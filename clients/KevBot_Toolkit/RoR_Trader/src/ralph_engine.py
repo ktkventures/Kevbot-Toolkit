@@ -1542,6 +1542,42 @@ class SymbolHub:
             source_label='polygon',
         )
 
+        # Phase 31 polygon path stops here for the primary TF only. Cross-TF
+        # confluence shadows (e.g. 15Min secondary on a 10Sec primary) need
+        # bars too — without this, shadow engines never advance past warmup
+        # and the MTF buffer goes stale. Aggregate the just-closed 1Min AM
+        # bar into every secondary-TF builder; on each secondary close,
+        # update its shadow's MTF confluence record.
+        for sec_tf in list(self._shadow_engines.keys()):
+            if sec_tf == tf_seconds:
+                continue  # primary already handled above
+            sec_builder = self.builders.get(sec_tf)
+            if sec_builder is None:
+                continue
+            try:
+                completed = sec_builder.accept_second_bar(
+                    bar_dict, close_on_boundary=True)
+            except Exception as e:
+                logger.warning(
+                    "secondary-TF aggregation failed (%ss): %s",
+                    sec_tf, e)
+                continue
+            if completed is None:
+                continue
+            shadow = self._shadow_engines.get(sec_tf)
+            if shadow is None or not shadow.indicators._initialized:
+                continue
+            try:
+                self._mtf_confluence[sec_tf] = shadow.on_bar_close(
+                    completed)
+                logger.info(
+                    "shadow_close %s/%ss close=%.2f records=%s",
+                    self.symbol, sec_tf, float(completed['close']),
+                    self._mtf_confluence[sec_tf])
+            except Exception as e:
+                logger.warning(
+                    "shadow on_bar_close failed (%ss): %s", sec_tf, e)
+
     def on_second_bar(self, bar_dict: dict,
                        alert_callback: Callable = None,
                        config: dict = None,
