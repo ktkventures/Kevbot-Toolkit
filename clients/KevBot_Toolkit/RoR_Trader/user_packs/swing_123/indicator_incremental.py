@@ -84,7 +84,11 @@ class Swing123Incremental:
             "sw123_candle_color": candle_color,
             # Trigger booleans (engine reads via user-pack pickup loop)
             "sw123_bull_c2": bool(bull_c2_fired),
+            "__sw123_bull_c2": bool(bull_c2_fired),  # alias for interpreter
             "sw123_bull_c3": bool(bull_c3_fired),
+            "__sw123_bull_c3": bool(bull_c3_fired),  # alias for interpreter
             "sw123_bear_c2": bool(bear_c2_fired),
+            "__sw123_bear_c2": bool(bear_c2_fired),  # alias for interpreter
             "sw123_bear_c3": bool(bear_c3_fired),
+            "__sw123_bear_c3": bool(bear_c3_fired),  # alias for interpreter
         }

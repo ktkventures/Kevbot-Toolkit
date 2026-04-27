@@ -157,8 +157,13 @@ class Swing123TestIncremental:
             "sw123t_bear_entry_level_prev": close,
             # Trigger booleans (engine reads via user-pack pickup loop)
             "s123t_bullish_c2_detected": bool(c2_detected_bull),
+            "__s123t_bullish_c2_detected": bool(c2_detected_bull),  # alias for interpreter
             "s123t_bullish_c3_confirmed": bool(c3_confirmed_bull),
+            "__s123t_bullish_c3_confirmed": bool(c3_confirmed_bull),  # alias for interpreter
             "s123t_bearish_c2_detected": bool(c2_detected_bear),
+            "__s123t_bearish_c2_detected": bool(c2_detected_bear),  # alias for interpreter
             "s123t_bearish_c3_confirmed": bool(c3_confirmed_bear),
+            "__s123t_bearish_c3_confirmed": bool(c3_confirmed_bear),  # alias for interpreter
             "s123t_pattern_reset": bool(pattern_reset),
+            "__s123t_pattern_reset": bool(pattern_reset),  # alias for interpreter
         }

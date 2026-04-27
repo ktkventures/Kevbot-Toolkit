@@ -162,9 +162,15 @@ class StratAssistantIncremental:
             "strat_candle_color": candle_color,
             # Trigger booleans (engine reads via user-pack pickup loop)
             "strat_bull_c2": bool(trig_bull_c2),
+            "__strat_bull_c2": bool(trig_bull_c2),  # alias for interpreter
             "strat_bear_c2": bool(trig_bear_c2),
+            "__strat_bear_c2": bool(trig_bear_c2),  # alias for interpreter
             "strat_outside_bar": bool(trig_outside_bar),
+            "__strat_outside_bar": bool(trig_outside_bar),  # alias for interpreter
             "strat_inside_bar": bool(trig_inside_bar),
+            "__strat_inside_bar": bool(trig_inside_bar),  # alias for interpreter
             "strat_shooter": bool(trig_shooter),
+            "__strat_shooter": bool(trig_shooter),  # alias for interpreter
             "strat_hammer": bool(trig_hammer),
+            "__strat_hammer": bool(trig_hammer),  # alias for interpreter
         }

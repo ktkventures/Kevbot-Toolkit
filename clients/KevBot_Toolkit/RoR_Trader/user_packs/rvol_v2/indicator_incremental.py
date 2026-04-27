@@ -67,6 +67,9 @@ class RvolV2Incremental:
             "rv2_rvol": rvol,
             "rv2_vol_sma": vol_sma,
             "rv2_spike": bool(spike),
+            "__rv2_spike": bool(spike),  # alias for interpreter
             "rv2_extreme": bool(extreme),
+            "__rv2_extreme": bool(extreme),  # alias for interpreter
             "rv2_fade": bool(fade),
+            "__rv2_fade": bool(fade),  # alias for interpreter
         }

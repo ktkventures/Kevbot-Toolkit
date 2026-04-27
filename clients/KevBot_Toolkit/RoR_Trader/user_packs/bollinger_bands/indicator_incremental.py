@@ -76,11 +76,17 @@ class BollingerBandsIncremental:
                 "bb_basis_prev": out_prev_basis,
                 "bb_lower_prev": out_prev_lower,
                 "bb_cross_upper": False,
+                "__bb_cross_upper": False,  # alias for interpreter
                 "bb_cross_lower": False,
+                "__bb_cross_lower": False,  # alias for interpreter
                 "bb_cross_basis_up": False,
+                "__bb_cross_basis_up": False,  # alias for interpreter
                 "bb_cross_basis_down": False,
+                "__bb_cross_basis_down": False,  # alias for interpreter
                 "bb_squeeze_on": False,
+                "__bb_squeeze_on": False,  # alias for interpreter
                 "bb_squeeze_off": False,
+                "__bb_squeeze_off": False,  # alias for interpreter
             }
 
         # SMA + sample stdev (ddof=1) — matches pandas .rolling().std() default.
@@ -139,9 +145,15 @@ class BollingerBandsIncremental:
             "bb_basis_prev": out_prev_basis,
             "bb_lower_prev": out_prev_lower,
             "bb_cross_upper": bool(cross_upper),
+            "__bb_cross_upper": bool(cross_upper),  # alias for interpreter
             "bb_cross_lower": bool(cross_lower),
+            "__bb_cross_lower": bool(cross_lower),  # alias for interpreter
             "bb_cross_basis_up": bool(cross_basis_up),
+            "__bb_cross_basis_up": bool(cross_basis_up),  # alias for interpreter
             "bb_cross_basis_down": bool(cross_basis_down),
+            "__bb_cross_basis_down": bool(cross_basis_down),  # alias for interpreter
             "bb_squeeze_on": bool(squeeze_on),
+            "__bb_squeeze_on": bool(squeeze_on),  # alias for interpreter
             "bb_squeeze_off": bool(squeeze_off),
+            "__bb_squeeze_off": bool(squeeze_off),  # alias for interpreter
         }

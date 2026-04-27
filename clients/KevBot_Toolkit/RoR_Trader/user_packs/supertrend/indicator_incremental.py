@@ -139,7 +139,11 @@ class SupertrendIncremental:
             "st_atr": self._atr,
             "st_line_prev": out_prev_line,
             "st_bull_flip": bool(bull_flip),
+            "__st_bull_flip": bool(bull_flip),  # alias for interpreter
             "st_bear_flip": bool(bear_flip),
+            "__st_bear_flip": bool(bear_flip),  # alias for interpreter
             "st_near_stop_bull": bool(near_stop_bull),
+            "__st_near_stop_bull": bool(near_stop_bull),  # alias for interpreter
             "st_near_stop_bear": bool(near_stop_bear),
+            "__st_near_stop_bear": bool(near_stop_bear),  # alias for interpreter
         }
