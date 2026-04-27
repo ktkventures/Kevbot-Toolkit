@@ -1650,10 +1650,49 @@ class SymbolHub:
         except (ValueError, TypeError):
             self.last_tick_time = datetime.now(timezone.utc)
 
-        # Set of primary timeframes (each monitor's tf_seconds). Skip secondary
-        # TF builders — those are seeded at warmup and used for cross-TF
-        # confluence, not driven by live per-second data.
+        # Primary TF builders are driven by per-second bars below.
+        # Secondary TF builders split by granularity:
+        #   - >= 60s: fed from the canonical 1Min AM bars in on_polygon_bar
+        #     (commit ca57cac).
+        #   - < 60s: fed here from per-second bars (commit follows ca57cac
+        #     and heals sub-minute cross-TF gates like sid 125's
+        #     `5s-SWING_123_TEST-NEUTRAL` and sid 102's `15s-...`).
         primary_tfs = {m.tf_seconds for m in self.monitors.values()}
+        secondary_subminute_tfs = {
+            tf for tf in self._shadow_engines.keys() if tf < 60
+        }
+
+        # Sub-minute secondary aggregation: feed each per-second bar into
+        # any sub-minute shadow builder; on close, refresh _mtf_confluence.
+        for sec_tf in secondary_subminute_tfs:
+            if sec_tf in primary_tfs:
+                continue  # primary path handles it below
+            sec_builder = self.builders.get(sec_tf)
+            if sec_builder is None:
+                continue
+            try:
+                completed = sec_builder.accept_second_bar(
+                    bar_dict, close_on_boundary=True)
+            except Exception as e:
+                logger.warning(
+                    "sub-minute secondary aggregation failed (%ss): %s",
+                    sec_tf, e)
+                continue
+            if completed is None:
+                continue
+            shadow = self._shadow_engines.get(sec_tf)
+            if shadow is None or not shadow.indicators._initialized:
+                continue
+            try:
+                self._mtf_confluence[sec_tf] = shadow.on_bar_close(
+                    completed)
+                logger.info(
+                    "shadow_close %s/%ss close=%.2f records=%s",
+                    self.symbol, sec_tf, float(completed['close']),
+                    self._mtf_confluence[sec_tf])
+            except Exception as e:
+                logger.warning(
+                    "shadow on_bar_close failed (%ss): %s", sec_tf, e)
 
         for tf_seconds, b in self.builders.items():
             if tf_seconds not in primary_tfs:
