@@ -209,6 +209,78 @@ def get_user_pack_code(slug: str, user=Depends(get_current_user)):
     return result
 
 
+# =============================================================================
+# Parity test — 4-quadrant pack validation
+# =============================================================================
+
+class ParityTestRequest(BaseModel):
+    """Optional config for the 4-quadrant parity test. Sensible defaults
+    cover most stock packs; crypto packs should pass an appropriate
+    symbol + session."""
+    symbol: str = "SPY"
+    primary_tf: str = "1Min"
+    secondary_tf: str = "15Min"
+    days: int = 7
+    session: str = "RTH"
+    feed: str = "sip"
+    warmup_bars: int = 200
+
+
+@router.post("/user-packs/{slug}/parity-test")
+def run_pack_parity_test_endpoint(
+    slug: str,
+    req: ParityTestRequest = Body(default_factory=ParityTestRequest),
+    user=Depends(get_current_user),
+):
+    """Run the 4-quadrant parity test for a user pack and return the
+    full report. Sync invocation — typical runtime 30-60s on 7d/SPY.
+
+    Result schema (top-level):
+      pack_id, symbol, primary_tf, secondary_tf, days,
+      overall_verdict ('PASS'|'WARN'|'FAIL'),
+      summary (one-liner),
+      quadrants: {
+        Q1: trigger / primary TF      (parity_score, verdict, ...)
+        Q2: interpreter / primary TF  (parity_score, verdict, ...)
+        Q3: interpreter / secondary TF (cross-TF shadow path)
+        Q4: data fidelity (deferred — always SKIP)
+      }
+
+    Use this as the gating check before publishing a pack: a pack
+    should reach overall_verdict == 'PASS' on its primary supported
+    symbol/timeframe before being trusted in production.
+    """
+    import pack_registry
+    pack = pack_registry.get_pack(slug)
+    if pack is None:
+        raise HTTPException(
+            status_code=404, detail=f"Pack '{slug}' not registered")
+    if not pack.is_valid:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Pack '{slug}' has validation errors and cannot "
+                    f"be tested: {pack.validation_errors}"))
+
+    from parity_simulator import run_pack_parity_test_4q
+    try:
+        result = run_pack_parity_test_4q(
+            pack_id=slug,
+            symbol=req.symbol,
+            primary_tf=req.primary_tf,
+            secondary_tf=req.secondary_tf,
+            days=req.days,
+            session=req.session,
+            feed=req.feed,
+            warmup_bars=req.warmup_bars,
+        )
+    except Exception as e:
+        logger.exception("[parity-test] %s failed: %s", slug, e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Parity test crashed: {type(e).__name__}: {e}")
+    return result
+
+
 @router.post("/generate-structure")
 def generate_structure(req: GenerateStructureRequest, user=Depends(get_current_user)):
     """Step 2: AI proposes pack structure from description."""
