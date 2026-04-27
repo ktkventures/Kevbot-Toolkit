@@ -1113,10 +1113,34 @@ class SymbolHub:
                         continue
                     interp_key = parts[1]
                     req_interp.add(interp_key)
+                    matched_builtin = False
                     for _tpl_key, (ind_set, ikey) in TEMPLATE_REQUIREMENTS.items():
                         if ikey == interp_key:
                             req_ind.update(ind_set)
+                            matched_builtin = True
                             break
+                    if not matched_builtin:
+                        # User-pack interpreter on a secondary TF — add the
+                        # `_user_pack_<slug>` marker so the shadow engine's
+                        # IncrementalIndicatorEngine instantiates the pack's
+                        # incremental_class. Without this the shadow engine
+                        # carries the interpreter requirement but no
+                        # underlying indicator values, and evaluate_bar_close
+                        # has nothing to dispatch on. This was bug #4 in the
+                        # user-pack live integration set (sids 132/134).
+                        try:
+                            import pack_registry
+                            for slug, pack in (
+                                pack_registry.get_registered_packs().items()
+                            ):
+                                if interp_key in pack.manifest.get(
+                                    'interpreters', []):
+                                    req_ind.add(f'_user_pack_{slug}')
+                                    break
+                        except Exception as _e:
+                            logger.warning(
+                                "shadow user-pack lookup failed for %s: %s",
+                                interp_key, _e)
 
                 # Merge params from every requesting monitor so the shadow's
                 # union of required indicators is fully covered. Shared keys
