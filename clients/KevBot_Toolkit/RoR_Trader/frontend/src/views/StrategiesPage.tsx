@@ -487,6 +487,9 @@ export default function StrategiesPage() {
   // Strategy Health drawer — opens when a badge is clicked. We track the
   // strategy whose drawer is open (or null when closed).
   const [healthDrawerFor, setHealthDrawerFor] = useState<string | null>(null);
+  // Health-aggregate filter: 'all' shows everything; otherwise filter cards
+  // to only strategies whose health.severity matches.
+  const [healthFilter, setHealthFilter] = useState<'all' | HealthSeverity>('all');
 
   // Bulk select (always available, no select mode toggle needed)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -507,6 +510,10 @@ export default function StrategiesPage() {
     if (directionFilter !== 'All') result = result.filter((s) => s.direction === directionFilter);
     if (tagFilter !== 'All') result = result.filter((s) => s.tags.includes(tagFilter));
     if (statusFilter !== 'All') result = result.filter((s) => s.status === statusFilter);
+    if (healthFilter !== 'all') {
+      // Treat strategies with no health field as 'healthy'
+      result = result.filter((s) => (s.health?.severity || 'healthy') === healthFilter);
+    }
 
     // Sort
     switch (sortBy) {
@@ -519,7 +526,19 @@ export default function StrategiesPage() {
       case 'Max DD (Best)': result.sort((a, b) => b.maxDD - a.maxDD); break;
     }
     return result;
-  }, [strategies, tickerFilter, directionFilter, tagFilter, statusFilter, sortBy]);
+  }, [strategies, tickerFilter, directionFilter, tagFilter, statusFilter, healthFilter, sortBy]);
+
+  // Health aggregate counts (for the chip row above the filters)
+  const healthCounts = useMemo(() => {
+    const counts: Record<HealthSeverity, number> = {
+      healthy: 0, minor: 0, action: 0, broken: 0,
+    };
+    for (const s of strategies) {
+      const sev = (s.health?.severity || 'healthy') as HealthSeverity;
+      counts[sev]++;
+    }
+    return counts;
+  }, [strategies]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => {
@@ -735,6 +754,68 @@ export default function StrategiesPage() {
           </button>
         </div>
       </Modal>
+
+      {/* ---- Health Aggregate Chip Row ----
+           Shows total counts by severity across the strategy fleet.
+           Each non-zero severity is clickable to filter the cards below to
+           only that severity. Click an active filter again (or All) to clear.
+           Hidden entirely when every strategy is healthy. */}
+      {(healthCounts.minor + healthCounts.action + healthCounts.broken > 0) && (
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Strategy health:
+          </span>
+          {(['all', 'broken', 'action', 'minor', 'healthy'] as const).map((sev) => {
+            // Build label + color per severity
+            const labels: Record<typeof sev, string> = {
+              all: `All (${strategies.length})`,
+              healthy: `${healthCounts.healthy} healthy`,
+              minor: `${healthCounts.minor} minor`,
+              action: `${healthCounts.action} action`,
+              broken: `${healthCounts.broken} broken`,
+            };
+            const colors: Record<typeof sev, { bg: string; fg: string }> = {
+              all:     { bg: 'var(--bg-input)', fg: 'var(--text-secondary)' },
+              healthy: { bg: 'var(--green-muted)', fg: 'var(--green)' },
+              minor:   { bg: 'var(--orange-muted)', fg: 'var(--orange)' },
+              action:  { bg: 'var(--orange-muted)', fg: 'var(--orange)' },
+              broken:  { bg: 'var(--red-muted)', fg: 'var(--red)' },
+            };
+            const isActive = healthFilter === sev;
+            // Hide zero-count severities (except 'all', which always shows)
+            if (sev !== 'all'
+                && healthCounts[sev as HealthSeverity] === 0) {
+              return null;
+            }
+            return (
+              <button
+                key={sev}
+                type="button"
+                onClick={() => setHealthFilter(sev === 'all' ? 'all' : sev as HealthSeverity)}
+                className="text-xs px-2.5 py-1 rounded-full font-medium"
+                style={{
+                  background: isActive ? colors[sev].fg : colors[sev].bg,
+                  color: isActive ? 'white' : colors[sev].fg,
+                  border: `1px solid ${colors[sev].fg}40`,
+                  cursor: 'pointer',
+                }}
+              >
+                {labels[sev]}
+              </button>
+            );
+          })}
+          {healthFilter !== 'all' && (
+            <button
+              type="button"
+              onClick={() => setHealthFilter('all')}
+              className="text-xs px-2 py-1 rounded"
+              style={{ color: 'var(--text-muted)', background: 'transparent', border: '1px solid var(--border)' }}
+            >
+              Clear filter
+            </button>
+          )}
+        </div>
+      )}
 
       {/* ---- Filters ---- */}
       <div className="grid grid-cols-3 lg:grid-cols-7 gap-3 mb-5">
