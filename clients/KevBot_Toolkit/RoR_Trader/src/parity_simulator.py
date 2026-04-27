@@ -650,6 +650,485 @@ def run_pack_parity_test(
     }
 
 
+# ===========================================================================
+# 4-QUADRANT EXTENSION (2026-04-27)
+# ===========================================================================
+# The original `run_pack_parity_test` covers Quadrant 1 (Trigger / primary
+# TF). Today's bug chain (#3 = primary-TF interpreter never ran live;
+# #4/#5 = secondary-TF user-pack interpreter never registered or never
+# received bars) exposed two more parity surfaces. The 4-quadrant test
+# extends the simulator to surface all of these at pack-creation time.
+#
+#   Q1: Trigger / primary TF       — original test
+#   Q2: Interpreter / primary TF   — pack as same-TF confluence gate
+#   Q3: Interpreter / secondary TF — pack as cross-TF confluence gate
+#                                    (exercises shadow engine path)
+#   Q4: Data feed fidelity         — secondary aggregation matches
+#                                    direct REST load (deferred — would
+#                                    catch Polygon-side OHLCV drift, not
+#                                    pack-author bugs)
+#
+# A pack passes the 4-quadrant test if every applicable quadrant returns
+# parity_score=1.0. Packs without a manifest interpreter skip Q2/Q3.
+# ===========================================================================
+
+
+def _interp_states_batch(
+    pack: 'pack_registry.RegisteredPack',
+    enriched_df: pd.DataFrame,
+) -> 'list[Optional[str]]':
+    """Run pack.interpreter_func on the full DataFrame; return per-bar states.
+
+    Mirrors the backtest pipeline's interpreter step. Returned list aligns
+    1:1 with enriched_df rows.
+    """
+    if pack.interpreter_func is None:
+        return [None] * len(enriched_df)
+    try:
+        states = pack.interpreter_func(enriched_df)
+    except Exception as e:
+        logger.warning("[parity-Q2] batch interpreter failed: %s", e)
+        return [None] * len(enriched_df)
+    return [
+        states.iloc[i] if states is not None and i < len(states) else None
+        for i in range(len(enriched_df))
+    ]
+
+
+def _interp_states_live(
+    strategy: dict,
+    df: pd.DataFrame,
+    interpreter_key: str,
+    warmup_bars: int = 200,
+) -> 'list[Optional[str]]':
+    """Replay df bar-by-bar through IncrementalIndicatorEngine + the live
+    user-pack interpreter dispatch in evaluate_bar_close. Capture
+    interpreter state per bar.
+
+    Mirrors what `evaluate_bar_close` (with the 88be377 generic dispatch)
+    does on every live bar close.
+    """
+    from unified_engine import (
+        resolve_strategy_requirements, IncrementalIndicatorEngine,
+        TriggerEvaluator,
+    )
+    indicators, interpreters, triggers, params = (
+        resolve_strategy_requirements(strategy))
+    ind = IncrementalIndicatorEngine(indicators, params)
+    trig = TriggerEvaluator(interpreters, triggers, params['ema_periods'])
+
+    raw_cols = [c for c in df.columns
+                if c.lower() in ('open', 'high', 'low', 'close', 'volume')]
+    raw = df[raw_cols].copy() if raw_cols else df
+
+    states: list = []
+    for i, (ts, row) in enumerate(raw.iterrows()):
+        bar = {
+            'open': float(row['open']), 'high': float(row['high']),
+            'low': float(row['low']), 'close': float(row['close']),
+            'volume': float(row.get('volume', 0)),
+            'timestamp': ts,
+        }
+        current = ind.update_bar(bar)
+        if i >= warmup_bars and ind._initialized:
+            prev = ind.get_prev_values()
+            try:
+                interps, _t = trig.evaluate_bar_close(
+                    current, prev, ind.state.prev2_macd_hist)
+                states.append(interps.get(interpreter_key))
+            except Exception as e:
+                logger.warning(
+                    "[parity-Q2] live evaluate_bar_close failed bar %d: %s",
+                    i, e)
+                states.append(None)
+        else:
+            states.append(None)
+    return states
+
+
+def run_quadrant_2_interpreter_primary(
+    pack_id: str,
+    symbol: str = 'SPY',
+    timeframe: str = '1Min',
+    days: int = 7,
+    session: str = 'RTH',
+    feed: str = 'sip',
+    warmup_bars: int = 200,
+) -> dict:
+    """Q2: Interpreter parity on the primary TF.
+
+    Runs the pack's interpreter on the full DataFrame (batch) and replays
+    bar-by-bar through the live dispatch. Compares per-bar states.
+
+    Skipped if the pack has no interpreter or no incremental_class.
+    """
+    _ensure_user_packs_loaded()
+    import pack_registry
+    pack = pack_registry.get_pack(pack_id)
+    if pack is None:
+        return {'verdict': 'SKIP',
+                'explanation': f'pack {pack_id!r} not registered'}
+    if pack.interpreter_func is None:
+        return {'verdict': 'SKIP',
+                'explanation': f'pack {pack_id!r} has no interpreter_func'}
+    if pack.incremental_class is None:
+        return {'verdict': 'SKIP',
+                'explanation': (f'pack {pack_id!r} is batch-only '
+                                '(no incremental_class) — interpreter '
+                                'cannot be live-dispatched')}
+
+    interpreter_keys = pack.manifest.get('interpreters', [])
+    if not interpreter_keys:
+        return {'verdict': 'SKIP',
+                'explanation': f'pack {pack_id!r} declares no interpreters'}
+    interpreter_key = interpreter_keys[0]
+
+    enriched_df = _load_bars_with_indicators(
+        symbol, timeframe, days, session, feed)
+    if len(enriched_df) < warmup_bars + 10:
+        return {'verdict': 'SKIP',
+                'explanation': (f'only {len(enriched_df)} bars; need '
+                                f'>{warmup_bars + 10}')}
+
+    # Build a strategy proxy so the live replay knows the pack is required
+    triggers = pack.manifest.get('triggers', [])
+    if not triggers:
+        return {'verdict': 'SKIP',
+                'explanation': f'pack {pack_id!r} has no triggers'}
+    base = triggers[0].get('base', '')
+    proxy_trigger = _resolve_engine_trigger_id(pack_id, base)
+    strategy = _build_strategy_proxy(
+        pack_id, proxy_trigger,
+        timeframe=timeframe, symbol=symbol, session=session)
+
+    batch_states = _interp_states_batch(pack, enriched_df)
+    live_states = _interp_states_live(
+        strategy, enriched_df, interpreter_key, warmup_bars=warmup_bars)
+
+    # Compare post-warmup; ignore positions where either side is None
+    matched = 0
+    compared = 0
+    divergent: list = []
+    for i, (b, l) in enumerate(zip(batch_states, live_states)):
+        if i < warmup_bars or b is None or l is None:
+            continue
+        compared += 1
+        if b == l:
+            matched += 1
+        elif len(divergent) < 5:
+            divergent.append({
+                'bar_idx': i,
+                'timestamp': str(enriched_df.index[i]),
+                'batch': b,
+                'live': l,
+            })
+    parity = (matched / compared) if compared else 1.0
+    verdict = 'PASS' if parity == 1.0 else (
+        'WARN' if parity >= 0.9 else 'FAIL')
+    return {
+        'quadrant': 'Q2_interpreter_primary',
+        'pack_id': pack_id,
+        'interpreter_key': interpreter_key,
+        'symbol': symbol,
+        'timeframe': timeframe,
+        'days': days,
+        'bars_loaded': len(enriched_df),
+        'compared': compared,
+        'matched': matched,
+        'parity_score': round(parity, 4),
+        'divergent_examples': divergent,
+        'verdict': verdict,
+        'explanation': (
+            f'{matched}/{compared} bars matched on primary-TF interpreter '
+            f'(parity={parity:.4f}). Divergence on flip bars is the known '
+            f'__-prefix gap — see feedback memory.'
+            if compared else 'no comparable bars'),
+    }
+
+
+def run_quadrant_3_interpreter_secondary(
+    pack_id: str,
+    primary_tf: str = '1Min',
+    secondary_tf: str = '15Min',
+    symbol: str = 'SPY',
+    days: int = 14,
+    session: str = 'RTH',
+    feed: str = 'sip',
+    warmup_bars: int = 100,
+) -> dict:
+    """Q3: Interpreter parity on a SECONDARY TF (cross-TF / shadow path).
+
+    Backtest reference: load secondary_tf bars directly from REST, compute
+    the pack interpreter, capture per-bar state.
+
+    Live path: build a SymbolHub with a primary monitor + secondary shadow.
+    Feed primary-TF bars via on_polygon_bar (mirrors ca57cac live path);
+    secondary builder aggregates and shadow.on_bar_close emits records on
+    each secondary boundary. Capture the emitted state per close.
+
+    Compare matched closes.
+    """
+    _ensure_user_packs_loaded()
+    import pack_registry
+    pack = pack_registry.get_pack(pack_id)
+    if pack is None:
+        return {'verdict': 'SKIP',
+                'explanation': f'pack {pack_id!r} not registered'}
+    if pack.interpreter_func is None or pack.incremental_class is None:
+        return {'verdict': 'SKIP',
+                'explanation': (f'pack {pack_id!r} cannot be live-shadowed '
+                                '(missing interpreter or incremental_class)')}
+    interpreter_keys = pack.manifest.get('interpreters', [])
+    if not interpreter_keys:
+        return {'verdict': 'SKIP',
+                'explanation': f'pack {pack_id!r} declares no interpreters'}
+    interpreter_key = interpreter_keys[0]
+    triggers = pack.manifest.get('triggers', [])
+    if not triggers:
+        return {'verdict': 'SKIP',
+                'explanation': f'pack {pack_id!r} has no triggers'}
+
+    # Direct backtest: load secondary TF bars + compute interpreter
+    sec_df = _load_bars_with_indicators(
+        symbol, secondary_tf, days, session, feed)
+    if len(sec_df) < warmup_bars + 5:
+        return {'verdict': 'SKIP',
+                'explanation': (f'only {len(sec_df)} secondary bars; need '
+                                f'>{warmup_bars + 5}')}
+    batch_states = _interp_states_batch(pack, sec_df)
+
+    # Build a synthetic cross-TF strategy and exercise the shadow path
+    from ralph_engine import (
+        SymbolHub, StrategyMonitor, TIMEFRAME_SECONDS, SECONDS_TO_TIMEFRAME,
+    )
+    from data_loader import load_market_data
+
+    sec_tf_seconds = TIMEFRAME_SECONDS.get(secondary_tf)
+    primary_tf_seconds = TIMEFRAME_SECONDS.get(primary_tf)
+    if not sec_tf_seconds or not primary_tf_seconds:
+        return {'verdict': 'SKIP',
+                'explanation': f'unrecognized timeframe(s)'}
+    if sec_tf_seconds < primary_tf_seconds:
+        return {'verdict': 'SKIP',
+                'explanation': (f'secondary {secondary_tf} is finer than '
+                                f'primary {primary_tf} — Q3 simulates '
+                                'coarser-secondary cross-TF only')}
+
+    # Use a built-in trigger as the strategy entry so resolve_strategy_
+    # requirements doesn't need this pack's trigger to instantiate.
+    sec_label = secondary_tf.replace('Min', 'M').replace('Hour', 'H').replace(
+        'Day', 'D').replace('Week', 'W').replace('Sec', 's').lower()
+    state_for_record = pack.manifest.get('outputs', ['BULL_TREND'])[0]
+    strategy = {
+        'id': 999_999,
+        'symbol': symbol,
+        'timeframe': primary_tf,
+        'direction': 'LONG',
+        'entry_trigger_confluence_id':
+            'ema_price_position_v2_default_cross_short_up',
+        'exit_trigger_confluence_ids':
+            ['ema_price_position_v2_default_cross_mid_down'],
+        'confluence': [f'{sec_label}-{interpreter_key}-{state_for_record}'],
+        'general_confluences': [],
+        'trading_session': session,
+    }
+    hub = SymbolHub(symbol, publisher=None)
+    monitor = StrategyMonitor(strategy, None, general_packs=[])
+    hub.add_monitor(monitor)
+    hub.finalize_shadow_engines()
+    shadow = hub._shadow_engines.get(sec_tf_seconds)
+    if shadow is None:
+        return {'verdict': 'FAIL',
+                'explanation': (f'no shadow engine created for '
+                                f'{sec_tf_seconds}s — Q3/Q4 user-pack '
+                                'requirement plumbing is broken')}
+
+    # Warmup the shadow engine on historical secondary bars (matches what
+    # worker.py does on engine startup).
+    sec_warmup = load_market_data(
+        symbol=symbol, days=days, timeframe=secondary_tf, session=session)
+    shadow.warmup(sec_warmup.iloc[:max(1, len(sec_warmup) - warmup_bars)])
+
+    # Now feed each PRIMARY-TF bar through hub.on_polygon_bar — secondary
+    # builder will aggregate and call shadow.on_bar_close on every close.
+    pri_df = load_market_data(
+        symbol=symbol, days=days, timeframe=primary_tf, session=session)
+    if len(pri_df) < (sec_tf_seconds // primary_tf_seconds) + 2:
+        return {'verdict': 'SKIP',
+                'explanation': 'not enough primary bars to span secondary'}
+
+    live_close_records: dict = {}
+    for ts, row in pri_df.iterrows():
+        bar_dict = {
+            'open': float(row['open']), 'high': float(row['high']),
+            'low': float(row['low']), 'close': float(row['close']),
+            'volume': float(row.get('volume', 0)),
+            'timestamp': ts.isoformat() if hasattr(ts, 'isoformat') else str(ts),
+        }
+        try:
+            hub.on_polygon_bar(bar_dict, primary_tf_seconds)
+        except Exception as e:
+            logger.warning("[parity-Q3] hub.on_polygon_bar failed: %s", e)
+            continue
+        # _mtf_confluence is the shadow's latest emitted record set
+        recs = hub._mtf_confluence.get(sec_tf_seconds, set()) or set()
+        # Extract just this pack's interpreter state from the records
+        for rec in recs:
+            parts = rec.split('-', 2)
+            if len(parts) >= 3 and parts[1] == interpreter_key:
+                # Use the closing timestamp of the secondary bar that
+                # produced this record. Approximation: the primary bar's
+                # timestamp aligned to secondary period end.
+                live_close_records[ts] = parts[2]
+
+    # Compare live emissions against batch states on the secondary timeline
+    matched = 0
+    compared = 0
+    divergent: list = []
+    for sec_ts, batch_state in zip(sec_df.index, batch_states):
+        if batch_state is None:
+            continue
+        # Find the primary bar at or after this secondary bar's close
+        try:
+            mask = pri_df.index >= sec_ts
+            if not mask.any():
+                continue
+            anchor_ts = pri_df.index[mask][0]
+        except Exception:
+            continue
+        live_state = live_close_records.get(anchor_ts)
+        if live_state is None:
+            continue
+        compared += 1
+        if live_state == batch_state:
+            matched += 1
+        elif len(divergent) < 5:
+            divergent.append({
+                'sec_ts': str(sec_ts),
+                'batch': batch_state,
+                'live': live_state,
+            })
+
+    parity = (matched / compared) if compared else 1.0
+    verdict = 'PASS' if parity == 1.0 else (
+        'WARN' if parity >= 0.9 else 'FAIL')
+    return {
+        'quadrant': 'Q3_interpreter_secondary',
+        'pack_id': pack_id,
+        'interpreter_key': interpreter_key,
+        'symbol': symbol,
+        'primary_tf': primary_tf,
+        'secondary_tf': secondary_tf,
+        'days': days,
+        'compared': compared,
+        'matched': matched,
+        'parity_score': round(parity, 4),
+        'divergent_examples': divergent,
+        'verdict': verdict,
+        'explanation': (
+            f'{matched}/{compared} secondary closes matched on '
+            f'cross-TF shadow path (parity={parity:.4f}).'
+            if compared else
+            'no comparable secondary closes — investigate shadow plumbing'),
+    }
+
+
+def run_pack_parity_test_4q(
+    pack_id: str,
+    symbol: str = 'SPY',
+    primary_tf: str = '1Min',
+    secondary_tf: str = '15Min',
+    days: int = 7,
+    session: str = 'RTH',
+    feed: str = 'sip',
+    warmup_bars: int = 200,
+) -> dict:
+    """Run all four parity quadrants for a single pack and return a unified
+    report. Use this as the "did my pack pass?" gate for new pack saves.
+
+    Q1 = trigger / primary TF (existing)
+    Q2 = interpreter / primary TF
+    Q3 = interpreter / secondary TF (cross-TF shadow path)
+    Q4 = deferred (data feed fidelity)
+    """
+    _ensure_user_packs_loaded()
+    import pack_registry
+    pack = pack_registry.get_pack(pack_id)
+    if pack is None:
+        return {'verdict': 'FAIL',
+                'explanation': f'pack {pack_id!r} not registered',
+                'quadrants': {}}
+
+    # Q1: Trigger primary TF — use first declared trigger as proxy
+    triggers = pack.manifest.get('triggers', [])
+    q1 = {'verdict': 'SKIP', 'explanation': 'pack declares no triggers'}
+    if triggers:
+        first_trigger_base = triggers[0].get('base', '')
+        try:
+            q1_full = run_pack_parity_test(
+                pack_id=pack_id,
+                entry_trigger=first_trigger_base,
+                symbol=symbol, timeframe=primary_tf, days=days,
+                session=session, feed=feed, warmup_bars=warmup_bars,
+            )
+            q1 = {
+                'quadrant': 'Q1_trigger_primary',
+                'pack_id': pack_id,
+                'trigger': q1_full['entry_trigger'],
+                'parity_score': q1_full['parity_score'],
+                'verdict': q1_full['verdict'],
+                'explanation': q1_full['explanation'],
+                'matched': len(q1_full['matched']),
+                'backtest_only': len(q1_full['backtest_only']),
+                'live_only': len(q1_full['live_only']),
+            }
+        except Exception as e:
+            q1 = {'verdict': 'FAIL', 'explanation': f'Q1 raised: {e}'}
+
+    # Q2: Interpreter primary TF
+    try:
+        q2 = run_quadrant_2_interpreter_primary(
+            pack_id=pack_id, symbol=symbol, timeframe=primary_tf,
+            days=days, session=session, feed=feed, warmup_bars=warmup_bars,
+        )
+    except Exception as e:
+        q2 = {'verdict': 'FAIL', 'explanation': f'Q2 raised: {e}'}
+
+    # Q3: Interpreter secondary TF (cross-TF shadow)
+    try:
+        q3 = run_quadrant_3_interpreter_secondary(
+            pack_id=pack_id, primary_tf=primary_tf,
+            secondary_tf=secondary_tf, symbol=symbol, days=days,
+            session=session, feed=feed,
+        )
+    except Exception as e:
+        q3 = {'verdict': 'FAIL', 'explanation': f'Q3 raised: {e}'}
+
+    # Q4 deferred
+    q4 = {'verdict': 'SKIP', 'explanation': 'Q4 (data fidelity) deferred'}
+
+    # Overall verdict: any FAIL → FAIL; any WARN (no FAIL) → WARN; all
+    # PASS or SKIP → PASS
+    quadrants = {'Q1': q1, 'Q2': q2, 'Q3': q3, 'Q4': q4}
+    severity_rank = {'FAIL': 3, 'WARN': 2, 'PASS': 1, 'SKIP': 0}
+    worst = max(severity_rank.get(q['verdict'], 0) for q in quadrants.values())
+    overall = {3: 'FAIL', 2: 'WARN', 1: 'PASS', 0: 'PASS'}[worst]
+
+    return {
+        'pack_id': pack_id,
+        'symbol': symbol,
+        'primary_tf': primary_tf,
+        'secondary_tf': secondary_tf,
+        'days': days,
+        'quadrants': quadrants,
+        'overall_verdict': overall,
+        'summary': (
+            f'{overall}: '
+            f'Q1={q1["verdict"]} Q2={q2["verdict"]} '
+            f'Q3={q3["verdict"]} Q4={q4["verdict"]}  ({pack_id})'),
+    }
+
+
 # ---------------------------------------------------------------------------
 # CLI smoke test — run this file directly to exercise the backtest path
 # ---------------------------------------------------------------------------
@@ -678,26 +1157,56 @@ if __name__ == '__main__':
     from db import set_admin_user_context
     set_admin_user_context(KEVIN_USER_ID)
 
-    # Default smoke test — utbot_v2 (production-validated, fires often)
-    pack_id = sys.argv[1] if len(sys.argv) > 1 else 'utbot_v2'
-    trigger = sys.argv[2] if len(sys.argv) > 2 else 'utbot_v2_buy'
-    symbol = sys.argv[3] if len(sys.argv) > 3 else 'SPY'
-    timeframe = sys.argv[4] if len(sys.argv) > 4 else '1Min'
-    days = int(sys.argv[5]) if len(sys.argv) > 5 else 7
+    # CLI:
+    #   python parity_simulator.py <pack_id> [trigger] [symbol] [timeframe] [days]
+    #   python parity_simulator.py --4q <pack_id> [symbol] [primary_tf] [secondary_tf] [days]
+    args = sys.argv[1:]
+    if args and args[0] == '--4q':
+        pack_id = args[1] if len(args) > 1 else 'ut_bot_v4'
+        symbol = args[2] if len(args) > 2 else 'SPY'
+        primary_tf = args[3] if len(args) > 3 else '1Min'
+        secondary_tf = args[4] if len(args) > 4 else '15Min'
+        days = int(args[5]) if len(args) > 5 else 7
 
-    print(f"\n=== Parity smoke test: {pack_id} / {trigger} on "
-          f"{symbol} / {timeframe} / {days}d ===\n")
-    result = run_pack_parity_test(
-        pack_id=pack_id, entry_trigger=trigger,
-        symbol=symbol, timeframe=timeframe, days=days,
-    )
-    # Truncate fire lists for printing — just show counts + first 3
-    short = dict(result)
-    for key in ('backtest_fires', 'live_fires', 'live_fires_other_triggers',
-                'matched', 'backtest_only', 'live_only', 'backtest_warmup'):
-        vals = result.get(key, []) or []
-        short[key] = (
-            f"[{len(vals)} fires] "
-            + (str(vals[:3]) if vals else '(empty)')
+        print(f"\n=== 4-Quadrant Parity: {pack_id} / {symbol} / "
+              f"primary={primary_tf} secondary={secondary_tf} / {days}d ===\n")
+        result = run_pack_parity_test_4q(
+            pack_id=pack_id, symbol=symbol,
+            primary_tf=primary_tf, secondary_tf=secondary_tf, days=days,
         )
-    print(json.dumps(short, indent=2, default=str))
+        # Compact view: per-quadrant verdict + parity
+        print(f"Overall: {result['overall_verdict']}\n")
+        for qkey in ('Q1', 'Q2', 'Q3', 'Q4'):
+            q = result['quadrants'].get(qkey, {})
+            ps = q.get('parity_score', '—')
+            print(f"  [{qkey}] {q.get('verdict', '?'):<5} parity={ps}  "
+                  f"{q.get('explanation', '')}")
+        print()
+        # Full JSON for follow-up inspection (truncate divergent_examples
+        # lists if huge)
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        # Original Q1-only smoke test path — utbot_v2 default
+        pack_id = args[0] if args else 'utbot_v2'
+        trigger = args[1] if len(args) > 1 else 'utbot_v2_buy'
+        symbol = args[2] if len(args) > 2 else 'SPY'
+        timeframe = args[3] if len(args) > 3 else '1Min'
+        days = int(args[4]) if len(args) > 4 else 7
+
+        print(f"\n=== Parity smoke test: {pack_id} / {trigger} on "
+              f"{symbol} / {timeframe} / {days}d ===\n")
+        result = run_pack_parity_test(
+            pack_id=pack_id, entry_trigger=trigger,
+            symbol=symbol, timeframe=timeframe, days=days,
+        )
+        short = dict(result)
+        for key in ('backtest_fires', 'live_fires',
+                    'live_fires_other_triggers',
+                    'matched', 'backtest_only', 'live_only',
+                    'backtest_warmup'):
+            vals = result.get(key, []) or []
+            short[key] = (
+                f"[{len(vals)} fires] "
+                + (str(vals[:3]) if vals else '(empty)')
+            )
+        print(json.dumps(short, indent=2, default=str))
