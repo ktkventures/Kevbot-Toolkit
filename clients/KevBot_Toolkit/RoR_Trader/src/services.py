@@ -49,7 +49,20 @@ _logger = logging.getLogger('ror_trader')
 # Why process-local (not Redis): single API process today; cross-process
 # caching is the next step but not required to fix today's symptom. When we
 # move to multi-replica, swap this for Redis with the same key shape.
-_PREPARE_CACHE_TTL_SECONDS = 30
+#
+# TTL chosen to span a typical user session (page browsing + bulk
+# strategy refresh). Bumped from 30s → 900s on 2026-04-28 because the
+# 30s window only absorbed the burst of parallel calls on a single page
+# open, not subsequent navigations. With 15 min:
+#   - Bulk refresh of N strategies on the same symbol shares work N-1 times
+#   - Chart navigations within a session feel instant after first load
+#   - Worst-case staleness: a chart historical pane lagging by 15 min;
+#     the live forming-bar still streams via Supabase Realtime so the
+#     CURRENT tick is always fresh
+# Critically: this cache is NOT used by the live worker (alert-firing
+# path is independent). Worker calls load_market_data directly for
+# warmup, never prepare_data_with_indicators.
+_PREPARE_CACHE_TTL_SECONDS = 900
 _prepare_cache: dict = {}
 _prepare_cache_lock = threading.Lock()
 
