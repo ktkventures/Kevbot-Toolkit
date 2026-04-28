@@ -797,7 +797,24 @@ def run_hifi_pass2_bulk(
 
 
 @router.post("/{strategy_id}/parity-check")
-def run_parity_check(strategy_id: int, user=Depends(get_current_user)):
+def run_parity_check(
+    strategy_id: int,
+    last_n: Optional[int] = Query(
+        25, ge=0,
+        description=(
+            "Compare only the most recent N stored trades (0 = all). "
+            "Older backtest data was often computed with different pack "
+            "code / Polygon snapshots and naturally diverges; the recent "
+            "tail is what tells you whether the engine matches today's "
+            "backtest output.")),
+    forward_test_only: bool = Query(
+        False,
+        description=(
+            "If true, ignore stored trades dated before "
+            "strategy.forward_test_start. Pre-forward-test trades are "
+            "pure historical backtest and aren't expected to match live.")),
+    user=Depends(get_current_user),
+):
     """Replay a strategy's stored backtest trades through the live engine
     (StrategyMonitor + shadow engines, same code the worker runs) and
     diff the resulting fires against stored trades.
@@ -830,7 +847,13 @@ def run_parity_check(strategy_id: int, user=Depends(get_current_user)):
     set_admin_user_context(user_id)
     try:
         from api.services.parity_service import run_strategy_parity
-        report = run_strategy_parity(strategy_id, user_id=user_id)
+        # Treat last_n=0 as "no limit" so the query param can express both.
+        effective_last_n = last_n if (last_n and last_n > 0) else None
+        report = run_strategy_parity(
+            strategy_id, user_id=user_id,
+            last_n=effective_last_n,
+            forward_test_only=forward_test_only,
+        )
     except Exception as e:
         logger.exception(
             "[PARITY] Strategy %s crashed: %s", strategy_id, e)

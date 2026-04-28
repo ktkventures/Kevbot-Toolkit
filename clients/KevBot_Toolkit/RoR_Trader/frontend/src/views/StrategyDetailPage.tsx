@@ -916,6 +916,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [parityLoading, setParityLoading] = useState(false);
   const [parityReport, setParityReport] = useState<any | null>(null);
   const [parityError, setParityError] = useState<string | null>(null);
+  const [parityLastN, setParityLastN] = useState<number>(25);
+  const [parityForwardOnly, setParityForwardOnly] = useState<boolean>(false);
 
   const handleManualExit = useCallback(async () => {
     if (!strategyId || manualExitLoading) return;
@@ -4175,7 +4177,29 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   a backtest, or any time you suspect a parity gap.
                 </p>
 
-                <div className="flex items-center gap-3 mb-4">
+                <div className="flex items-center gap-3 mb-4 flex-wrap">
+                  <label className="text-xs flex items-center gap-1" style={{ color: 'var(--text-muted)' }}>
+                    Last N trades:
+                    <input
+                      type="number"
+                      min={0}
+                      step={5}
+                      value={parityLastN}
+                      onChange={(e) => setParityLastN(Math.max(0, parseInt(e.target.value || '0', 10)))}
+                      style={{ ...selectStyle, width: 70 }}
+                    />
+                  </label>
+                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                    (0 = all)
+                  </span>
+                  <label className="text-xs flex items-center gap-1" style={{ color: 'var(--text-muted)' }}>
+                    <input
+                      type="checkbox"
+                      checked={parityForwardOnly}
+                      onChange={(e) => setParityForwardOnly(e.target.checked)}
+                    />
+                    Forward-test trades only
+                  </label>
                   <button
                     type="button"
                     disabled={parityLoading}
@@ -4190,9 +4214,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       setParityError(null);
                       const token = localStorage.getItem('ror_access_token') || '';
                       const base = process.env.NEXT_PUBLIC_API_URL || '';
+                      const params = new URLSearchParams({
+                        last_n: String(parityLastN),
+                        forward_test_only: parityForwardOnly ? 'true' : 'false',
+                      });
                       try {
                         const resp = await fetch(
-                          `${base}/api/strategies/${strategyId}/parity-check`,
+                          `${base}/api/strategies/${strategyId}/parity-check?${params.toString()}`,
                           {
                             method: 'POST',
                             headers: {

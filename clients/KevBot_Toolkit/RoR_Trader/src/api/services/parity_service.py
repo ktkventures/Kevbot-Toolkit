@@ -459,10 +459,24 @@ def _build_report(
     # replay_only = live fires with no corresponding stored trade. Less
     # critical than stored_only (it means live would over-fire), but still
     # useful for catching backtest-side gaps.
+    # Constrain replay_only to the same time window covered by stored_entries
+    # so it doesn't drown the table when last_n / forward_test_only filters
+    # tighten the stored side.
     stored_minutes = {s['ts'][:16] for s in stored_entries if s.get('ts')}
+    if stored_entries:
+        sorted_ts = sorted(s['ts'] for s in stored_entries if s.get('ts'))
+        window_start = sorted_ts[0] if sorted_ts else None
+        window_end = sorted_ts[-1] if sorted_ts else None
+    else:
+        window_start = window_end = None
+
     replay_only: list[dict] = []
     for f in replay_fires:
         if not f.get('ts'):
+            continue
+        if window_start and f['ts'] < window_start:
+            continue
+        if window_end and f['ts'] > window_end:
             continue
         if f['ts'][:16] not in stored_minutes:
             replay_only.append(f)
@@ -518,13 +532,29 @@ def _build_report(
 # ---------------------------------------------------------------------------
 
 def run_strategy_parity(
-    strategy_id: int, user_id: Optional[str] = None,
+    strategy_id: int,
+    user_id: Optional[str] = None,
+    last_n: Optional[int] = None,
+    forward_test_only: bool = False,
 ) -> dict:
     """Run a parity check on the given strategy.
 
     Loads the strategy + its stored trades, replays bars through the live
     engine (StrategyMonitor + shadow engines), and diffs the resulting
     fires against the stored trades. Returns a structured report.
+
+    Args:
+        strategy_id: which strategy to check.
+        user_id: admin context user (defaults to strategy.user_id).
+        last_n: limit comparison to the most recent N stored trades.
+            Older backtest data was often computed with different pack
+            code / Polygon snapshots and naturally diverges; the recent
+            tail tells us if the *current* engine matches the latest
+            backtest. None = compare every stored trade.
+        forward_test_only: if True, only compare stored trades whose
+            entry_fill_ts >= strategy.forward_test_start. Pre-forward-test
+            trades are pure-historical backtest output and aren't
+            expected to match live engine behaviour.
 
     Caller must have admin DB context set (set_admin_user_context) or pass
     a user_id; the underlying load_general_packs_admin / load_trades_admin
@@ -539,8 +569,32 @@ def run_strategy_parity(
     # If user_id wasn't provided, derive it from the strategy row.
     user_id = user_id or strat.get('user_id')
 
+    # Source: prefer trades table; fall back to JSONB on the strategies
+    # row when trades table is empty (recompute_and_persist may have
+    # written only to JSONB depending on the trades-table flag state).
     stored_trades = load_trades_admin(strategy_id, user_id) or []
+    if not stored_trades:
+        st = strat.get('stored_trades') or []
+        if isinstance(st, list):
+            stored_trades = st
+
     stored_entries = _stored_entry_records(stored_trades)
+
+    # Apply forward-test-only filter BEFORE last_n so "last N forward-test
+    # trades" works as expected.
+    pre_filter_count = len(stored_entries)
+    if forward_test_only:
+        fwd_start = strat.get('forward_test_start')
+        if fwd_start:
+            stored_entries = [
+                s for s in stored_entries
+                if s.get('ts') and s['ts'] >= fwd_start
+            ]
+
+    if last_n and last_n > 0 and len(stored_entries) > last_n:
+        # Sort ascending by ts and take the tail
+        stored_entries = sorted(
+            stored_entries, key=lambda s: s.get('ts') or '')[-last_n:]
 
     if not stored_entries:
         return {
@@ -579,5 +633,11 @@ def run_strategy_parity(
             'error': f'{type(e).__name__}: {e}',
         }
 
-    return _build_report(
+    report = _build_report(
         strat, stored_entries, replay_fires, replay_bar_states, meta)
+    report.setdefault('meta', {}).update({
+        'last_n_filter': last_n,
+        'forward_test_only': forward_test_only,
+        'stored_total_before_filter': pre_filter_count,
+    })
+    return report
