@@ -425,6 +425,7 @@ const TABS = [
   'Alerts',
   'Alert Analysis',
   'Unified Trades',
+  'Parity',
 ];
 
 /* ========================================================================= */
@@ -910,6 +911,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [candleCount, setCandleCount] = useState(200);
   const [manualExitLoading, setManualExitLoading] = useState(false);
   const [manualExitResult, setManualExitResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  // Parity tab: lazy-loaded on click. Holds the most recent ParityReport.
+  const [parityLoading, setParityLoading] = useState(false);
+  const [parityReport, setParityReport] = useState<any | null>(null);
+  const [parityError, setParityError] = useState<string | null>(null);
 
   const handleManualExit = useCallback(async () => {
     if (!strategyId || manualExitLoading) return;
@@ -4152,6 +4158,222 @@ export default function StrategyDetailPage({ strategyId }: Props) {
               </div>
               );
             })()}
+
+            {/* =========================================================== */}
+            {/* TAB: PARITY                                                   */}
+            {/* =========================================================== */}
+            {tab === 'Parity' && (
+              <div>
+                <h3 className="text-sm font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
+                  Backtest ↔ Live Parity Check
+                </h3>
+                <p className="text-xs mb-4" style={{ color: 'var(--text-muted)' }}>
+                  Replays this strategy&apos;s stored backtest trades through the
+                  live engine (StrategyMonitor + shadow engines, the same code
+                  the worker runs) and diffs against stored trades. Surfaces
+                  the exact gate that blocks each unmatched entry. Run after
+                  a backtest, or any time you suspect a parity gap.
+                </p>
+
+                <div className="flex items-center gap-3 mb-4">
+                  <button
+                    type="button"
+                    disabled={parityLoading}
+                    className="text-xs px-3 py-1.5 rounded font-medium"
+                    style={{
+                      background: parityLoading ? 'var(--bg-input)' : 'var(--accent)',
+                      color: parityLoading ? 'var(--text-muted)' : 'white',
+                      cursor: parityLoading ? 'not-allowed' : 'pointer',
+                    }}
+                    onClick={async () => {
+                      setParityLoading(true);
+                      setParityError(null);
+                      const token = localStorage.getItem('ror_access_token') || '';
+                      const base = process.env.NEXT_PUBLIC_API_URL || '';
+                      try {
+                        const resp = await fetch(
+                          `${base}/api/strategies/${strategyId}/parity-check`,
+                          {
+                            method: 'POST',
+                            headers: {
+                              'Authorization': `Bearer ${token}`,
+                              'Content-Type': 'application/json',
+                            },
+                          });
+                        const result = await resp.json();
+                        if (resp.ok) {
+                          setParityReport(result);
+                        } else {
+                          setParityError(result.detail || JSON.stringify(result));
+                        }
+                      } catch (e: any) {
+                        setParityError(e?.message || String(e));
+                      } finally {
+                        setParityLoading(false);
+                      }
+                    }}
+                  >
+                    {parityLoading ? 'Running…' : (parityReport ? 'Re-run Parity Check' : 'Run Parity Check')}
+                  </button>
+                  {parityLoading && (
+                    <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                      Loading bars + replaying through engine — typically 5-20s
+                    </span>
+                  )}
+                </div>
+
+                {parityError && (
+                  <div className="text-xs p-3 mb-4 rounded" style={{ background: 'var(--bg-input)', color: '#f87171' }}>
+                    Error: {parityError}
+                  </div>
+                )}
+
+                {parityReport && (() => {
+                  const verdict = parityReport.verdict || 'UNKNOWN';
+                  const verdictColor =
+                    verdict === 'PASS' ? '#22c55e' :
+                    verdict === 'PARTIAL' ? '#eab308' :
+                    verdict === 'FAIL_LIVE_BLOCKED' ? '#ef4444' :
+                    verdict === 'FAIL_OVER_FIRES' ? '#ef4444' :
+                    verdict === 'NO_TRADES' || verdict === 'NO_DATA' ? '#94a3b8' :
+                    '#94a3b8';
+                  const score = parityReport.parity_score;
+                  const scorePct = score == null ? '—' : `${(score * 100).toFixed(1)}%`;
+                  return (
+                    <div>
+                      {/* Status banner */}
+                      <div className="flex items-center gap-4 mb-4 p-3 rounded" style={{ background: 'var(--bg-input)' }}>
+                        <span
+                          className="text-xs font-bold px-2 py-1 rounded"
+                          style={{ background: verdictColor, color: 'white' }}
+                        >
+                          {verdict}
+                        </span>
+                        <span className="text-sm" style={{ color: 'var(--text-primary)' }}>
+                          Parity score: <strong>{scorePct}</strong>
+                        </span>
+                        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                          {parityReport.matched_count}/{parityReport.stored_count} stored trades match live replay
+                        </span>
+                        {parityReport.most_common_failing_gate && (
+                          <span className="text-xs ml-auto" style={{ color: 'var(--text-muted)' }}>
+                            Most common failing gate:{' '}
+                            <code style={{ color: '#f87171' }}>{parityReport.most_common_failing_gate}</code>
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Reason breakdown */}
+                      {parityReport.reason_breakdown && Object.keys(parityReport.reason_breakdown).length > 0 && (
+                        <div className="mb-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+                          <strong>Reason breakdown:</strong>{' '}
+                          {Object.entries(parityReport.reason_breakdown).map(([reason, count]) => (
+                            <span key={reason} className="mr-3">
+                              <code>{reason}</code>: {count as number}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Stored-only table (the bug) */}
+                      {(parityReport.stored_only || []).length > 0 && (
+                        <div className="mb-6">
+                          <h4 className="text-sm font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
+                            Stored trades NOT firing in live replay ({parityReport.stored_only.length})
+                          </h4>
+                          <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+                            These backtest trades produced an entry, but the live engine wouldn&apos;t fire today on the same bar. This is the parity-gap surface.
+                          </p>
+                          <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+                            <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+                              <thead>
+                                <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                                  <th className="text-left px-2 py-1" style={{ color: 'var(--text-muted)' }}>Entry TS</th>
+                                  <th className="text-left px-2 py-1" style={{ color: 'var(--text-muted)' }}>Trigger</th>
+                                  <th className="text-left px-2 py-1" style={{ color: 'var(--text-muted)' }}>Reason</th>
+                                  <th className="text-left px-2 py-1" style={{ color: 'var(--text-muted)' }}>Detail</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(parityReport.stored_only as any[]).slice(0, 200).map((row, i) => (
+                                  <tr key={i} style={{ borderBottom: '1px solid var(--border)' }}>
+                                    <td className="px-2 py-1" style={{ color: 'var(--text-primary)', fontFamily: 'monospace' }}>
+                                      {row.stored_ts ? row.stored_ts.replace('T', ' ').replace('+00:00', 'Z') : ''}
+                                    </td>
+                                    <td className="px-2 py-1" style={{ color: 'var(--text-primary)' }}>
+                                      <code>{row.trigger || ''}</code>
+                                    </td>
+                                    <td className="px-2 py-1">
+                                      <code style={{
+                                        color:
+                                          row.reason === 'GATE_FAILED' ? '#eab308' :
+                                          row.reason === 'TRIGGER_NOT_FIRED' ? '#ef4444' :
+                                          row.reason === 'NO_REPLAY_BAR' ? '#94a3b8' :
+                                          'var(--text-primary)',
+                                      }}>
+                                        {row.reason}
+                                      </code>
+                                    </td>
+                                    <td className="px-2 py-1" style={{ color: 'var(--text-muted)', maxWidth: 600 }}>
+                                      {row.failing_gates && row.failing_gates.length > 0 ? (
+                                        <span>
+                                          Missing:{' '}
+                                          {row.failing_gates.map((g: any, j: number) => (
+                                            <code key={j} className="mr-2" style={{ color: '#f87171' }}>
+                                              {g.required}
+                                              {g.replay_actual ? ` (replay: ${g.replay_actual})` : ''}
+                                            </code>
+                                          ))}
+                                        </span>
+                                      ) : (
+                                        row.detail || ''
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          {parityReport.stored_only.length > 200 && (
+                            <p className="text-xs mt-2" style={{ color: 'var(--text-muted)' }}>
+                              Showing first 200 of {parityReport.stored_only.length}. Re-run after fixing the most common cause to see remainder.
+                            </p>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Replay-only summary */}
+                      {(parityReport.replay_only || []).length > 0 && (
+                        <div className="mb-4">
+                          <h4 className="text-sm font-semibold mb-2" style={{ color: 'var(--text-primary)' }}>
+                            Live replay would over-fire ({parityReport.replay_only.length})
+                          </h4>
+                          <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+                            Bars where live replay produces an entry but the stored backtest didn&apos;t. Less critical than &quot;stored-only&quot;, but indicates the backtest may have been run with different code/data than what live runs today. Consider re-running the backtest.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Meta */}
+                      {parityReport.meta && (
+                        <details className="text-xs mt-4" style={{ color: 'var(--text-muted)' }}>
+                          <summary style={{ cursor: 'pointer' }}>Replay metadata</summary>
+                          <pre className="mt-2 p-2 rounded" style={{ background: 'var(--bg-input)' }}>
+                            {JSON.stringify(parityReport.meta, null, 2)}
+                          </pre>
+                        </details>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {!parityReport && !parityLoading && !parityError && (
+                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                    Click <strong>Run Parity Check</strong> above to analyze this strategy.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         )}
       </TabBar>

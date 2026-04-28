@@ -796,6 +796,53 @@ def run_hifi_pass2_bulk(
     }
 
 
+@router.post("/{strategy_id}/parity-check")
+def run_parity_check(strategy_id: int, user=Depends(get_current_user)):
+    """Replay a strategy's stored backtest trades through the live engine
+    (StrategyMonitor + shadow engines, same code the worker runs) and
+    diff the resulting fires against stored trades.
+
+    Surfaces parity gaps as concrete "this stored trade would NOT fire in
+    live, and here's the failing gate" rows for the Strategy Detail UI.
+
+    Response shape: see api.services.parity_service.run_strategy_parity.
+    Verdicts: PASS / PARTIAL / FAIL_LIVE_BLOCKED / FAIL_OVER_FIRES /
+              NO_TRADES / NO_DATA / ERROR.
+    """
+    from db import USE_DB
+    if not USE_DB:
+        raise HTTPException(status_code=501, detail="Requires DB mode")
+
+    from db import (get_strategy_by_id_db, set_admin_user_context,
+                    clear_current_user)
+    strat = get_strategy_by_id_db(strategy_id)
+    if strat is None:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+
+    user_id = strat.get('user_id') or (
+        user.get('id') or user.get('sub')
+        if isinstance(user, dict) else None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user context")
+
+    # Admin context so the replay can read this user's general packs +
+    # trades regardless of which JWT the request arrived with.
+    set_admin_user_context(user_id)
+    try:
+        from api.services.parity_service import run_strategy_parity
+        report = run_strategy_parity(strategy_id, user_id=user_id)
+    except Exception as e:
+        logger.exception(
+            "[PARITY] Strategy %s crashed: %s", strategy_id, e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Parity check crashed: {type(e).__name__}: {e}")
+    finally:
+        clear_current_user()
+
+    return _sanitize_json(report)
+
+
 @router.post("/{strategy_id}/duplicate")
 def duplicate_strategy(strategy_id: int, user=Depends(get_current_user)):
     """Duplicate a strategy. Creates new copy with forward testing disabled."""
