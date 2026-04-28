@@ -18,6 +18,8 @@ import logging
 logger = logging.getLogger(__name__)
 import pandas as pd
 import numpy as np
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 from data_loader import load_market_data, get_data_source, is_crypto
@@ -28,6 +30,71 @@ import general_packs as gp_module
 from confluence_groups import load_confluence_groups, get_enabled_groups
 
 _logger = logging.getLogger('ror_trader')
+
+# =============================================================================
+# PREPARE_DATA_WITH_INDICATORS TTL CACHE
+# =============================================================================
+# Process-local TTL cache for prepare_data_with_indicators(). Strategy detail
+# page fires multiple parallel requests for the same data (chart-data,
+# confluence-chart × N conditions, kpis, etc.) — each was running the full
+# indicator pipeline independently. With this cache, only the first call does
+# the work and the next 30 seconds of identical calls return a copy of the
+# cached frame.
+#
+# Why a copy: callers mutate the returned DataFrame (add stop levels, trade
+# columns, etc.). Returning the cached frame directly would cause cross-request
+# contamination. A pandas .copy() of ~70k rows is sub-second; cheap relative
+# to the indicator pipeline cost we're avoiding.
+#
+# Why process-local (not Redis): single API process today; cross-process
+# caching is the next step but not required to fix today's symptom. When we
+# move to multi-replica, swap this for Redis with the same key shape.
+_PREPARE_CACHE_TTL_SECONDS = 30
+_prepare_cache: dict = {}
+_prepare_cache_lock = threading.Lock()
+
+
+def _prepare_cache_key(symbol, days, seed, start_date, end_date,
+                       timeframe, data_feed, session, secondary_tfs):
+    """Build a hashable cache key. start_date/end_date stringified for hash."""
+    return (
+        symbol, days, seed,
+        str(start_date) if start_date is not None else None,
+        str(end_date) if end_date is not None else None,
+        timeframe, data_feed, session,
+        tuple(secondary_tfs) if secondary_tfs else (),
+    )
+
+
+def _prepare_cache_get(key):
+    """Return a fresh copy of the cached frame if present and within TTL."""
+    with _prepare_cache_lock:
+        entry = _prepare_cache.get(key)
+        if entry is None:
+            return None
+        ts, df = entry
+        if time.monotonic() - ts > _PREPARE_CACHE_TTL_SECONDS:
+            _prepare_cache.pop(key, None)
+            return None
+    return df.copy()
+
+
+def _prepare_cache_put(key, df):
+    """Store a copy of the frame in the cache. Caller's mutations don't bleed."""
+    with _prepare_cache_lock:
+        # Bound the cache so a long-running process can't grow it unbounded.
+        # 32 entries × ~70k rows ≈ ~200 MB at worst — well within Railway limits.
+        if len(_prepare_cache) >= 32:
+            # Drop the oldest entry (smallest timestamp)
+            oldest_key = min(_prepare_cache, key=lambda k: _prepare_cache[k][0])
+            _prepare_cache.pop(oldest_key, None)
+        _prepare_cache[key] = (time.monotonic(), df.copy())
+
+
+def clear_prepare_cache():
+    """Manual cache invalidation — call after refresh-data or strategy edit."""
+    with _prepare_cache_lock:
+        _prepare_cache.clear()
 
 
 # =============================================================================
@@ -58,6 +125,16 @@ def prepare_data_with_indicators(
     Returns DataFrame ready for trade generation and analysis.
     """
     from data_loader import resample_to_timeframe, get_tf_label
+
+    # TTL-cache lookup. Strategy detail page fires several parallel requests
+    # for identical (symbol, timeframe, days) combos; without this they all
+    # ran the full pipeline independently and saturated the API process.
+    cache_key = _prepare_cache_key(
+        symbol, days, seed, start_date, end_date,
+        timeframe, data_feed, session, secondary_tfs)
+    cached = _prepare_cache_get(cache_key)
+    if cached is not None:
+        return cached
 
     # Load raw bars
     df = load_market_data(symbol, days=days, seed=seed,
@@ -118,6 +195,10 @@ def prepare_data_with_indicators(
             except Exception:
                 pass
 
+    # Cache the result so concurrent identical calls (chart-data + heatmap
+    # conditions all firing in parallel on strategy detail page open) share
+    # the work. TTL is 30s per _PREPARE_CACHE_TTL_SECONDS.
+    _prepare_cache_put(cache_key, df)
     return df
 
 
