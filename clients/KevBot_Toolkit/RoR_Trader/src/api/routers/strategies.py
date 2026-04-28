@@ -633,20 +633,31 @@ def run_hifi_pass2(strategy_id: int, user=Depends(get_current_user)):
     # Detect what changed
     entries_changed = 0
     exits_changed = 0
+    flag_changes = 0  # rows that got hifi_resolved=True without other changes
     if 'entry_fill_ts' in refined_df.columns:
         for i, row in refined_df.iterrows():
             orig = trades_list[i] if i < len(trades_list) else {}
+            had_change = False
             if str(row.get('entry_fill_ts')) != str(orig.get('entry_fill_ts')):
                 entries_changed += 1
+                had_change = True
             if (str(row.get('exit_price')) != str(orig.get('exit_price'))
                     or str(row.get('exit_reason')) != str(orig.get('exit_reason'))):
                 exits_changed += 1
+                had_change = True
+            # Even if no timestamp/price change, count flag-only changes so
+            # persistence iterates and writes them.
+            if not had_change and (
+                ('hifi_resolved' in row.index and row.get('hifi_resolved') is True)
+                or ('behavior' in row.index and row.get('behavior') == 'HIFI')
+            ):
+                flag_changes += 1
 
     # Persist refined trades + flip data_source. We update each row that
     # changed; rows that didn't change are skipped.
     client = get_admin_client()
     persisted = 0
-    if entries_changed + exits_changed > 0:
+    if entries_changed + exits_changed + flag_changes > 0:
         # Update each changed row's columns. Since trades table now has
         # canonical columns we update directly.
         for i, row in refined_df.iterrows():
@@ -669,6 +680,32 @@ def run_hifi_pass2(strategy_id: int, user=Depends(get_current_user)):
                         new_val = new_val.item()
                     if str(new_val) != str(orig.get(col)):
                         update_payload[col] = new_val
+            # Also propagate the Hi-Fi flags into the `data` JSONB so the
+            # algo_history_fidelity aggregator surfaces the trade as Hi-Fi.
+            # _hifi_resolve_trades sets hifi_resolved=True / behavior='HIFI'
+            # on the dataframe row when it refines either entry or exit.
+            row_hifi = (row.get('hifi_resolved') if 'hifi_resolved' in row.index
+                        else None)
+            row_behavior = (row.get('behavior') if 'behavior' in row.index
+                            else None)
+            if row_hifi is True or row_behavior == 'HIFI':
+                # Merge into existing data JSONB (preserve other fields)
+                orig_data = orig.get('data') or {}
+                if isinstance(orig_data, str):
+                    try:
+                        import json as _json
+                        orig_data = _json.loads(orig_data)
+                    except Exception:
+                        orig_data = {}
+                if not isinstance(orig_data, dict):
+                    orig_data = {}
+                merged = dict(orig_data)
+                if row_hifi is True:
+                    merged['hifi_resolved'] = True
+                if row_behavior == 'HIFI':
+                    merged['behavior'] = 'HIFI'
+                if merged != orig_data:
+                    update_payload['data'] = merged
             if update_payload:
                 try:
                     client.table('trades').update(
@@ -680,7 +717,7 @@ def run_hifi_pass2(strategy_id: int, user=Depends(get_current_user)):
                         tid, e)
 
     # Mark strategy as Hi-Fi resolved in data_source.
-    if entries_changed + exits_changed > 0:
+    if entries_changed + exits_changed + flag_changes > 0:
         try:
             update_strategy_admin(strategy_id, str(user_id), {
                 'data_source': 'hifi',
@@ -697,8 +734,9 @@ def run_hifi_pass2(strategy_id: int, user=Depends(get_current_user)):
         "trades_count": len(trades_list),
         "entries_refined": entries_changed,
         "exits_refined": exits_changed,
+        "flag_only_updates": flag_changes,
         "persisted": persisted,
-        "data_source": 'hifi' if entries_changed + exits_changed > 0
+        "data_source": 'hifi' if entries_changed + exits_changed + flag_changes > 0
                        else strat.get('data_source'),
     }
 

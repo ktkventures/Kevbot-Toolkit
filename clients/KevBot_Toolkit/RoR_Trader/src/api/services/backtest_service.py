@@ -663,12 +663,29 @@ def _hifi_resolve_trades(trades_df: pd.DataFrame, symbol: str, timeframe: str) -
                                     trades_df.at[idx, 'entry_fill_ts'] = iso
                                     if 'entry_time' in trades_df.columns:
                                         trades_df.at[idx, 'entry_time'] = iso
+                                    # Mark the trade as Hi-Fi resolved so the
+                                    # algo_history_fidelity aggregator surfaces
+                                    # 'Hi-Fi'. Also flip behavior off 'B'.
+                                    trades_df.at[idx, 'hifi_resolved'] = True
+                                    trades_df.at[idx, 'behavior'] = 'HIFI'
                                     entries_refined += 1
                                     logger.info(
                                         "[HIFI-ENTRY] Trade %s: entry %s → %s "
                                         "(level=%.4f, dir=%s)",
                                         idx, entry_dt.isoformat(),
                                         iso, entry_price, direction)
+                        else:
+                            logger.info(
+                                "[HIFI-ENTRY] Trade %s: no 1-sec bars for "
+                                "window %s → %s (skipped)",
+                                idx, e_window_start.isoformat(),
+                                e_window_end.isoformat())
+                    elif on_boundary:
+                        logger.info(
+                            "[HIFI-ENTRY] Trade %s: on boundary at %s but "
+                            "entry_price=%s — skipping (need price for "
+                            "1-sec walk)",
+                            idx, entry_dt.isoformat(), entry_price)
             except Exception as e:
                 logger.warning(
                     "[HIFI-ENTRY] Error refining trade %s entry: %s", idx, e)
