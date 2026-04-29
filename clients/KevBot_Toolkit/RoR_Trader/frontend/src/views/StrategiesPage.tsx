@@ -926,6 +926,38 @@ export default function StrategiesPage() {
           >
             Run Hi-Fi
           </button>
+          <button
+            style={{ ...btnSecondary, opacity: refreshing ? 0.6 : 1 }}
+            className="text-sm"
+            disabled={refreshing || selectedIds.size === 0}
+            title="Queue parity replays in the background. Returns immediately; badges update to ⋯ Computing then settle when each finishes."
+            onClick={async () => {
+              if (refreshing || selectedIds.size === 0) return;
+              const ids = Array.from(selectedIds).map(Number);
+              setRefreshing(true);
+              const token = localStorage.getItem('ror_access_token') || '';
+              const base = process.env.NEXT_PUBLIC_API_URL || '';
+              try {
+                const resp = await fetch(`${base}/api/strategies/run-parity-bulk`, {
+                  method: 'POST',
+                  headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ strategy_ids: ids }),
+                });
+                const result = await resp.json();
+                alert(`Parity queued\n\n` +
+                      `Strategies: ${result.total_strategies}\n` +
+                      `Queued: ${result.total_queued}\n` +
+                      `Failed: ${result.total_failed}\n\n` +
+                      `Parity runs serialized in the background — refresh the page in a few minutes to see verdicts.`);
+              } catch (e: any) {
+                alert(`Parity queue failed: ${e?.message || e}`);
+              }
+              setRefreshing(false);
+              window.location.reload();
+            }}
+          >
+            Run Parity
+          </button>
           <button style={btnSecondary} className="text-sm">
             Add Tag
           </button>

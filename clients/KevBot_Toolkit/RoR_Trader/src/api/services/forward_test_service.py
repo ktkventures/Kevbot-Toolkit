@@ -204,47 +204,71 @@ def _do_recompute(
             'kpis_stale_since': None,
         })
 
-    parity_summary = None
-    if compute_parity and USE_DB and _auto_parity_enabled():
-        # Kick parity off as a fire-and-forget background thread. A 10Sec
-        # strategy with thousands of bars takes minutes to replay; if we
-        # blocked the refresh response on it, the user would see a hung
-        # spinner (and Railway/Cloudflare would 504 well before parity
-        # finished). Instead the refresh returns immediately with a
-        # PENDING parity_status, and the bg thread writes the real
-        # verdict + score when the replay completes. The strategy card
-        # picks up the new value on the next list refetch.
-        pending_status = {
-            'verdict': 'PENDING',
-            'score': None,
-            'stored_count': len(stored),
-            'matched_count': 0,
-            'computed_at': refreshed_at,
-            'params': {
-                'last_n': _AUTO_PARITY_LAST_N,
-                'forward_test_only': False,
-            },
-        }
-        _try_persist_parity(strategy_id, user_id, pending_status,
-                            update_strategy_admin)
-        parity_summary = pending_status
+    # Parity is now a distinct user-triggered action — mirrors the
+    # Run Hi-Fi button pattern. Refresh writes stored_trades + KPIs and
+    # returns. The user clicks "Run Parity Test" separately when they
+    # want to see whether the backtest reproduces in the live engine.
+    # The compute_parity arg is preserved for backwards compatibility
+    # but is no longer auto-triggered here. queue_parity_for_strategy()
+    # is the entrypoint for the new button.
 
-        threading.Thread(
-            target=_bg_compute_parity,
-            args=(strategy_id, user_id),
-            name=f"parity-bg-{strategy_id}",
-            daemon=True,
-        ).start()
-
-    result: Dict[str, Any] = {
+    return {
         'status': 'refreshed',
         'trades': len(stored),
         'kpis': kpis,
         'refreshed_at': refreshed_at,
     }
-    if parity_summary is not None:
-        result['parity'] = parity_summary
-    return result
+
+
+def queue_parity_for_strategy(strategy_id: int, user_id: str) -> Dict[str, Any]:
+    """Public API: queue a background parity replay for the given
+    strategy. Stamps parity_status=PENDING immediately and spawns a
+    daemon thread that runs through the global semaphore.
+
+    Returns immediately with the pending status. Caller doesn't wait
+    for completion. The frontend polls or refreshes the strategy list
+    to see the final verdict.
+
+    Honors AUTO_PARITY_ENABLED env var as a kill-switch.
+    """
+    from db import USE_DB, update_strategy_admin
+    if not USE_DB:
+        return {
+            'strategy_id': strategy_id,
+            'status': 'skipped',
+            'detail': 'USE_DB is False',
+        }
+    if not _auto_parity_enabled():
+        return {
+            'strategy_id': strategy_id,
+            'status': 'disabled',
+            'detail': 'AUTO_PARITY_ENABLED is false',
+        }
+
+    pending_status = {
+        'verdict': 'PENDING',
+        'score': None,
+        'computed_at': datetime.now(timezone.utc).isoformat(),
+        'params': {
+            'last_n': _AUTO_PARITY_LAST_N,
+            'forward_test_only': False,
+        },
+    }
+    _try_persist_parity(strategy_id, user_id, pending_status,
+                        update_strategy_admin)
+
+    threading.Thread(
+        target=_bg_compute_parity,
+        args=(strategy_id, user_id),
+        name=f"parity-bg-{strategy_id}",
+        daemon=True,
+    ).start()
+
+    return {
+        'strategy_id': strategy_id,
+        'status': 'queued',
+        'parity_status': pending_status,
+    }
 
 
 def _bg_compute_parity(strategy_id: int, user_id: str) -> None:

@@ -796,6 +796,95 @@ def run_hifi_pass2_bulk(
     }
 
 
+@router.post("/{strategy_id}/run-parity")
+def run_parity(strategy_id: int, user=Depends(get_current_user)):
+    """Queue a background parity replay for one strategy.
+
+    Mirrors the run-hifi-pass2 pattern. Returns immediately with
+    parity_status = PENDING; the bg thread writes the final verdict
+    when done. Bg threads are serialized via Semaphore(1) so concurrent
+    queues don't thrash the API process.
+
+    Use this instead of waiting for auto-parity on refresh: it's the
+    user-controlled "compute the live-executable score" action.
+    """
+    strat = _get_or_404(strategy_id, user)
+    user_id = strat.get('user_id') or (
+        user.get('id') or user.get('sub')
+        if isinstance(user, dict) else None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user context")
+
+    from api.services.forward_test_service import queue_parity_for_strategy
+    return queue_parity_for_strategy(strategy_id, user_id)
+
+
+@router.post("/run-parity-bulk")
+def run_parity_bulk(
+    body: dict = Body(...),
+    user=Depends(get_current_user),
+):
+    """Queue parity replays across multiple strategies.
+
+    Body: {"strategy_ids": [int, ...]}.
+    Returns per-strategy queue status. The actual parity work runs
+    serialized in the background via the global Semaphore(1) — the
+    API stays responsive while they process one at a time.
+    """
+    sids = body.get('strategy_ids') or []
+    if not isinstance(sids, list) or not sids:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide non-empty strategy_ids list")
+
+    from db import get_strategy_by_id_db
+    from api.services.forward_test_service import queue_parity_for_strategy
+
+    results = []
+    queued = 0
+    failed = 0
+    for sid in sids:
+        try:
+            strat = get_strategy_by_id_db(sid)
+            if strat is None:
+                results.append({
+                    "strategy_id": sid, "status": "error",
+                    "detail": "not found"})
+                failed += 1
+                continue
+            user_id = strat.get('user_id') or (
+                user.get('id') or user.get('sub')
+                if isinstance(user, dict) else None)
+            if not user_id:
+                results.append({
+                    "strategy_id": sid, "status": "error",
+                    "detail": "no user context"})
+                failed += 1
+                continue
+            r = queue_parity_for_strategy(sid, user_id)
+            results.append({
+                "strategy_id": sid,
+                "status": r.get("status", "queued"),
+            })
+            if r.get("status") == "queued":
+                queued += 1
+            else:
+                failed += 1
+        except Exception as e:
+            failed += 1
+            results.append({
+                "strategy_id": sid, "status": "error",
+                "detail": str(e),
+            })
+
+    return {
+        "results": results,
+        "total_strategies": len(sids),
+        "total_queued": queued,
+        "total_failed": failed,
+    }
+
+
 @router.post("/{strategy_id}/parity-check")
 def run_parity_check(
     strategy_id: int,
