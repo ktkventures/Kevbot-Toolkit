@@ -21,9 +21,13 @@ from typing import Any, Dict
 logger = logging.getLogger(__name__)
 
 
+_AUTO_PARITY_LAST_N = 200
+
+
 def recompute_and_persist_stored_trades(
     strategy_id: int,
     user_id: str,
+    compute_parity: bool = True,
 ) -> Dict[str, Any]:
     """Run unified engine on historical bars and persist results.
 
@@ -31,16 +35,25 @@ def recompute_and_persist_stored_trades(
     append semantics). Uses the admin client so it works from worker
     threads that have no user JWT.
 
+    Args:
+        compute_parity: when True (default), automatically replay the
+            freshly-written trades through the live engine and persist
+            a `parity_status` summary on the strategy row. Set False
+            for bulk paths where the caller will batch-parity later
+            (mass builder, migration scripts) — keeps the refresh fast
+            when running over many strategies.
+
     Returns:
         {
           "status": "refreshed" | "no_trades",
           "trades": int,
           "kpis": dict,
           "refreshed_at": ISO8601 str,
+          "parity": dict | None,    # only when compute_parity=True
         }
 
-    Raises on unrecoverable failure (caller decides whether to surface
-    as HTTP 500 or a worker log warning).
+    Raises on unrecoverable failure of the trade-recompute step. Parity
+    failures are isolated and surface as `parity.verdict == "ERROR"`.
     """
     from db import (
         USE_DB,
@@ -73,7 +86,7 @@ def recompute_and_persist_stored_trades(
         set_admin_user_context(user_id)
     try:
         return _do_recompute(strategy_id, user_id, strat, svc, USE_DB,
-                             update_strategy_admin)
+                             update_strategy_admin, compute_parity)
     finally:
         if _need_ctx_swap:
             clear_current_user()
@@ -86,6 +99,7 @@ def _do_recompute(
     svc,
     USE_DB: bool,
     update_strategy_admin,
+    compute_parity: bool,
 ) -> Dict[str, Any]:
 
     confluence = strat.get('confluence', [])
@@ -166,12 +180,125 @@ def _do_recompute(
             'kpis_stale_since': None,
         })
 
-    return {
+    parity_summary = None
+    if compute_parity and USE_DB:
+        # Replay the freshly-written trades through the live engine to
+        # produce a "would this fire live?" score. Persisted as its own
+        # update_strategy_admin call — keeps the column write isolated
+        # from the trades update so a parity bug can't corrupt the
+        # stored_trades / kpis / equity_curve_data we just wrote.
+        parity_summary = _compute_and_persist_parity(
+            strategy_id, user_id, update_strategy_admin)
+
+    result: Dict[str, Any] = {
         'status': 'refreshed',
         'trades': len(stored),
         'kpis': kpis,
         'refreshed_at': refreshed_at,
     }
+    if parity_summary is not None:
+        result['parity'] = parity_summary
+    return result
+
+
+def _compute_and_persist_parity(
+    strategy_id: int,
+    user_id: str,
+    update_strategy_admin,
+) -> Dict[str, Any]:
+    """Run parity replay against the just-written stored_trades and
+    persist a compact summary on strategies.parity_status.
+
+    Tolerant of failure: an exception inside the parity service never
+    blocks the parent recompute path — the function records an ERROR
+    verdict, attempts to persist it, and returns. The caller's trade
+    write has already committed by the time we get here.
+
+    Defaults: last_n=200, forward_test_only=False. The user's intent for
+    auto-scoring is "does the live engine reproduce the trades I just
+    backtested?" — both pre- and post-forward-test trades are valid
+    inputs since they were all produced by the same engine that just
+    ran. The Parity tab in the UI exposes the forward-test-only filter
+    for users who want to scope to live-window-only.
+    """
+    import time as _time
+    from datetime import datetime, timezone
+
+    _t = _time.time()
+    try:
+        from api.services.parity_service import run_strategy_parity
+        report = run_strategy_parity(
+            strategy_id, user_id=user_id,
+            last_n=_AUTO_PARITY_LAST_N, forward_test_only=False,
+        )
+    except Exception as e:
+        logger.exception(
+            "[FT-RECOMPUTE] auto-parity crashed for strategy %s: %s",
+            strategy_id, e)
+        status = {
+            'verdict': 'ERROR',
+            'score': None,
+            'error': f'{type(e).__name__}: {e}',
+            'computed_at': datetime.now(timezone.utc).isoformat(),
+            'duration_s': round(_time.time() - _t, 2),
+            'params': {
+                'last_n': _AUTO_PARITY_LAST_N,
+                'forward_test_only': False,
+            },
+        }
+        _try_persist_parity(strategy_id, user_id, status,
+                            update_strategy_admin)
+        return status
+
+    duration_s = _time.time() - _t
+    stored_count = report.get('stored_count') or 0
+    matched_count = report.get('matched_count') or 0
+    score = report.get('parity_score')
+    if score is None and stored_count > 0:
+        # Defensive: parity_service computes score from
+        # matched / (matched + stored_only + replay_only); if the upstream
+        # ever drifts, surface a usable matched/stored ratio anyway.
+        score = matched_count / stored_count if stored_count > 0 else None
+
+    status = {
+        'score': score,
+        'verdict': report.get('verdict'),
+        'stored_count': stored_count,
+        'matched_count': matched_count,
+        'stored_only_count': report.get('stored_only_count') or 0,
+        'replay_only_count': report.get('replay_only_count') or 0,
+        'most_common_failing_gate': report.get('most_common_failing_gate'),
+        'computed_at': datetime.now(timezone.utc).isoformat(),
+        'duration_s': round(duration_s, 2),
+        'params': {
+            'last_n': _AUTO_PARITY_LAST_N,
+            'forward_test_only': False,
+        },
+    }
+    _try_persist_parity(strategy_id, user_id, status, update_strategy_admin)
+    logger.warning(
+        "[FT-RECOMPUTE] parity strategy=%s verdict=%s score=%s "
+        "stored=%s matched=%s duration=%.2fs",
+        strategy_id, status['verdict'], status['score'],
+        status['stored_count'], status['matched_count'], duration_s)
+    return status
+
+
+def _try_persist_parity(
+    strategy_id: int,
+    user_id: str,
+    parity_status: Dict[str, Any],
+    update_strategy_admin,
+) -> None:
+    """Best-effort write of parity_status. Logs but never raises."""
+    try:
+        update_strategy_admin(strategy_id, user_id, {
+            'parity_status': parity_status,
+        })
+    except Exception as e:
+        logger.warning(
+            "[FT-RECOMPUTE] failed to persist parity_status for %s: %s",
+            strategy_id, e)
 
 
 def _serialize_trades(trades_df) -> list[dict]:

@@ -953,10 +953,16 @@ class DBRalphEngine:
             from api.services.forward_test_service import (
                 recompute_and_persist_stored_trades,
             )
+            from functools import partial
+            # Skip auto-parity on the bar-close hook. It fires per-strategy
+            # per-bar and a parity replay can take 30-90s for sub-minute
+            # strategies — running it inline would saturate _ft_executor
+            # immediately. Parity is computed on user-initiated refresh +
+            # mass-builder finish instead.
             await loop.run_in_executor(
                 self._ft_executor,
-                recompute_and_persist_stored_trades,
-                strategy_id, user_id,
+                partial(recompute_and_persist_stored_trades,
+                        strategy_id, user_id, compute_parity=False),
             )
         except Exception as e:
             logger.warning(

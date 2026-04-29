@@ -164,6 +164,8 @@ STRATEGY_COLUMN_FIELDS = {
     'data_refreshed_at', 'created_at', 'updated_at',
     # Strategy Health Badge (2026-04-27 migration: strategy_health_badge.sql)
     'data_source', 'kpis_stale_since', 'kpis_computed_at',
+    # Auto-parity score (2026-04-28 migration: strategy_parity_status.sql)
+    'parity_status',
 }
 
 
