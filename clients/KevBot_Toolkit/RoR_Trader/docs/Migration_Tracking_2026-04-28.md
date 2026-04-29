@@ -19,20 +19,26 @@ Goal: migrate Kevin's legacy strategies off built-in TF Confluence templates ont
 
 ## Current status (sid → mirror sid)
 
-### Tier A — final state EOD 2026-04-28
+### Tier A — final state EOD 2026-04-28 (post-evening migration)
 
-| Original | Mirror | Symbol/TF | Swaps | Backtest status |
-|---|---|---|---|---|
-| sid 50 | **sid 136** | SPY/1Min | macd_line, macd_histogram | empty stored_trades |
-| sid 51 | **sid 135** | META/1Min | macd_line, macd_histogram, rvol | ✅ 208 trades, 96-99% parity vs sid 51 |
-| sid 91 | **sid 137** | TSLA/5Min | vwap, macd_histogram | empty stored_trades |
-| sid 100 | **sid 138** | TSLA/5Min | macd_histogram | empty stored_trades |
-| sid 102 | **sid 139** | TSLA/10Sec | rvol | empty stored_trades |
-| sid 122 | **sid 140** | SPY/1Min | macd_histogram | empty stored_trades |
-| sid 123 | **sid 141** | TSLL/1Min | vwap | empty stored_trades |
-| sid 125 | **sid 142** | TSLA/10Sec | vwap | empty stored_trades |
-| sid 127 | **sid 143** | TSLA/10Sec | macd_histogram, vwap | empty stored_trades |
-| sid 63 | **sid 144** | AMD/1Min | ema_stack (partial — entry trigger still on ema_price_position_v2) | ✅ 49 trades, 11/11 forward-test matches (no regressions, +4 new trades from today's bars) |
+All 10 mirrors are now structurally clean (audit `_audit_strategy_migration.py` reports ALL_MIRRORED for every one). Configs were updated this session via `_migrate_mirrors_to_v2.py` (commit `29a8af1`):
+- `bar_count_exit=4` → `time_exit_config={method: max_hold_bars, max_bars: 4}` on sids 135, 136, 144
+- sid 144 entry trigger `ema_price_position_v2_default_cross_short_up` → `eppv4_default_cross_short_up` (Tier B v4 chosen — L1 1-bar lag closer to original C-type semantic)
+- sid 144 confluence `1d-EMA_PRICE_POSITION-PSML` → `1d-EMA_PP_V4-PSML`
+- `swing_123_default` confluence group re-enabled (was disabled, would have crashed worker per `feedback_disabled_groups_kill_worker.md`)
+
+| Original | Mirror | Symbol/TF | Swaps | Stored trades | Parity status |
+|---|---|---|---|---|---|
+| sid 50 | **sid 136** | SPY/1Min | macd_line_v2, macd_histogram_v2 | populated | not yet run |
+| sid 51 | **sid 135** | META/1Min | macd_line_v2, macd_histogram_v2, rvol_v2 | ✅ 208 trades | not yet run (this session) |
+| sid 91 | **sid 137** | TSLA/5Min | vwap_v2, macd_histogram_v2 | populated | not yet run |
+| sid 100 | **sid 138** | TSLA/5Min | macd_histogram_v2 | populated | not yet run |
+| sid 102 | **sid 139** | TSLA/10Sec | rvol_v2 | populated | not yet run |
+| sid 122 | **sid 140** | SPY/1Min | macd_histogram_v2 | populated | not yet run |
+| sid 123 | **sid 141** | TSLL/1Min | vwap_v2 | populated | not yet run |
+| sid 125 | **sid 142** | TSLA/10Sec | vwap_v2 | populated | not yet run |
+| sid 127 | **sid 143** | TSLA/10Sec | macd_histogram_v2, vwap_v2 | populated | FAIL_LIVE_BLOCKED 0/122 (one-off run during contention; needs re-run) |
+| sid 63 | **sid 144** | AMD/1Min | ema_stack_v2, eppv4 entry, EMA_PP_V4 confluence | ✅ 49 → 50 trades | PARTIAL 0/49 PRE-migration (replay_only=92). Re-run post-migration pending. |
 
 ### Tier B — not started
 
@@ -50,29 +56,39 @@ The worker monitors every strategy with a stamped `entry_trigger_confluence_id` 
 
 To turn off mirror live-firing if it becomes noisy: set `forward_testing=False` on each. To reactivate, flip it back.
 
-## Verification protocol
+## Verification protocol (post-evening update)
 
-For each mirror (after backtest runs):
-1. Open Strategy Detail → Parity tab, set `last_n=25, forward_test_only=true`
-2. Read parity_score; expect ≥95% on Tier A
-3. If PASS, original can be retired (delete or archive)
-4. If <95%, investigate via the Reason breakdown column
+Auto-parity is now **user-triggered via the Run Parity button** (commit `1dc14bf`) — no longer auto-fires on refresh. To verify a mirror:
+
+1. From My Strategies, select the mirror (or a batch).
+2. Click **Run Parity** in the bulk-action bar. Backend queues a bg parity replay through `Semaphore(1)` per `718f692` so concurrent queues don't thrash the API.
+3. The badge shows `⋯ Computing` until done. Reload page to see verdict.
+4. Verdict colour-coding: green PASS / orange PARTIAL / red FAIL_LIVE_BLOCKED / FAIL_OVER_FIRES / muted NO_TRADES.
+5. If PASS (≥95%), original can be retired.
+6. If PARTIAL/FAIL, drill into Strategy Detail → Parity tab for per-trade diff.
+
+For deeper diagnosis: the Parity tab still supports custom `last_n` + `forward_test_only` filters; the auto-stamped `parity_status` column uses defaults `last_n=200, forward_test_only=False`.
 
 ## Open issues
 
-1. **~~Backtest cost is the migration bottleneck.~~ Withdrawn 2026-04-28.** The "5-10 min per backtest" figure was conflating *single backtest* cost with the queued-up cost of running heavy backtests *concurrently* with mirror creation, data updates, and parity checks. Profiling a single 180d × 1Min backtest in isolation produced **~16 seconds** end-to-end (Stage 1 data+indicators ≈ 8s, Stage 2 unified engine ≈ 8s). The real bottleneck during the original migration session was concurrency overload, not single-call cost — the cat-shutdown reset was actually a clean break.
-   - **Implication:** persistent bar cache (Layer 1) is *correctness-clean* (Supabase Postgres + delta-fetch + historical-tail backfill, commits `ab49ebe` / `12e6701` / `574f04f`) but is **not enabled** and not needed for the migration. Polygon REST is faster than Supabase REST for raw OHLCV at this scale. Layer 2 (indicator state pickle) is also de-prioritized; the indicator pipeline runs in a few seconds, so the win is small.
-   - **The actual 10x opportunity** (if needed later) is vectorizing `unified_engine.process_bar` — currently 47k bars × `df.iloc[i]` accounts for ~6s of every 180d backtest. Filed for future, not blocking.
-2. **forward_test_start preserved exactly** ✅ verified on sid 135 + spot-checked on others.
-3. **Built-in confluence groups stay enabled** until every strategy is migrated. Disabling early kills the worker (see `feedback_disabled_groups_kill_worker.md`).
-4. **Strategy Detail "Loading indicators & heatmap data..." hangs (open).** Sid 127 (TSLA/10Sec) reproducibly takes 10-20 min to load chart-data, sometimes never completing. Likely contributors: 49k bar payload over single API process, Polygon rate-limiting during concurrent migration spam, possible 50s+ pandas `.copy()` on cached DataFrame. Diagnosis blocked on lack of per-phase server timing — adding instrumentation in this session.
+1. **~~Backtest cost is the migration bottleneck.~~ Withdrawn 2026-04-28 evening.** The "5-10 min per backtest" was concurrency overload, not single-call cost. Profiled isolated 180d × 1Min × META = 16s end-to-end. Real backtest bottleneck (when one matters) is per-bar `.iloc` in `unified_engine.process_bar` — ~6s of pure overhead per 180d. Future 10x project; not blocking.
+2. **Bar cache via Supabase REST is a perf REGRESSION** for this workload. 30d direct Polygon = 0.9s, cache warm = 2.86s. Flag stays off. Correctness-clean (commits `ab49ebe` / `12e6701` / `574f04f`) but not enabled.
+3. **forward_test_start preserved exactly** ✅ verified on sid 135 + spot-checked.
+4. **Built-in + user-pack confluence groups must stay enabled** while strategies reference them. `swing_123_default` had been disabled this session — re-enabled in `29a8af1` migration. See `feedback_disabled_groups_kill_worker.md`.
+5. **Strategy Detail "Loading indicators & heatmap" hang (RESOLVED).** Sid 127 took 10-20 min on TSLA/10Sec. Fixed in `2914f20` — vectorized state-column injection (~6s saved per chart load on 49k-bar strategies) + per-phase timing log. Verified: 5-6s end-to-end now.
+6. **User packs lacking parity records (open).** Only `swing_123` (FAIL) + `ut_bot_v4` (FAIL) have records. The v2 packs the mirrors actually use have NO parity records. Run `POST /api/packs/builder/user-packs/{slug}/parity-test` on `macd_line_v2`, `macd_histogram_v2`, `vwap_v2`, `rvol_v2`, `ema_stack_v2`, `ema_pp_v3`, `ema_pp_v4`, `swing_123_test` next session.
+7. **forward_trades_count flicker on strategy card (open).** Card shows `0` then `15` on consecutive page loads after a refresh. Likely race in `_augment_with_counts` with concurrent updates.
 
-## Revised next session plan (post-profiling)
+## Next session plan (post-button-split)
 
-1. ~~Ship Layer 1 of persistent bar cache.~~ ✅ Shipped + correctness fixed; flag stays off.
-2. **Diagnose the chart-data hang on sid 127 first** — perf is more user-visible than the migration backlog.
-3. **Bulk-refresh the 9 Tier A mirrors** sequentially via the existing `recompute_and_persist_stored_trades` path. Expected total time: ~2-3 minutes (9 × 16s), well under the original 15 min target.
-4. Run parity check on each (Strategy Detail → Parity tab, `last_n=25, forward_test_only=true`).
-5. Retire originals where parity passes (≥95% on Tier A).
-6. Talk through Tier B (v3-vs-v4 per strategy).
-7. **Defer:** Layer 2 indicator pickle, vectorization of `process_bar`. Both are real but neither blocks anything user-visible right now.
+1. **Click Run Parity on the 10 Tier-A mirrors.** Should populate the verdict matrix in 5-15 min total (Semaphore(1) serializes so they take their natural sum, no thrashing).
+2. **Run user-pack 4-quadrant parity** on the 8 v2 packs. Catches batch↔live drift at the pack level.
+3. **Read the verdict matrix** + decide:
+   - Green dominant → retire originals where mirror passes.
+   - Orange/red dominant → fix the failing pack(s) at the pack level.
+   - TF-correlated failures → engine-level bug.
+4. **sid 144 specifically:** re-run Run Parity post-migration. The pre-migration result (0/49 matched, 92 replay_only) might have been a built-in template artifact — see if eppv4 cleared it.
+5. **Retire originals** where parity passes (sid 50, 51, 91, 100, 102, 122, 123, 125, 127 — once their mirrors are PASS).
+6. **Tier B walkthrough** for the non-mirror strategies that still reference `ema_price_position_v2` (sid 88, 124, 134, 66) — per-strategy v3 vs v4 decision.
+7. **Tier C still deferred** (utbot_v2 → ut_bot_v4 needs rebuild not migrate; sid 59, 64, 66, 71, 114, 117, 131).
+8. **Defer:** Layer 2 indicator pickle, `process_bar` vectorization, parity badge drilldown drawer, auto-clear parity_status on refresh, parity window sizing.
