@@ -18,7 +18,14 @@ from db import set_admin_user_context
 from api.services.forward_test_service import queue_parity_for_strategy
 
 USER = "19d47e46-f718-49a6-af32-5f5407f5b170"
-SIDS = list(range(135, 145))  # 135-144
+
+# Optional --sids override (e.g. --sids 139,140,141)
+import sys as _sys
+SIDS = list(range(135, 145))  # 135-144 default
+for _i, _a in enumerate(_sys.argv):
+    if _a == '--sids' and _i + 1 < len(_sys.argv):
+        SIDS = [int(s.strip()) for s in _sys.argv[_i + 1].split(',') if s.strip()]
+        break
 
 set_admin_user_context(USER)
 
@@ -29,7 +36,7 @@ for sid in SIDS:
 
 # Wait for all bg threads to finish
 print("\nWaiting for bg parity threads to complete...")
-deadline = _time.monotonic() + 1800  # 30 min ceiling
+deadline = _time.monotonic() + 7200  # 2 hour ceiling — sub-minute strats with 180-day windows are slow
 while _time.monotonic() < deadline:
     active = [t for t in threading.enumerate() if t.name.startswith('parity-bg-')]
     if not active:

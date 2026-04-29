@@ -74,10 +74,39 @@ After the baseline, every Tier-A mirror's strategy-level parity verdict will be 
 - mirror FAIL + pack FAIL → fix the pack first, then re-run mirror parity
 - mirror PASS + pack FAIL → may be coincidence (the failing quadrant didn't intersect with the strategy's actual confluence usage). Document but don't act.
 
-## Next steps after this doc fills in
+## Phase 2 strategy-level results (after Phase 5 fixes)
 
-Phase 2 (sids 135–144 strategy-level Run Parity sweep) → expand this doc with a per-strategy table:
+Two engine-integration bugs were found and fixed during this sweep:
 
-```
-strategy | mirror_sid | verdict | most_common_failing_gate | underlying_packs | suspected_root_cause
-```
+1. **`f68b410`** — `TriggerEvaluator.evaluate_bar_close` user-pack interpreter dispatch was building a single-row DataFrame from `current`, which broke any interpreter that uses `df.shift(1)` (e.g., MACD_HISTOGRAM_V2's H+up/H-dn classification). Fix: build a 2-row `[prev, current]` frame so shift produces a meaningful prev value. Effect: live shadow engines went from emitting only 2 of 4 possible MACD_HISTOGRAM_V2 states to all 4.
+
+2. **`3aae5bc`** — `parity_service._replay_strategy` was reading `sig.get('time')` (which doesn't exist on entry signals) and falling back to bar_start `ts`. `stored_trades.entry_fill_ts` is bar_close per Trade Timestamps Spec. After `ts[:16]` minute truncation, bar_start vs bar_close land in different buckets — so matched_count was 0 by construction. Fix: read `sig.get('entry_fill_ts')` first.
+
+| sid | name | verdict | score | matched/stored | replay_only | notes |
+|---|---|---|---|---|---|---|
+| 135 | META 1Min | PARTIAL | 0.24 | 65/200 | 73 | both fixes contributed |
+| 136 | SPY 1Min | **PARTIAL** | **0.68** | 145/200 | 13 | best result; close to PASS-territory |
+| 137 | TSLA 5Min | PARTIAL | 0.18 | 33/141 | 46 | both fixes contributed |
+| 138 | TSLA 5Min | FAIL_LIVE_BLOCKED | 0.00 | 0/26 | 0 | live still fires nothing — different root cause |
+| 139 | TSLA 10Sec | FAIL_LIVE_BLOCKED | 0.00 | 0/200 | 0 | live still fires nothing (after retry — first run errored on Polygon `Server disconnected`) |
+| 140 | SPY 1Min | **PARTIAL** | **0.55** | 139/200 | 52 | strong improvement |
+| 141 | TSLL 1Min | FAIL_LIVE_BLOCKED | 0.00 | 0/200 | 0 | live still fires nothing |
+| 142 | TSLA 10Sec | NO_TRADES | – | 0/0 | 0 | no stored trades to compare |
+| 143 | TSLA 10Sec | FAIL_LIVE_BLOCKED | 0.00 | 0/122 | 0 | live still fires nothing |
+| 144 | AMD 1Min | PARTIAL | 0.30 | 35/50 | 65 | matched=35 (was 0 pre-fix) |
+
+**Pattern:** five PARTIAL verdicts with non-zero matches confirm the fixes work end-to-end. **Four strategies remain FAIL_LIVE_BLOCKED with `replay_only=0`** (sids 138, 139, 141, 143) — live engine is still producing zero output. Common factor isn't TF (5Min, 10Sec, 1Min) or symbol (TSLA, TSLL) cleanly, but ALL FOUR use `swing_123_default_bull_c2` as their entry trigger AND have cross-TF confluence gates. That's a distinct bug (likely cross-TF setup specific to swing_123-based mirrors) — separate Phase 5 follow-up.
+
+## Open Phase 5 follow-ups
+
+1. **Three strategies still emit zero live trades** (sids 138, 141, 143). All have `replay_only=0` after the fixes. Common factor isn't TF (5Min, 1Min, 10Sec) or symbol (TSLA, TSLL). Need a probe targeted at one of these to see what's blocking the trigger or confluence.
+
+2. **PARTIAL → PASS gap.** Even on the best result (sid 136 at 68%), there's still 55 stored_only + 13 replay_only that don't match. Possible explanations:
+   - Cross-TF buffer's "warmup gap" — early replay bars don't have a populated 1Day shadow record because the shadow consumed those bars during its own warmup. Backtest's pre-computed cross-TF column uses ffill from before, so the first primary bars get a value.
+   - Race condition where shadow updates lag the primary by one bar at TF boundaries.
+   - Position state machine differences (e.g., bar_count cooldown).
+   - Some indicators converge to slightly different values between batch (full df pass) vs incremental (bar-by-bar).
+
+3. **4Q simulator's default config (1Min × 15Min × 7 days) was insufficient** to surface the dispatch bug fixed in `f68b410`. macd_histogram_v2 PASSED Q3 on those defaults despite the bug. Need to either raise the default test scope OR add a per-pack regression test that explicitly exercises rising/falling-state interpreters across longer windows.
+
+4. **`_kick_stuck_parities.py` startup-recovery hook** (`a8923b7`) marks PENDING > 10 min stale as ERROR. This protected against deploy-killed threads. The 30-min timeout in `_rerun_all_parities.py` was also too short for sub-minute strategies' large data windows — bumped to 2 hours. Consider auto-extending based on strategy TF.
