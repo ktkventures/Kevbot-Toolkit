@@ -168,6 +168,14 @@ def list_strategies(
     # for performance — list endpoint runs across the user's whole fleet.
     _attach_algo_history_fidelity(strategies)
 
+    # Source filter (Mirror Migration workflow 2026-04-29): attach
+    # `template_class` ∈ {user_pack, legacy, mixed, no_mirror, unknown,
+    # empty} so the My Strategies page can filter to user-pack-only as
+    # the migration progresses. Cheap pure classification per strategy
+    # — uses lru_cache'd template indexes loaded once per process.
+    from api.services.template_classifier import attach_template_class
+    attach_template_class(strategies)
+
     return _sanitize_json(strategies)
 
 

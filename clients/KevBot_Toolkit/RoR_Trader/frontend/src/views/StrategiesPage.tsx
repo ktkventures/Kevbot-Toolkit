@@ -10,8 +10,9 @@
  *   {{field}} = not wired, needs backend work
  */
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import Link from 'next/link';
+import { useQueryClient } from '@tanstack/react-query';
 import Card from '@/components/Card';
 import Modal from '@/components/Modal';
 import { useStrategies } from '@/hooks/queries/useStrategies';
@@ -69,7 +70,21 @@ interface Strategy {
   // every refresh; null if the strategy has not been refreshed since the
   // 2026-04-28 dbe0cb3 cut-over.
   parityStatus?: ParityStatus | null;
+  // Source classification — drives the My Strategies "Source" filter
+  // (Mirror Migration workflow 2026-04-29). Computed server-side via
+  // api.services.template_classifier.attach_template_class.
+  templateClass?: TemplateClass;
+  referencedTemplates?: string[];  // distinct slugs the strategy uses
 }
+
+// Template classification used by the Source filter chip row.
+//   user_pack  — every reference resolves to a user pack (clean)
+//   legacy     — every reference is a built-in template w/ a mirror available
+//   mixed      — both user-pack and legacy templates (partial migration)
+//   no_mirror  — references built-ins with no mirror (can't migrate)
+//   unknown    — couldn't classify
+//   empty      — no references (webhook_inbound, etc.)
+export type TemplateClass = 'user_pack' | 'legacy' | 'mixed' | 'no_mirror' | 'unknown' | 'empty';
 
 // Strategy Health Badge — see services.compute_strategy_health.
 // Severity: 'healthy' (no issues) | 'minor' (yellow info) | 'action' (orange,
@@ -190,6 +205,8 @@ function apiToStrategy(s: any): Strategy {
     dataSource: s.data_source || undefined,
     algoHistoryFidelity: s.algo_history_fidelity || 'Unknown',
     parityStatus: s.parity_status || null,
+    templateClass: s.template_class || 'unknown',
+    referencedTemplates: s.referenced_templates || [],
   };
 }
 
@@ -341,6 +358,362 @@ export function StrategyParityBadge({
       <span style={{ fontSize: 10, lineHeight: 1 }}>{c.icon}</span>
       <span>{display}</span>
     </button>
+  );
+}
+
+/* ========================================================================= */
+/* Strategy Parity Drawer                                                      */
+/* ========================================================================= */
+// Click-to-peek drawer that opens when the user clicks a parity badge on a
+// strategy card. Mirrors StrategyHealthDrawer below. Three sections:
+//
+//   1. Verdict header   — pill, score, matched/stored counts, computed_at age
+//   2. Failing trades   — top-5 stored_only entries with failing_gates; lazy-
+//                         fetched on open via POST /{id}/parity-check
+//   3. Pack cross-link  — for each pack the strategy uses, show that pack's
+//                         user_pack_parity_status verdict (if any). Closes
+//                         the diagnostic loop: "did the underlying pack also
+//                         fail parity?" without bouncing to UserPacksPage.
+
+interface ParityCheckResponse {
+  verdict: ParityVerdict;
+  parity_score: number | null;
+  stored_count: number;
+  matched_count: number;
+  stored_only: Array<{
+    ts: string;
+    trigger?: string;
+    reason?: string;
+    detail?: string;
+    failing_gates?: Array<{ required: string; replay_actual: string }>;
+  }>;
+  reason_breakdown?: Record<string, number>;
+  most_common_failing_gate?: string | null;
+}
+
+interface PackParityStatus {
+  pack_slug: string;
+  overall_verdict: 'PASS' | 'WARN' | 'FAIL';
+  summary?: string;
+  quadrants?: Record<string, { verdict: string; parity_score?: number | null }>;
+  tested_at?: string;
+}
+
+export function StrategyParityDrawer({
+  parity,
+  isOpen,
+  onClose,
+  strategyId,
+  strategyName,
+  packSlugs,
+}: {
+  parity?: ParityStatus | null;
+  isOpen: boolean;
+  onClose: () => void;
+  strategyId: string;
+  strategyName?: string;
+  packSlugs?: string[];
+}) {
+  const [details, setDetails] = useState<ParityCheckResponse | null>(null);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [detailsError, setDetailsError] = useState<string | null>(null);
+  const [packStatuses, setPackStatuses] = useState<Record<string, PackParityStatus | null>>({});
+
+  // Lazy-fetch the deep parity report + pack cross-link statuses on open.
+  // Only fires once per drawer open; closes reset the cache so reopening
+  // re-fetches (fresh data is cheap; one /parity-check call is ~5-15s but
+  // already used by Strategy Detail Parity tab).
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+
+    async function loadDetails() {
+      const token = localStorage.getItem('ror_access_token') || '';
+      const base = process.env.NEXT_PUBLIC_API_URL || '';
+
+      // Skip the deep fetch if there's nothing to diff (NO_TRADES, PENDING).
+      // The header info already covers what the user needs.
+      const skipDeep = !parity || ['NO_TRADES', 'PENDING', 'NO_DATA', 'ERROR']
+        .includes(parity.verdict);
+
+      if (!skipDeep) {
+        setDetailsLoading(true);
+        try {
+          const params = new URLSearchParams({
+            last_n: '200',
+            forward_test_only: 'false',
+          });
+          const resp = await fetch(
+            `${base}/api/strategies/${strategyId}/parity-check?${params.toString()}`,
+            {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            },
+          );
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          const j: ParityCheckResponse = await resp.json();
+          if (!cancelled) setDetails(j);
+        } catch (e: any) {
+          if (!cancelled) setDetailsError(e?.message || String(e));
+        } finally {
+          if (!cancelled) setDetailsLoading(false);
+        }
+      }
+
+      // Pack cross-link: fire one GET /parity-status per pack the
+      // strategy uses. Sequential; usually 1-3 packs per strategy.
+      if (packSlugs && packSlugs.length > 0) {
+        for (const slug of packSlugs) {
+          if (cancelled) break;
+          try {
+            const r = await fetch(
+              `${base}/api/packs/builder/user-packs/${slug}/parity-status`,
+              { headers: { 'Authorization': `Bearer ${token}` } },
+            );
+            if (!r.ok) {
+              setPackStatuses((prev) => ({ ...prev, [slug]: null }));
+              continue;
+            }
+            const j = await r.json();
+            if (!cancelled) {
+              setPackStatuses((prev) => ({ ...prev, [slug]: j || null }));
+            }
+          } catch {
+            if (!cancelled) {
+              setPackStatuses((prev) => ({ ...prev, [slug]: null }));
+            }
+          }
+        }
+      }
+    }
+
+    loadDetails();
+    return () => { cancelled = true; };
+  }, [isOpen, strategyId, parity?.verdict, packSlugs?.join(',')]);
+
+  // Reset on close so the next open re-fetches fresh data.
+  useEffect(() => {
+    if (!isOpen) {
+      setDetails(null);
+      setDetailsError(null);
+      setPackStatuses({});
+    }
+  }, [isOpen]);
+
+  if (!parity) return null;
+
+  const c = PARITY_COLORS[parity.verdict] ?? PARITY_COLORS.ERROR;
+  const pct = parity.score != null ? `${Math.round(parity.score * 100)}%` : null;
+  const computedAge = parity.computed_at
+    ? timeAgo(parity.computed_at)
+    : '—';
+
+  // Use stored_only from the deep report if loaded; fall back to nothing.
+  const failingTrades = details?.stored_only?.slice(0, 5) || [];
+
+  return (
+    <Modal
+      title={`Parity${strategyName ? ` — ${strategyName}` : ''}`}
+      isOpen={isOpen}
+      onClose={onClose}
+      width="640px"
+    >
+      <div className="space-y-4">
+        {/* Verdict header */}
+        <div
+          className="rounded p-3"
+          style={{ background: c.bg, border: `1px solid ${c.fg}30` }}
+        >
+          <div className="flex items-center gap-3">
+            <span
+              className="inline-flex items-center justify-center rounded-full font-bold flex-shrink-0"
+              style={{ background: c.fg, color: 'white', width: 32, height: 32, fontSize: 14 }}
+            >
+              {c.icon}
+            </span>
+            <div className="flex-1">
+              <div className="text-sm font-semibold" style={{ color: c.fg }}>
+                {parity.verdict.replace(/_/g, ' ')}{pct ? ` — ${pct}` : ''}
+              </div>
+              <div className="text-xs mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                {parity.matched_count}/{parity.stored_count} stored trades match the live engine
+                {parity.replay_only_count > 0 && (
+                  <> · {parity.replay_only_count} replay-only</>
+                )}
+                <> · computed {computedAge}</>
+              </div>
+            </div>
+          </div>
+          {parity.most_common_failing_gate && (
+            <div className="text-xs mt-2 font-mono" style={{ color: 'var(--text-secondary)' }}>
+              Most common failing gate:&nbsp;
+              <span style={{ color: c.fg, fontWeight: 600 }}>
+                {parity.most_common_failing_gate}
+              </span>
+            </div>
+          )}
+          {parity.error && (
+            <div className="text-xs mt-2" style={{ color: 'var(--red)' }}>
+              Error: {parity.error}
+            </div>
+          )}
+        </div>
+
+        {/* Failing trades section — only relevant for FAIL_LIVE_BLOCKED / PARTIAL */}
+        {(parity.verdict === 'FAIL_LIVE_BLOCKED' || parity.verdict === 'PARTIAL'
+          || parity.verdict === 'FAIL_OVER_FIRES') && (
+          <div>
+            <h4 className="text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>
+              Top failing trades (bar-by-bar gates)
+            </h4>
+            {detailsLoading && (
+              <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                Loading parity diff…
+              </div>
+            )}
+            {detailsError && (
+              <div className="text-xs" style={{ color: 'var(--red)' }}>
+                Couldn't load detail: {detailsError}
+              </div>
+            )}
+            {!detailsLoading && !detailsError && failingTrades.length === 0 && (
+              <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                No failing trades surfaced (deep parity may use a different
+                last_n filter than the auto-parity badge).
+              </div>
+            )}
+            {failingTrades.length > 0 && (
+              <div className="space-y-2">
+                {failingTrades.map((trade, i) => (
+                  <div
+                    key={i}
+                    className="rounded p-2 text-xs"
+                    style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>
+                        {trade.ts?.slice(0, 16) || '—'}
+                      </span>
+                      {trade.trigger && (
+                        <span style={{ color: 'var(--text-muted)' }}>
+                          · {trade.trigger}
+                        </span>
+                      )}
+                      {trade.reason && (
+                        <span
+                          className="ml-auto px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                          style={{
+                            background: 'var(--red-muted)',
+                            color: 'var(--red)',
+                          }}
+                        >
+                          {trade.reason}
+                        </span>
+                      )}
+                    </div>
+                    {trade.failing_gates && trade.failing_gates.length > 0 && (
+                      <div className="mt-1 font-mono text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                        {trade.failing_gates.slice(0, 3).map((g, gi) => (
+                          <div key={gi}>
+                            need <span style={{ color: 'var(--green)' }}>{g.required}</span>,
+                            got <span style={{ color: 'var(--red)' }}>{g.replay_actual}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+                <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  Showing top {failingTrades.length} of{' '}
+                  {details?.stored_count ? details.stored_count - (details.matched_count || 0) : '?'} non-matching trades.
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Pack cross-link section */}
+        {packSlugs && packSlugs.length > 0 && (
+          <div>
+            <h4 className="text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>
+              Underlying packs
+            </h4>
+            <div className="space-y-1.5">
+              {packSlugs.map((slug) => {
+                const ps = packStatuses[slug];
+                const loaded = slug in packStatuses;
+                if (!loaded) {
+                  return (
+                    <div key={slug} className="flex items-center gap-2 text-xs">
+                      <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>{slug}</span>
+                      <span style={{ color: 'var(--text-muted)' }}>loading…</span>
+                    </div>
+                  );
+                }
+                if (!ps) {
+                  return (
+                    <div key={slug} className="flex items-center gap-2 text-xs">
+                      <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>{slug}</span>
+                      <span
+                        className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                        style={{
+                          background: 'var(--bg-input)',
+                          color: 'var(--text-muted)',
+                          border: '1px solid var(--border)',
+                        }}
+                      >
+                        no parity record yet
+                      </span>
+                    </div>
+                  );
+                }
+                const verdictColor = ps.overall_verdict === 'PASS'
+                  ? { bg: 'var(--green-muted)', fg: 'var(--green)' }
+                  : ps.overall_verdict === 'WARN'
+                  ? { bg: 'var(--orange-muted)', fg: 'var(--orange)' }
+                  : { bg: 'var(--red-muted)', fg: 'var(--red)' };
+                return (
+                  <div key={slug} className="flex items-center gap-2 text-xs">
+                    <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>{slug}</span>
+                    <span
+                      className="px-1.5 py-0.5 rounded-full text-[10px] font-semibold"
+                      style={{
+                        background: verdictColor.bg,
+                        color: verdictColor.fg,
+                        border: `1px solid ${verdictColor.fg}40`,
+                      }}
+                    >
+                      {ps.overall_verdict}
+                    </span>
+                    {ps.summary && (
+                      <span style={{ color: 'var(--text-muted)' }} className="truncate">
+                        {ps.summary}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+              <p className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>
+                Pack-level parity tests batch (indicator.py) vs live (incremental)
+                output. A pack that fails Q2/Q3 will cascade into strategy parity
+                failures — fix at the pack level first.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Footer link */}
+        <div className="pt-2" style={{ borderTop: '1px solid var(--border)' }}>
+          <Link
+            href={`/strategies/${strategyId}?tab=parity`}
+            className="text-xs"
+            style={{ color: 'var(--blue)' }}
+          >
+            Open Strategy Detail → Parity tab for the full diff →
+          </Link>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -682,6 +1055,15 @@ export default function StrategiesPage() {
   // Health-aggregate filter: 'all' shows everything; otherwise filter cards
   // to only strategies whose health.severity matches.
   const [healthFilter, setHealthFilter] = useState<'all' | HealthSeverity>('all');
+  // Strategy Parity drawer — same pattern as health drawer.
+  const [parityDrawerFor, setParityDrawerFor] = useState<string | null>(null);
+  // Source filter (Mirror Migration workflow): hide legacy strategies as
+  // they're retired in favor of user-pack mirrors. 'all' default; user can
+  // narrow to user-pack-only or legacy-only.
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'user_pack' | 'legacy'>('all');
+  // React-Query handle for invalidating the strategies list when bulk
+  // Run Parity completes (replaces the old window.location.reload()).
+  const queryClient = useQueryClient();
 
   // Bulk select (always available, no select mode toggle needed)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -706,6 +1088,18 @@ export default function StrategiesPage() {
       // Treat strategies with no health field as 'healthy'
       result = result.filter((s) => (s.health?.severity || 'healthy') === healthFilter);
     }
+    if (sourceFilter !== 'all') {
+      // user_pack: only fully-clean mirrors. legacy: anything still
+      // referencing built-in templates (legacy / mixed / no_mirror).
+      // 'unknown' / 'empty' (webhook_inbound, etc.) stay visible in
+      // both modes — they're not legacy-template baggage.
+      result = result.filter((s) => {
+        const tc = s.templateClass || 'unknown';
+        if (sourceFilter === 'user_pack') return tc === 'user_pack';
+        if (sourceFilter === 'legacy') return tc === 'legacy' || tc === 'mixed' || tc === 'no_mirror';
+        return true;
+      });
+    }
 
     // Sort
     switch (sortBy) {
@@ -718,7 +1112,7 @@ export default function StrategiesPage() {
       case 'Max DD (Best)': result.sort((a, b) => b.maxDD - a.maxDD); break;
     }
     return result;
-  }, [strategies, tickerFilter, directionFilter, tagFilter, statusFilter, healthFilter, sortBy]);
+  }, [strategies, tickerFilter, directionFilter, tagFilter, statusFilter, healthFilter, sourceFilter, sortBy]);
 
   // Health aggregate counts (for the chip row above the filters)
   const healthCounts = useMemo(() => {
@@ -930,10 +1324,11 @@ export default function StrategiesPage() {
             style={{ ...btnSecondary, opacity: refreshing ? 0.6 : 1 }}
             className="text-sm"
             disabled={refreshing || selectedIds.size === 0}
-            title="Queue parity replays in the background. Returns immediately; badges update to ⋯ Computing then settle when each finishes."
+            title="Queue parity replays in the background. Badges update from ⋯ Computing to final verdicts as each completes — no page reload needed."
             onClick={async () => {
               if (refreshing || selectedIds.size === 0) return;
               const ids = Array.from(selectedIds).map(Number);
+              const idSet = new Set(ids.map(String));
               setRefreshing(true);
               const token = localStorage.getItem('ror_access_token') || '';
               const base = process.env.NEXT_PUBLIC_API_URL || '';
@@ -948,12 +1343,49 @@ export default function StrategiesPage() {
                       `Strategies: ${result.total_strategies}\n` +
                       `Queued: ${result.total_queued}\n` +
                       `Failed: ${result.total_failed}\n\n` +
-                      `Parity runs serialized in the background — refresh the page in a few minutes to see verdicts.`);
+                      `Badges show ⋯ Computing; they'll update in place as each parity replay completes (~30s–2min per strategy, serialized).`);
               } catch (e: any) {
                 alert(`Parity queue failed: ${e?.message || e}`);
+                setRefreshing(false);
+                return;
               }
-              setRefreshing(false);
-              window.location.reload();
+
+              // Poll the strategies list every 5s, refetching React-Query
+              // so badges update in-place. Stop when no queued strategy
+              // is still PENDING (or after a 15-min ceiling for safety).
+              const startedAt = Date.now();
+              const POLL_INTERVAL_MS = 5000;
+              const TIMEOUT_MS = 15 * 60 * 1000;
+
+              const pollOnce = async (): Promise<boolean> => {
+                await queryClient.invalidateQueries({ queryKey: ['strategies'] });
+                // Read the freshly-refetched list directly from the query
+                // cache (the `strategies` state in this closure is stale
+                // by one render).
+                const data = queryClient.getQueryData<any[]>(['strategies']);
+                if (!data) return false;
+                const queued = data.filter((s: any) => idSet.has(String(s.id)));
+                const stillPending = queued.some(
+                  (s: any) => s.parity_status?.verdict === 'PENDING',
+                );
+                return !stillPending;
+              };
+
+              const loop = async () => {
+                while (Date.now() - startedAt < TIMEOUT_MS) {
+                  await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+                  try {
+                    const done = await pollOnce();
+                    if (done) break;
+                  } catch {
+                    // Network blip — keep polling.
+                  }
+                }
+                setRefreshing(false);
+              };
+
+              // Fire-and-forget; the user can keep clicking around.
+              loop();
             }}
           >
             Run Parity
@@ -981,6 +1413,21 @@ export default function StrategiesPage() {
             isOpen={true}
             onClose={() => setHealthDrawerFor(null)}
             strategyName={target?.name}
+          />
+        );
+      })()}
+
+      {/* ---- Strategy Parity drawer ---- */}
+      {parityDrawerFor && (() => {
+        const target = strategies.find((s) => s.id === parityDrawerFor);
+        return (
+          <StrategyParityDrawer
+            parity={target?.parityStatus}
+            isOpen={true}
+            onClose={() => setParityDrawerFor(null)}
+            strategyId={parityDrawerFor}
+            strategyName={target?.name}
+            packSlugs={target?.referencedTemplates}
           />
         );
       })()}
@@ -1073,6 +1520,62 @@ export default function StrategiesPage() {
           )}
         </div>
       )}
+
+      {/* ---- Source filter (Mirror Migration workflow 2026-04-29) ---- */}
+      {(() => {
+        const sourceCounts = strategies.reduce(
+          (acc, s) => {
+            const tc = s.templateClass || 'unknown';
+            acc.all += 1;
+            if (tc === 'user_pack') acc.user_pack += 1;
+            else if (tc === 'legacy' || tc === 'mixed' || tc === 'no_mirror') acc.legacy += 1;
+            return acc;
+          },
+          { all: 0, user_pack: 0, legacy: 0 } as { all: number; user_pack: number; legacy: number },
+        );
+        // Hide the row entirely if there are no legacy strategies left —
+        // the eventual end state once migration completes.
+        if (sourceCounts.legacy === 0) return null;
+
+        const sourceLabels: Record<'all' | 'user_pack' | 'legacy', string> = {
+          all: `All (${sourceCounts.all})`,
+          user_pack: `User-pack only (${sourceCounts.user_pack})`,
+          legacy: `Legacy (${sourceCounts.legacy})`,
+        };
+        const sourceColors: Record<'all' | 'user_pack' | 'legacy',
+          { bg: string; fg: string }> = {
+          all: { bg: 'var(--bg-input)', fg: 'var(--text-secondary)' },
+          user_pack: { bg: 'var(--green-muted)', fg: 'var(--green)' },
+          legacy: { bg: 'var(--orange-muted)', fg: 'var(--orange)' },
+        };
+
+        return (
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            <span className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>
+              Source:
+            </span>
+            {(['all', 'user_pack', 'legacy'] as const).map((src) => {
+              const isActive = sourceFilter === src;
+              return (
+                <button
+                  key={src}
+                  type="button"
+                  onClick={() => setSourceFilter(src)}
+                  className="text-xs px-2.5 py-1 rounded-full font-medium"
+                  style={{
+                    background: isActive ? sourceColors[src].fg : sourceColors[src].bg,
+                    color: isActive ? 'white' : sourceColors[src].fg,
+                    border: `1px solid ${sourceColors[src].fg}40`,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {sourceLabels[src]}
+                </button>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {/* ---- Filters ---- */}
       <div className="grid grid-cols-3 lg:grid-cols-7 gap-3 mb-5">
@@ -1248,7 +1751,10 @@ export default function StrategiesPage() {
                   health={strat.health}
                   onOpenDrawer={() => setHealthDrawerFor(strat.id)}
                 />
-                <StrategyParityBadge parity={strat.parityStatus} />
+                <StrategyParityBadge
+                  parity={strat.parityStatus}
+                  onClick={() => setParityDrawerFor(strat.id)}
+                />
                 <span className="flex-1" />
                 {strat.fwdTrades > 0 && (() => {
                   const { fwd, alert } = getStrategySD(strat);
