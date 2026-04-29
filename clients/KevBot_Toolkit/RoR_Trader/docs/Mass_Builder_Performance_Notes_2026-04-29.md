@@ -145,10 +145,19 @@ Same engine code path. The only intentional change in Update Data flow this week
 
 **P1 — Restore the rapid backtest path in mass builder.** Fix the broken integration: build the precompute mega-config to declare ALL selected entry/exit triggers so the cache stores booleans for every one. Each combo's `run_trades_from_cache()` then succeeds because all its triggers are in the cache. Estimated ~10–50× speedup on mass searches per the docstring claim.
 
-**P2 — Vectorize the bar loop in `run_unified_backtest`.** Pre-extract numpy O/H/L/C/V arrays outside the loop, iterate by index. Same pattern applied to `parity_service` yesterday. Independent of P1; benefits Update Data, mass builder, parity, anywhere `run_unified_backtest` is called. ~2× per-call speedup expected.
+**P1a — Surface "Rapid vs Standard" as a user-facing toggle in the Mass Builder UI** (Kevin's idea, 2026-04-29). Mirror the existing pattern of Trigger Hi-Fi / Confluence Hi-Fi toggles: let the user decide between speed (rapid path, indicator math runs once per `(symbol, tf)` group) and highest fidelity (standard path, full bar-by-bar engine recomputed per combo). Sketch:
+- Default: Rapid (matches the speed users had pre-2026-03-16; usually what people want for exploratory searches)
+- Opt-in: Standard (when you specifically want the unified engine to re-evaluate per combo — useful as a parity sanity check or when a strategy uses an exec type that the rapid cache doesn't yet support)
+- Storage: `mass_searches.config_data.execution_mode` = `"rapid" | "standard"` so the choice is recorded with each search and can be filtered in Mass Results
+- Mass Builder execution path branches on this flag: rapid → call `precompute_bar_cache()` + loop combos through `run_trades_from_cache()`; standard → existing `run_unified_backtest()` per combo
+- Estimator recalibrates against the chosen mode (rapid uses ~5ms/combo, standard uses bar-loop cost)
 
-**P3 — Recalibrate the estimator.** After P1 lands the new constants are `~5ms per cache replay` (rapid path). Until then, surface trigger-backtest cost as `bars_per_strategy × per_bar_cost × n_base_configs` so the prediction stops lying when `data_days` is large.
+This generalizes nicely: when we eventually add new execution types or pack semantics that the rapid cache can't replay correctly, users can fall back to Standard for those searches without us having to gate it server-side.
+
+**P2 — Vectorize the bar loop in `run_unified_backtest`.** Pre-extract numpy O/H/L/C/V arrays outside the loop, iterate by index. Same pattern applied to `parity_service` yesterday. Independent of P1; benefits Update Data, mass builder Standard mode, parity, anywhere `run_unified_backtest` is called. ~2× per-call speedup expected.
+
+**P3 — Recalibrate the estimator.** After P1 lands, separate Rapid-mode constants from Standard-mode constants — Rapid: `~5ms per combo replay`; Standard: `bars_per_strategy × per_bar_cost × n_base_configs`. Honor the toggle from P1a in the prediction so the UI stops lying.
 
 **P4 — Strategy-level parity workflow finalization.** This was mid-flight last night. Run Parity button shipped (`1dc14bf`). Need to: click it on the 10 Tier-A mirrors, read the verdict matrix, run user-pack 4Q parity on the v2 packs to identify any pack-level batch↔live drift. See `docs/Migration_Tracking_2026-04-28.md` and `memory/project_session_2026-04-28.md`.
 
-P4 should land before P1/P2/P3. Migration finish + trustworthy parity = the foundation we need before optimizing Mass Builder. Otherwise we'll be optimizing strategies we can't trust.
+P4 lands before P1/P1a/P2/P3. Migration finish + trustworthy parity = the foundation we need before optimizing Mass Builder. Otherwise we'll be optimizing strategies we can't trust.
