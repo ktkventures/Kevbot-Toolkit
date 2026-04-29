@@ -15,11 +15,34 @@ direct fidelity signal rather than a data-origin question.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from datetime import datetime, timezone
 from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
+
+# Serialize background parity work. Concurrent bg parity threads on a
+# single API instance contend for CPU brutally — observed 04:32 UTC
+# 2026-04-28: sid 143 replay loop dropped from ~1500 bars/s isolated
+# to 83 bars/s under contention (18× slowdown), turning a 60s parity
+# into 16.5 minutes. Semaphore(1) means at most one bg parity runs;
+# subsequent ones queue. The user-facing refresh response stays fast
+# (it returns before the semaphore is acquired); only the parity write
+# completion is delayed.
+_PARITY_BG_SEM = threading.Semaphore(1)
+
+
+def _auto_parity_enabled() -> bool:
+    """Allow ops to globally disable auto-parity via env var without a
+    redeploy of code. Useful when running mass refreshes / mass-builder
+    where the parity overhead isn't wanted, or as a kill-switch when
+    something goes sideways."""
+    val = os.environ.get("AUTO_PARITY_ENABLED", "").strip().lower()
+    if val in ("0", "false", "no", "off"):
+        return False
+    # Default on — explicit disable required.
+    return True
 
 
 _AUTO_PARITY_LAST_N = 200
@@ -182,7 +205,7 @@ def _do_recompute(
         })
 
     parity_summary = None
-    if compute_parity and USE_DB:
+    if compute_parity and USE_DB and _auto_parity_enabled():
         # Kick parity off as a fire-and-forget background thread. A 10Sec
         # strategy with thousands of bars takes minutes to replay; if we
         # blocked the refresh response on it, the user would see a hung
@@ -228,22 +251,35 @@ def _bg_compute_parity(strategy_id: int, user_id: str) -> None:
     """Background-thread entry. Re-imports update_strategy_admin so the
     thread doesn't depend on closures from the originating request, and
     re-establishes admin user context (set_admin_user_context is
-    thread-local; the request thread's context doesn't propagate)."""
-    try:
-        from db import (
-            update_strategy_admin,
-            set_admin_user_context,
-            clear_current_user,
-        )
-        set_admin_user_context(user_id)
+    thread-local; the request thread's context doesn't propagate).
+
+    Acquires _PARITY_BG_SEM so concurrent bg parity threads serialize
+    rather than thrashing the CPU. A blocked thread sits in semaphore
+    wait — it doesn't consume CPU, just memory for its frame.
+    """
+    queued_ts = datetime.now(timezone.utc).isoformat()
+    with _PARITY_BG_SEM:
+        wait_s = (datetime.now(timezone.utc) -
+                  datetime.fromisoformat(queued_ts)).total_seconds()
+        if wait_s > 1.0:
+            logger.warning(
+                "[FT-PARITY-BG] strategy=%s queued for %.1fs before run",
+                strategy_id, wait_s)
         try:
-            _compute_and_persist_parity(
-                strategy_id, user_id, update_strategy_admin)
-        finally:
-            clear_current_user()
-    except Exception as e:
-        logger.exception(
-            "[FT-PARITY-BG] strategy=%s crashed: %s", strategy_id, e)
+            from db import (
+                update_strategy_admin,
+                set_admin_user_context,
+                clear_current_user,
+            )
+            set_admin_user_context(user_id)
+            try:
+                _compute_and_persist_parity(
+                    strategy_id, user_id, update_strategy_admin)
+            finally:
+                clear_current_user()
+        except Exception as e:
+            logger.exception(
+                "[FT-PARITY-BG] strategy=%s crashed: %s", strategy_id, e)
 
 
 def _compute_and_persist_parity(
