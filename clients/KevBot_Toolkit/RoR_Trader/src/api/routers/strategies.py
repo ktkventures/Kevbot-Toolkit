@@ -1138,9 +1138,9 @@ def get_strategy_chart_data(
         else:
             chart_days = base_days
 
-        logger.info("[CHART-DATA:%s] start symbol=%s tf=%s days=%s sec_tfs=%s",
-                    strategy_id, strat.get('symbol'), strat.get('timeframe'),
-                    chart_days, sec_tfs)
+        logger.warning("[CHART-DATA:%s] start symbol=%s tf=%s days=%s sec_tfs=%s",
+                       strategy_id, strat.get('symbol'), strat.get('timeframe'),
+                       chart_days, sec_tfs)
         _t = _time.time()
         df = svc.prepare_data_with_indicators(
             strat['symbol'],
@@ -1150,8 +1150,8 @@ def get_strategy_chart_data(
             secondary_tfs=sec_tfs,
         )
         _phases["prepare"] = _time.time() - _t
-        logger.info("[CHART-DATA:%s] prepare_data_with_indicators=%.2fs bars=%d",
-                    strategy_id, _phases["prepare"], len(df))
+        logger.warning("[CHART-DATA:%s] prepare_data_with_indicators=%.2fs bars=%d",
+                       strategy_id, _phases["prepare"], len(df))
         if len(df) == 0:
             return {"chart_data": [], "overlay_indicators": [], "oscillator_indicators": [], "heatmap_conditions": []}
 
@@ -1329,7 +1329,7 @@ def get_strategy_chart_data(
         _phases["state_inject"] = _time.time() - _t
 
         total = _time.time() - _t_start
-        logger.info(
+        logger.warning(
             "[CHART-DATA:%s] DONE total=%.2fs prepare=%.2fs serialize=%.2fs "
             "state_inject=%.2fs bars=%d state_cols=%d overlay=%d oscillator=%d",
             strategy_id, total,

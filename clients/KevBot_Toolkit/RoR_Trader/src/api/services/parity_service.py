@@ -20,6 +20,7 @@ Output is a ParityReport dict shaped for the frontend Parity tab.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -185,8 +186,15 @@ def _replay_strategy(
     # Cap at 365 to avoid pathological loads
     days = min(days, 365)
 
+    sid = strategy.get('id', '?')
+    _t = time.time()
     primary_df, sec_dfs = _load_primary_and_secondary_bars(
         strategy, monitor._required_secondary_tf, days)
+    t_load = time.time() - _t
+    logger.warning(
+        "[PARITY:%s] bar_load=%.2fs primary_bars=%d secondary_tfs=%s days=%d",
+        sid, t_load, len(primary_df) if primary_df is not None else 0,
+        list(sec_dfs.keys()), days)
 
     if primary_df is None or len(primary_df) < 20:
         return [], [], {
@@ -196,6 +204,7 @@ def _replay_strategy(
 
     # Warmup: each engine consumes its first N bars to seed indicator state.
     warmup = min(_DEFAULT_PRIMARY_WARMUP_BARS, max(20, len(primary_df) // 4))
+    _t = time.time()
     monitor.warmup(primary_df.iloc[:warmup])
 
     for sec_tf, sec_df in sec_dfs.items():
@@ -224,9 +233,14 @@ def _replay_strategy(
             'idx': sec_warmup,  # next bar to play after warmup
         }
 
+    t_warmup = time.time() - _t
+    logger.warning("[PARITY:%s] warmup=%.2fs warmup_bars=%d", sid, t_warmup, warmup)
+
     replay_fires: list[dict] = []
     replay_bar_states: list[dict] = []
     bar_count = warmup
+    _t_loop = time.time()
+    n_to_replay = len(primary_df) - warmup
 
     for ts, row in primary_df.iloc[warmup:].iterrows():
         # Advance any secondary TF whose next bar timestamp <= primary ts.
@@ -301,12 +315,24 @@ def _replay_strategy(
 
         bar_count += 1
 
+    t_loop = time.time() - _t_loop
+    bars_per_sec = (n_to_replay / t_loop) if t_loop > 0 else 0
+    logger.warning(
+        "[PARITY:%s] replay_loop=%.2fs bars=%d (%.0f bars/s) fires=%d",
+        sid, t_loop, n_to_replay, bars_per_sec, len(replay_fires))
+
     meta = {
         'primary_bars_total': int(len(primary_df)),
         'primary_bars_replayed': int(len(primary_df) - warmup),
         'warmup_bars': warmup,
         'secondary_tfs': sorted(sec_dfs.keys()),
         'data_days': days,
+        'timing': {
+            'bar_load_s': round(t_load, 2),
+            'warmup_s': round(t_warmup, 2),
+            'replay_loop_s': round(t_loop, 2),
+            'bars_per_s': round(bars_per_sec, 0),
+        },
     }
     return replay_fires, replay_bar_states, meta
 
@@ -562,6 +588,11 @@ def run_strategy_parity(
     """
     from db import get_strategy_by_id_db, load_trades_admin
 
+    _t_total = time.time()
+    logger.warning(
+        "[PARITY:%s] start last_n=%s forward_test_only=%s",
+        strategy_id, last_n, forward_test_only)
+
     strat = get_strategy_by_id_db(strategy_id)
     if strat is None:
         return {'error': 'Strategy not found', 'strategy_id': strategy_id}
@@ -633,11 +664,26 @@ def run_strategy_parity(
             'error': f'{type(e).__name__}: {e}',
         }
 
+    _t = time.time()
     report = _build_report(
         strat, stored_entries, replay_fires, replay_bar_states, meta)
+    t_diff = time.time() - _t
+    t_total = time.time() - _t_total
+    logger.warning(
+        "[PARITY:%s] DONE total=%.2fs diff=%.2fs verdict=%s "
+        "stored=%d matched=%d stored_only=%d replay_only=%d",
+        strategy_id, t_total, t_diff,
+        report.get('verdict'),
+        report.get('stored_count', 0),
+        report.get('matched_count', 0),
+        report.get('stored_only_count', 0),
+        report.get('replay_only_count', 0))
+
     report.setdefault('meta', {}).update({
         'last_n_filter': last_n,
         'forward_test_only': forward_test_only,
         'stored_total_before_filter': pre_filter_count,
+        'timing_total_s': round(t_total, 2),
+        'timing_diff_s': round(t_diff, 2),
     })
     return report
