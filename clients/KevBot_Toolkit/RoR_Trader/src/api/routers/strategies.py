@@ -1117,9 +1117,13 @@ def get_strategy_chart_data(
     strat = _get_or_404(strategy_id, user)
     import services as svc
     import pandas as pd
+    import time as _time
 
     OVERLAY_TEMPLATES = {"ema_stack", "ema_price_position", "ema_price_position_v2", "vwap", "utbot", "utbot_v2"}
     OSCILLATOR_TEMPLATES = {"macd_line", "macd_histogram", "rvol"}
+
+    _t_start = _time.time()
+    _phases: dict = {}
 
     try:
         # Extract required secondary timeframes from confluence records
@@ -1134,6 +1138,10 @@ def get_strategy_chart_data(
         else:
             chart_days = base_days
 
+        logger.info("[CHART-DATA:%s] start symbol=%s tf=%s days=%s sec_tfs=%s",
+                    strategy_id, strat.get('symbol'), strat.get('timeframe'),
+                    chart_days, sec_tfs)
+        _t = _time.time()
         df = svc.prepare_data_with_indicators(
             strat['symbol'],
             days=chart_days,
@@ -1141,6 +1149,9 @@ def get_strategy_chart_data(
             session=strat.get('trading_session', 'RTH'),
             secondary_tfs=sec_tfs,
         )
+        _phases["prepare"] = _time.time() - _t
+        logger.info("[CHART-DATA:%s] prepare_data_with_indicators=%.2fs bars=%d",
+                    strategy_id, _phases["prepare"], len(df))
         if len(df) == 0:
             return {"chart_data": [], "overlay_indicators": [], "oscillator_indicators": [], "heatmap_conditions": []}
 
@@ -1282,27 +1293,50 @@ def get_strategy_chart_data(
         from api.services.backtest_service import _serialize_chart_data
 
         # For state columns, serialize separately (they're categorical, not numeric)
+        _t = _time.time()
         chart_data = _serialize_chart_data(df, all_indicator_cols)
+        _phases["serialize"] = _time.time() - _t
 
-        # Add interpreter state values to each bar for heatmap
+        # Add interpreter state values to each bar for heatmap. Vectorized:
+        # extract each state column to a list once via .tolist(), then zip
+        # into chart_data in a single pass. The previous per-bar `.iloc[i]`
+        # lookup was ~6s for 49k bars (10Sec strategies) before this refactor.
+        _t = _time.time()
         if state_cols:
-            reset_df = df.reset_index()
-            time_col = reset_df.columns[0]
-            # Log what state columns contain for debugging
+            present_cols = [sc for sc in state_cols if sc in df.columns]
             for sc in state_cols:
-                if sc in reset_df.columns:
-                    unique_vals = reset_df[sc].dropna().unique()
-                    logger.info("[CHART-DATA] heatmap state_col=%s, unique_values=%s (last 5: %s)",
-                                sc, list(unique_vals[:10]),
-                                list(reset_df[sc].tail(5).values))
-                else:
-                    logger.warning("[CHART-DATA] heatmap state_col=%s NOT FOUND in df", sc)
-            for i, row in enumerate(chart_data):
-                if i < len(reset_df):
-                    r = reset_df.iloc[i]
-                    for sc in state_cols:
-                        val = r.get(sc)
-                        row[f"_state_{sc}"] = str(val) if pd.notna(val) else None
+                if sc not in df.columns:
+                    logger.warning("[CHART-DATA:%s] heatmap state_col=%s NOT FOUND in df",
+                                   strategy_id, sc)
+
+            # Pre-extract each state column's values as a Python list. Skip
+            # pd.notna per-cell by precomputing the mask once per column.
+            col_values: dict[str, list] = {}
+            for sc in present_cols:
+                series = df[sc]
+                mask = series.notna().tolist()
+                vals = series.astype(object).tolist()
+                col_values[sc] = [
+                    str(v) if m else None for v, m in zip(vals, mask)
+                ]
+
+            n = min(len(chart_data), len(df))
+            for sc in present_cols:
+                col_list = col_values[sc]
+                key = f"_state_{sc}"
+                for i in range(n):
+                    chart_data[i][key] = col_list[i]
+        _phases["state_inject"] = _time.time() - _t
+
+        total = _time.time() - _t_start
+        logger.info(
+            "[CHART-DATA:%s] DONE total=%.2fs prepare=%.2fs serialize=%.2fs "
+            "state_inject=%.2fs bars=%d state_cols=%d overlay=%d oscillator=%d",
+            strategy_id, total,
+            _phases.get("prepare", 0), _phases.get("serialize", 0),
+            _phases.get("state_inject", 0),
+            len(df), len(state_cols), len(overlay_cols), len(oscillator_cols)
+        )
 
         return {
             "chart_data": chart_data,
@@ -1312,7 +1346,11 @@ def get_strategy_chart_data(
             "candle_color_column": candle_color_column,
         }
     except Exception as e:
-        logger.exception("Failed to compute chart data for strategy %s: %s", strategy_id, e)
+        elapsed = _time.time() - _t_start
+        logger.exception(
+            "[CHART-DATA:%s] FAILED after %.2fs phases=%s: %s",
+            strategy_id, elapsed, _phases, e
+        )
         raise HTTPException(status_code=504, detail=f"Chart data computation failed: {str(e)[:200]}")
 
 
