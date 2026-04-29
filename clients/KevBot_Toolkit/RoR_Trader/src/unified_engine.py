@@ -1143,6 +1143,17 @@ class TriggerEvaluator:
         if unhandled:
             try:
                 import pack_registry
+                # Build a 2-row DataFrame [prev, current] (or 1-row if prev
+                # is empty/missing). User-pack interpreters often compute
+                # state from row vs row-1 via `df.shift(1)` — e.g.
+                # MACD_HISTOGRAM_V2 classifies H+up/H+dn by whether hist
+                # rose or fell vs the previous bar. A single-row DataFrame
+                # makes shift(1) → NaN and the interpreter emits None for
+                # every bar, silently dropping the cross-TF confluence
+                # record. Confirmed broken on sid 137 (TSLA/5Min) where
+                # the 1Day MACD_HISTOGRAM_V2 shadow emitted 0 records
+                # across 33 bars fed, blocking every entry. Found via
+                # `_probe_parity_divergence.py` 2026-04-29.
                 row_df = None
                 for pack in pack_registry.get_registered_packs().values():
                     pack_interps = set(
@@ -1151,7 +1162,10 @@ class TriggerEvaluator:
                     if not overlap or pack.interpreter_func is None:
                         continue
                     if row_df is None:
-                        row_df = pd.DataFrame([current])
+                        if prev:
+                            row_df = pd.DataFrame([prev, current])
+                        else:
+                            row_df = pd.DataFrame([current])
                     try:
                         states = pack.interpreter_func(row_df)
                         if states is not None and len(states) > 0:
