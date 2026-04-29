@@ -637,6 +637,30 @@ def load_market_data(
     _use_polygon = DATA_PROVIDER in ("polygon", "auto") and is_polygon_configured()
     _use_alpaca = DATA_PROVIDER in ("alpaca", "auto") and is_alpaca_configured()
 
+    # Persistent bar cache (Layer 1 — opt-in via BAR_CACHE_ENABLED env var).
+    # Wraps the Polygon stocks path; routes through Supabase Postgres bar_cache
+    # table with delta-fetch from Polygon for any gap. Crypto / Alpaca / mock
+    # paths bypass and run through the legacy code below. See bar_cache.py.
+    if not force_mock and _use_polygon and not is_crypto(symbol):
+        try:
+            from bar_cache import cached_load_market_data, is_enabled
+            if is_enabled():
+                df = cached_load_market_data(
+                    symbol=symbol, days=days, timeframe=timeframe,
+                    start_date=start_date, end_date=end_date, session=session)
+                if df is not None and len(df) > 0:
+                    _last_actual_source = "Polygon (cached)"
+                    return df
+                # Cache returned None (e.g. cold + Polygon failed) — fall
+                # through to direct Polygon call as a safety net
+        except Exception as _cache_err:  # noqa: F841
+            # Never let a cache bug block a market-data call. Log and fall
+            # through to the legacy path.
+            import logging as _l
+            _l.getLogger(__name__).warning(
+                "bar_cache: lookup failed, falling back to direct Polygon "
+                "(symbol=%s, tf=%s): %s", symbol, timeframe, _cache_err)
+
     # Try Polygon first (unless forced to mock or provider is alpaca-only)
     if not force_mock and _use_polygon:
         if is_crypto(symbol):
