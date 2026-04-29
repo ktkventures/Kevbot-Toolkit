@@ -345,8 +345,21 @@ def _replay_strategy(
         for sig in signals:
             stype = sig.get('signal_type') or sig.get('type') or ''
             if stype.lower().startswith('entry'):
+                # Anchor on the same field stored_trades use: entry_fill_ts.
+                # The engine emits 'entry_fill_ts' on entry signals (Trade
+                # Timestamps Spec; equals bar-close anchor). Falling back to
+                # 'time' or 'bar_time' (bar-start) was the bug — bar_start
+                # vs bar_close are different minutes after :16 truncation,
+                # making matched_count==0 even when the live engine fired
+                # the same trades the backtest did. Sid 137 probe (2026-04-29)
+                # showed 108 replay fires + 141 stored fires with 0 match
+                # before this fix because of this exact anchor mismatch.
+                ts_field = (sig.get('entry_fill_ts')
+                            or sig.get('bar_time')
+                            or sig.get('time')
+                            or ts)
                 replay_fires.append({
-                    'ts': _normalize_ts(sig.get('time') or ts),
+                    'ts': _normalize_ts(ts_field),
                     'bar_count': bar_count,
                     'trigger': sig.get('trigger', ''),
                     'price': sig.get('price') or sig.get('fill_price'),
