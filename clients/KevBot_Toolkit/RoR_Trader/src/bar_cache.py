@@ -65,6 +65,19 @@ def _max_cached_ts(symbol: str, timeframe: str) -> Optional[datetime]:
     """Return the latest ts in the cache for (symbol, timeframe), or None
     if nothing is cached yet. Uses ORDER BY + LIMIT 1 — should be cheap
     given the composite primary key index."""
+    return _edge_cached_ts(symbol, timeframe, desc=True)
+
+
+def _min_cached_ts(symbol: str, timeframe: str) -> Optional[datetime]:
+    """Return the earliest ts in the cache for (symbol, timeframe), or
+    None. Used to detect missing historical-tail coverage so the cache
+    can backfill when callers ask for a range that extends below
+    `first_cached`."""
+    return _edge_cached_ts(symbol, timeframe, desc=False)
+
+
+def _edge_cached_ts(symbol: str, timeframe: str, *,
+                    desc: bool) -> Optional[datetime]:
     from db import get_admin_client
     client = get_admin_client()
     try:
@@ -72,12 +85,12 @@ def _max_cached_ts(symbol: str, timeframe: str) -> Optional[datetime]:
             .select("ts") \
             .eq("symbol", symbol) \
             .eq("timeframe", timeframe) \
-            .order("ts", desc=True) \
+            .order("ts", desc=desc) \
             .limit(1) \
             .execute()
     except Exception as e:
-        logger.warning("bar_cache: max_ts query failed for %s/%s: %s",
-                       symbol, timeframe, e)
+        logger.warning("bar_cache: edge_ts(desc=%s) failed for %s/%s: %s",
+                       desc, symbol, timeframe, e)
         return None
     if not r.data:
         return None
@@ -248,49 +261,63 @@ def cached_load_market_data(
     # Cache always stores 1Min bars; resample on read for coarser TFs.
     cache_tf = "1Min"
 
-    # 1. Find latest cached bar
+    # 1. Find cached coverage
     last_cached = _max_cached_ts(symbol, cache_tf)
+    first_cached = _min_cached_ts(symbol, cache_tf)
 
-    # 2. Determine delta-fetch range
-    delta_from = None
-    delta_to = end_dt
-    if last_cached is None:
+    # 2. Determine fetch ranges. Two-sided gap detection:
+    #    - Backfill historical tail when start_dt < first_cached
+    #    - Forward-fill trailing edge when last_cached < end_dt
+    # Skipping either side silently corrupts the result for callers asking
+    # for a range that extends past current cache coverage.
+    fetch_ranges: list[tuple[datetime, datetime]] = []
+
+    if first_cached is None:
         # Cold start — fetch the full requested range
-        delta_from = start_dt
-    elif last_cached < end_dt:
-        # Top-up — fetch from last_cached + 1Min to now. BUT skip the
-        # network round-trip if the cache is already fresher than 60s.
-        # The bar-builder won't have a newer bar within the last
-        # minute anyway, and chart loads tolerate up to a minute of
-        # staleness on the most-recent bar (live ticks come via
-        # Realtime WS separately).
-        gap_seconds = (end_dt - last_cached).total_seconds()
-        if gap_seconds > 60:
-            delta_from = last_cached + timedelta(minutes=1)
-    # else: cache fully covers [start_dt, end_dt], no delta needed
+        fetch_ranges.append((start_dt, end_dt))
+    else:
+        # Historical-tail backfill
+        if start_dt < first_cached:
+            fetch_ranges.append(
+                (start_dt, first_cached - timedelta(minutes=1)))
+        # Trailing-edge forward-fill, but skip the network round-trip if
+        # the cache is already fresher than 60s. The bar-builder won't
+        # have a newer bar within the last minute, and chart loads
+        # tolerate up to a minute of staleness on the most-recent bar
+        # (live ticks come via Realtime WS separately).
+        if last_cached is not None and last_cached < end_dt:
+            gap_seconds = (end_dt - last_cached).total_seconds()
+            if gap_seconds > 60:
+                fetch_ranges.append(
+                    (last_cached + timedelta(minutes=1), end_dt))
 
-    # 3. Delta-fetch + upsert
-    if delta_from is not None and delta_from < delta_to:
+    # 3. Execute fetches + upsert
+    fetch_failed_cold = False
+    for f_from, f_to in fetch_ranges:
+        if f_from >= f_to:
+            continue
         try:
             delta_df = load_from_polygon(
                 symbol=symbol, days=0, timeframe=cache_tf,
-                start_date=delta_from, end_date=delta_to,
+                start_date=f_from, end_date=f_to,
                 session="24/7",  # raw fetch — no filter, store all hours
             )
             if delta_df is not None and len(delta_df) > 0:
                 inserted = _bulk_upsert(symbol, cache_tf, delta_df)
                 logger.info(
-                    "bar_cache: delta-fetched %d %s/%s bars (range %s → %s)",
+                    "bar_cache: fetched %d %s/%s bars (range %s → %s)",
                     inserted, symbol, cache_tf,
-                    delta_from.isoformat(), delta_to.isoformat())
+                    f_from.isoformat(), f_to.isoformat())
         except Exception as e:
             logger.warning(
-                "bar_cache: delta-fetch failed for %s %s → %s: %s",
-                symbol, delta_from, delta_to, e)
-            # If we have ANY cached data we proceed with what's there;
-            # only return None if cache is also empty
-            if last_cached is None:
-                return None
+                "bar_cache: fetch failed for %s %s → %s: %s",
+                symbol, f_from, f_to, e)
+            if first_cached is None:
+                # Cold cache + Polygon failed — caller falls through
+                fetch_failed_cold = True
+
+    if fetch_failed_cold:
+        return None
 
     # 4. Range select from cache
     df = _select_range(symbol, cache_tf, start_dt, end_dt)
