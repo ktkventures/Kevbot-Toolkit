@@ -65,6 +65,10 @@ interface Strategy {
   dataSource?: 'rapid' | 'full' | 'hifi';
   // Algo history fidelity — derived from stored_trades' behavior + hifi_resolved
   algoHistoryFidelity?: 'Bar' | 'Hi-Fi' | 'Mixed' | 'Unknown';
+  // Auto-parity status — set by recompute_and_persist_stored_trades after
+  // every refresh; null if the strategy has not been refreshed since the
+  // 2026-04-28 dbe0cb3 cut-over.
+  parityStatus?: ParityStatus | null;
 }
 
 // Strategy Health Badge — see services.compute_strategy_health.
@@ -84,6 +88,32 @@ export interface HealthIssue {
 export interface StrategyHealth {
   severity: HealthSeverity;
   issues: HealthIssue[];
+}
+
+// Auto-parity score (services.forward_test_service writes this after every
+// recompute_and_persist_stored_trades). Verdicts come from
+// api.services.parity_service._build_report.
+export type ParityVerdict =
+  | 'PASS'
+  | 'PARTIAL'
+  | 'FAIL_LIVE_BLOCKED'
+  | 'FAIL_OVER_FIRES'
+  | 'NO_TRADES'
+  | 'NO_DATA'
+  | 'ERROR';
+
+export interface ParityStatus {
+  score: number | null;            // matched_count / total (0..1)
+  verdict: ParityVerdict;
+  stored_count: number;
+  matched_count: number;
+  stored_only_count: number;
+  replay_only_count: number;
+  most_common_failing_gate: string | null;
+  computed_at: string;             // ISO8601
+  duration_s: number;
+  error?: string;                  // present iff verdict === 'ERROR'
+  params: { last_n: number; forward_test_only: boolean };
 }
 
 /* ========================================================================= */
@@ -155,6 +185,7 @@ function apiToStrategy(s: any): Strategy {
     health: s.health || undefined,
     dataSource: s.data_source || undefined,
     algoHistoryFidelity: s.algo_history_fidelity || 'Unknown',
+    parityStatus: s.parity_status || null,
   };
 }
 
@@ -213,6 +244,98 @@ export function StrategyFidelityBadges({
         </span>
       )}
     </div>
+  );
+}
+
+/* ========================================================================= */
+/* Strategy Parity Badge                                                       */
+/* ========================================================================= */
+// Always-visible chip: "does this strategy fire live?" Sourced from
+// strategies.parity_status which auto-recomputes on every refresh.
+//
+// Verdict → colour:
+//   PASS              → green     ("trust this — backtest reproduces live")
+//   PARTIAL           → orange    ("some trades match, some don't")
+//   FAIL_LIVE_BLOCKED → red       ("nothing fires live")
+//   FAIL_OVER_FIRES   → red       ("live fires extras the backtest didn't")
+//   NO_TRADES         → muted     ("strategy hasn't produced any trades yet")
+//   NO_DATA / ERROR   → orange    ("couldn't compute — usually transient")
+//   null              → muted     ("not refreshed since auto-parity launched")
+
+const PARITY_COLORS: Record<ParityVerdict,
+  { bg: string; fg: string; icon: string; label: string }> = {
+  PASS:              { bg: 'var(--green-muted)',  fg: 'var(--green)',  icon: '✓', label: 'Live' },
+  PARTIAL:           { bg: 'var(--orange-muted)', fg: 'var(--orange)', icon: '~', label: 'Partial' },
+  FAIL_LIVE_BLOCKED: { bg: 'var(--red-muted)',    fg: 'var(--red)',    icon: '✕', label: 'Blocked' },
+  FAIL_OVER_FIRES:   { bg: 'var(--red-muted)',    fg: 'var(--red)',    icon: '+', label: 'Over' },
+  NO_TRADES:         { bg: 'var(--bg-input)',     fg: 'var(--text-muted)', icon: '·', label: 'No trades' },
+  NO_DATA:           { bg: 'var(--orange-muted)', fg: 'var(--orange)', icon: '!', label: 'No data' },
+  ERROR:             { bg: 'var(--orange-muted)', fg: 'var(--orange)', icon: '!', label: 'Error' },
+};
+
+export function StrategyParityBadge({
+  parity,
+  variant = 'pill',
+  onClick,
+}: {
+  parity?: ParityStatus | null;
+  variant?: 'pill' | 'compact';
+  onClick?: () => void;
+}) {
+  const sizeClass = variant === 'compact'
+    ? 'text-[10px] px-1.5 py-0.5'
+    : 'text-xs px-2 py-0.5';
+
+  // Not yet computed — show a muted placeholder so the user knows the
+  // feature exists and a refresh will populate it.
+  if (!parity) {
+    return (
+      <span
+        title="No parity score yet — refresh the strategy to compute one"
+        className={`${sizeClass} rounded font-medium inline-flex items-center gap-1`}
+        style={{
+          color: 'var(--text-muted)',
+          background: 'var(--bg-input)',
+          border: '1px solid var(--border)',
+        }}
+      >
+        <span>?</span>
+        <span>Parity —</span>
+      </span>
+    );
+  }
+
+  const c = PARITY_COLORS[parity.verdict] ?? PARITY_COLORS.ERROR;
+  const pct = parity.score != null
+    ? `${Math.round(parity.score * 100)}%`
+    : null;
+  const display = pct ?? c.label;
+  const tooltip = (() => {
+    const parts: string[] = [];
+    parts.push(`Parity: ${parity.verdict}`);
+    if (parity.score != null) {
+      parts.push(`${parity.matched_count}/${parity.stored_count} stored trades match live engine`);
+    }
+    if (parity.most_common_failing_gate) {
+      parts.push(`Most common failing gate: ${parity.most_common_failing_gate}`);
+    }
+    if (parity.error) {
+      parts.push(`Error: ${parity.error}`);
+    }
+    return parts.join(' — ');
+  })();
+
+  return (
+    <button
+      type="button"
+      onClick={onClick ? (e) => { e.stopPropagation(); onClick(); } : undefined}
+      title={tooltip}
+      className={`${sizeClass} rounded-full font-medium inline-flex items-center gap-1 ${onClick ? 'cursor-pointer' : 'cursor-default'}`}
+      style={{ color: c.fg, background: c.bg, border: `1px solid ${c.fg}40` }}
+    >
+      <span style={{ fontSize: 10, lineHeight: 1 }}>{c.icon}</span>
+      <span>{display}</span>
+    </button>
   );
 }
 
@@ -1088,6 +1211,7 @@ export default function StrategiesPage() {
                   health={strat.health}
                   onOpenDrawer={() => setHealthDrawerFor(strat.id)}
                 />
+                <StrategyParityBadge parity={strat.parityStatus} />
                 <span className="flex-1" />
                 {strat.fwdTrades > 0 && (() => {
                   const { fwd, alert } = getStrategySD(strat);

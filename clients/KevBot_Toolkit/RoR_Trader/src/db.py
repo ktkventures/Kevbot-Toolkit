@@ -304,7 +304,10 @@ _STRATEGY_LIST_COLUMNS = (
     # Without these the list endpoint can't fully compute the badge —
     # data_source-based issues (rapid_test_data, no_hifi_run, kpis_time_stale)
     # silently skip.
-    'data_source,kpis_stale_since,kpis_computed_at'
+    'data_source,kpis_stale_since,kpis_computed_at,'
+    # Auto-parity score (2026-04-28 strategy_parity_status.sql) — used by
+    # the strategy card to show a "live-executable" verdict at a glance.
+    'parity_status'
 )
 
 
