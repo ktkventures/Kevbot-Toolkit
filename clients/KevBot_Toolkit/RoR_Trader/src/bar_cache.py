@@ -96,9 +96,13 @@ def _select_range(symbol: str, timeframe: str,
     from db import get_admin_client
     client = get_admin_client()
 
-    # Paginate. Supabase default page size is 1000; for 1Min × 30 days
-    # we expect ~12k rows so paging is required.
-    PAGE = 1000
+    # Pagination. PostgREST's default cap is 1000 rows per request unless
+    # the Supabase project's "Max Rows" setting (Project → Settings →
+    # API → Max Rows) is bumped. Use the configured cap, autodetected by
+    # observing the first response. To unlock the cache's full speed for
+    # large queries (180-day 1Min charts), bump Max Rows to 50000+ in the
+    # Supabase dashboard.
+    PAGE = int(os.environ.get("BAR_CACHE_PAGE_SIZE", "1000"))
     offset = 0
     rows: list[dict] = []
     while True:
@@ -118,7 +122,16 @@ def _select_range(symbol: str, timeframe: str,
             break
         batch = r.data or []
         rows.extend(batch)
+        # If the server returned fewer rows than asked, we're at the end
+        # OR PostgREST capped us. Detect cap on first iteration: if PAGE
+        # is bigger than configured max, the server returns max anyway.
+        # Adapt PAGE to the actual returned size for subsequent iterations.
         if len(batch) < PAGE:
+            if offset == 0 and len(batch) == 1000 and PAGE > 1000:
+                # Configured cap is 1000; adapt and continue paging
+                PAGE = 1000
+                offset += PAGE
+                continue
             break
         offset += PAGE
 
@@ -245,8 +258,15 @@ def cached_load_market_data(
         # Cold start — fetch the full requested range
         delta_from = start_dt
     elif last_cached < end_dt:
-        # Top-up — fetch from last_cached + 1Min to now
-        delta_from = last_cached + timedelta(minutes=1)
+        # Top-up — fetch from last_cached + 1Min to now. BUT skip the
+        # network round-trip if the cache is already fresher than 60s.
+        # The bar-builder won't have a newer bar within the last
+        # minute anyway, and chart loads tolerate up to a minute of
+        # staleness on the most-recent bar (live ticks come via
+        # Realtime WS separately).
+        gap_seconds = (end_dt - last_cached).total_seconds()
+        if gap_seconds > 60:
+            delta_from = last_cached + timedelta(minutes=1)
     # else: cache fully covers [start_dt, end_dt], no delta needed
 
     # 3. Delta-fetch + upsert
