@@ -103,6 +103,63 @@ def create_app() -> FastAPI:
                 "Mass search startup cleanup failed (non-fatal): %s", e)
     threading.Thread(target=_startup_cleanup, daemon=True, name="startup_orphan_cleanup").start()
 
+    # Stale parity_status cleanup — bg parity threads are daemon=True and
+    # die when the worker process exits. Any strategy left at PENDING from
+    # a pre-deploy queue is silently orphaned; the badge keeps saying
+    # "Computing" forever. Mark anything PENDING older than 10 minutes as
+    # ERROR with a clear hint so the user can re-trigger via Run Parity.
+    # Runs once at boot, in a background thread to avoid blocking uvicorn.
+    def _stale_parity_cleanup():
+        try:
+            from datetime import datetime, timezone, timedelta
+            import json as _json
+            from db import get_admin_client, USE_DB
+            if not USE_DB:
+                return
+            client = get_admin_client()
+            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+            r = (client.table('strategies')
+                 .select('id,parity_status')
+                 .not_.is_('parity_status', 'null')
+                 .execute())
+            rows = r.data or []
+            stale = []
+            for row in rows:
+                ps = row.get('parity_status') or {}
+                if isinstance(ps, str):
+                    try:
+                        ps = _json.loads(ps)
+                    except Exception:
+                        continue
+                if ps.get('verdict') != 'PENDING':
+                    continue
+                computed_at = ps.get('computed_at') or ''
+                if computed_at and computed_at < cutoff:
+                    stale.append(row['id'])
+            for sid in stale:
+                client.table('strategies').update({
+                    'parity_status': {
+                        'verdict': 'ERROR',
+                        'score': None,
+                        'error': 'Background parity thread was killed (likely '
+                                 'an API deploy). Click Run Parity again to '
+                                 'retry.',
+                        'computed_at': datetime.now(timezone.utc).isoformat(),
+                        'params': {'last_n': 200, 'forward_test_only': False},
+                    },
+                }).eq('id', sid).execute()
+            if stale:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "[STARTUP] cleared %d stale PENDING parity_status rows: %s",
+                    len(stale), stale)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Stale parity cleanup failed (non-fatal): %s", e)
+    threading.Thread(target=_stale_parity_cleanup, daemon=True,
+                     name="startup_stale_parity_cleanup").start()
+
     # Health check
     @app.get("/health")
     def health():
