@@ -1151,14 +1151,16 @@ def start_mass_search_async(search_id, search_config: dict,
     # load user-specific packs from the database (confluence groups,
     # RM packs, general packs, strategies).
     #
-    # For auto-resumed searches triggered by cleanup_orphaned_mass_searches
-    # at startup, there's no request JWT — the caller passes
-    # user_id_override so the worker can use admin-mode context to query
-    # the original owner's data without a token.
-    from db import get_current_user_id, get_current_token
+    # The worker thread ALWAYS runs in admin-mode (service-role key, no
+    # JWT) because mass searches routinely run for >60 min and a user
+    # JWT expires in that window. Once expired, every subsequent
+    # Supabase call fails with PGRST303 and the worker silently
+    # bleeds — last hit was 2026-04-29 sid 1471921923 which lost 9 of
+    # 10 (symbol, tf) data loads + the final results writeback after
+    # 60 min. Admin mode + user_id WHERE filters preserve the same
+    # row-scoping that RLS+JWT would have enforced.
+    from db import get_current_user_id
     _user_id = user_id_override or get_current_user_id()
-    _token = get_current_token() if user_id_override is None else None
-    _use_admin_ctx = user_id_override is not None
 
     with _search_lock:
         _active_searches[search_id] = {
@@ -1173,18 +1175,14 @@ def start_mass_search_async(search_id, search_config: dict,
 
     def _worker():
         try:
-            # Re-establish user context on this thread so DB queries
-            # (confluence groups, RM packs, etc.) return user's data.
-            # Two paths: normal request-triggered runs have both user_id
-            # and token → set_current_user. Auto-resumed runs at startup
-            # have user_id only (no JWT) → admin-mode with user_id so
-            # user-scoped queries still filter to the owner's rows.
-            if _use_admin_ctx and _user_id:
+            # Always admin-mode on this thread. JWT-bearing user
+            # context would expire mid-run on long searches; admin
+            # context never expires. user_id is captured at request
+            # time, so user-scoped WHERE filters still prevent cross-
+            # user data exposure (same as worker.py).
+            if _user_id:
                 from db import set_admin_user_context
                 set_admin_user_context(_user_id)
-            elif _user_id and _token:
-                from db import set_current_user
-                set_current_user(_user_id, _token)
 
             from db import save_mass_search, update_mass_search
 
