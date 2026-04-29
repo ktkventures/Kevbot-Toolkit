@@ -100,7 +100,11 @@ export type ParityVerdict =
   | 'FAIL_OVER_FIRES'
   | 'NO_TRADES'
   | 'NO_DATA'
-  | 'ERROR';
+  | 'ERROR'
+  // PENDING is written synchronously the moment a refresh kicks off the
+  // background parity computation; replaced with the real verdict when
+  // the bg thread completes (typically 30s–5min depending on TF).
+  | 'PENDING';
 
 export interface ParityStatus {
   score: number | null;            // matched_count / total (0..1)
@@ -271,6 +275,7 @@ const PARITY_COLORS: Record<ParityVerdict,
   NO_TRADES:         { bg: 'var(--bg-input)',     fg: 'var(--text-muted)', icon: '·', label: 'No trades' },
   NO_DATA:           { bg: 'var(--orange-muted)', fg: 'var(--orange)', icon: '!', label: 'No data' },
   ERROR:             { bg: 'var(--orange-muted)', fg: 'var(--orange)', icon: '!', label: 'Error' },
+  PENDING:           { bg: 'var(--bg-input)',     fg: 'var(--text-muted)', icon: '⋯', label: 'Computing' },
 };
 
 export function StrategyParityBadge({

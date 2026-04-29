@@ -15,6 +15,7 @@ direct fidelity signal rather than a data-origin question.
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime, timezone
 from typing import Any, Dict
 
@@ -182,13 +183,35 @@ def _do_recompute(
 
     parity_summary = None
     if compute_parity and USE_DB:
-        # Replay the freshly-written trades through the live engine to
-        # produce a "would this fire live?" score. Persisted as its own
-        # update_strategy_admin call — keeps the column write isolated
-        # from the trades update so a parity bug can't corrupt the
-        # stored_trades / kpis / equity_curve_data we just wrote.
-        parity_summary = _compute_and_persist_parity(
-            strategy_id, user_id, update_strategy_admin)
+        # Kick parity off as a fire-and-forget background thread. A 10Sec
+        # strategy with thousands of bars takes minutes to replay; if we
+        # blocked the refresh response on it, the user would see a hung
+        # spinner (and Railway/Cloudflare would 504 well before parity
+        # finished). Instead the refresh returns immediately with a
+        # PENDING parity_status, and the bg thread writes the real
+        # verdict + score when the replay completes. The strategy card
+        # picks up the new value on the next list refetch.
+        pending_status = {
+            'verdict': 'PENDING',
+            'score': None,
+            'stored_count': len(stored),
+            'matched_count': 0,
+            'computed_at': refreshed_at,
+            'params': {
+                'last_n': _AUTO_PARITY_LAST_N,
+                'forward_test_only': False,
+            },
+        }
+        _try_persist_parity(strategy_id, user_id, pending_status,
+                            update_strategy_admin)
+        parity_summary = pending_status
+
+        threading.Thread(
+            target=_bg_compute_parity,
+            args=(strategy_id, user_id),
+            name=f"parity-bg-{strategy_id}",
+            daemon=True,
+        ).start()
 
     result: Dict[str, Any] = {
         'status': 'refreshed',
@@ -199,6 +222,28 @@ def _do_recompute(
     if parity_summary is not None:
         result['parity'] = parity_summary
     return result
+
+
+def _bg_compute_parity(strategy_id: int, user_id: str) -> None:
+    """Background-thread entry. Re-imports update_strategy_admin so the
+    thread doesn't depend on closures from the originating request, and
+    re-establishes admin user context (set_admin_user_context is
+    thread-local; the request thread's context doesn't propagate)."""
+    try:
+        from db import (
+            update_strategy_admin,
+            set_admin_user_context,
+            clear_current_user,
+        )
+        set_admin_user_context(user_id)
+        try:
+            _compute_and_persist_parity(
+                strategy_id, user_id, update_strategy_admin)
+        finally:
+            clear_current_user()
+    except Exception as e:
+        logger.exception(
+            "[FT-PARITY-BG] strategy=%s crashed: %s", strategy_id, e)
 
 
 def _compute_and_persist_parity(
