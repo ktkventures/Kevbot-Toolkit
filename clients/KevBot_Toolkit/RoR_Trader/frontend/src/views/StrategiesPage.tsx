@@ -419,49 +419,22 @@ export function StrategyParityDrawer({
   const [detailsError, setDetailsError] = useState<string | null>(null);
   const [packStatuses, setPackStatuses] = useState<Record<string, PackParityStatus | null>>({});
 
-  // Lazy-fetch the deep parity report + pack cross-link statuses on open.
-  // Only fires once per drawer open; closes reset the cache so reopening
-  // re-fetches (fresh data is cheap; one /parity-check call is ~5-15s but
-  // already used by Strategy Detail Parity tab).
+  // Lazy-fetch ONLY the pack cross-link statuses on open. The deep
+  // /parity-check call is now opt-in (see "Load detailed failing
+  // trades" button below) — the auto-fetch was causing every drawer
+  // open to trigger a full bg parity replay (~200s+ for 10Sec
+  // strategies), bypassing the Semaphore(1) and starving bulk Run
+  // Parity work of CPU. Observed 2026-04-29 17:00 UTC: a Kevin
+  // bulk Run Parity on sids 135-144 stalled because drawer opens
+  // for sid 144 kept re-running its parity replay.
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
 
-    async function loadDetails() {
+    async function loadCrossLinks() {
       const token = localStorage.getItem('ror_access_token') || '';
       const base = process.env.NEXT_PUBLIC_API_URL || '';
 
-      // Skip the deep fetch if there's nothing to diff (NO_TRADES, PENDING).
-      // The header info already covers what the user needs.
-      const skipDeep = !parity || ['NO_TRADES', 'PENDING', 'NO_DATA', 'ERROR']
-        .includes(parity.verdict);
-
-      if (!skipDeep) {
-        setDetailsLoading(true);
-        try {
-          const params = new URLSearchParams({
-            last_n: '200',
-            forward_test_only: 'false',
-          });
-          const resp = await fetch(
-            `${base}/api/strategies/${strategyId}/parity-check?${params.toString()}`,
-            {
-              method: 'POST',
-              headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-            },
-          );
-          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-          const j: ParityCheckResponse = await resp.json();
-          if (!cancelled) setDetails(j);
-        } catch (e: any) {
-          if (!cancelled) setDetailsError(e?.message || String(e));
-        } finally {
-          if (!cancelled) setDetailsLoading(false);
-        }
-      }
-
-      // Pack cross-link: fire one GET /parity-status per pack the
-      // strategy uses. Sequential; usually 1-3 packs per strategy.
       if (packSlugs && packSlugs.length > 0) {
         for (const slug of packSlugs) {
           if (cancelled) break;
@@ -487,11 +460,42 @@ export function StrategyParityDrawer({
       }
     }
 
-    loadDetails();
+    loadCrossLinks();
     return () => { cancelled = true; };
-  }, [isOpen, strategyId, parity?.verdict, packSlugs?.join(',')]);
+  }, [isOpen, packSlugs?.join(',')]);
 
-  // Reset on close so the next open re-fetches fresh data.
+  // Explicit user-triggered deep fetch — separate handler for the
+  // "Load detailed failing trades" button. Acquires the same SYNC
+  // /parity-check endpoint that the Strategy Detail Parity tab uses;
+  // expects 5-200s depending on strategy TF / trade count.
+  const loadDeepDiff = async () => {
+    const token = localStorage.getItem('ror_access_token') || '';
+    const base = process.env.NEXT_PUBLIC_API_URL || '';
+    setDetailsLoading(true);
+    setDetailsError(null);
+    try {
+      const params = new URLSearchParams({
+        last_n: '200',
+        forward_test_only: 'false',
+      });
+      const resp = await fetch(
+        `${base}/api/strategies/${strategyId}/parity-check?${params.toString()}`,
+        {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        },
+      );
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const j: ParityCheckResponse = await resp.json();
+      setDetails(j);
+    } catch (e: any) {
+      setDetailsError(e?.message || String(e));
+    } finally {
+      setDetailsLoading(false);
+    }
+  };
+
+  // Reset on close so the next open starts fresh.
   useEffect(() => {
     if (!isOpen) {
       setDetails(null);
@@ -559,16 +563,44 @@ export function StrategyParityDrawer({
           )}
         </div>
 
-        {/* Failing trades section — only relevant for FAIL_LIVE_BLOCKED / PARTIAL */}
+        {/* Failing trades section — only relevant for FAIL_LIVE_BLOCKED / PARTIAL.
+            Deep diff is opt-in (button click), NOT auto-fetched on open.
+            The auto-fetch caused every drawer open to trigger a full ~200s
+            replay that bypassed the bg-parity Semaphore(1) and starved
+            bulk Run Parity work. */}
         {(parity.verdict === 'FAIL_LIVE_BLOCKED' || parity.verdict === 'PARTIAL'
           || parity.verdict === 'FAIL_OVER_FIRES') && (
           <div>
             <h4 className="text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>
               Top failing trades (bar-by-bar gates)
             </h4>
+            {!details && !detailsLoading && !detailsError && (
+              <div className="text-xs space-y-2" style={{ color: 'var(--text-muted)' }}>
+                <p>
+                  Click below to run a fresh /parity-check for the per-trade
+                  failing-gates breakdown. Takes 5–200s depending on strategy
+                  size; runs synchronously and may briefly slow other parity
+                  work in flight.
+                </p>
+                <button
+                  type="button"
+                  onClick={loadDeepDiff}
+                  className="text-xs px-3 py-1 rounded font-medium"
+                  style={{
+                    background: 'var(--blue-muted)',
+                    color: 'var(--blue)',
+                    border: '1px solid var(--blue)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Load detailed failing trades
+                </button>
+              </div>
+            )}
             {detailsLoading && (
               <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                Loading parity diff…
+                Running parity replay… (this can take a few minutes for
+                sub-minute strategies)
               </div>
             )}
             {detailsError && (
@@ -576,10 +608,9 @@ export function StrategyParityDrawer({
                 Couldn't load detail: {detailsError}
               </div>
             )}
-            {!detailsLoading && !detailsError && failingTrades.length === 0 && (
+            {details && !detailsLoading && !detailsError && failingTrades.length === 0 && (
               <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                No failing trades surfaced (deep parity may use a different
-                last_n filter than the auto-parity badge).
+                No failing trades surfaced.
               </div>
             )}
             {failingTrades.length > 0 && (
