@@ -222,6 +222,8 @@ def _replay_strategy(
     # Track secondary iter positions so we can advance them in lockstep
     # with the primary timestamp. Each shadow.on_bar_close() updates the
     # hub's _mtf_confluence buffer, mirroring on_polygon_bar's fan-out.
+    # Pre-extract numpy arrays per secondary df — `sec_df.iloc[i]` per bar
+    # was the second-largest source of pandas overhead in the inner loop.
     sec_state: dict[int, dict] = {}
     for sec_tf, sec_df in sec_dfs.items():
         if sec_df is None or len(sec_df) < 5:
@@ -229,39 +231,64 @@ def _replay_strategy(
         sec_warmup = min(_DEFAULT_SHADOW_WARMUP_BARS,
                          max(5, len(sec_df) // 4))
         sec_state[sec_tf] = {
-            'df': sec_df,
-            'idx': sec_warmup,  # next bar to play after warmup
+            'idx': sec_warmup,
+            'len': len(sec_df),
+            'index': sec_df.index.values,  # numpy datetime64 array
+            'open': sec_df['open'].to_numpy(dtype=float),
+            'high': sec_df['high'].to_numpy(dtype=float),
+            'low': sec_df['low'].to_numpy(dtype=float),
+            'close': sec_df['close'].to_numpy(dtype=float),
+            'volume': sec_df['volume'].to_numpy(dtype=float)
+                       if 'volume' in sec_df.columns
+                       else None,
+            'sec_df_index': sec_df.index,  # keep for sec_ts pandas Timestamp
         }
 
     t_warmup = time.time() - _t
     logger.warning("[PARITY:%s] warmup=%.2fs warmup_bars=%d", sid, t_warmup, warmup)
+
+    # Pre-extract primary df columns. iterrows() instantiates a Series per
+    # row which dwarfs the dict-construction cost we were doing inside the
+    # loop. With 67k+ bars on a sub-minute strategy this added up to
+    # tens of seconds of pure pandas overhead before the engine even ran.
+    primary_index = primary_df.index
+    p_open  = primary_df['open'].to_numpy(dtype=float)
+    p_high  = primary_df['high'].to_numpy(dtype=float)
+    p_low   = primary_df['low'].to_numpy(dtype=float)
+    p_close = primary_df['close'].to_numpy(dtype=float)
+    p_volume = (primary_df['volume'].to_numpy(dtype=float)
+                if 'volume' in primary_df.columns
+                else None)
 
     replay_fires: list[dict] = []
     replay_bar_states: list[dict] = []
     bar_count = warmup
     _t_loop = time.time()
     n_to_replay = len(primary_df) - warmup
+    progress_step = max(10_000, n_to_replay // 10) if n_to_replay > 0 else 0
 
-    for ts, row in primary_df.iloc[warmup:].iterrows():
+    for i in range(warmup, len(primary_df)):
+        ts = primary_index[i]
         # Advance any secondary TF whose next bar timestamp <= primary ts.
         # Mirrors the production fan-out (on_polygon_bar / on_second_bar).
         for sec_tf, st in sec_state.items():
             shadow = hub._shadow_engines.get(sec_tf)
             if shadow is None:
                 continue
-            sec_df = st['df']
-            while st['idx'] < len(sec_df):
-                sec_ts = sec_df.index[st['idx']]
-                # Compare as pandas Timestamps (both come from DataFrame index)
+            s_idx = st['idx']
+            s_len = st['len']
+            s_index = st['sec_df_index']
+            while s_idx < s_len:
+                sec_ts = s_index[s_idx]
                 if sec_ts > ts:
                     break
-                sec_row = sec_df.iloc[st['idx']]
                 sec_bar = {
-                    'open': float(sec_row['open']),
-                    'high': float(sec_row['high']),
-                    'low': float(sec_row['low']),
-                    'close': float(sec_row['close']),
-                    'volume': float(sec_row.get('volume', 0)),
+                    'open':   st['open'][s_idx],
+                    'high':   st['high'][s_idx],
+                    'low':    st['low'][s_idx],
+                    'close':  st['close'][s_idx],
+                    'volume': float(st['volume'][s_idx])
+                              if st['volume'] is not None else 0.0,
                     'timestamp': sec_ts,
                 }
                 try:
@@ -271,15 +298,16 @@ def _replay_strategy(
                     logger.warning(
                         "[parity] shadow bar_close failed (%ss @ %s): %s",
                         sec_tf, sec_ts, e)
-                st['idx'] += 1
+                s_idx += 1
+            st['idx'] = s_idx
 
         # Run primary monitor on this bar with current cross-TF buffer.
         bar = {
-            'open': float(row['open']),
-            'high': float(row['high']),
-            'low': float(row['low']),
-            'close': float(row['close']),
-            'volume': float(row.get('volume', 0)),
+            'open':   p_open[i],
+            'high':   p_high[i],
+            'low':    p_low[i],
+            'close':  p_close[i],
+            'volume': float(p_volume[i]) if p_volume is not None else 0.0,
             'timestamp': ts,
         }
         try:
@@ -291,6 +319,17 @@ def _replay_strategy(
                 "[parity] monitor.on_bar_close failed at %s: %s", ts, e)
             bar_count += 1
             continue
+
+        # Periodic progress log so a hung replay shows up in the log.
+        if progress_step and (bar_count - warmup) % progress_step == 0 \
+                and bar_count > warmup:
+            elapsed = time.time() - _t_loop
+            done = bar_count - warmup
+            rate = done / elapsed if elapsed > 0 else 0
+            eta = (n_to_replay - done) / rate if rate > 0 else -1
+            logger.warning(
+                "[PARITY:%s] progress %d/%d (%.0f bars/s, eta %.0fs)",
+                sid, done, n_to_replay, rate, eta)
 
         # Capture diagnostic for this bar (compact)
         triggers_fired = [
