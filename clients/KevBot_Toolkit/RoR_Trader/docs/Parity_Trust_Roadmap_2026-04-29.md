@@ -245,6 +245,96 @@ on `BULL_TREND`; the disagreement is at flip moments.
 **Verdict:** Patterns 1 + 3 are likely the same bug, just different
 TFs/packs. Pattern 2 is plausibly distinct.
 
+---
+
+## Drill findings (2026-04-29 ~21:00 UTC)
+
+Used `_drill_parity_full.py` to invoke `run_strategy_parity()` directly
+and inspect the per-bar `stored_only` reason breakdown (the persisted
+`parity_status` only stores summary counts).
+
+### Sid 145 (AAPL/1Min, 0/132) — REVISED hypothesis
+
+**Original guess: cross-TF MACD_LINE_V2 1Day gate.**
+**Drilled reality:** ALL 132 stored entries have `reason=TRIGGER_NOT_FIRED`
+with `triggers_fired_in_replay=[]`. Live replay walked 31,775 bars and
+fired ZERO triggers across the whole window. The gate hypothesis was
+wrong — the trigger itself never fires.
+
+```
+verdict: FAIL_LIVE_BLOCKED  score: 0.0
+stored: 132  matched: 0  stored_only: 132  replay_only: 0
+reason breakdown: TRIGGER_NOT_FIRED  ×132
+```
+
+Same pattern on sids 146, 147 (also AAPL/1Min). Whatever the bug is,
+it affects ALL user-pack triggers (utv4_bull_flip on 145/146,
+eppv4_cross_short_up on 147) on AAPL specifically.
+
+### Sid 153 (SPY/10Sec, 15/24, replay_only=20) — flip-state drift
+
+```
+verdict: PARTIAL  score: 0.34
+stored: 24  matched: 15  stored_only: 9  replay_only: 20
+reason breakdown: TRIGGER_NOT_FIRED  ×9
+```
+
+Live DOES fire `utv4_bull_flip` on SPY (35 fires total = 15 matched +
+20 replay_only). Live and backtest just disagree on WHICH bars are
+flips. This is real flip-state drift, not "live emits zero."
+
+### Sid 154 (SPY/10Sec, 175/200, replay_only=21) — cross-TF None state CONFIRMED
+
+```
+verdict: PARTIAL  score: 0.79
+stored: 200  matched: 175  stored_only: 25  replay_only: 21
+reason breakdown:
+  TRIGGER_NOT_FIRED  ×19
+  GATE_FAILED        ×6
+
+failing gates:
+  '15m-UT_BOT_V4-BULL_TREND'  →  replay_actual: None  ×6
+```
+
+**The 6 GATE_FAILED entries are the smoking gun for Pattern 1+3.** Live
+shadow engine for the 15m secondary TF emits `replay_actual=None` —
+not "wrong state," literally null. The shadow's user-pack interpreter
+dispatch is silently dropping output on these bars.
+
+The other 19 are TRIGGER_NOT_FIRED on the primary side — same flip-state
+drift as sid 153.
+
+### Sid 150 (SPY/10Sec, 3/4) — confirms small-sample of Bug 3
+
+1 TRIGGER_NOT_FIRED on `utv4_bull_flip`, no GATE_FAILED, no replay_only.
+Tiny sample of the same Pattern 2 drift.
+
+---
+
+## Revised bug ledger — 3 distinct bugs
+
+| Bug | Symptom | Evidence | Likely root cause |
+|---|---|---|---|
+| **Bug A — AAPL-specific user-pack trigger black hole** | Live replay fires ZERO triggers across 31,775 bars on AAPL strategies, regardless of which user-pack trigger is required | Sids 145/146/147: 380/380 entries TRIGGER_NOT_FIRED, replay's triggers_fired=[] every bar | Unknown — could be data-loader returning wrong bars for AAPL, RTH filter dropping AAPL bars, or pack engine instantiation broken for AAPL config. Needs a probe that loads AAPL/1Min via `_load_primary_and_secondary_bars` and runs `ut_bot_v4.update_bar()` on the bars to confirm/rule out incremental class |
+| **Bug B — Shadow engine emits None for user-pack interpreter on secondary TF** | Cross-TF gate `15m-UT_BOT_V4-BULL_TREND` evaluates to None (not "wrong state") on 6 specific bars | Sid 154: 6 GATE_FAILED entries with `replay_actual=None` | f68b410 fixed the 1-row→2-row DataFrame issue for primary TF interpreter dispatch. May not have propagated identically to shadow engine's `_ShadowIndicatorEngine.on_bar_close()` path, or there's a remaining warmup-gap edge case |
+| **Bug C — Flip-state trigger fires on different bars in live vs backtest** | Same trigger (utv4_bull_flip on sid 153, eppv4_cross_short_up on sid 154) fires on overlapping but non-identical bars between live replay and stored backtest | Sid 153: 15 matched + 9 stored_only + 20 replay_only. Sid 154: 175 matched + 19 TRIGGER_NOT_FIRED stored_only + 21 replay_only | Two candidate causes: (1) numerical drift between batch's full-df pass and incremental's bar-by-bar accumulation of ATR/EMA state over thousands of bars; (2) tick-level data difference between Polygon REST snapshot used for backtest and Polygon REST snapshot used for replay (different at-rest timestamps) |
+
+### Why none of these are caught by current tests
+
+- 4Q Q1+Q2+Q3 don't load real Polygon data per symbol — they synthesize a fixture. Bug A (AAPL-specific) cannot surface because pack tests don't iterate over symbols.
+- 4Q Q3 default secondary_tf=15m × 7 days produces few state transitions. Bug B's "None state on specific bars" is a low-frequency edge case that needs longer windows.
+- Strategy parity catches Bug C but only after-the-fact. The 4Q simulator never tests "trigger fires same in live as in batch over 30 days" — it tests "indicator values match" and "interpreter classifies same state," which are upstream.
+
+### Action items derived from findings
+
+1. **Bug A is highest-leverage to drill next** — single fix probably unblocks sids 145, 146, 147 (and explains the Tier-A swing_123 cluster on TSLA: 138, 139, 141, 143). Concrete next step: write `_probe_aapl_userpack.py` that loads AAPL/1Min bars via the same path parity_service uses, instantiates `ut_bot_v4.update_bar()` directly on those bars, and counts how many bull_flips are produced. If 0 → bar data is wrong. If many → integration bug between data and engine.
+
+2. **Bug B is a shadow-engine specific check.** Read `_ShadowIndicatorEngine.on_bar_close` and verify it constructs a 2-row [prev, current] DataFrame for user-pack interpreters the same way `TriggerEvaluator.evaluate_bar_close` was fixed in f68b410.
+
+3. **Bug C is the hardest to fix and probably the right thing to defer.** It's small-magnitude (10–20% drift), only matters on flip-state triggers, and a fix would require investigating tick-level data integrity vs replay reproducibility. Encode as a monitored metric ("flip-state trigger drift %") rather than blocking.
+
+4. **All three bugs justify the synthetic-probe (Phase C).** The probe should run a real backtest + replay on a real symbol, exercising all three bug classes by construction. Pack creation can't ship if the probe surfaces any of them.
+
 #### Cross-tier consolidation
 
 Combining Tier A (Phase 2 from this doc) + Tier B/C (Phase A above):
