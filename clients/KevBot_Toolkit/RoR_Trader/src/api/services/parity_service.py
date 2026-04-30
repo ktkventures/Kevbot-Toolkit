@@ -119,10 +119,20 @@ def _load_primary_and_secondary_bars(
 ) -> tuple[pd.DataFrame, dict[int, pd.DataFrame]]:
     """Load OHLCV for the primary TF and every required secondary TF.
 
+    Secondary bars are RESAMPLED from primary bars when the secondary TF
+    is coarser than the primary — NEVER loaded as native bars from
+    Polygon. Native daily/hourly bars from Polygon have stock-split
+    adjustment inconsistencies (per CLAUDE.md and verified empirically:
+    AAPL native 1Day closes at $185, AAPL resampled-from-1Min at $271,
+    a ~30% divergence that breaks every cross-TF gate's classification).
+    Backtest (services.prepare_data_with_indicators) and production
+    live (worker BarBuilders) both work from primary-or-finer bars and
+    aggregate up — parity replay must do the same to match.
+
     Returns (primary_df, {sec_tf_seconds: secondary_df}).
     """
-    from data_loader import load_market_data
-    from ralph_engine import SECONDS_TO_TIMEFRAME
+    from data_loader import load_market_data, resample_to_timeframe
+    from ralph_engine import SECONDS_TO_TIMEFRAME, TIMEFRAME_SECONDS
 
     sym = strategy.get('symbol', 'SPY')
     tf_label = strategy.get('timeframe', '1Min')
@@ -131,6 +141,8 @@ def _load_primary_and_secondary_bars(
     primary_df = load_market_data(
         symbol=sym, days=days, timeframe=tf_label, session=session)
 
+    primary_tf_seconds = TIMEFRAME_SECONDS.get(tf_label, 60)
+
     sec_dfs: dict[int, pd.DataFrame] = {}
     for sec_tf in secondary_tfs:
         sec_label = SECONDS_TO_TIMEFRAME.get(sec_tf)
@@ -138,8 +150,23 @@ def _load_primary_and_secondary_bars(
             logger.warning("[parity] no label for tf=%ss; skipping", sec_tf)
             continue
         try:
-            sec_dfs[sec_tf] = load_market_data(
-                symbol=sym, days=days, timeframe=sec_label, session=session)
+            if sec_tf > primary_tf_seconds and primary_df is not None and len(primary_df) > 0:
+                # Resample from primary — matches backtest + production
+                # live aggregation paths
+                sec_dfs[sec_tf] = resample_to_timeframe(
+                    primary_df[['open', 'high', 'low', 'close', 'volume']].copy(),
+                    sec_label,
+                )
+            else:
+                # Secondary is finer than primary OR primary failed —
+                # fall back to direct load (rare; usually a config bug)
+                logger.warning(
+                    "[parity] secondary tf %s (%ds) <= primary tf (%ds), "
+                    "falling back to native load — parity may diverge",
+                    sec_label, sec_tf, primary_tf_seconds,
+                )
+                sec_dfs[sec_tf] = load_market_data(
+                    symbol=sym, days=days, timeframe=sec_label, session=session)
         except Exception as e:
             logger.warning(
                 "[parity] secondary bar load failed for %s/%s: %s",
@@ -506,8 +533,19 @@ def _build_report(
     meta: dict,
 ) -> dict:
     """Diff stored vs. replay and emit a structured report."""
-    confluence_set = (set(strategy.get('confluence', []) or [])
-                      | set(strategy.get('general_confluences', []) or []))
+    # Normalize confluence labels to match what the engine emits
+    # (e.g., '1d-MACD_LINE_V2-M>S-' → '1D-MACD_LINE_V2-M>S-'). Live
+    # engine uppercases the TF prefix in monitor._current_confluence
+    # via _normalize_confluence_label; without applying the same
+    # normalization here, every gate looks "missing" in the diagnostic
+    # explain even when the engine correctly evaluates it. Fixed during
+    # Phase B drill on sid 145 — was masking GATE_FAILED entries with
+    # replay_actual=None when the actual emitted state existed but was
+    # cased differently.
+    from ralph_engine import _normalize_confluence_label
+    raw_conf = (set(strategy.get('confluence', []) or [])
+                | set(strategy.get('general_confluences', []) or []))
+    confluence_set = {_normalize_confluence_label(r) for r in raw_conf}
 
     # Index replay fires by minute-truncated ts so timestamps that drift by
     # a few seconds (sub-second alert fill_ts vs bar_start) still match.
