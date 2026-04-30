@@ -201,6 +201,14 @@ getting polluted across bars or shared across strategies, the
 classification can flip multiple times and all states get recorded.
 Same root cause likely.
 
+### NEW follow-up: Strategy Builder + Mass Builder stalling (2026-04-30)
+
+Kevin reports both Strategy Builder and Mass Strategy Builder UI
+flows stall on the "Analyzing..." step. May be a regression from
+recent changes (the diag logging shouldn't affect this path, but
+worth a check). Tracked, not blocking the Q3 drill — when Q3 is
+resolved, drill this separately.
+
 ### Backup branches saved
 
 - `dev-backup-pre-shadow-fix-2026-04-29`
