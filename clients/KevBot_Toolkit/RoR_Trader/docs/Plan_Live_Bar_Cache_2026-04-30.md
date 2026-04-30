@@ -212,31 +212,110 @@ After all Required tasks ship:
 4. New live alerts continue to match a fresh local backtest run on
    the same bars (cached) within $0.0001 of close prices.
 
-## Decision points before starting
+## Decision points — RESOLVED 2026-04-30
 
-These are open and worth aligning on before code:
+These have been agreed on with Kevin:
 
-1. **Bar timeframes to cache.** All TFs the worker uses, or just
-   primary 1Min and let other TFs resample? Recommendation: cache
-   all TFs the worker emits, since BarBuilder already produces them.
+1. **Bar timeframes to cache: ALL TFs the worker emits** (1Min, 10Sec,
+   5Min, 15Min, 1Hour, 1Day, etc. — whatever's in the BarBuilder set
+   at any moment). NOT 1Sec for now — that's deferred to M8.6 (Hi-Fi)
+   so we don't conflate scopes. Resampling at read-time would add
+   ~50-100ms latency per read which compounds in mass builder, and
+   storage of all TFs is only ~20-40 MB/day.
 
-2. **Symbols to cache.** All active strategies' symbols, or a fixed
-   set? Recommendation: dynamic — cache whatever symbols the worker
-   is monitoring at any given moment.
+2. **Symbols to cache: dynamic.** Whatever the worker is monitoring at
+   any given moment. As strategies are added/removed, the set adapts.
 
-3. **Retention period.** 30/60/90 days? Recommendation: 90 days
-   default, configurable. Older → REST as fallback.
+3. **Retention: 90 days default, configurable.** Older bars fall back
+   to REST. ~30K bars/day × 90 days = ~3M rows = ~500 MB. Fine.
 
-4. **Write frequency.** Per-bar (current proposal) or batched
-   (e.g., every 5 bars)? Per-bar is simpler. Batched reduces write
-   pressure but adds complexity. Recommendation: per-bar; revisit
-   if Supabase write rate becomes a bottleneck.
+4. **Write frequency: per-bar.** Simpler. Revisit if Supabase write
+   rate becomes a bottleneck (unlikely at <200 writes/min).
 
-5. **REST backfill of historical data.** Backfill 90 days at cache
-   start, or let it grow forward only? Recommendation: forward-only
-   for simplicity. Historical period uses REST as today; only
-   new-from-here-on bars come from cache. After 90 days, the cache
-   covers the full active backtest window.
+5. **Historical REST backfill at cache-start: forward-only.** Older
+   periods use REST as today; only bars from cache-start onwards are
+   guaranteed to come from cache. After 90 days, the active backtest
+   window is fully cache-sourced.
+
+## Worker outage handling (decision noted)
+
+When the worker comes up after downtime, REST-backfills the gap window
+for (symbol, TF) pairs it's now monitoring. Backfilled rows have
+`source='rest_backfill'` so they're distinguishable from `source='ws'`
+rows. **Important caveat:** these gap-bars have the same WS-vs-REST
+drift property as historical REST data — they're not "true live."
+Cache continuity is preserved but trades evaluated on these specific
+gap-bars retain a small data-source asymmetry. Acceptable trade-off
+for not having a hole in the cache.
+
+## Future: Hi-Fi extension (M8.6 enabling)
+
+Caching the BarBuilder-aggregated bars for M8.7 is a stepping stone.
+When Hi-Fi work resumes (M8.6), the natural next layer is to cache
+1Sec bars (the BarBuilder's source data) to a related table
+`live_bars_1s`. Then Hi-Fi 1Sec recomputation uses the same source as
+live → guaranteed parity for Hi-Fi triggers AND CB-fidelity confluence.
+NOT in scope for M8.7, but architecturally the schema and write path
+generalize cleanly.
+
+## Verification checklist (post-implementation)
+
+Run these BEFORE marking M8.7 complete. Mix of automated checks
+(Claude can run) and visual checks (Kevin verifies in browser).
+
+### Automated checks (Claude)
+
+- [ ] **Cache write integrity** — Worker writes ~30K bars/day during
+  RTH; rows include all expected TFs and symbols; written_at is fresh
+  (within seconds of bar_start)
+- [ ] **Cache read parity** — `_validate_live_bars_cache.py` confirms
+  cached bars match live alert prices on the bars where they fired
+- [ ] **Phase D regressions** — `python test_parity_regression.py`
+  passes (7/7 — no engine changes, but sanity check)
+- [ ] **Synthetic probe** — `_phase_e_retrofit.py` re-run on all 10 v2
+  packs; expect verdicts at or above previous results (5 PASS / 5 PARTIAL)
+- [ ] **Parity sweep on cached-period strategies** —
+  `_rerun_all_parities.py` on sids that have been live since cache
+  start; expect aggregate parity score climb above 0.79
+- [ ] **Q3 fidelity drill** — `_fidelity_check_overnight.py` on the
+  same strategies; expect fidelity rate ~100% on cached-period bars
+- [ ] **Mass builder dry run** — load any saved mass-search config and
+  run a small N=10 sweep; confirm trades produced match pre-cache
+  baseline (caching is data-source-only; trade results should be
+  IDENTICAL on cached-period bars)
+
+### Visual checks (Kevin)
+
+- [ ] **Heatmap rendering** — Strategy Detail page heatmaps render
+  exactly as before; gates that were green before are still green;
+  red bars still red. (No expected changes, just sanity.)
+- [ ] **Algo history vs alert history alignment** — On a strategy
+  monitored over the last few days, the algo-history table and
+  alert-history table on the Strategy Detail page should now line up
+  much more closely than before. Mismatches that were "live fired
+  but algo didn't" should be substantially reduced.
+- [ ] **Strategy Builder functional** — Try saving a new strategy from
+  Strategy Builder; backtest renders; KPIs populate. (Currently
+  stalling per follow-up; this is also a chance to fix or confirm.)
+- [ ] **Mass Strategy Builder functional** — Try a small mass search;
+  results render; trades match.
+- [ ] **Live chart real-time** — Live chart on Strategy Detail still
+  updates with each tick; no degradation from the worker's added
+  write step.
+- [ ] **Pack 4Q test in UI** — Run "Run Parity Test" on one user pack
+  via the UI; confirm verdict + score still display correctly.
+
+### Acceptance gate
+
+M8.7 is COMPLETE when:
+- All 7 automated checks pass
+- All 6 visual checks pass
+- Aggregate parity sweep score has climbed (target: >0.90 from
+  current 0.79)
+- Q3 fidelity check shows >95% on cached-period strategies (from
+  current ~50-85%)
+- Worker has been running with cache writes for ≥7 days with no
+  noticeable performance degradation
 
 ## Deferred for later
 
@@ -257,7 +336,8 @@ This plan is the proposed approach. Before implementing:
 - Review the schema, write path, and read path for any concerns
 - Confirm the phased rollout (read-write → read-cache → cutover) is
   acceptable
-- Confirm the decision points above
+- Decision points above are noted as RESOLVED, but flag any concerns
+- Verification checklist above — confirm coverage feels right
 - Approve the ~2-4 day timeline
 
 Once approved, implementation starts with task 8.7a (schema +
