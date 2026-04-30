@@ -41,6 +41,57 @@ point under the ambiguous display.
 production trading begins. UI-only change; no engine modifications
 needed.
 
+---
+
+## End-of-day status (2026-04-30)
+
+### What shipped
+
+Across the two-day arc:
+- **Yesterday (2026-04-29)**: 8 commits — diagnostic fixes (anchor,
+  case-norm), data fix (native→resampled), engine fix (shift-forward),
+  Phase C synthetic-probe scaffold + ai_builder install wire-in.
+  Aggregate parity score 0.46 → 0.79; PASS count 3/15 → 7/15.
+- **Today (2026-04-30)**: 6 commits — Q1/Q2/Q3 framing, ±1 bar
+  fidelity tolerance, heatmap-vs-gate verification, Phase D regression
+  tests (7 passing), Phase E retrofit (10 packs all healthy).
+
+### Phase status
+
+| Phase | Status |
+|---|---|
+| A — Sweep Tier B/C | ✅ done |
+| B — Enumerate bug classes | ✅ done — 3 fixes shipped |
+| B+ — Shadow engine dispatch fix | ✅ done — shift-forward landed |
+| C — Synthetic probe scaffold + wire-in | ✅ done (frontend surface deferred) |
+| D — Regression tests | ✅ done — 7 tests covering all 4 fixes |
+| E — Retrofit upgraded probe on existing packs | ✅ done — 5 PASS, 5 PARTIAL, 0 FAIL |
+
+### Open follow-ups (tracked, not blocking)
+
+1. **Heatmap PB-vs-CB labelling** (UI clarity — Kevin's preference
+   before live trading begins)
+2. **Q3 fidelity drill** — sid 136-style position-state divergence
+   when live runs continuously over many days while backtest starts
+   FLAT each replay. Real but bounded; not a Q1 issue.
+3. **Frontend Q5 surface in PackBuilderPage.tsx** — small UX polish
+4. **Phase 6 — retire originals where mirror PASSES** (deferred per
+   user; keep alert-firing originals as live reference baseline)
+5. **Parity-simulator (4Q test) bar_count default** — synthetic config
+   used at pack creation time uses bar_count_exit. Not a bug per se
+   (pack 4Q can't know strategy config), but worth noting that pack-
+   level 4Q test ≠ strategy-level parity replay.
+
+### Backup branches saved
+
+- `dev-backup-pre-shadow-fix-2026-04-29`
+- `dev-backup-post-shadow-fix-2026-04-29`
+- `dev-backup-post-phase-c-scaffold-2026-04-29`
+- `dev-backup-eod-2026-04-29`
+- `dev-backup-post-shift-fix-2026-04-29`
+- `dev-backup-final-fixes-2026-04-29`
+- `dev-backup-phase-e-complete-2026-04-30`
+
 
 ## North star
 
