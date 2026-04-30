@@ -554,6 +554,137 @@ verdict is interpretable. Diagnostic correctness is a prerequisite for
 the entire roadmap. The diagnostic fix landed in this drill is what
 unblocks Phase C.
 
+---
+
+## Phase B+ — Real engine bug found (data source divergence)
+
+After the diagnostic fix exposed `replay_actual=None` clearly, drilling
+the underlying shadow engine revealed a **second** real bug.
+
+### Drill: shadow 1Day MACD_LINE_V2 on AAPL
+
+`_probe_shadow_macd_line_v2.py` instantiates the AAPL/1Day shadow engine
+exactly the way parity does, walks 86 native daily bars, and dumps the
+emitted records. Result:
+
+```
+Distinct records produced: ['1D-MACD_LINE_V2-M<S+', '1D-MACD_LINE_V2-M>S+']
+Record frequencies:
+  1D-MACD_LINE_V2-M>S+: 44/55
+  1D-MACD_LINE_V2-M<S+: 11/55
+```
+
+Strategy needs `1d-MACD_LINE_V2-M>S-`. Shadow never emits it. But
+backtest's stored_trades record `1d-MACD_LINE_V2-M>S-` was satisfied
+on 132 bars. **Same interpreter code (`interpret_macd_line_v2` —
+classifies on `mlv2_line` and `mlv2_signal`). Different output.**
+
+The interpreter's classification is purely a function of `mlv2_line`
+and `mlv2_signal`. Different output → different input data.
+
+### Native vs resampled daily bars
+
+```
+Resampled 1Day from 1Min RTH:
+  count: 82, first 5 closes: [271.84, 270.98, 267.26, 262.22, 260.36]
+
+Native 1Day (Polygon REST):
+  count: 86, first 5 closes: [185.53, 183.72, 184.49, 184.41, 181.93]
+```
+
+**~30% price divergence.** Native AAPL 1Day bars from Polygon's REST
+API include split-unadjusted (or differently-adjusted) prices. CLAUDE.md
+explicitly forbids this pattern:
+
+> "NEVER load native bars from Polygon for coarser timeframes."
+> "Polygon's native daily/hourly bars have stock split adjustment issues."
+
+### What each layer was doing
+
+| Layer | Secondary TF data source | Notes |
+|---|---|---|
+| Backtest (services.prepare_data_with_indicators) | Resample 1Min RTH → 1Day | Correct |
+| Production live (worker via BarBuilders) | Aggregate 1Sec ticks → 1Min → 1Day | Correct |
+| **Parity replay** (`_load_primary_and_secondary_bars`) | **`load_market_data(timeframe='1Day')`** | **WRONG — native bars** |
+
+So parity replay was the only path with the bad data. Backtest and
+production live agreed; parity diverged silently.
+
+### Fix applied
+
+`api/services/parity_service.py:117-156` — `_load_primary_and_secondary_bars`
+now resamples primary df → secondary TF instead of loading native bars
+when the secondary is coarser than primary.
+
+```python
+if sec_tf > primary_tf_seconds and primary_df is not None and len(primary_df) > 0:
+    sec_dfs[sec_tf] = resample_to_timeframe(
+        primary_df[['open','high','low','close','volume']].copy(),
+        sec_label,
+    )
+else:
+    # fall-back: only when secondary is finer than primary (rare)
+    sec_dfs[sec_tf] = load_market_data(...)
+```
+
+### Plus: case-normalization fix
+
+Strategy stores `confluence: ['1d-MACD_LINE_V2-M>S-']` (lowercase `1d`).
+Live engine emits `'1D-MACD_LINE_V2-M>S+'` (uppercase, via
+`_normalize_confluence_label`). Set diff with mismatched case meant
+EVERY gate looked missing in the diagnostic — even when actually
+emitted by the engine. Fixed by applying `_normalize_confluence_label`
+to strategy.confluence in `_build_report` (1 line change).
+
+### Sid 145 verdict trajectory
+
+| Stage | verdict | matched/stored | replay_only | Notes |
+|---|---|---|---|---|
+| Original (before drill) | FAIL_LIVE_BLOCKED | 0/132 | 0 | reason: TRIGGER_NOT_FIRED ×132 (lying) |
+| After bar-anchor diagnostic fix | FAIL_LIVE_BLOCKED | 0/132 | 0 | reason: GATE_FAILED ×132 with `actual=None` (still confusing) |
+| After resample fix | PARTIAL | 85/132 | 24 | score 0.54 — many gates evaluating correctly now |
+| After case-norm fix | PARTIAL | 85/132 | 24 | reasons readable: 26× FLIP-vs-TREND, 20× M>S+ vs M>S-, 6× None |
+
+### Remaining 47 stored_only on sid 145 — what they actually mean
+
+After fixes, `_explain_unmatched` shows:
+
+| Required gate | Replay actual | Count | Diagnosis |
+|---|---|---|---|
+| `5M-UT_BOT_V4-BEAR_TREND` | `BULL_FLIP` | 26 | **Documented FLIP-vs-TREND gap.** Strategy gates on TREND state but live's incremental class produces FLIP states for the transition bars. Memory entry `feedback_userpack_interpreter_live_dispatch.md` flagged this. **Strategy-design issue, not engine bug.** |
+| `1D-MACD_LINE_V2-M>S-` | `M>S+` | 20 | Genuine state divergence — the daily MACD landed in a different state at this bar between the two computation paths. Could be subtle (resample timing, ffill window) or fundamental (extended hours bars in original 1Day Polygon load that resampled RTH-only doesn't see). Needs further drill. |
+| `1D-MACD_LINE_V2-M>S-` | `None` | 6 | Likely shadow warmup gap — early bars before the daily MACD has enough history. |
+
+The 24 replay_only fires are the inverse — live fires the trigger and
+gates pass on bars where backtest's stored_trades didn't fire. Could
+be:
+- Live engine has stricter or looser gate evaluation
+- Position-state machine differences (cooldown, in-position blocks)
+- Same shadow-warmup or ffill-window edge cases as #2 above
+
+### Bug ledger — final consolidated state
+
+| Bug | Discovered via | Fix landed | Status |
+|---|---|---|---|
+| Diagnostic bar-anchor (off-by-one minute) | Phase B drill | `dee64f5` index by both bar_start and bar_close | ✅ shipped |
+| Diagnostic case mismatch (1d vs 1D) | Phase B+ drill | `28db984` normalize confluence_set | ✅ shipped |
+| Native daily bars in parity replay (split divergence) | Phase B+ drill (`_probe_shadow_macd_line_v2.py`) | `28db984` resample primary→secondary | ✅ shipped |
+| FLIP-vs-TREND state-name gap on cross-TF gates | Memory entry + new drill | Not engine — strategy-design issue | 📝 documented (per-strategy fix on demand) |
+| Shadow 1Day MACD warmup gap (residual ~6 of 132) | Phase B+ drill | Not blocking, low magnitude | 🟡 deferred |
+| Resample-vs-batch interpretation drift on 1Day MACD (residual ~20 of 132) | Phase B+ drill | Needs follow-up drill | 🟡 deferred |
+
+### Effects on other Tier-A FAIL_LIVE_BLOCKED strategies (predicted)
+
+The same fixes likely move sids 138, 139, 141, 143 (Tier A swing_123
+cluster on TSLA) from `FAIL_LIVE_BLOCKED 0/N` to `PARTIAL` with non-zero
+matches. Their cross-TF gate is `1d-MACD_HISTOGRAM_V2-H-dn` —
+TSLA daily bars have similar split-adjustment issues for native
+Polygon. After fix, real failure mode should surface (probably
+similar mix of FLIP-vs-TREND + state-divergence + warmup).
+
+A full-sweep rerun is in progress (sids 135-154); results will land in
+the next section of this doc.
+
 #### Cross-tier consolidation
 
 Combining Tier A (Phase 2 from this doc) + Tier B/C (Phase A above):
