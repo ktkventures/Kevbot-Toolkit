@@ -334,8 +334,22 @@ def _replay_strategy(
         # Capture diagnostic for this bar (compact)
         triggers_fired = [
             k for k, v in (audit.get('trigger_booleans') or {}).items() if v]
+        # Record both bar_start and bar_close timestamps so the
+        # diagnostic explain function can locate this bar regardless of
+        # which anchor the stored trade was recorded with. C-type stored
+        # trades use entry_fill_ts = bar_close (bar_start + tf_seconds);
+        # L-type stored trades use entry_fill_ts = bar_start. Without
+        # the bar_close key the C-type lookup misses by exactly one bar
+        # (one minute on 1Min strats), causing every unmatched stored
+        # entry to report TRIGGER_NOT_FIRED on the next bar's state when
+        # the actual trigger fired on this bar — masking real GATE_FAILED
+        # diagnoses for cross-TF shadow gate failures. Found via Phase B
+        # drill on sid 145 (132/132 stored entries match incremental fires
+        # at offset -1m).
+        bar_close_ts = ts + pd.Timedelta(seconds=monitor.tf_seconds)
         replay_bar_states.append({
             'ts': _normalize_ts(ts),
+            'ts_close': _normalize_ts(bar_close_ts),
             'bar_count': bar_count,
             'position': audit.get('position_state'),
             'triggers_fired': triggers_fired,
@@ -505,11 +519,14 @@ def _build_report(
         fire_by_minute.setdefault(key, f)
 
     # Index bar states by minute as well for the unmatched-explanation lookup.
+    # Index by BOTH bar_start and bar_close minute keys so a stored trade
+    # recorded with entry_fill_ts at either anchor lands on the correct bar.
     state_by_minute: dict[str, dict] = {}
     for s in replay_bar_states:
-        if not s.get('ts'):
-            continue
-        state_by_minute.setdefault(s['ts'][:16], s)
+        if s.get('ts'):
+            state_by_minute.setdefault(s['ts'][:16], s)
+        if s.get('ts_close'):
+            state_by_minute.setdefault(s['ts_close'][:16], s)
 
     matched: list[dict] = []
     stored_only: list[dict] = []  # backtest fired, live wouldn't — the bug

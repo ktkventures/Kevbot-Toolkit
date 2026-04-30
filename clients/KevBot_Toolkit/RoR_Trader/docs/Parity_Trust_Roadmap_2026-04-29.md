@@ -335,6 +335,225 @@ Tiny sample of the same Pattern 2 drift.
 
 4. **All three bugs justify the synthetic-probe (Phase C).** The probe should run a real backtest + replay on a real symbol, exercising all three bug classes by construction. Pack creation can't ship if the probe surfaces any of them.
 
+---
+
+## Phase B continuation — drill found a DIAGNOSTIC bug, not an engine bug
+
+After 6 hours of layered drilling on sid 145 (the cleanest 0/132 case),
+the actual root cause is **not** what the parity report said. The
+real-world story:
+
+### The signal everyone was reading
+
+Parity report on sid 145:
+```
+verdict: FAIL_LIVE_BLOCKED  score: 0.0
+stored: 132  matched: 0  stored_only: 132  replay_only: 0
+reason breakdown: TRIGGER_NOT_FIRED  ×132
+```
+
+This says: backtest fired 132 entries, live emits zero, and the live
+trigger doesn't fire on any of those bars. Read literally → engine
+integration bug.
+
+### What's actually happening
+
+1. The pack `ut_bot_v4` produces **2,088 utv4_bull_flip events** on
+   the same 120-day AAPL/1Min window — verified by:
+   - Direct `update_bar()` walk on AAPL bars: **2,088 fires**
+   - Batch `prepare_data_with_indicators` `trig_utv4_bull_flip`
+     column: **2,088 fires**
+   - Live engine `audit.trigger_booleans['utv4_bull_flip']` via
+     `monitor.on_bar_close()`: **2,080 fires** (8 fewer = warmup loss,
+     fully explained)
+   - **All three counts agree**, all three identify the same 2,088 bars.
+
+2. The 132 stored backtest trade entries are a strict **subset** of those
+   2,088 fires — gated by the strategy's confluence rules
+   (`1d-MACD_LINE_V2-M>S-` and `5m-UT_BOT_V4-BEAR_TREND`).
+
+3. Live IS hitting those same 2,088 trigger bars during parity replay
+   (the engine is correct). But live's confluence gates are also
+   failing, so no entry signal is emitted → `replay_only=0`. So far
+   this matches the reality.
+
+4. **The bug is in the diagnostic `_explain_unmatched`.** When trying
+   to explain why a stored entry has no match, it builds a
+   minute-keyed lookup table of bar states. The lookup uses the
+   stored entry's `entry_fill_ts` (= bar_close per Trade Timestamps
+   Spec) as the key, but the bar state is keyed on the bar's `index`
+   (= bar_start). For 1Min C-type triggers, those are off by 1 minute.
+
+### Empirical proof
+
+Offset analysis: do stored entry timestamps match incremental fire
+bars when shifted by N minutes?
+
+| offset | stored→incremental match count | |
+|---|---|---|
+| -5m | 3/132 | |
+| -2m | 0/132 | |
+| **-1m** | **132/132** | ✅ perfect 100% |
+| 0m | 0/132 | |
+| +1m | 1/132 | |
+
+Every stored entry's bar_close timestamp is exactly 1 minute later
+than the corresponding incremental fire's bar_start. Same bar, two
+anchors, off-by-one on minute truncation.
+
+### Where the bug lives
+
+`src/api/services/parity_service.py:337-343`
+
+```python
+replay_bar_states.append({
+    'ts': _normalize_ts(ts),    # ← bar_start
+    'bar_count': bar_count,
+    'position': audit.get('position_state'),
+    'triggers_fired': triggers_fired,
+    'confluence_records': sorted(monitor._current_confluence),
+})
+```
+
+Then at line 510-512:
+```python
+for s in replay_bar_states:
+    if not s.get('ts'): continue
+    state_by_minute.setdefault(s['ts'][:16], s)   # ← keyed on bar_start minute
+```
+
+Lookup at `_explain_unmatched`:
+```python
+key = stored_entry['ts'][:16]   # ← bar_close minute (entry_fill_ts)
+bar_state = state_by_minute.get(key)
+```
+
+Lookup hits the bar one minute later (bar with index = bar_close). That
+bar may have no triggers fired → reports `TRIGGER_NOT_FIRED` even
+though the actual fire happened on the bar one minute earlier.
+
+For 10Sec strategies (sid 153) the offset is 10s, sometimes within the
+same minute → some matches succeed, some don't. For 1Min C-type
+strategies (sid 145) the offset is exactly 1 minute → 100% misclassified.
+
+### History — `3aae5bc` fixed half of this
+
+Commit `3aae5bc` (memory entry "feedback_phantom_missed_trade_defs.md"
+adjacent) anchored `replay_fires` on `entry_fill_ts` (bar_close). That
+fixed the **matching** path: stored.ts and replay_fires.ts both bar_close
+→ matched_count counts correctly.
+
+But `replay_bar_states` (used only by `_explain_unmatched` for diagnosis)
+still uses bar_start. So the `matched/stored_only/replay_only` counts
+are correct. The `reason` field within each `stored_only` entry is the
+part that's been lying.
+
+### Implication for everything we've drilled today
+
+The TRIGGER_NOT_FIRED verdicts on sids 145, 146, 147, 138, 139, 141,
+143 (the "live emits zero" cluster across both Tier A and Tier B/C)
+are **likely GATE_FAILED in reality** — the trigger fires correctly,
+the gates block correctly, the diagnostic just reports the wrong reason.
+
+This DOES NOT change the verdict (FAIL_LIVE_BLOCKED is still real), but
+it does change WHERE we look for the fix:
+
+- **Before this drill:** "engine doesn't fire trigger on AAPL" — would
+  have led us to engine integration code, possibly weeks of investigation
+- **After this drill:** "engine fires trigger correctly; cross-TF
+  shadow engine for 1d MACD_LINE_V2 / 5m UT_BOT_V4 isn't producing the
+  states the strategy expects" — this is shadow-engine work, much more
+  bounded
+
+### Updated bug ledger
+
+| Bug | Was | Actually |
+|---|---|---|
+| ~~Bug A — AAPL user-pack trigger black hole~~ | Engine doesn't fire user-pack triggers on AAPL | DIAGNOSTIC: parity_service `_explain_unmatched` looks up wrong bar due to bar_start vs bar_close anchor mismatch. **Engine fires correctly.** Real underlying issue is shadow-engine gates failing. |
+| Bug B — Shadow None state on secondary TF | Confirmed (sid 154 has 6 GATE_FAILED with replay_actual=None) | Same — this one was already correctly diagnosed because state_by_minute lookup happens to land on bar_state with `confluence_records` populated for the *adjacent* minute on 10Sec strats |
+| Bug C — Flip-state trigger drift | Real but probably not what we thought | Most "drift" cases on sid 153 are likely also bar-anchor misclassification — needs re-drill after Bug A fix |
+
+### Action items (revised)
+
+1. **Fix `parity_service._build_report` to align bar_state lookup with stored_entry anchor.** Either store both bar_start and bar_close keys, or compute bar_close at insertion time. ~5 line change.
+
+2. **Re-run drill on sid 145 with the fix.** Expected: 132 entries reclassified from TRIGGER_NOT_FIRED to GATE_FAILED with specific failing gates. The actual missing state(s) (e.g., `1d-MACD_LINE_V2-M>S-` shadow emitting None or wrong state) becomes the next drill target.
+
+3. **Re-classify Tier-A FAIL_LIVE_BLOCKED clusters** (sids 138, 139, 141, 143) — they were probably GATE_FAILED on `1d-MACD_HISTOGRAM_V2-H-dn` all along, masked by this same diagnostic bug.
+
+4. **Synthetic probe (Phase C) is still the right strategic move** but the prerequisite is having a trustworthy parity diagnostic — without it, the probe just produces lies on top of lies.
+
+---
+
+## Phase B closure — diagnostic fix landed, real root cause clarified
+
+### Fix applied to `parity_service._build_report` and `_replay_strategy`
+
+`_replay_strategy` now records `ts_close = ts + tf_seconds` alongside
+`ts` on every `replay_bar_state`. `_build_report.state_by_minute` is
+indexed by both keys so stored entries (anchored on either bar_start
+for L-type or bar_close for C-type) all locate the correct bar. ~6
+line change.
+
+### Re-drill sid 145 — verdict UNCHANGED, reasons CLARIFIED
+
+```
+verdict: FAIL_LIVE_BLOCKED  score: 0.0       (same)
+stored: 132  matched: 0  stored_only: 132    (same)
+
+reason breakdown:
+  GATE_FAILED                    132          (was: TRIGGER_NOT_FIRED ×132)
+
+failing gates:
+  '1d-MACD_LINE_V2-M>S-'   → replay_actual=None  ×132
+  '5m-UT_BOT_V4-BEAR_TREND' → replay_actual=None  ×132
+```
+
+**Same FAIL_LIVE_BLOCKED verdict, but now we know exactly why.** Both
+required cross-TF gates evaluate to `None` (literal null state) in
+live replay. The trigger fires correctly; the gates can't be
+satisfied because the shadow engines for 1Day MACD_LINE_V2 and 5Min
+UT_BOT_V4 aren't emitting any state at all.
+
+### Single root cause for the entire FAIL_LIVE_BLOCKED cluster
+
+This collapses 3 hypothesized bug patterns into one:
+
+> **Shadow secondary-TF engine silently emits None for user-pack
+> interpreter dispatch.**
+
+Affected gates across Tier A + Tier B/C:
+- `1d-MACD_LINE_V2-*` (sids 145, 146)
+- `1M-MACD_LINE_V2-*` (sid 146)
+- `5m-UT_BOT_V4-*` (sids 145, 147)
+- `15m-UT_BOT_V4-*` (sid 154 — already had 6 GATE_FAILED before fix)
+- `1d-MACD_HISTOGRAM_V2-*` (Tier A: sids 138, 139, 141, 143 — to verify)
+
+Likely fix location: `_ShadowIndicatorEngine.on_bar_close` in
+`ralph_engine.py:746` (or wherever it dispatches to user-pack
+interpreters). The f68b410 fix in `TriggerEvaluator.evaluate_bar_close`
+fixed the 1-row → 2-row DataFrame issue for primary-TF dispatch; the
+shadow engine probably has its own dispatch path that didn't get the
+same treatment.
+
+### What changed in the bug ledger
+
+| Original Bug | Status | Reality |
+|---|---|---|
+| Bug A — AAPL trigger black hole | **Closed (was diagnostic illusion)** | Trigger fires correctly; was reported wrong by buggy diagnostic |
+| Bug B — Shadow None state on user-pack interp | **Confirmed + scope expanded** | Single root cause for all FAIL_LIVE_BLOCKED across both tiers |
+| Bug C — Flip-state trigger drift | **Likely also Bug B in disguise** | Re-run drill on sid 153 will tell us |
+
+### Lesson for the roadmap
+
+The diagnostic itself was lying. **Three independent drills converged
+on the same wrong conclusion** because the lookup was off-by-one. This
+is a textbook case for the synthetic-probe approach: a probe that runs
+the full integration path and reports a verdict only matters if the
+verdict is interpretable. Diagnostic correctness is a prerequisite for
+the entire roadmap. The diagnostic fix landed in this drill is what
+unblocks Phase C.
+
 #### Cross-tier consolidation
 
 Combining Tier A (Phase 2 from this doc) + Tier B/C (Phase A above):
