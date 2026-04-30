@@ -1014,9 +1014,47 @@ class IncrementalIndicatorEngine:
         # TriggerEvaluator picks them up alongside built-in indicators.
         for slug, engine in getattr(self, '_user_pack_engines', {}).items():
             try:
+                # Diagnostic: capture engine internal state BEFORE
+                # update_bar, to compare against a fresh-replay if a
+                # trigger fires. This is for the Q3 production drill —
+                # we suspect _prev_macd_line / _prev_signal are getting
+                # polluted somewhere outside the snapshot guard. Log only
+                # when a user-pack trigger flips False→True (low volume).
+                # Remove after Q3 root cause is identified.
+                _prev_state = {
+                    k: getattr(engine, k, None)
+                    for k in ('_prev_macd_line', '_prev_signal',
+                              '_prev_close', '_ema_fast', '_ema_slow',
+                              '_signal_ema', '_first', '_atr',
+                              '_trail_stop', '_prev_trail_stop')
+                    if hasattr(engine, k)
+                }
+                _last_out = getattr(engine, '_diag_last_out', None) or {}
+
                 out = engine.update_bar(bar)
                 if isinstance(out, dict):
                     vals.update(out)
+
+                # Detect newly-fired triggers (False/missing → True)
+                if isinstance(out, dict):
+                    fired_triggers = [
+                        k for k, v in out.items()
+                        if isinstance(v, bool) and v
+                        and not _last_out.get(k, False)
+                    ]
+                    if fired_triggers:
+                        logger.warning(
+                            "[Q3-DIAG] slug=%s triggers_fired=%s bar_ts=%s "
+                            "bar_close=%s pre_state=%s out=%s",
+                            slug,
+                            fired_triggers,
+                            bar.get('timestamp'),
+                            bar.get('close'),
+                            _prev_state,
+                            {k: v for k, v in out.items()
+                             if not (isinstance(v, bool) and not v)},
+                        )
+                    engine._diag_last_out = dict(out)
             except Exception as e:
                 logger.warning(
                     "user pack %r incremental update failed: %s", slug, e)
