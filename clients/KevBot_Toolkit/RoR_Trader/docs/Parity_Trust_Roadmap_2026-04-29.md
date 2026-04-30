@@ -685,6 +685,183 @@ similar mix of FLIP-vs-TREND + state-divergence + warmup).
 A full-sweep rerun is in progress (sids 135-154); results will land in
 the next section of this doc.
 
+---
+
+## Phase C — Synthetic-strategy probe (scaffold landed)
+
+### Module: `src/api/services/synthetic_probe.py`
+
+API:
+- `build_synthetic_strategy(pack_slug, user_id, **kwargs)` — returns an
+  in-memory strategy dict. Picks first bull/long entry trigger and first
+  bear/short exit, optionally adds a known-good cross-TF gate.
+- `run_pack_probe(pack_slug, user_id, **kwargs)` — persists synthetic
+  strategy, runs `recompute_and_persist_stored_trades`, runs
+  `run_strategy_parity`, returns structured verdict, tears down on
+  cleanup=True.
+
+Verdict shape:
+```json
+{
+  "status": "pass" | "partial" | "fail" | "error" | "skipped",
+  "verdict": "PASS" | "PARTIAL" | "FAIL_LIVE_BLOCKED" | ...,
+  "score": 0.0..1.0,
+  "matched_count": int,
+  "stored_count": int,
+  "replay_only_count": int,
+  "most_common_failing_gate": str | null,
+  "failing_gates": [{"required": str, "replay_actual": str | None, "count": int}],
+  "notes": ["debug breadcrumbs"]
+}
+```
+
+### Smoke test result (2026-04-29 22:07)
+
+```
+pack: ema_pp_v4
+config: SPY/1Min/7days, no cross-TF gate
+verdict: PARTIAL  score: 0.98
+matched: 227/229  stored_only: 2  replay_only: 2
+elapsed: ~9s (mostly parity replay loop)
+```
+
+Two trades drift — likely TF-boundary edge cases (warmup gap or
+position state machine differences). 0.98 is probe PASS-territory.
+
+### Heuristics in `build_synthetic_strategy`
+
+Trigger pairing logic:
+```python
+bull_words = ('bull', 'up', 'cross_above', 'enter_oversold', 'long')
+bear_words = ('bear', 'down', 'cross_below', 'enter_overbought', 'short')
+entry_base = first trigger matching bull_words, fallback to triggers[0]
+exit_base  = first trigger matching bear_words, fallback to triggers[1]
+```
+
+Cross-TF gate selection: `_KNOWN_GOOD_CROSS_TF_GATES` is a hand-curated
+list of (TF, INTERPRETER, STATE) records that are batch parity-clean
+per `docs/User_Pack_Parity_Baseline_2026-04-29.md`. Probe picks the
+first gate whose INTERPRETER doesn't appear in the candidate pack's
+own interpreters list — exercises actual cross-pack dispatch.
+
+### What still needs wiring (Phase C completion punch list)
+
+- [ ] Call `run_pack_probe` from `api/routers/ai_builder.py` install
+      handler (after existing 4Q gate, before final install commit)
+- [ ] Surface verdict in pack creation wizard response — frontend
+      `PackBuilderPage.tsx` should display alongside the 4Q result
+- [ ] Decide install policy: PASS-only? Warn-on-PARTIAL? Block-on-FAIL?
+      Currently nothing blocks; verdict is purely informational
+- [ ] Add an `--probe SLUG` CLI flag to a standalone script for
+      manual pack validation (parallel to `_run_pack_parity_baseline.py`)
+
+### Known limitations of the probe
+
+1. **The cross-TF gate may produce false PARTIAL** if the gate's state
+   isn't actually satisfied for the test symbol/window. The probe
+   doesn't (yet) verify the gate fires often enough to gate
+   meaningfully. Mitigation: pick gates that fire frequently on SPY.
+2. **FLIP-vs-TREND state-name gap** (memory entry
+   `feedback_userpack_interpreter_live_dispatch.md`) means probes that
+   pair with `*_FLIP` or `*_TREND` confluence will report a non-engine
+   drift as PARTIAL. Probe should explicitly avoid FLIP/TREND
+   confluences in `_KNOWN_GOOD_CROSS_TF_GATES`.
+3. **Native-vs-resampled 1Day MACD residual drift** (~10% on AAPL)
+   means daily cross-TF gates may report PARTIAL even when the engine
+   is correctly integrated. Mitigation: avoid 1Day in default probe;
+   test 15Min gates first.
+
+---
+
+## Phase D — Encode regressions in 4Q simulator (design)
+
+The 4Q simulator (Q1+Q2+Q3+Q4) currently runs each pack in isolation
+on synthetic data. Each bug we fixed in Phase B/B+ should be encoded
+as a regression case so future packs can't reintroduce it.
+
+### Bugs from this drill cycle that 4Q DID NOT catch
+
+| Bug | What 4Q would need to catch it |
+|---|---|
+| Diagnostic bar-anchor (off-by-one) | N/A — 4Q runs in isolation, doesn't use the diagnostic |
+| Diagnostic case mismatch | N/A — same |
+| Native-vs-resampled 1Day data divergence | Q3 cross-TF would catch IF run on a real symbol with split history (currently Q3 uses synthesized data) |
+| Shadow user-pack interpreter dispatch | Q3 cross-TF — needed longer windows to expose state transitions (caught by Q3 on 1Min×15Min×7d only when state changes happen) |
+
+### Proposed Phase D regression cases
+
+#### D.1 — Q3 Real-Symbol Stress Suite
+
+Add a new mode to `parity_simulator.run_pack_parity_test_4q`:
+`real_symbol_mode=True`. Instead of synthetic OHLC, loads real
+historical bars for a stress symbol (AAPL — has split history),
+runs the same 4 quadrants. Catches:
+
+- **Shadow native-vs-resampled drift** because Q3 fetches 1Day natively
+  via the same code path parity replay was using.
+- **Stock-split-related divergence in cross-TF indicators** — would have
+  failed on AAPL because $185 vs $271 closes produce different MACD.
+
+Stress symbol candidates:
+- AAPL (10:1 split, recent 2024 split)
+- TSLA (3:1 split 2022)
+- NVDA (10:1 split 2024)
+- AMZN (20:1 split 2022)
+
+Default: AAPL, fallback to TSLA if data fetch fails.
+
+#### D.2 — Q3 Long-Window Variant
+
+Current Q3 default: 1Min × 15Min × 7 days. Add a `long_window` variant:
+1Min × 15Min × **30 days**. The f68b410 bug (interpreter dispatch losing
+prev-bar context) only surfaces when the cross-TF interpreter has
+enough state transitions to exercise rising/falling-state classification.
+7-day windows on quiet symbols may have too few transitions.
+
+#### D.3 — Q3 Multi-TF Variant
+
+Current Q3 tests one secondary TF. Add `secondary_tfs=(15Min, 1Day)`
+variant. Strategies often use multi-TF gates (e.g. AAPL strats with
+both 1d MACD and 5m UT_BOT). Catches per-TF asymmetries.
+
+#### D.4 — New Quadrant: Q5 Synthetic-Probe
+
+The synthetic probe IS a 4Q quadrant in spirit — runs the full
+integration path on a real symbol. Make it official:
+
+| Quadrant | Tests |
+|---|---|
+| Q1 | Trigger primary (existing) |
+| Q2 | Interpreter primary (existing) |
+| Q3 | Cross-TF shadow (existing, expand per D.1-D.3) |
+| Q4 | Data fidelity (existing, SKIP) |
+| **Q5** | **Synthetic strategy end-to-end (new — uses run_pack_probe)** |
+
+Q5's verdict gates pack install, Q1-Q4 stay informational. A pack
+that PASSes Q5 has demonstrated end-to-end integration on a real
+symbol; Q1-Q4 PASS doesn't guarantee that.
+
+### Implementation order
+
+1. Wire synthetic probe into `ai_builder.py` install handler (Phase C
+   completion).
+2. Q3 real-symbol stress (D.1) — 1-day work, biggest bug-class catcher.
+3. Q3 long-window + multi-TF variants (D.2, D.3) — smaller but
+   complementary.
+4. Q5 official quadrant designation + UI surface (D.4) — primarily
+   docs/naming.
+
+### Phase E retrofit list (post-D)
+
+After D ships, re-run the upgraded suite on existing packs:
+- macd_line_v2, macd_histogram_v2, vwap_v2, rvol_v2
+- ema_stack_v2, ema_pp_v3, ema_pp_v4
+- ut_bot_v4, swing_123, swing_123_test
+
+Expected: at least 2-3 packs surface new failures because the upgraded
+4Q exercises code paths the original config didn't. Each becomes a
+fix-or-mark-as-known-limitation decision.
+
 #### Cross-tier consolidation
 
 Combining Tier A (Phase 2 from this doc) + Tier B/C (Phase A above):

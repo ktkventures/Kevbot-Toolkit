@@ -600,9 +600,60 @@ def install_pack(req: InstallRequest, user=Depends(get_current_user)):
                         "[install] Q2 parity test crashed for %s: %s",
                         slug, _e)
                     q2 = {'verdict': 'ERROR', 'explanation': str(_e)}
+                # Q5: Synthetic-strategy probe — runs the FULL integration
+                # path (TriggerEvaluator dispatch + parity-service replay
+                # + position state machine + cross-TF shadow engine) on
+                # a real symbol/window. Q1/Q2 catch math bugs in
+                # isolation; Q5 catches integration bugs that have
+                # historically slipped through. See Phase B drill in
+                # docs/Parity_Trust_Roadmap_2026-04-29.md.
+                q5 = None
+                try:
+                    user_id_for_probe = (
+                        user.get('id') or user.get('sub')
+                        if isinstance(user, dict) else None
+                    )
+                    if user_id_for_probe:
+                        from api.services.synthetic_probe import run_pack_probe
+                        probe_result = run_pack_probe(
+                            slug, str(user_id_for_probe),
+                            symbol='SPY', timeframe='1Min', days=7,
+                            add_cross_tf_gate=False,  # don't pair on
+                            # install-time — keep the test focused on
+                            # the candidate pack's own fire path
+                            cleanup=True,
+                        )
+                        # Map probe status → 4Q verdict ranks
+                        score = probe_result.get('score')
+                        st = probe_result.get('status')
+                        if st == 'pass':
+                            v = 'PASS'
+                        elif st == 'partial' and score is not None and score >= 0.85:
+                            v = 'WARN'
+                        elif st in ('partial', 'fail'):
+                            v = 'FAIL'
+                        elif st == 'skipped':
+                            v = 'SKIP'
+                        else:
+                            v = 'ERROR'
+                        q5 = {
+                            'verdict': v,
+                            'parity_score': score,
+                            'matched': probe_result.get('matched_count'),
+                            'stored': probe_result.get('stored_count'),
+                            'replay_only': probe_result.get('replay_only_count'),
+                            'most_common_failing_gate': (
+                                probe_result.get('most_common_failing_gate')),
+                        }
+                except Exception as _e:
+                    logger.warning(
+                        "[install] Q5 synthetic probe crashed for %s: %s",
+                        slug, _e)
+                    q5 = {'verdict': 'ERROR', 'explanation': str(_e)}
+
                 # Roll up to a single verdict — overall is FAIL if any
                 # explicit FAIL, WARN if any WARN, else PASS.
-                parts = [p for p in (q1, q2) if p]
+                parts = [p for p in (q1, q2, q5) if p]
                 ranks = {'PASS': 1, 'SKIP': 0, 'WARN': 2, 'FAIL': 3,
                          'ERROR': 3}
                 overall = 'PASS'
@@ -614,7 +665,9 @@ def install_pack(req: InstallRequest, user=Depends(get_current_user)):
                     'overall_verdict': overall,
                     'Q1': q1,
                     'Q2': q2,
-                    'note': ('Run the full 4-quadrant test (Q3 cross-TF) '
+                    'Q5': q5,
+                    'note': ('Q5 = synthetic-strategy end-to-end probe. '
+                             'Run the full 4-quadrant test (Q3 cross-TF) '
                              'from the user_packs detail page when ready.'),
                 }
                 # Persist as initial parity_status row so the detail page
@@ -631,9 +684,10 @@ def install_pack(req: InstallRequest, user=Depends(get_current_user)):
                             summary=(
                                 f'Install-time check: '
                                 f'Q1={q1["verdict"] if q1 else "—"}, '
-                                f'Q2={q2["verdict"] if q2 else "—"} '
-                                f'(SPY/1Min/5d)'),
-                            quadrants={'Q1': q1, 'Q2': q2},
+                                f'Q2={q2["verdict"] if q2 else "—"}, '
+                                f'Q5={q5["verdict"] if q5 else "—"} '
+                                f'(SPY/1Min)'),
+                            quadrants={'Q1': q1, 'Q2': q2, 'Q5': q5},
                             test_config={
                                 'symbol': 'SPY',
                                 'primary_tf': '1Min',
