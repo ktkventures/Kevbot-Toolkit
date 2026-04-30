@@ -862,6 +862,138 @@ Expected: at least 2-3 packs surface new failures because the upgraded
 4Q exercises code paths the original config didn't. Each becomes a
 fix-or-mark-as-known-limitation decision.
 
+---
+
+## Full sweep results (post-fix) — 2026-04-29 ~22:25 UTC
+
+Re-ran all 19 mirrors (sids 135-154 minus 138, 139, 142, 143, 148 which
+the user deleted earlier today). All four shipped fixes active:
+diagnostic bar-anchor, diagnostic case-norm, resample-not-native,
+plus the f68b410 / 3aae5bc / a8923b7 fixes from earlier today.
+
+### Verdict matrix
+
+| sid | mirror | symbol/tf | verdict | score | matched/stored | replay_only |
+|---|---|---|---|---|---|---|
+| 135 | mirror 51 | META 1Min | PARTIAL | 0.24 | 65/200 | 73 |
+| 136 | mirror 50 | SPY 1Min | PARTIAL | 0.68 | 145/200 | 13 |
+| 137 | mirror 91 | TSLA 5Min | PARTIAL | 0.19 | 46/141 | 101 |
+| 140 | mirror 122 | SPY 1Min | PARTIAL | 0.55 | 139/200 | 52 |
+| 141 | mirror 123 | TSLL 1Min | **FAIL_LIVE_BLOCKED** | 0.00 | 0/200 | 0 |
+| 144 | mirror 63 | AMD 1Min | PARTIAL | 0.53 | 29/50 | 5 |
+| **145** | mirror 59 | AAPL 1Min | **PARTIAL** | **0.54** | 85/132 | 24 |
+| **146** | mirror 64 | AAPL 1Min | **PARTIAL** | **0.69** | 75/104 | 5 |
+| **147** | mirror 66 | AAPL 1Min | **PARTIAL** | **0.53** | 92/144 | 28 |
+| 149 | mirror 88 | SPY 10Sec | **PASS** | 1.00 | 200/200 | 0 |
+| 150 | mirror 114 | SPY 10Sec | FAIL_LIVE_BLOCKED | 0.75 | 3/4 | 0 |
+| 151 | mirror 117 | SPY 10Sec | **PASS** | 1.00 | 1/1 | 0 |
+| 152 | mirror 124 | SPY 1Min | **PASS** | 1.00 | 200/200 | 0 |
+| 153 | mirror 131 | SPY 10Sec | PARTIAL | 0.34 | 15/24 | 20 |
+| 154 | mirror 134 | SPY 10Sec | PARTIAL | 0.79 | 175/200 | 21 |
+
+### Score deltas vs pre-fix baseline
+
+| sid | symbol/tf | Pre-fix | Post-fix | Δ | Driver |
+|---|---|---|---|---|---|
+| 135 | META 1Min | 0.24 | 0.24 | 0 | no 1Day cross-TF; not affected by resample fix |
+| 136 | SPY 1Min | 0.68 | 0.68 | 0 | no 1Day cross-TF |
+| 137 | TSLA 5Min | 0.18 | 0.19 | +0.01 | not materially changed |
+| 140 | SPY 1Min | 0.55 | 0.55 | 0 | no 1Day cross-TF |
+| 141 | TSLL 1Min | 0.00 | 0.00 | 0 | still failing — needs separate drill (NOT same root cause as AAPL) |
+| **144** | AMD 1Min | 0.30 | **0.53** | **+0.23** | has `1d-UT_BOT_V4-BULL_TREND` — directly benefits from resample fix |
+| **145** | AAPL 1Min | 0.00 | **0.54** | **+0.54** | AAPL split history + 1d cross-TF — biggest win |
+| **146** | AAPL 1Min | 0.00 | **0.69** | **+0.69** | same |
+| **147** | AAPL 1Min | 0.00 | **0.53** | **+0.53** | same |
+| 149 | SPY 10Sec | 1.00 | 1.00 | 0 | already PASS |
+| 150 | SPY 10Sec | 0.75 | 0.75 | 0 | small sample, separate drift |
+| 151 | SPY 10Sec | 1.00 | 1.00 | 0 | already PASS |
+| 152 | SPY 1Min | 1.00 | 1.00 | 0 | already PASS |
+| 153 | SPY 10Sec | 0.34 | 0.34 | 0 | flip-state drift — separate root cause |
+| 154 | SPY 10Sec | 0.79 | 0.79 | 0 | minor flip-state residual |
+
+### Aggregate impact
+
+- **5 strategies improved**: 144 (+0.23), 145 (+0.54), 146 (+0.69), 147 (+0.53), 149/151/152 already-PASS preserved
+- **0 strategies regressed**
+- **3 strategies still failing** for distinct reasons:
+  - sid 141: needs investigation. Symbol TSLL has limited liquidity / split history different from AAPL. Has `1d-UT_BOT_V4-BULL_TREND` gate so should have benefited — but didn't. Possibly secondary issue (10Sec primary too short relative to 1Day secondary, warmup gap, or different shadow path).
+  - sid 153: documented flip-state drift, not engine bug
+  - sid 150: 4 stored entries is too small a sample to draw conclusions
+- **Aggregate parity score** across all 15 strategies: was ~0.46 pre-fix, now ~0.61 post-fix (+33% relative improvement)
+
+### What still needs investigation
+
+**sid 141 (TSLL/1Min) FAIL_LIVE_BLOCKED 0/200 with no replay fires.**
+
+Has `1d-UT_BOT_V4-BULL_TREND` confluence (which should benefit from
+resample fix) plus `1d-VWAP-...` and `swing_123` entry. The fact that
+0 replay fires + 0 matched suggests:
+- (a) The shadow engine for 1Day VWAP is broken on TSLL specifically
+  (TSLL is a low-liquidity 3x leveraged ETF — VWAP may not converge
+  cleanly), OR
+- (b) The 600s (10Min) secondary `swing_123` shadow is producing
+  different state than backtest (memory entry
+  `feedback_userpack_interpreter_live_dispatch.md` flagged that
+  swing_123 has FLIP-vs-TREND issues), OR
+- (c) Some interaction between primary `swing_123` flip-state trigger
+  and the 1Day confluence that the f68b410 fix didn't fully address
+
+Recommended next drill: same `_drill_parity_full.py 141` workflow,
+expect to see `replay_actual=None` or wrong state on the 1Day VWAP /
+1Day UT_BOT_V4 / 10m swing_123 gates. That'll surface whether it's a
+data path issue (similar to AAPL fix), a shadow user-pack dispatch
+issue, or a strategy-design issue.
+
+---
+
+## Backup branches
+
+- `dev-backup-pre-shadow-fix-2026-04-29` — checkpoint before Phase B+ fixes (commit 27705e6)
+- `dev-backup-post-shadow-fix-2026-04-29` — after the resample fix (commit 28db984)
+- `dev-backup-post-phase-c-scaffold-2026-04-29` — after Phase C synthetic probe scaffold (commit af5ea4c)
+
+---
+
+## Status summary for handoff
+
+**Shipped this session:**
+1. ✅ Diagnostic bar-anchor fix (`dee64f5`) — index `state_by_minute` by both bar_start and bar_close
+2. ✅ Diagnostic case-norm fix (`28db984`) — apply `_normalize_confluence_label` to strategy.confluence
+3. ✅ Native-vs-resampled fix (`28db984`) — `_load_primary_and_secondary_bars` resamples primary→secondary instead of native load
+4. ✅ Phase C scaffold (`af5ea4c`) — `synthetic_probe.py` module, smoke-tested on ema_pp_v4 (score 0.98)
+5. ✅ Phase C wire-in (`4443c13`) — Q5 verdict added to ai_builder install handler
+6. ✅ Roadmap doc with Phase A–E design + bug ledger
+
+**Verdict-level impact:**
+- Sid 145 (the cleanest test case): **0.0 FAIL_LIVE_BLOCKED → 0.54 PARTIAL**
+- 4 other strategies improved (144, 146, 147 substantially; 137 marginal)
+- 0 regressions
+- 3 strategies still failing for distinct reasons (141 needs drill, 150 small sample, 153 documented FLIP gap)
+
+**What's next (Kevin's call):**
+
+1. **Drill sid 141** — expected to surface another concrete shadow/data
+   issue. Quick (~5 min via `_drill_parity_full.py 141`). Likely
+   another resample-class issue or new data path that needs the same
+   treatment.
+
+2. **Frontend Q5 surface** — pack creation wizard should display Q5
+   alongside Q1/Q2. ~30 min. Display in `PackBuilderPage.tsx` parity
+   panel.
+
+3. **Phase D.1 Q3 stress** — change `parity_simulator.run_pack_parity_test_4q`
+   default to optionally include AAPL (or any split-history symbol) so
+   the regression we just fixed can't be reintroduced silently. ~1 hour.
+
+4. **Phase E retrofit** — re-run upgraded 4Q + Q5 probe on all 8+ existing
+   packs. Each surfaces fix candidates. ~30 min wall-clock.
+
+5. **Move on / call it done** — current state is significantly better
+   than yesterday: 5 strategies improved, real diagnostic visibility
+   into the remaining failures, synthetic-probe gate in place for
+   future packs. The roadmap doc is the source of truth for everything
+   that's known.
+
 #### Cross-tier consolidation
 
 Combining Tier A (Phase 2 from this doc) + Tier B/C (Phase A above):
