@@ -662,6 +662,10 @@ class StrategyMonitor:
             for slug, eng in getattr(self.indicators,
                                      '_user_pack_engines', {}).items()
         }
+        # Tell _update_indicators to suppress Q3 diag logging on this
+        # path — these are forming-bar tentative evaluations, not the
+        # committed bar-close path that actually dispatches alerts.
+        self.indicators._diag_skip = True
         try:
             current = self.indicators.update_bar(forming_bar)
             prev = self.indicators.get_prev_values()
@@ -675,6 +679,7 @@ class StrategyMonitor:
             self.indicators._initialized = init_snapshot
             if user_pack_snapshot:
                 self.indicators._user_pack_engines = user_pack_snapshot
+            self.indicators._diag_skip = False
         return current, interps
 
     def on_tick(self, price: float, timestamp: str,

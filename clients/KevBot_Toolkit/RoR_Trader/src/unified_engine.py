@@ -1012,31 +1012,32 @@ class IncrementalIndicatorEngine:
         # of column values + trigger booleans (under their full
         # `{trigger_prefix}_{base}` keys). Merge into `vals` so the
         # TriggerEvaluator picks them up alongside built-in indicators.
+        # Q3 diag mode: '_diag_skip' is set by compute_tentative_state to
+        # silence forming-bar tentative calls (~10/sec spam). Committed
+        # on_bar_close path doesn't set it, so we get one log per real
+        # trigger fire. Marker `[Q3-DIAG-COMMIT]` distinguishes these
+        # from the tentative path (no longer logged).
+        _diag_skip_tentative = getattr(self, '_diag_skip', False)
         for slug, engine in getattr(self, '_user_pack_engines', {}).items():
             try:
-                # Diagnostic: capture engine internal state BEFORE
-                # update_bar, to compare against a fresh-replay if a
-                # trigger fires. This is for the Q3 production drill —
-                # we suspect _prev_macd_line / _prev_signal are getting
-                # polluted somewhere outside the snapshot guard. Log only
-                # when a user-pack trigger flips False→True (low volume).
-                # Remove after Q3 root cause is identified.
-                _prev_state = {
-                    k: getattr(engine, k, None)
-                    for k in ('_prev_macd_line', '_prev_signal',
-                              '_prev_close', '_ema_fast', '_ema_slow',
-                              '_signal_ema', '_first', '_atr',
-                              '_trail_stop', '_prev_trail_stop')
-                    if hasattr(engine, k)
-                }
-                _last_out = getattr(engine, '_diag_last_out', None) or {}
+                _prev_state = None
+                _last_out = None
+                if not _diag_skip_tentative:
+                    _prev_state = {
+                        k: getattr(engine, k, None)
+                        for k in ('_prev_macd_line', '_prev_signal',
+                                  '_prev_close', '_ema_fast', '_ema_slow',
+                                  '_signal_ema', '_first', '_atr',
+                                  '_trail_stop', '_prev_trail_stop')
+                        if hasattr(engine, k)
+                    }
+                    _last_out = getattr(engine, '_diag_last_out', None) or {}
 
                 out = engine.update_bar(bar)
                 if isinstance(out, dict):
                     vals.update(out)
 
-                # Detect newly-fired triggers (False/missing → True)
-                if isinstance(out, dict):
+                if not _diag_skip_tentative and isinstance(out, dict):
                     fired_triggers = [
                         k for k, v in out.items()
                         if isinstance(v, bool) and v
@@ -1044,8 +1045,8 @@ class IncrementalIndicatorEngine:
                     ]
                     if fired_triggers:
                         logger.warning(
-                            "[Q3-DIAG] slug=%s triggers_fired=%s bar_ts=%s "
-                            "bar_close=%s pre_state=%s out=%s",
+                            "[Q3-DIAG-COMMIT] slug=%s triggers_fired=%s "
+                            "bar_ts=%s bar_close=%s pre_state=%s out=%s",
                             slug,
                             fired_triggers,
                             bar.get('timestamp'),
