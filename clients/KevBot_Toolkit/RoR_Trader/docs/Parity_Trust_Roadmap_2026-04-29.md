@@ -15,6 +15,32 @@
 > Q2 = perf agreement → not directly measured today
 > Q3 = predictive    → fidelity check (`_fidelity_check_overnight.py`)
 
+## Open follow-ups (track, not blocking)
+
+**Heatmap labeling — visual prev-bar vs current-bar clarity (UI):**
+Kevin flagged this 2026-04-30: charts show heatmap colors using each
+bar's *own* state, but entries are gated on the *previous* bar's
+state (cross-TF look-ahead protection from 2026-03-16). Backtest is
+verified correctly gated (sid 135: 208/208, sid 154: 599/599 stored
+entries had required gates satisfied at entry time per
+`confluence_records`). But visually it looks wrong — entries appear
+on red bars because the bar before was green.
+
+Kevin's preference: relabel the heatmap as `PB-heatmap` (or split into
+PB and CB variants) so visual confirmation matches the gating semantics.
+Or change the heatmap to display the prev-bar state by default.
+
+**Why this matters:** before live trading, Kevin wants to be able to
+visually validate strategies. The current display creates ambiguity
+about whether the engine is gating correctly. The data confirms it is
+— but trading without visual confirmation is uncomfortable, and any
+later UI fix would invalidate the alerts/strategies built up to that
+point under the ambiguous display.
+
+**Not blocking today's work**, but should be addressed before
+production trading begins. UI-only change; no engine modifications
+needed.
+
 
 ## North star
 
