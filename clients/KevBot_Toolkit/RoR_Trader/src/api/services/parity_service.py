@@ -296,8 +296,23 @@ def _replay_strategy(
 
     for i in range(warmup, len(primary_df)):
         ts = primary_index[i]
-        # Advance any secondary TF whose next bar timestamp <= primary ts.
-        # Mirrors the production fan-out (on_polygon_bar / on_second_bar).
+        # Advance any secondary TF whose bar has FULLY CLOSED before the
+        # current primary ts. The check is `sec_ts + tf_period <= ts` —
+        # only feed a secondary bar when its full period has elapsed
+        # (so a 1Day bar with ts=2025-12-02 00:00 is fed at the FIRST
+        # primary bar at-or-after 2025-12-03 00:00). This mirrors the
+        # 1-period forward shift that `prepare_data_with_indicators`
+        # applies to secondary indicators in the batch path (look-ahead
+        # protection: primary bar X must use the previously-closed
+        # secondary bar's state, never the secondary bar that's still
+        # forming).
+        #
+        # Without this shift, parity replay fed the 12-02 daily bar to
+        # the shadow at primary 14:30 on 12-02, while batch (per the
+        # forward shift) used the 12-01 daily bar's state at that
+        # moment — producing legitimate same-bar state divergence on
+        # every cross-TF gate (sid 141 TSLL: VWAP_V2 78/200 opposite
+        # state). Found via `_probe_vwap_v2_divergence.py` 2026-04-29.
         for sec_tf, st in sec_state.items():
             shadow = hub._shadow_engines.get(sec_tf)
             if shadow is None:
@@ -305,9 +320,11 @@ def _replay_strategy(
             s_idx = st['idx']
             s_len = st['len']
             s_index = st['sec_df_index']
+            tf_period = pd.Timedelta(seconds=sec_tf)
             while s_idx < s_len:
                 sec_ts = s_index[s_idx]
-                if sec_ts > ts:
+                # Only feed when the bar has fully closed before primary ts.
+                if sec_ts + tf_period > ts:
                     break
                 sec_bar = {
                     'open':   st['open'][s_idx],
