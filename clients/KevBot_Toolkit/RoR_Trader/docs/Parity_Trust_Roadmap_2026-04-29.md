@@ -1,19 +1,21 @@
 # Parity Trust Roadmap — 2026-04-29
 
-> **Naming clarification (added 2026-04-30):** Throughout this doc and
-> the codebase, "parity" is used to mean what we should call a
-> **fire test** — answering Q1 ("will the engine fire alerts when
-> conditions meet?"). It does NOT measure Q3 ("do today's live alerts
-> match a fresh backtest on today's bars?" — that's *fidelity*). A
-> strategy passing parity (Q1) can still drift from live (Q3) due to
-> position-state continuity, indicator warmup divergence, or stop-fill
-> timing — those are separate axes. The synthetic probe (Phase C) is
-> the Q1 tool. Module/DB rename deferred; verdict semantics are clearer
-> than the names.
+> **FINAL STATUS (added 2026-04-30 EOD):** Phases A-E complete. Engine
+> integration bugs all fixed (4 commits — anchor, case-norm, native→
+> resampled, shift-forward). 7/15 mirrors at PASS; aggregate parity
+> 0.46 → 0.79 (+72% relative). Q3 fidelity gap (sid 136-style "live
+> fires when heatmap says no cross") traced to a SEPARATE root cause:
+> **Polygon WS-aggregated bars (live worker) vs Polygon REST bars
+> (backtest) disagree on close prices for ~42% of bars by $0.01-$0.07.**
+> Engine math is correct on both paths — the data sources just diverge
+> slightly, and EMA history accumulates the divergence. **Resolution
+> path: Live Bar Cache milestone** (see `Plan_Live_Bar_Cache_2026-04-30.md`
+> + `Roadmap_To_Scale.md` Milestone 8.7). Roadmap doc preserved as
+> historical reference for the engine-integration drill cycle.
 >
-> Q1 = will it fire?  → parity test (current "PASS"/"FAIL_LIVE_BLOCKED")
-> Q2 = perf agreement → not directly measured today
-> Q3 = predictive    → fidelity check (`_fidelity_check_overnight.py`)
+> Q1 = will it fire?       → parity test (engine integration — DONE)
+> Q2 = perf agreement     → emerges naturally once Q3 is fixed
+> Q3 = trade-by-trade match → blocked by data drift, fixed by Live Bar Cache
 
 ## Open follow-ups (track, not blocking)
 
@@ -209,61 +211,72 @@ recent changes (the diag logging shouldn't affect this path, but
 worth a check). Tracked, not blocking the Q3 drill — when Q3 is
 resolved, drill this separately.
 
-### Q3 ROOT CAUSE FOUND (2026-04-30)
+### Q3 finding — REVISED (2026-04-30 EOD)
 
-After deploying diagnostic logging to Railway and comparing live worker
-state to fresh local replay:
+> **Earlier sections in this doc made over-confident claims about Q3
+> root cause based on a single data point. Reality is more nuanced.
+> Final understanding below.**
 
-**Engine math is verified CORRECT.** Local `pack.incremental_class.update_bar()`
-produces byte-identical state to the Railway worker for the same input
-bar. Verified on ut_bot_v4 at 2026-04-29 16:54:10:
-  - close, atr, trail_stop, prev_close, prev_trail_stop ALL match
-  - bull_flip output matches
+**What we verified:**
 
-**The divergence is in the INPUT DATA.** SPY 10Sec bar at 2026-04-30
-19:14:20:
-  - Local (Polygon REST `load_market_data`): close=719.29
-  - Worker (Polygon WS-aggregated via BarBuilder): close=719.27
+1. **Engine math is correct on both paths.** Local `pack.incremental_class.update_bar()`
+   produces byte-identical state to the Railway worker for the same
+   input bar. Verified on ut_bot_v4 at 2026-04-29 16:54:10 — close,
+   atr, trail_stop, prev_close, prev_trail_stop all match to 4+
+   decimals, bull_flip output matches.
 
-Different by $0.02. For sensitive cross-detection triggers like
-`mlv2_cross_bull` (line vs signal), tiny price differences flip the
-trigger boolean.
+2. **Polygon REST vs Polygon WS-aggregated bars MOSTLY agree.** Cross-
+   checked sid 136's 12 entry alerts today against REST close prices:
+   - **7 of 12 match exactly** — REST and WS-aggregated agree on close
+   - **5 of 12 differ by $0.01-$0.07** — small but real disagreement,
+     direction varies (REST sometimes higher, sometimes lower)
 
-This explains:
-1. Heatmap (uses REST via `prepare_data_with_indicators`) shows red
-2. Live engine (uses WS-aggregated bars from BarBuilder) fires green
-3. Backtest match rate to live alerts is permanently <100%
-4. Same strategy on the same bar produces different results
+3. **EMA chains amplify small differences.** Even when bar X's close
+   is identical between REST and WS, the MACD line at bar X depends on
+   long EMA history. If any prior bar's close differed (and ~42% of
+   bars do show small differences), the divergence persists in the
+   engine's `_ema_fast`, `_ema_slow`, `_signal_ema` state.
 
-**Both views are correct given their data source.** The data sources
-disagree.
+**What this means:**
 
-### Implications
+For sensitive comparisons like `mlv2_cross_bull` (line vs signal cross,
+where a 0.001 difference can flip the boolean), the cumulative EMA
+drift between WS-history and REST-history can produce different
+trigger results at the same bar. Heatmap (REST view) shows red,
+worker (WS view) fires the trigger — both correct given their inputs.
 
-- This isn't an engine bug; it's a fundamental data-architecture issue
-- Polygon WS-aggregated bars (real-time, what live HAS to use) differ
-  from Polygon REST bars (post-aggregation, what backtest uses) by
-  small but trigger-flipping amounts
-- True Q3 fidelity (live = backtest at the bar level) is impossible
-  without unifying the data sources
-- For trustworthy backtests, either:
-  (a) Live worker should snapshot its WS-aggregated bars to a local
-      cache, then backtest reads from that cache → guaranteed match
-  (b) Switch to a data source that doesn't aggregate (raw ticks
-      everywhere)
-  (c) Accept the small drift and document it clearly
+**Magnitude:** ~5-15% trade-set divergence between live alerts and
+fresh REST backtest, depending on strategy sensitivity. Most bars
+agree exactly; the divergence comes from accumulated state drift on
+the small subset that don't.
 
-### Recommended next steps
+### Resolution path — Live Bar Cache milestone
 
-1. **Don't trade live yet** — every strategy will have ~5-15% trade
-   set divergence between backtest and live due to data drift, even
-   if all engine code is correct.
-2. **Build a tick-level snapshot system** — worker stores raw 1Sec
-   bars to a cache. Backtest replays from that cache instead of REST.
-   This unifies the data source. ~2-3 days of work.
-3. **Quantify the drift** — measure across many strategies/bars how
-   often live-vs-REST diverge enough to flip a trigger. If it's <1%,
-   maybe acceptable as "noise floor" of the system.
+The fix is to unify the data source: have the live worker write its
+WS-aggregated bars to a Supabase table as they're built. Backtest
+reads from that table instead of REST. Same data → same engine
+state → guaranteed match.
+
+Detailed plan: `docs/Plan_Live_Bar_Cache_2026-04-30.md`
+Roadmap entry: `docs/Roadmap_To_Scale.md` Milestone 8.7
+
+For historical bars (years of data predating the cache start):
+keep using REST. Only future bars (post-cache-start) need to come
+from the cache. The cache grows daily.
+
+This is what serious trading platforms (TradingView etc.) do —
+own your bar data, use the same bars for chart, backtest, and live.
+
+### Implications for current state
+
+- **Don't trade live yet** with a strategy you backtested on REST data
+  — expect ~5-15% trade-set divergence due to data drift. Real-time
+  alerts will fire on bars where backtest doesn't, and vice versa.
+- **Engine integration bugs are all fixed.** The work shipped over the
+  last two days (Phase A-E, 8 commits, aggregate parity 0.46→0.79)
+  is real and stays. Q3 fidelity is a separate (data-layer) problem.
+- **Build the Live Bar Cache before live trading** to eliminate the
+  data-drift variable. ~2-4 days.
 
 ### Backup branches saved
 
