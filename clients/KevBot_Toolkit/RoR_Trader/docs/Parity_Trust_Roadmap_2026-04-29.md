@@ -1,5 +1,21 @@
 # Parity Trust Roadmap — 2026-04-29
 
+> **Naming clarification (added 2026-04-30):** Throughout this doc and
+> the codebase, "parity" is used to mean what we should call a
+> **fire test** — answering Q1 ("will the engine fire alerts when
+> conditions meet?"). It does NOT measure Q3 ("do today's live alerts
+> match a fresh backtest on today's bars?" — that's *fidelity*). A
+> strategy passing parity (Q1) can still drift from live (Q3) due to
+> position-state continuity, indicator warmup divergence, or stop-fill
+> timing — those are separate axes. The synthetic probe (Phase C) is
+> the Q1 tool. Module/DB rename deferred; verdict semantics are clearer
+> than the names.
+>
+> Q1 = will it fire?  → parity test (current "PASS"/"FAIL_LIVE_BLOCKED")
+> Q2 = perf agreement → not directly measured today
+> Q3 = predictive    → fidelity check (`_fidelity_check_overnight.py`)
+
+
 ## North star
 
 > Add a new user pack (or general pack), back-test it, and trust that

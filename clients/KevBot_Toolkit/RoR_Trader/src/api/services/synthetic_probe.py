@@ -1,18 +1,32 @@
-"""Synthetic-strategy probe for user packs (Phase C).
+"""Synthetic-strategy fire test for user packs (Phase C).
 
-Goal: when an AI builds a new user pack, we want a verdict before the
-pack is installed that reflects whether it'll actually fire alerts +
-webhooks live. The 4Q simulator tests indicator/interpreter math in
+Primary question this answers: **will a strategy built with this pack
+actually fire alerts when conditions meet?** Not "do live and backtest
+match exactly" (fidelity — Q3) but "is something fundamentally broken
+that would prevent firing?" (Q1). The replay-match used internally as
+the verdict signal is a proxy: if a fresh backtest fires N entries and
+a fresh live replay fires roughly N entries on overlapping bars, the
+engine integration is alive.
+
+The 4Q simulator (Q1+Q2+Q3+Q4) tests indicator/interpreter math in
 isolation but doesn't exercise the full integration path
 (TriggerEvaluator dispatch, parity-service matching, position state
-machine, cross-TF shadow engines). Every backtest↔live drift bug we've
-fixed lived in those layers, not in pack math.
+machine, cross-TF shadow engines). Every backtest↔live drift bug
+fixed during the Phase B/B+ drill cycle (see
+docs/Parity_Trust_Roadmap_2026-04-29.md) lived in those layers, not
+in pack math. This probe catches them at pack-creation time.
 
 This module spins up a sandboxed strategy that uses the candidate
 pack's triggers as entry/exit, optionally adds a known-good cross-TF
 gate from another pack, runs `recompute_and_persist_stored_trades` to
 materialize backtest output, then runs `run_strategy_parity` and
 returns a structured verdict.
+
+**Naming note:** the underlying functions are still called
+`run_strategy_parity` etc. — the module/DB-schema rename to "fire test"
+is deferred. The verdict semantics are clearer than the names: PASS =
+"engine fires properly," PARTIAL = "fires but with drift," FAIL = "does
+not fire at all" (engine bug).
 
 Wire points:
   - `api/routers/ai_builder.py` install handler — call `run_pack_probe`

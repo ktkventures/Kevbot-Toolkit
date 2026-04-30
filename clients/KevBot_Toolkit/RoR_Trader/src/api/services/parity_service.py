@@ -687,7 +687,20 @@ def run_strategy_parity(
     last_n: Optional[int] = None,
     forward_test_only: bool = False,
 ) -> dict:
-    """Run a parity check on the given strategy.
+    """Run a parity (fire-test) check on the given strategy.
+
+    Primary question this answers: **does the engine fire when conditions
+    meet?** This is the Q1 "will it fire / is something fundamentally
+    broken" check. PASS means a fresh live replay produced approximately
+    the same fires the backtest stored; FAIL_LIVE_BLOCKED means live
+    emits nothing; PARTIAL means live fires but on slightly different
+    bars (often legitimate timing edges, not a broken engine).
+
+    What this DOES NOT measure: live↔backtest agreement on TODAY's bars
+    (Q3 fidelity — see _fidelity_check_overnight.py). The replay window
+    is fixed (last N stored trades) and stored trades may be days old;
+    a PASS here doesn't guarantee a fresh backtest on today's bars
+    matches today's live alerts. Q3 is a separate measurement.
 
     Loads the strategy + its stored trades, replays bars through the live
     engine (StrategyMonitor + shadow engines), and diffs the resulting
