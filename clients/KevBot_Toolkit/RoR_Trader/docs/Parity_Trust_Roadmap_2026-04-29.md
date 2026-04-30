@@ -209,6 +209,62 @@ recent changes (the diag logging shouldn't affect this path, but
 worth a check). Tracked, not blocking the Q3 drill — when Q3 is
 resolved, drill this separately.
 
+### Q3 ROOT CAUSE FOUND (2026-04-30)
+
+After deploying diagnostic logging to Railway and comparing live worker
+state to fresh local replay:
+
+**Engine math is verified CORRECT.** Local `pack.incremental_class.update_bar()`
+produces byte-identical state to the Railway worker for the same input
+bar. Verified on ut_bot_v4 at 2026-04-29 16:54:10:
+  - close, atr, trail_stop, prev_close, prev_trail_stop ALL match
+  - bull_flip output matches
+
+**The divergence is in the INPUT DATA.** SPY 10Sec bar at 2026-04-30
+19:14:20:
+  - Local (Polygon REST `load_market_data`): close=719.29
+  - Worker (Polygon WS-aggregated via BarBuilder): close=719.27
+
+Different by $0.02. For sensitive cross-detection triggers like
+`mlv2_cross_bull` (line vs signal), tiny price differences flip the
+trigger boolean.
+
+This explains:
+1. Heatmap (uses REST via `prepare_data_with_indicators`) shows red
+2. Live engine (uses WS-aggregated bars from BarBuilder) fires green
+3. Backtest match rate to live alerts is permanently <100%
+4. Same strategy on the same bar produces different results
+
+**Both views are correct given their data source.** The data sources
+disagree.
+
+### Implications
+
+- This isn't an engine bug; it's a fundamental data-architecture issue
+- Polygon WS-aggregated bars (real-time, what live HAS to use) differ
+  from Polygon REST bars (post-aggregation, what backtest uses) by
+  small but trigger-flipping amounts
+- True Q3 fidelity (live = backtest at the bar level) is impossible
+  without unifying the data sources
+- For trustworthy backtests, either:
+  (a) Live worker should snapshot its WS-aggregated bars to a local
+      cache, then backtest reads from that cache → guaranteed match
+  (b) Switch to a data source that doesn't aggregate (raw ticks
+      everywhere)
+  (c) Accept the small drift and document it clearly
+
+### Recommended next steps
+
+1. **Don't trade live yet** — every strategy will have ~5-15% trade
+   set divergence between backtest and live due to data drift, even
+   if all engine code is correct.
+2. **Build a tick-level snapshot system** — worker stores raw 1Sec
+   bars to a cache. Backtest replays from that cache instead of REST.
+   This unifies the data source. ~2-3 days of work.
+3. **Quantify the drift** — measure across many strategies/bars how
+   often live-vs-REST diverge enough to flip a trigger. If it's <1%,
+   maybe acceptable as "noise floor" of the system.
+
 ### Backup branches saved
 
 - `dev-backup-pre-shadow-fix-2026-04-29`
