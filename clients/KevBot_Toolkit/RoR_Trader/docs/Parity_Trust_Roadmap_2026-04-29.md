@@ -924,25 +924,76 @@ plus the f68b410 / 3aae5bc / a8923b7 fixes from earlier today.
 ### What still needs investigation
 
 **sid 141 (TSLL/1Min) FAIL_LIVE_BLOCKED 0/200 with no replay fires.**
+Drilled. Result:
 
-Has `1d-UT_BOT_V4-BULL_TREND` confluence (which should benefit from
-resample fix) plus `1d-VWAP-...` and `swing_123` entry. The fact that
-0 replay fires + 0 matched suggests:
-- (a) The shadow engine for 1Day VWAP is broken on TSLL specifically
-  (TSLL is a low-liquidity 3x leveraged ETF — VWAP may not converge
-  cleanly), OR
-- (b) The 600s (10Min) secondary `swing_123` shadow is producing
-  different state than backtest (memory entry
-  `feedback_userpack_interpreter_live_dispatch.md` flagged that
-  swing_123 has FLIP-vs-TREND issues), OR
-- (c) Some interaction between primary `swing_123` flip-state trigger
-  and the 1Day confluence that the f68b410 fix didn't fully address
+```
+reason breakdown: GATE_FAILED ×200
 
-Recommended next drill: same `_drill_parity_full.py 141` workflow,
-expect to see `replay_actual=None` or wrong state on the 1Day VWAP /
-1Day UT_BOT_V4 / 10m swing_123 gates. That'll surface whether it's a
-data path issue (similar to AAPL fix), a shadow user-pack dispatch
-issue, or a strategy-design issue.
+failing gates:
+  '10M-SWING_123_TEST-BEARISH_C2'  → replay_actual=None  ×200
+  '1D-VWAP_V2->+2σ'                → replay_actual='<-2σ'  ×78
+  '1D-VWAP_V2->+2σ'                → replay_actual=None  ×24
+```
+
+**Two distinct sub-bugs:**
+
+1. **`10M-SWING_123_TEST-BEARISH_C2` shadow emits None on 100% of stored
+   entries.** swing_123_test interpreter has flip/confirmation states
+   (BEARISH_C2 = "second bearish confirmation"). Same FLIP/TREND class
+   issue as ut_bot_v4 — the primary-TF f68b410 fix doesn't propagate
+   to the shadow's user-pack interpreter dispatch for confirmation
+   states, OR swing_123_test's interpreter requires more historical
+   bars than the shadow has after warmup.
+
+2. **`1D-VWAP_V2->+2σ` shadow emits the OPPOSITE state (`<-2σ`)** on
+   78 of 200 stored entries (39%). Re-ran backtest with current engine —
+   stored_trades regenerated, parity STILL shows the same divergence.
+   So the issue isn't stale stored_trades. Both batch and shadow now
+   use resampled-from-1Min daily bars (post our fix). Yet they
+   classify different VWAP_V2 zones at the same bar.
+
+   **Hypothesis for sub-bug 2:** VWAP_V2's standard deviation
+   classification likely differs between batch (full-day pass) and
+   shadow (incremental). Possible causes:
+   - Batch uses sample std-dev `(n-1)` divisor; incremental uses
+     population std-dev `(n)` divisor. For volatile TSLL with ~390
+     1Min bars per day, this shifts the σ boundaries enough to flip
+     `>+2σ` ↔ `<-2σ`.
+   - Cumulative numerator/denominator accumulator order-of-operations
+     drift over many bars (numerical precision).
+   - Shadow's incremental engine may use a DIFFERENT VWAP standard
+     deviation than the batch indicator function.
+   - The batch path computes secondary TF indicators on a DAILY-period
+     reset, while shadow may not be honoring the daily reset properly.
+
+   To verify: probe the shadow's emitted `vwap_v2_upper_2sigma`
+   indicator value vs batch's `vwap_v2_upper_2sigma` on the same TSLL
+   daily bars. If they differ → batch-vs-shadow VWAP_V2 implementation
+   bug. If they agree → interpreter divergence (less likely).
+
+3. **`1D-VWAP_V2->+2σ` shadow emits None** on 24 entries (12%). Likely
+   warmup gap — the daily VWAP_V2 incremental class needs a few bars
+   before the standard deviation channels stabilize.
+
+### Updated handoff status
+
+After the additional sid 141 drill, the bug taxonomy is now:
+
+| Bug class | Surfaces on | Status |
+|---|---|---|
+| Native vs resampled cross-TF data | Strategies with split-history symbols + 1Day cross-TF | ✅ FIXED today (`28db984`) |
+| Diagnostic bar-anchor (off-by-one minute) | All FAIL_LIVE_BLOCKED reasons | ✅ FIXED today (`dee64f5`) |
+| Diagnostic case mismatch (1d vs 1D) | All cross-TF gate diagnostics | ✅ FIXED today (`28db984`) |
+| User-pack interpreter dispatch primary-TF | All user-pack interpreters | ✅ FIXED earlier (`f68b410`) |
+| Parity matching anchor (entry_fill_ts) | Match counting | ✅ FIXED earlier (`3aae5bc`) |
+| **VWAP_V2 batch-vs-shadow std-dev divergence** | **TSLL 1Day VWAP, possibly other volatile symbols** | 🔴 NEEDS INVESTIGATION (sid 141) |
+| **swing_123_test BEARISH_C2 shadow emits None** | **TSLL 10M shadow, possibly any swing_123 confirmation state** | 🔴 NEEDS INVESTIGATION (sid 141) |
+| Flip-state state-name gap (FLIP vs TREND) | Strategies gating on TREND when state is FLIP | 🟡 STRATEGY-DESIGN issue, not engine — documented |
+| Shadow warmup gap (None on early bars) | Any cross-TF gate in first ~10% of replay | 🟡 LOW PRIORITY (small-magnitude residual) |
+
+The two RED items are the next drill targets. Both are likely to be
+short fixes once located; both surface sharply on a specific symbol/TF
+combination, suggesting localized rather than fundamental bugs.
 
 ---
 
