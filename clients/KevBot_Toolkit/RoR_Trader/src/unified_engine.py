@@ -1013,16 +1013,34 @@ class IncrementalIndicatorEngine:
         # `{trigger_prefix}_{base}` keys). Merge into `vals` so the
         # TriggerEvaluator picks them up alongside built-in indicators.
         # Q3 diag mode: '_diag_skip' is set by compute_tentative_state to
-        # silence forming-bar tentative calls (~10/sec spam). Committed
-        # on_bar_close path doesn't set it, so we get one log per real
-        # trigger fire. Marker `[Q3-DIAG-COMMIT]` distinguishes these
-        # from the tentative path (no longer logged).
+        # silence forming-bar tentative calls. Plus we filter to only-
+        # recent bars (within 60s of wall-clock) to skip warmup replay
+        # spam (Railway was rate-limiting at ~390 dropped messages).
+        # Live alerts always come from very-recent bars; warmup replay
+        # uses days-old bars. So filtering on bar age cleanly separates.
         _diag_skip_tentative = getattr(self, '_diag_skip', False)
+        _diag_should_log = not _diag_skip_tentative
+        if _diag_should_log:
+            try:
+                from datetime import datetime as _dt, timezone as _tz
+                bar_ts = bar.get('timestamp')
+                if bar_ts is not None:
+                    if hasattr(bar_ts, 'to_pydatetime'):
+                        bar_ts = bar_ts.to_pydatetime()
+                    elif isinstance(bar_ts, str):
+                        bar_ts = _dt.fromisoformat(bar_ts.replace('Z', '+00:00'))
+                    if bar_ts.tzinfo is None:
+                        bar_ts = bar_ts.replace(tzinfo=_tz.utc)
+                    age_s = (_dt.now(_tz.utc) - bar_ts).total_seconds()
+                    if age_s > 90:  # warmup replay or stale broadcast
+                        _diag_should_log = False
+            except Exception:
+                _diag_should_log = False
         for slug, engine in getattr(self, '_user_pack_engines', {}).items():
             try:
                 _prev_state = None
                 _last_out = None
-                if not _diag_skip_tentative:
+                if _diag_should_log:
                     _prev_state = {
                         k: getattr(engine, k, None)
                         for k in ('_prev_macd_line', '_prev_signal',
@@ -1037,7 +1055,7 @@ class IncrementalIndicatorEngine:
                 if isinstance(out, dict):
                     vals.update(out)
 
-                if not _diag_skip_tentative and isinstance(out, dict):
+                if _diag_should_log and isinstance(out, dict):
                     fired_triggers = [
                         k for k, v in out.items()
                         if isinstance(v, bool) and v
