@@ -82,6 +82,48 @@ Across the two-day arc:
    (pack 4Q can't know strategy config), but worth noting that pack-
    level 4Q test ≠ strategy-level parity replay.
 
+### Heatmap concern resolution (2026-04-30)
+
+Drilled sid 136 specifically: backtest `stored_trades` for the
+14:20 UTC entry has **130 confluence_records** (well-formed, one
+active state per interpreter), and **both required gates are
+satisfied**:
+- `15m-MACD_HISTOGRAM_V2-H+dn` ✓
+- `1M-MACD_LINE_V2-M>S-` ✓
+
+Same trade entry (16:29 UTC) in the live `trades` table also has
+both required gates marked active. Engine IS correctly gating.
+
+Visual heatmap mismatch is the documented prev-bar (gate semantics)
+vs current-bar (heatmap render) timing — not an engine bug. UI fix
+deferred per Kevin's note.
+
+### NEW follow-up: live `confluence_records` contamination
+
+Drilling sid 136 also surfaced a data-shape issue. The `data.confluence_records`
+field on **live trades** (`trades` table, written by the worker) shows
+multiple mutually-exclusive states as "active" simultaneously — e.g.,
+all 4 `1M-MACD_LINE` quadrants (M>S+, M>S-, M<S+, M<S-) listed
+together. Mathematically impossible for a single bar.
+
+Backtest `stored_trades` (JSONB on strategies row) does NOT have this
+problem — one active state per (TF, interpreter) pair, as expected.
+
+**Impact:**
+- Engine gate-evaluation logic IS correct (confirmed by sid 135/137/154/136
+  audits + Phase E retrofit results)
+- The contamination only affects tools that READ confluence_records
+  from the trades table for after-the-fact analysis. Including my
+  `_fidelity_check_overnight.py` script — explains why the fidelity
+  numbers looked low.
+- Likely a serialization bug in how the worker writes the bar-state
+  snapshot to `trades.data.confluence_records`. Should be fixed before
+  any analytics relies on this field.
+
+**Where to drill:** worker.py and the alert/trade dispatch path that
+writes to the trades table. Compare to how `recompute_and_persist_stored_trades`
+serializes `confluence_records` (correct shape).
+
 ### Backup branches saved
 
 - `dev-backup-pre-shadow-fix-2026-04-29`
