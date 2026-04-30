@@ -661,6 +661,54 @@ Rather than recomputing indicators on every 1-second bar, piggyback on the exist
 
 ---
 
+### Milestone 8.7: Live Bar Cache — Unified Data Source for Live + Backtest
+**Priority:** Required before live trading at scale
+**Effort:** 2-4 days
+**Status:** Plan drafted (`docs/Plan_Live_Bar_Cache_2026-04-30.md`), awaiting approval before implementation
+**Background:** `docs/Parity_Trust_Roadmap_2026-04-29.md`
+
+**The problem:** Live worker uses Polygon **WebSocket** aggregated bars; backtest uses Polygon **REST** bars. They mostly agree but ~42% of bars differ by $0.01-$0.07 (verified on sid 136 alerts 2026-04-30). Engine math is correct on both paths, but EMA chains accumulate the small differences over time, so cumulative state drift causes sensitive triggers (e.g. `mlv2_cross_bull` line-vs-signal crosses) to fire differently between live (WS-history) and backtest (REST-history). Net effect: ~5-15% trade-set divergence between live alerts and a fresh backtest.
+
+This is exactly what TradingView and other gold-standard platforms avoid by using ONE data source for chart, backtest, and live engine.
+
+**The approach:** Have the worker write its WS-aggregated bars to a Supabase `live_bars` table as they're built. Backtest reads from this cache first, falling back to REST only for bars older than the cache. Live and backtest then operate on identical OHLCV — engine state agrees by construction.
+
+**Schema (proposed):**
+```sql
+CREATE TABLE live_bars (
+    symbol TEXT, timeframe_seconds INT, bar_start TIMESTAMPTZ,
+    open, high, low, close, volume DOUBLE PRECISION,
+    written_at TIMESTAMPTZ, source TEXT,  -- 'ws' or 'rest_backfill'
+    PRIMARY KEY (symbol, timeframe_seconds, bar_start)
+);
+```
+
+**Tasks (Required, in order):**
+- [ ] 8.7a. [Required] Schema + migration for `live_bars` table
+- [ ] 8.7b. [Required] Worker write path — BarBuilder bar-close hook writes to `live_bars` (admin client, best-effort, log + continue on failure)
+- [ ] 8.7c. [Required] Validation script — compare cache vs REST for last hour, surface disagreements
+- [ ] 8.7d. [Required] Backtest read path — `data_loader` checks cache first, REST fallback for gaps. Opt-in initially via flag
+- [ ] 8.7e. [Required] Gap detection + REST backfill — cache becomes self-healing
+- [ ] 8.7f. [Required] Cutover — flip `load_market_data` default to cache-first
+- [ ] 8.7g. [Required] Re-run parity sweep + Q3 fidelity drill — confirm fidelity ~100% on cached-period strategies
+
+**Tasks (Polish):**
+- [ ] 8.7h. [Polish] Cache cleanup job — delete bars older than N days (90 default)
+- [ ] 8.7i. [Polish] Cache hit-rate metric in admin UI
+- [ ] 8.7j. [Polish] Worker restart gap handling — REST-backfill missed window on startup
+
+**Tasks (Deferred):**
+- [ ] 8.7k. [Deferred] Strategy historical backfill — REST-fill 90 days for active strategies at cache start
+- [ ] 8.7l. [Deferred] Per-tick cache (massive volume; defer to Hi-Fi work)
+
+**Exit Criteria:**
+- Worker writes ~30K bars/day during RTH
+- `load_market_data` reads ~100% from cache for cached-period queries
+- Re-running parity sweep shows fidelity at ~100% on cached-period strategies
+- Live alerts match fresh local backtest on same bars within $0.0001
+
+---
+
 ### Milestone 9: Scale Infrastructure + Pluggable Architecture
 **Priority:** Medium — required before AI agents
 **Effort:** 2-3 weeks
