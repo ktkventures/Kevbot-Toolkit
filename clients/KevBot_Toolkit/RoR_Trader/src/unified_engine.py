@@ -1012,68 +1012,11 @@ class IncrementalIndicatorEngine:
         # of column values + trigger booleans (under their full
         # `{trigger_prefix}_{base}` keys). Merge into `vals` so the
         # TriggerEvaluator picks them up alongside built-in indicators.
-        # Q3 diag mode: '_diag_skip' is set by compute_tentative_state to
-        # silence forming-bar tentative calls. Plus we filter to only-
-        # recent bars (within 60s of wall-clock) to skip warmup replay
-        # spam (Railway was rate-limiting at ~390 dropped messages).
-        # Live alerts always come from very-recent bars; warmup replay
-        # uses days-old bars. So filtering on bar age cleanly separates.
-        _diag_skip_tentative = getattr(self, '_diag_skip', False)
-        _diag_should_log = not _diag_skip_tentative
-        if _diag_should_log:
-            try:
-                from datetime import datetime as _dt, timezone as _tz
-                bar_ts = bar.get('timestamp')
-                if bar_ts is not None:
-                    if hasattr(bar_ts, 'to_pydatetime'):
-                        bar_ts = bar_ts.to_pydatetime()
-                    elif isinstance(bar_ts, str):
-                        bar_ts = _dt.fromisoformat(bar_ts.replace('Z', '+00:00'))
-                    if bar_ts.tzinfo is None:
-                        bar_ts = bar_ts.replace(tzinfo=_tz.utc)
-                    age_s = (_dt.now(_tz.utc) - bar_ts).total_seconds()
-                    if age_s > 90:  # warmup replay or stale broadcast
-                        _diag_should_log = False
-            except Exception:
-                _diag_should_log = False
         for slug, engine in getattr(self, '_user_pack_engines', {}).items():
             try:
-                _prev_state = None
-                _last_out = None
-                if _diag_should_log:
-                    _prev_state = {
-                        k: getattr(engine, k, None)
-                        for k in ('_prev_macd_line', '_prev_signal',
-                                  '_prev_close', '_ema_fast', '_ema_slow',
-                                  '_signal_ema', '_first', '_atr',
-                                  '_trail_stop', '_prev_trail_stop')
-                        if hasattr(engine, k)
-                    }
-                    _last_out = getattr(engine, '_diag_last_out', None) or {}
-
                 out = engine.update_bar(bar)
                 if isinstance(out, dict):
                     vals.update(out)
-
-                if _diag_should_log and isinstance(out, dict):
-                    fired_triggers = [
-                        k for k, v in out.items()
-                        if isinstance(v, bool) and v
-                        and not _last_out.get(k, False)
-                    ]
-                    if fired_triggers:
-                        logger.warning(
-                            "[Q3-DIAG-COMMIT] slug=%s triggers_fired=%s "
-                            "bar_ts=%s bar_close=%s pre_state=%s out=%s",
-                            slug,
-                            fired_triggers,
-                            bar.get('timestamp'),
-                            bar.get('close'),
-                            _prev_state,
-                            {k: v for k, v in out.items()
-                             if not (isinstance(v, bool) and not v)},
-                        )
-                    engine._diag_last_out = dict(out)
             except Exception as e:
                 logger.warning(
                     "user pack %r incremental update failed: %s", slug, e)
