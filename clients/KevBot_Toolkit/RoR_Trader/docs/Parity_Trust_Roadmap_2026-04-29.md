@@ -124,6 +124,83 @@ problem — one active state per (TF, interpreter) pair, as expected.
 writes to the trades table. Compare to how `recompute_and_persist_stored_trades`
 serializes `confluence_records` (correct shape).
 
+### REAL BUG: live engine fires triggers when math says NO cross (2026-04-30)
+
+Drilled sid 136's 9:25 MT (15:25 UTC) entry. Findings:
+
+**1. Math (incremental engine) and batch (`prepare_data_with_indicators`)
+agree exactly** on MACD values for SPY 1Min bars today. Tested with
+warmup history of 2, 7, 30, 90 days — identical to 6 decimal places.
+At 15:24 UTC: `mlv2_line=0.151392`, `mlv2_signal=0.218762`. Line BELOW
+signal. Trigger `mlv2_cross_bull` is False.
+
+**2. Heatmap renders correctly** based on this batch view. Red is
+correct — gate `1M-MACD_LINE_V2-M>S-` is genuinely not satisfied.
+
+**3. The chart's MACD oscillator visually shows MACD < signal** at the
+same bar — confirming batch view.
+
+**4. Live worker FIRED `mlv2_cross_bull` at 15:25 anyway** — recorded
+in alerts table (`source='ralph'`) and trades table at the same
+timestamp. Alert price (714.2501) matches REST close exactly, so the
+input data is the same.
+
+**5. Pattern repeats on 7 of 10 sid 136 alerts today.** Math says
+bull cross fires at bars 14:14, 14:19, 14:43, 15:31, 15:50, 16:06,
+17:00, 17:24, 17:29, 17:46, 18:00. Live fires alerts at fill_ts
+13:44, 14:00, 14:13, 14:19, 14:42, 15:25, 15:49, 16:29, 16:40, 16:50.
+Only 14:19 lines up after accounting for the +1min fill offset.
+
+**6. Sid 152 (no cross-TF gate, eppv4 trigger) shows ~26 of 27 live
+alerts matching math.** So this isn't a generic live-vs-math problem —
+it's specific to sid 136 / macd_line_v2-cross-bull / strategies with
+gates.
+
+### Hypothesis
+
+Sid 136 has a primary-TF gate (`1M-MACD_LINE_V2-M>S-`). Sid 152 has no
+such gate. The gate evaluation may be the divergent code path — live's
+gate evaluation might not match batch's, so live re-tests the trigger
+condition on bars where the gate "transitions" satisfaction state,
+producing spurious cross_bull fires. OR the live worker has a stale
+indicator state that differs from a fresh replay (e.g., `_prev_macd_line`
+not being correctly set after some specific event like a worker
+restart, websocket reconnect, or forming-bar tentative-state path).
+
+The forming-bar tentative-state pollution issue was supposedly fixed
+in `6e42acc` via deepcopy snapshot/restore — but the fix may not cover
+all the prev-state attributes (`_prev_macd_line`, `_prev_signal`, etc.)
+or some other code path is mutating them outside the snapshot guard.
+
+### Recommended next steps (production drill)
+
+This bug **cannot be reproduced locally** because we don't have access
+to the Railway worker's actual indicator state at the moment of fire.
+To diagnose:
+
+1. **Add diagnostic logging to the worker** for user-pack trigger
+   firings. Capture: bar timestamp, close price, `_prev_macd_line`,
+   `_prev_signal`, current line, current signal, computed `cross_bull`,
+   AND a comparison value from a fresh local replay on REST data.
+2. **Deploy to Railway**, wait for next sid 136 (or any
+   gate-laden) alert.
+3. **Compare logged worker state to fresh replay state**. The
+   divergence points at the specific code path causing it.
+
+This is a serious production bug — live trades are firing on
+conditions the math doesn't support. **Live trading is not safe until
+this is resolved.** Worth pausing any auto-execution on monitored
+strategies that have user-pack-trigger entries until fixed.
+
+### Confluence_records contamination — same root cause family
+
+The earlier finding that live trades' `confluence_records` shows
+multiple mutually-exclusive states as "active" (M>S+, M>S-, M<S+, M<S-
+all listed) is consistent with this bug. If `_prev_macd_line` is
+getting polluted across bars or shared across strategies, the
+classification can flip multiple times and all states get recorded.
+Same root cause likely.
+
 ### Backup branches saved
 
 - `dev-backup-pre-shadow-fix-2026-04-29`
