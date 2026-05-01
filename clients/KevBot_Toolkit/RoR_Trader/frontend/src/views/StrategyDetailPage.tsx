@@ -11,7 +11,7 @@ import ChartPlaceholder from '@/components/ChartPlaceholder';
 import type { TradeMarker } from '@/charts/TradingChart';
 
 // Static imports for hooks — these are safe because the page uses ssr:false
-import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useConfluenceChart, useTradeZoom } from '@/hooks/queries/useStrategies';
+import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useStrategyCacheBars, useConfluenceChart, useTradeZoom } from '@/hooks/queries/useStrategies';
 import { StrategyHealthBadge, StrategyHealthDrawer, StrategyFidelityBadges, type StrategyHealth } from './StrategiesPage';
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
@@ -959,6 +959,17 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     'All' | 'Forward Only' | 'Backtest Only' | 'Last 7 Days' | 'Last 30 Days' | 'Last 90 Days'
   >('Forward Only');
   const [showAllUnified, setShowAllUnified] = useState(false);
+  // Lab tab data-source toggle (M8.7). 'rest' = current behavior (REST
+  // backtest data). 'ws-latest' = live_bars cache `close` (after Polygon
+  // rebroadcasts within 15 min). 'ws-first' = live_bars `first_close`
+  // (what the live engine actually saw at decision moment).
+  const [labDataSource, setLabDataSource] = useState<'rest' | 'ws-latest' | 'ws-first'>('rest');
+  const { data: labCacheLatest, isLoading: labCacheLatestLoading } = useStrategyCacheBars(
+    strategyId, 'latest', labDataSource === 'ws-latest'
+  );
+  const { data: labCacheFirst, isLoading: labCacheFirstLoading } = useStrategyCacheBars(
+    strategyId, 'first', labDataSource === 'ws-first'
+  );
   const confluenceGroups = triggerAnalysis?.confluence_groups ?? EMPTY_CONFLUENCE_GROUPS;
   const confluenceTimeline = EMPTY_CONFLUENCE_TIMELINE; // State timeline requires backtest instrumentation
   const confluenceTriggerEvents = EMPTY_CONFLUENCE_TRIGGER_EVENTS; // Trigger events require backtest instrumentation
@@ -1713,6 +1724,81 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 
     return { chartPanes, overlayNames, hasBars: true };
   }, [
+    chartDataResp, barsData, candleCount, showConditions, showTriggers,
+    chartPrefs, btTrades, fwdTrades, apiStrategy, recentAlerts, tfMs,
+    strategy?.direction,
+  ]);
+
+  // M8.7 Lab tab: parallel chart-data computation that swaps the
+  // price bars based on labDataSource. Indicators/heatmap stay as
+  // computed by the chart-data endpoint (REST-derived) since they're
+  // expensive to recompute; only the candlesticks change source.
+  const labChartTabData = useMemo(() => {
+    // Pick the bar source based on the toggle
+    let rawBars: any[] = [];
+    if (labDataSource === 'rest') {
+      const chartSrc = chartDataResp?.chart_data;
+      rawBars = chartSrc && chartSrc.length > 0
+        ? chartSrc
+        : (barsData || []).map((b: any) => ({
+            timestamp: b.timestamp, open: b.open, high: b.high,
+            low: b.low, close: b.close, volume: b.volume,
+          }));
+    } else if (labDataSource === 'ws-latest') {
+      rawBars = labCacheLatest?.chart_data || [];
+    } else if (labDataSource === 'ws-first') {
+      rawBars = labCacheFirst?.chart_data || [];
+    }
+    const bars = candleCount > 0 && rawBars.length > candleCount
+      ? rawBars.slice(-candleCount)
+      : rawBars;
+
+    if (bars.length === 0) {
+      return { chartPanes: [] as PaneConfig[], overlayNames: [] as string[], hasBars: false };
+    }
+
+    const overlayNames: string[] = (chartDataResp as any)?.overlay_indicators || [];
+    const oscNames: string[] = (chartDataResp as any)?.oscillator_indicators || [];
+    const heatmapConds: any[] = ((chartDataResp as any)?.heatmap_conditions || []).filter((c: any) => c.has_data);
+    const candleColorColumn: string | undefined = (chartDataResp as any)?.candle_color_column || undefined;
+
+    const markerTrades = (btTrades.length > 0 || fwdTrades.length > 0)
+      ? [...btTrades, ...fwdTrades].map((t: any) => ({
+          ...t,
+          entry_fill_ts: t.entry_fill_ts ?? t.entryFillTs ?? t.entryTime ?? t.entryTimeDisplay,
+          exit_fill_ts: t.exit_fill_ts ?? t.exitFillTs ?? t.exitTime ?? t.exitTimeDisplay,
+        }))
+      : (apiStrategy?.stored_trades || []).map((t: any) => ({
+          entry_fill_ts: t.entry_fill_ts,
+          exit_fill_ts: t.exit_fill_ts,
+          entry_price: t.entry_price ?? 0,
+          exit_price: t.exit_price ?? 0,
+          r_multiple: t.r_multiple ?? 0,
+          exit_reason: t.exit_reason || '',
+          entry_trigger: t.entry_trigger || '',
+          exec_type: t.exec_type || 'C',
+          stop_exec_type: t.stop_exec_type,
+          target_exec_type: t.target_exec_type,
+        }));
+
+    const chartPanes = buildStrategyChartPanes({
+      bars,
+      trades: markerTrades,
+      alerts: recentAlerts,
+      direction: strategy?.direction || 'LONG',
+      overlayNames,
+      oscNames,
+      heatmapConds,
+      showConditions,
+      showTriggers,
+      tfMs,
+      candleColorColumn,
+      chartPrefs,
+    });
+
+    return { chartPanes, overlayNames, hasBars: true };
+  }, [
+    labDataSource, labCacheLatest, labCacheFirst,
     chartDataResp, barsData, candleCount, showConditions, showTriggers,
     chartPrefs, btTrades, fwdTrades, apiStrategy, recentAlerts, tfMs,
     strategy?.direction,
@@ -3090,31 +3176,70 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   </ul>
                 </div>
 
-                {/* Same chart as Chart & Trades — reuses memoized chartTabData */}
-                {!chartTabData.hasBars ? (
+                {/* Data source toggle */}
+                <div className="flex items-center gap-2 mb-3 flex-wrap">
+                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Data source:</span>
+                  {([
+                    { key: 'rest', label: 'REST (current)', tip: 'Polygon REST settled bars — same as backtest' },
+                    { key: 'ws-latest', label: 'Live WS (latest)', tip: 'live_bars cache `close` — WS values after Polygon rebroadcast corrections within 15 min' },
+                    { key: 'ws-first', label: 'Live WS (first-write)', tip: 'live_bars `first_close` — what the live engine actually saw at decision moment' },
+                  ] as const).map(opt => (
+                    <button
+                      key={opt.key}
+                      onClick={() => setLabDataSource(opt.key)}
+                      title={opt.tip}
+                      className="text-xs px-3 py-1 rounded-full transition-colors"
+                      style={{
+                        background: labDataSource === opt.key ? 'var(--accent)' : 'var(--bg-input)',
+                        color: labDataSource === opt.key ? 'white' : 'var(--text-muted)',
+                        border: labDataSource === opt.key ? 'none' : '1px solid var(--border)',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                  {(labCacheLatestLoading || labCacheFirstLoading) && (
+                    <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Loading cache bars...</span>
+                  )}
+                </div>
+
+                {/* Chart — uses labChartTabData which respects the data source toggle */}
+                {!labChartTabData.hasBars ? (
                   <Card className="mb-4">
                     <ChartPlaceholder
-                      label={stratSymbol ? `Loading ${stratSymbol} bars...` : 'OHLC chart'}
+                      label={
+                        labDataSource !== 'rest' && (labCacheLatestLoading || labCacheFirstLoading)
+                          ? `Loading ${stratSymbol} cache bars...`
+                          : labDataSource !== 'rest'
+                            ? `No cache data yet for ${stratSymbol} (cache started recording 2026-04-30)`
+                            : stratSymbol ? `Loading ${stratSymbol} bars...` : 'OHLC chart'
+                      }
                       height={400}
                     />
                   </Card>
                 ) : (
                   <Card className="mb-4">
                     <SyncedChartPane
-                      panes={chartTabData.chartPanes}
+                      panes={labChartTabData.chartPanes}
                       upColor={chartPrefs.candleUp}
                       downColor={chartPrefs.candleDown}
                       upBorderColor={chartPrefs.candleUpBorder}
                       gridLines={chartPrefs.gridLines}
                       rightOffset={chartPrefs.rightOffset}
                       timezone={chartPrefs.timezone}
-                      formingBar={formingBarProp}
-                      formingIndicators={formingIndicators}
-                      formingStates={formingStates}
-                      formingStateCrossTf={formingStateCrossTf}
+                      // Forming bar only makes sense for REST mode (it's a
+                      // single WS bar at the right edge of REST bars). For
+                      // ws-latest/ws-first, the entire chart is already WS.
+                      formingBar={labDataSource === 'rest' ? formingBarProp : null}
+                      formingIndicators={labDataSource === 'rest' ? formingIndicators : null}
+                      formingStates={labDataSource === 'rest' ? formingStates : null}
+                      formingStateCrossTf={labDataSource === 'rest' ? formingStateCrossTf : null}
                     />
                     <div className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>
-                      Data source: REST historical + WS forming bar (right edge)
+                      {labDataSource === 'rest' && 'Data source: REST historical + WS forming bar (right edge). Indicators computed from REST.'}
+                      {labDataSource === 'ws-latest' && `Data source: live_bars cache (latest WS values). ${labCacheLatest?.row_count ?? 0} bars in window. Indicators stay REST-derived.`}
+                      {labDataSource === 'ws-first' && `Data source: live_bars first-write (decision-moment WS). ${labCacheFirst?.row_count ?? 0} bars in window. Indicators stay REST-derived.`}
                     </div>
                   </Card>
                 )}

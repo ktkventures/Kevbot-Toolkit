@@ -1653,6 +1653,120 @@ def get_confluence_chart(
 
 
 # =============================================================================
+# CACHE BARS (M8.7 — live_bars-backed OHLCV for "Live WS" chart view)
+# =============================================================================
+
+TF_TO_SECONDS = {
+    '10Sec': 10, '30Sec': 30, '1Min': 60, '5Min': 300,
+    '10Min': 600, '15Min': 900, '30Min': 1800,
+    '1Hour': 3600, '1Day': 86400,
+}
+
+
+@router.get("/{strategy_id}/cache-bars")
+def get_strategy_cache_bars(
+    strategy_id: int,
+    value_type: str = Query("latest", description="'latest' = post-rebroadcast WS values; 'first' = decision-time values"),
+    days: int = Query(None, description="How many days of bars to return (default: strategy.data_days, capped at cache coverage)"),
+    user=Depends(get_current_user),
+):
+    """OHLCV bars for this strategy's (symbol, tf) sourced from `live_bars`.
+
+    Used by the 'Chart & Trades (Lab)' tab data-source toggle. Returns
+    just OHLCV — no indicators or heatmap. Frontend swaps the price-bar
+    data while keeping the indicator/heatmap layers REST-derived.
+
+    Two modes:
+      - value_type='latest' (default): the WS values currently in cache,
+        including any Polygon rebroadcast corrections within the 15-min
+        FINRA window. For 1Min bars, this matches REST closely.
+      - value_type='first':  the values at FIRST WS write — what the
+        live engine actually saw at decision moment. For 1Min, may
+        differ from 'latest' if Polygon rebroadcast a correction. For
+        sub-minute (we don't reaggregate on per-second corrections),
+        first == latest by construction.
+    """
+    strat = _get_or_404(strategy_id, user)
+    from db import get_admin_client, set_admin_user_context
+    from datetime import datetime, timedelta, timezone
+
+    symbol = strat.get('symbol')
+    tf = strat.get('timeframe', '1Min')
+    tf_seconds = TF_TO_SECONDS.get(tf)
+    if tf_seconds is None:
+        return {"chart_data": [], "value_type": value_type, "tf_seconds": None,
+                "note": f"Unknown timeframe '{tf}'"}
+
+    base_days = days or strat.get('data_days', 30)
+    end_dt = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(days=base_days)
+
+    set_admin_user_context(user.get('id') or strat.get('user_id'))
+    c = get_admin_client()
+
+    cols = "bar_start,open,high,low,close,volume,first_open,first_high,first_low,first_close,first_volume,source,written_at,last_updated_at"
+    rows = []
+    page_size = 1000
+    offset = 0
+    while True:
+        try:
+            r = c.table('live_bars').select(cols) \
+                .eq('symbol', symbol) \
+                .eq('timeframe_seconds', tf_seconds) \
+                .gte('bar_start', start_dt.isoformat()) \
+                .lte('bar_start', end_dt.isoformat()) \
+                .order('bar_start') \
+                .range(offset, offset + page_size - 1) \
+                .execute()
+        except Exception as e:
+            logger.warning("cache-bars: fetch failed offset=%d: %s", offset, e)
+            break
+        batch = r.data or []
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+
+    use_first = value_type == 'first'
+    chart_data = []
+    null_first = 0
+    for row in rows:
+        # Pick the OHLCV based on requested mode. If first_* is NULL
+        # (pre-migration row), fall back to latest values.
+        if use_first and row.get('first_close') is not None:
+            o, h, l, cl, v = row['first_open'], row['first_high'], row['first_low'], row['first_close'], row['first_volume']
+        else:
+            if use_first:
+                null_first += 1
+            o, h, l, cl, v = row['open'], row['high'], row['low'], row['close'], row['volume']
+        chart_data.append({
+            'timestamp': row['bar_start'],
+            'open': float(o or 0),
+            'high': float(h or 0),
+            'low': float(l or 0),
+            'close': float(cl or 0),
+            'volume': float(v or 0),
+            'source': row.get('source', 'ws'),
+        })
+
+    notes = []
+    if use_first and null_first:
+        notes.append(f"{null_first} bars predate the first_values migration; latest values used as fallback")
+
+    return {
+        "chart_data": chart_data,
+        "value_type": value_type,
+        "symbol": symbol,
+        "timeframe": tf,
+        "tf_seconds": tf_seconds,
+        "window_start": start_dt.isoformat(),
+        "window_end": end_dt.isoformat(),
+        "row_count": len(chart_data),
+        "notes": notes,
+    }
+
+
+# =============================================================================
 # TRIGGER ANALYSIS
 # =============================================================================
 

@@ -149,6 +149,46 @@ export function useStrategyChartData(id: number | null) {
   });
 }
 
+export interface CacheBar {
+  timestamp: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  source: string;
+}
+export interface CacheBarsResponse {
+  chart_data: CacheBar[];
+  value_type: string;
+  symbol?: string;
+  timeframe?: string;
+  tf_seconds?: number;
+  window_start?: string;
+  window_end?: string;
+  row_count: number;
+  notes: string[];
+}
+
+// M8.7: pulls OHLCV from live_bars (cache) for the Lab tab data-source
+// toggle. value_type='latest' = post-rebroadcast WS values; 'first' =
+// decision-time values (what live engine actually saw).
+export function useStrategyCacheBars(
+  id: number | null,
+  valueType: 'latest' | 'first',
+  enabled: boolean = true,
+) {
+  return useQuery({
+    queryKey: ['strategy-cache-bars', id, valueType],
+    queryFn: () => apiFetch<CacheBarsResponse>(
+      `/api/strategies/${id}/cache-bars?value_type=${valueType}`
+    ),
+    enabled: enabled && id !== null,
+    staleTime: 30000, // 30s — bars age into cache; refetch occasionally
+    retry: 1,
+  });
+}
+
 export interface ConfluenceChartData {
   bars: Record<string, any>[];
   indicator_columns: string[];
