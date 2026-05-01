@@ -420,6 +420,7 @@ const PULSE_CSS = `@keyframes pulse { 0%, 100% { transform: scale(1); opacity: 0
 const TABS = [
   'Equity & KPIs',
   'Chart & Trades',
+  'Chart & Trades (Lab)',
   'Confluence Analysis',
   'Configuration',
   'Alerts',
@@ -3047,6 +3048,219 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                 </div>
                   );
                 })()}
+              </div>
+            )}
+
+            {/* =========================================================== */}
+            {/* TAB 2.5: CHART & TRADES (LAB) — divergence-visualization view */}
+            {/* =========================================================== */}
+            {tab === 'Chart & Trades (Lab)' && (
+              <div>
+                {/* Explainer banner */}
+                <div
+                  className="mb-4 rounded-xl p-5"
+                  style={{
+                    background: 'var(--accent-muted)',
+                    border: '1px solid var(--accent)',
+                  }}
+                >
+                  <h4 className="text-sm font-medium mb-2" style={{ color: 'var(--accent)' }}>
+                    Lab tab — what each panel shows
+                  </h4>
+                  <ul className="text-xs space-y-1.5" style={{ color: 'var(--text)', lineHeight: 1.5 }}>
+                    <li>
+                      <strong>Price chart (below)</strong> — historical bars from <span style={{ color: 'var(--accent)' }}>Polygon REST</span> (settled values),
+                      plus a single <span style={{ color: 'var(--accent)' }}>WS forming bar</span> at the right edge.
+                      Indicators are computed from REST values. This matches what backtest sees.
+                    </li>
+                    <li>
+                      <strong>Algo trades (+)</strong> = backtest output, computed against REST bars.
+                      <strong> Alert trades (×)</strong> = what the live worker fired, against WS bars (different data source).
+                    </li>
+                    <li>
+                      <strong>Price Divergence panel (below)</strong> — for each matched (algo, alert) pair, shows
+                      the gap between the algo's bar-close price and the alert's near-live price.
+                      Drift &gt;$0.05 highlighted; persistent drift indicates the strategy is sensitive
+                      to the WS-vs-REST data gap.
+                    </li>
+                    <li style={{ color: 'var(--text-muted)' }}>
+                      WIP tab — visualizations to help understand backtest-vs-live data divergence.
+                      Existing Chart &amp; Trades tab unchanged.
+                    </li>
+                  </ul>
+                </div>
+
+                {/* Same chart as Chart & Trades — reuses memoized chartTabData */}
+                {!chartTabData.hasBars ? (
+                  <Card className="mb-4">
+                    <ChartPlaceholder
+                      label={stratSymbol ? `Loading ${stratSymbol} bars...` : 'OHLC chart'}
+                      height={400}
+                    />
+                  </Card>
+                ) : (
+                  <Card className="mb-4">
+                    <SyncedChartPane
+                      panes={chartTabData.chartPanes}
+                      upColor={chartPrefs.candleUp}
+                      downColor={chartPrefs.candleDown}
+                      upBorderColor={chartPrefs.candleUpBorder}
+                      gridLines={chartPrefs.gridLines}
+                      rightOffset={chartPrefs.rightOffset}
+                      timezone={chartPrefs.timezone}
+                      formingBar={formingBarProp}
+                      formingIndicators={formingIndicators}
+                      formingStates={formingStates}
+                      formingStateCrossTf={formingStateCrossTf}
+                    />
+                    <div className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>
+                      Data source: REST historical + WS forming bar (right edge)
+                    </div>
+                  </Card>
+                )}
+
+                {/* NEW: Price Divergence Panel — algo vs alert price gap per trade */}
+                <Card className="mb-4">
+                  <h4 className="text-sm font-medium mb-3">
+                    Price Divergence — Algo vs Alert
+                    <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
+                      (matched trades only — gap between REST-backtest price and live-fire price)
+                    </span>
+                  </h4>
+                  {(() => {
+                    // Build divergence rows from matched (algo, alert) pairs.
+                    // algoMatches[i] is the alert match for the i'th algo trade
+                    // in [...fwdTrades, ...btTrades]. Both arrays in scope above.
+                    const algoAll = [...fwdTrades, ...btTrades];
+                    type DivRow = {
+                      key: string;
+                      tradeNum: number;
+                      entryTime: string;
+                      algoEntry: number | null;
+                      alertEntry: number | null;
+                      entryDelta: number | null;
+                      exitTime: string;
+                      algoExit: number | null;
+                      alertExit: number | null;
+                      exitDelta: number | null;
+                    };
+                    const rows: DivRow[] = [];
+                    algoAll.forEach((t: any, i: number) => {
+                      const m = algoMatches[i];
+                      if (!m || !m.matched) return;
+                      const algoEntry = t.entryPrice != null ? Number(t.entryPrice) : null;
+                      const algoExit = t.exitPrice != null ? Number(t.exitPrice) : null;
+                      const alertEntry = m.alertEntryPrice != null ? Number(m.alertEntryPrice) : null;
+                      const alertExit = m.alertExitPrice != null ? Number(m.alertExitPrice) : null;
+                      const entryDelta = (algoEntry != null && alertEntry != null)
+                        ? alertEntry - algoEntry : null;
+                      const exitDelta = (algoExit != null && alertExit != null)
+                        ? alertExit - algoExit : null;
+                      rows.push({
+                        key: `${i}`,
+                        tradeNum: rows.length + 1,
+                        entryTime: t.entryTimeDisplay || t.entryTime || '--',
+                        algoEntry, alertEntry, entryDelta,
+                        exitTime: t.exitTimeDisplay || t.exitTime || '--',
+                        algoExit, alertExit, exitDelta,
+                      });
+                    });
+                    rows.sort((a, b) => safeDateMs(b.entryTime) - safeDateMs(a.entryTime));
+
+                    if (rows.length === 0) {
+                      return (
+                        <p className="text-xs py-4" style={{ color: 'var(--text-muted)' }}>
+                          No matched algo/alert pairs found. Either no live alerts have fired yet,
+                          or the matches are outside the slippage tolerance.
+                        </p>
+                      );
+                    }
+
+                    // Summary stats
+                    const entryDeltas = rows.map(r => r.entryDelta).filter((d): d is number => d != null);
+                    const exitDeltas = rows.map(r => r.exitDelta).filter((d): d is number => d != null);
+                    const stat = (arr: number[]) => {
+                      if (arr.length === 0) return { mean: 0, max: 0, n: 0 };
+                      const abs = arr.map(Math.abs);
+                      return {
+                        mean: abs.reduce((s, x) => s + x, 0) / abs.length,
+                        max: Math.max(...abs),
+                        n: arr.length,
+                      };
+                    };
+                    const eStat = stat(entryDeltas);
+                    const xStat = stat(exitDeltas);
+
+                    const fmtMoney = (v: number | null) => v == null ? '--' : `$${v.toFixed(4)}`;
+                    const fmtDelta = (d: number | null) => {
+                      if (d == null) return '--';
+                      const sign = d >= 0 ? '+' : '';
+                      return `${sign}$${d.toFixed(4)}`;
+                    };
+                    const deltaColor = (d: number | null) => {
+                      if (d == null) return 'var(--text-muted)';
+                      const a = Math.abs(d);
+                      if (a < 0.01) return 'var(--text-muted)';
+                      if (a < 0.05) return 'var(--orange)';
+                      return 'var(--red)';
+                    };
+
+                    return (
+                      <>
+                        {/* Summary stats row */}
+                        <div className="grid grid-cols-2 gap-4 mb-4 text-xs" style={{ color: 'var(--text-muted)' }}>
+                          <div>
+                            <div className="font-medium mb-1" style={{ color: 'var(--text)' }}>Entry drift summary</div>
+                            <div>Matched pairs: <span style={{ color: 'var(--text)' }}>{eStat.n}</span></div>
+                            <div>Mean |Δ|: <span style={{ color: 'var(--text)' }}>${eStat.mean.toFixed(4)}</span></div>
+                            <div>Max |Δ|: <span style={{ color: 'var(--text)' }}>${eStat.max.toFixed(4)}</span></div>
+                          </div>
+                          <div>
+                            <div className="font-medium mb-1" style={{ color: 'var(--text)' }}>Exit drift summary</div>
+                            <div>Matched pairs: <span style={{ color: 'var(--text)' }}>{xStat.n}</span></div>
+                            <div>Mean |Δ|: <span style={{ color: 'var(--text)' }}>${xStat.mean.toFixed(4)}</span></div>
+                            <div>Max |Δ|: <span style={{ color: 'var(--text)' }}>${xStat.max.toFixed(4)}</span></div>
+                          </div>
+                        </div>
+
+                        {/* Per-trade table */}
+                        <div style={{ overflowX: 'auto', maxHeight: 400, overflowY: 'auto' }}>
+                          <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
+                            <thead>
+                              <tr>
+                                {['#', 'Entry Time', 'Algo $', 'Alert $', 'Δ Entry',
+                                  'Exit Time', 'Algo $', 'Alert $', 'Δ Exit'].map((h, hi) => (
+                                  <th key={hi} style={thStyle}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {rows.slice(0, 100).map((r) => (
+                                <tr key={r.key}>
+                                  <td style={{ ...tdStyle, fontFamily: 'monospace', color: 'var(--text-muted)' }}>{r.tradeNum}</td>
+                                  <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem' }}>{renderTime(r.entryTime)}</td>
+                                  <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{fmtMoney(r.algoEntry)}</td>
+                                  <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{fmtMoney(r.alertEntry)}</td>
+                                  <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem', color: deltaColor(r.entryDelta), fontWeight: 600 }}>{fmtDelta(r.entryDelta)}</td>
+                                  <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem' }}>{renderTime(r.exitTime)}</td>
+                                  <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{fmtMoney(r.algoExit)}</td>
+                                  <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{fmtMoney(r.alertExit)}</td>
+                                  <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem', color: deltaColor(r.exitDelta), fontWeight: 600 }}>{fmtDelta(r.exitDelta)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        <div className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>
+                          Color: <span style={{ color: 'var(--text-muted)' }}>gray &lt;$0.01</span> ·{' '}
+                          <span style={{ color: 'var(--orange)' }}>orange $0.01-$0.05</span> ·{' '}
+                          <span style={{ color: 'var(--red)' }}>red ≥$0.05</span>.
+                          Showing {Math.min(rows.length, 100)} of {rows.length} matched trades.
+                        </div>
+                      </>
+                    );
+                  })()}
+                </Card>
               </div>
             )}
 
