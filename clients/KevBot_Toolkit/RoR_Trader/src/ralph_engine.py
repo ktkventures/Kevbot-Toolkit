@@ -1301,16 +1301,25 @@ class SymbolHub:
             if completed is None:
                 continue
 
-            # M8.7: record force-closed bar to live_bars. This is the
-            # path most sub-minute primary + non-AM-channel secondary
-            # bars actually take, since Polygon's per-second `A`
-            # events don't always arrive on the bar boundary itself.
-            try:
-                from live_bars_writer import write_bar as _live_bars_write
-                _live_bars_write(self.symbol, tf_seconds, completed,
-                                 source='ws')
-            except Exception:
-                pass
+            # M8.7 hotfix #2 (2026-05-01): only write SUB-MINUTE bars
+            # from the flush path. For tf >= 60, the canonical write
+            # comes from on_polygon_bar (primary AM) or its secondary
+            # fan-out — the 60s+ builder's `_partial` here is fed by
+            # per-second bars for chart-visual purposes ONLY (close_
+            # on_boundary=False) and contains incomplete data. Writing
+            # it would overwrite the canonical row with partial garbage.
+            # Symptom: 1Min cache rows with `volume` 99% lower than
+            # `first_volume` (canonical). Sub-minute primaries (10Sec,
+            # 30Sec) legitimately rely on flush-driven writes because
+            # Polygon's per-second A events arrive too sparsely to
+            # always trigger close_on_boundary=True at the right moment.
+            if tf_seconds < 60:
+                try:
+                    from live_bars_writer import write_bar as _live_bars_write
+                    _live_bars_write(self.symbol, tf_seconds, completed,
+                                     source='ws')
+                except Exception:
+                    pass
 
             # Update shared confluence buffer first (shadow or real monitor)
             shadow = self._shadow_engines.get(tf_seconds)
