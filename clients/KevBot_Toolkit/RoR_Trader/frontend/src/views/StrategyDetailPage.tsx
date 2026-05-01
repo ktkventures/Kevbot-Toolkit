@@ -959,11 +959,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     'All' | 'Forward Only' | 'Backtest Only' | 'Last 7 Days' | 'Last 30 Days' | 'Last 90 Days'
   >('Forward Only');
   const [showAllUnified, setShowAllUnified] = useState(false);
-  // Lab tab data-source toggle (M8.7). 'rest' = current behavior (REST
-  // backtest data). 'ws-latest' = live_bars cache `close` (after Polygon
-  // rebroadcasts within 15 min). 'ws-first' = live_bars `first_close`
-  // (what the live engine actually saw at decision moment).
-  const [labDataSource, setLabDataSource] = useState<'rest' | 'ws-latest' | 'ws-first'>('rest');
+  // Lab tab — toggles which WS view the right-side chart shows.
+  // 'ws-first' = live_bars `first_close` (what live engine saw at
+  // decision moment). 'ws-latest' = live_bars `close` (after Polygon
+  // rebroadcast corrections within 15 min, closer to settled REST).
+  // The left side is always REST (Algo Lens); only the right side
+  // (Alert Lens) is toggleable.
+  const [labDataSource, setLabDataSource] = useState<'ws-latest' | 'ws-first'>('ws-first');
   const { data: labCacheLatest, isLoading: labCacheLatestLoading } = useStrategyCacheBars(
     strategyId, 'latest', labDataSource === 'ws-latest'
   );
@@ -1734,17 +1736,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // computed by the chart-data endpoint (REST-derived) since they're
   // expensive to recompute; only the candlesticks change source.
   const labChartTabData = useMemo(() => {
-    // Pick the bar source based on the toggle
+    // Right-side chart bars come from the cache. Toggle picks first vs latest.
     let rawBars: any[] = [];
-    if (labDataSource === 'rest') {
-      const chartSrc = chartDataResp?.chart_data;
-      rawBars = chartSrc && chartSrc.length > 0
-        ? chartSrc
-        : (barsData || []).map((b: any) => ({
-            timestamp: b.timestamp, open: b.open, high: b.high,
-            low: b.low, close: b.close, volume: b.volume,
-          }));
-    } else if (labDataSource === 'ws-latest') {
+    if (labDataSource === 'ws-latest') {
       rawBars = labCacheLatest?.chart_data || [];
     } else if (labDataSource === 'ws-first') {
       rawBars = labCacheFirst?.chart_data || [];
@@ -3151,98 +3145,136 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   }}
                 >
                   <h4 className="text-sm font-medium mb-2" style={{ color: 'var(--accent)' }}>
-                    Lab tab — what each panel shows
+                    Lab tab — Algo Lens vs Alert Lens (side-by-side)
                   </h4>
                   <ul className="text-xs space-y-1.5" style={{ color: 'var(--text)', lineHeight: 1.5 }}>
                     <li>
-                      <strong>Price chart (below)</strong> — historical bars from <span style={{ color: 'var(--accent)' }}>Polygon REST</span> (settled values),
-                      plus a single <span style={{ color: 'var(--accent)' }}>WS forming bar</span> at the right edge.
-                      Indicators are computed from REST values. This matches what backtest sees.
+                      <strong>Algo Lens (left)</strong> — REST bars + REST indicators + REST heatmap.
+                      Matches what the backtest engine sees. Same as the existing Chart &amp; Trades tab.
                     </li>
                     <li>
-                      <strong>Algo trades (+)</strong> = backtest output, computed against REST bars.
-                      <strong> Alert trades (×)</strong> = what the live worker fired, against WS bars (different data source).
+                      <strong>Alert Lens (right)</strong> — WS bars from <code>live_bars</code> cache.
+                      Toggle <em>First-write</em> vs <em>Latest</em> to see decision-time vs post-rebroadcast values.
+                      <br />
+                      <strong style={{ color: 'var(--orange)' }}>Phase 1 caveat</strong>: indicators &amp; heatmap on the right side are
+                      currently computed from REST values, not WS. Phase 2 (engine-state replay from cache)
+                      will compute them properly so the heatmap matches what the live engine actually saw.
                     </li>
                     <li>
-                      <strong>Price Divergence panel (below)</strong> — for each matched (algo, alert) pair, shows
-                      the gap between the algo's bar-close price and the alert's near-live price.
-                      Drift &gt;$0.05 highlighted; persistent drift indicates the strategy is sensitive
-                      to the WS-vs-REST data gap.
+                      <strong>Price Divergence panel (below)</strong> — per-trade comparison of algo's bar-close price
+                      vs alert's near-live price. Drift coloring: gray &lt;$0.01, orange $0.01–$0.05, red ≥$0.05.
                     </li>
                     <li style={{ color: 'var(--text-muted)' }}>
-                      WIP tab — visualizations to help understand backtest-vs-live data divergence.
-                      Existing Chart &amp; Trades tab unchanged.
+                      Existing Chart &amp; Trades tab unchanged. This tab is for understanding how backtest's
+                      view differs from live's view.
                     </li>
                   </ul>
                 </div>
 
-                {/* Data source toggle */}
-                <div className="flex items-center gap-2 mb-3 flex-wrap">
-                  <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Data source:</span>
-                  {([
-                    { key: 'rest', label: 'REST (current)', tip: 'Polygon REST settled bars — same as backtest' },
-                    { key: 'ws-latest', label: 'Live WS (latest)', tip: 'live_bars cache `close` — WS values after Polygon rebroadcast corrections within 15 min' },
-                    { key: 'ws-first', label: 'Live WS (first-write)', tip: 'live_bars `first_close` — what the live engine actually saw at decision moment' },
-                  ] as const).map(opt => (
-                    <button
-                      key={opt.key}
-                      onClick={() => setLabDataSource(opt.key)}
-                      title={opt.tip}
-                      className="text-xs px-3 py-1 rounded-full transition-colors"
-                      style={{
-                        background: labDataSource === opt.key ? 'var(--accent)' : 'var(--bg-input)',
-                        color: labDataSource === opt.key ? 'white' : 'var(--text-muted)',
-                        border: labDataSource === opt.key ? 'none' : '1px solid var(--border)',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                  {(labCacheLatestLoading || labCacheFirstLoading) && (
-                    <span className="text-xs" style={{ color: 'var(--text-muted)' }}>Loading cache bars...</span>
-                  )}
-                </div>
-
-                {/* Chart — uses labChartTabData which respects the data source toggle */}
-                {!labChartTabData.hasBars ? (
-                  <Card className="mb-4">
-                    <ChartPlaceholder
-                      label={
-                        labDataSource !== 'rest' && (labCacheLatestLoading || labCacheFirstLoading)
-                          ? `Loading ${stratSymbol} cache bars...`
-                          : labDataSource !== 'rest'
-                            ? `No cache data yet for ${stratSymbol} (cache started recording 2026-04-30)`
-                            : stratSymbol ? `Loading ${stratSymbol} bars...` : 'OHLC chart'
-                      }
-                      height={400}
-                    />
-                  </Card>
-                ) : (
-                  <Card className="mb-4">
-                    <SyncedChartPane
-                      panes={labChartTabData.chartPanes}
-                      upColor={chartPrefs.candleUp}
-                      downColor={chartPrefs.candleDown}
-                      upBorderColor={chartPrefs.candleUpBorder}
-                      gridLines={chartPrefs.gridLines}
-                      rightOffset={chartPrefs.rightOffset}
-                      timezone={chartPrefs.timezone}
-                      // Forming bar only makes sense for REST mode (it's a
-                      // single WS bar at the right edge of REST bars). For
-                      // ws-latest/ws-first, the entire chart is already WS.
-                      formingBar={labDataSource === 'rest' ? formingBarProp : null}
-                      formingIndicators={labDataSource === 'rest' ? formingIndicators : null}
-                      formingStates={labDataSource === 'rest' ? formingStates : null}
-                      formingStateCrossTf={labDataSource === 'rest' ? formingStateCrossTf : null}
-                    />
-                    <div className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>
-                      {labDataSource === 'rest' && 'Data source: REST historical + WS forming bar (right edge). Indicators computed from REST.'}
-                      {labDataSource === 'ws-latest' && `Data source: live_bars cache (latest WS values). ${labCacheLatest?.row_count ?? 0} bars in window. Indicators stay REST-derived.`}
-                      {labDataSource === 'ws-first' && `Data source: live_bars first-write (decision-moment WS). ${labCacheFirst?.row_count ?? 0} bars in window. Indicators stay REST-derived.`}
+                {/* Side-by-side: Algo Lens (REST) | Alert Lens (WS) */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+                  {/* LEFT: Algo Lens — what backtest engine sees (REST) */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-sm font-medium">
+                        Algo Lens
+                        <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
+                          (what backtest sees — REST)
+                        </span>
+                      </h4>
                     </div>
-                  </Card>
-                )}
+                    {!chartTabData.hasBars ? (
+                      <Card>
+                        <ChartPlaceholder label={stratSymbol ? `Loading ${stratSymbol}...` : 'OHLC chart'} height={350} />
+                      </Card>
+                    ) : (
+                      <Card>
+                        <SyncedChartPane
+                          panes={chartTabData.chartPanes}
+                          upColor={chartPrefs.candleUp}
+                          downColor={chartPrefs.candleDown}
+                          upBorderColor={chartPrefs.candleUpBorder}
+                          gridLines={chartPrefs.gridLines}
+                          rightOffset={chartPrefs.rightOffset}
+                          timezone={chartPrefs.timezone}
+                          formingBar={formingBarProp}
+                          formingIndicators={formingIndicators}
+                          formingStates={formingStates}
+                          formingStateCrossTf={formingStateCrossTf}
+                        />
+                        <div className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>
+                          REST historical bars + WS forming bar (right edge). Indicators &amp; heatmap from REST.
+                        </div>
+                      </Card>
+                    )}
+                  </div>
+
+                  {/* RIGHT: Alert Lens — what live engine sees (WS bars) */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                      <h4 className="text-sm font-medium">
+                        Alert Lens
+                        <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
+                          (what live engine sees — WS cache)
+                        </span>
+                      </h4>
+                      {/* First/latest sub-toggle for the alert side */}
+                      <div className="flex items-center gap-1 text-xs">
+                        {(['ws-first', 'ws-latest'] as const).map(opt => (
+                          <button
+                            key={opt}
+                            onClick={() => setLabDataSource(opt)}
+                            title={opt === 'ws-first'
+                              ? "first_close — bar at first WS write (decision-time)"
+                              : "close — bar after Polygon rebroadcast corrections within 15 min"}
+                            className="px-2 py-0.5 rounded transition-colors"
+                            style={{
+                              background: labDataSource === opt ? 'var(--accent)' : 'var(--bg-input)',
+                              color: labDataSource === opt ? 'white' : 'var(--text-muted)',
+                              border: labDataSource === opt ? 'none' : '1px solid var(--border)',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            {opt === 'ws-first' ? 'First-write' : 'Latest'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {!labChartTabData.hasBars ? (
+                      <Card>
+                        <ChartPlaceholder
+                          label={(labCacheLatestLoading || labCacheFirstLoading)
+                            ? `Loading ${stratSymbol} cache bars...`
+                            : `No cache data for ${stratSymbol} yet (cache started 2026-04-30)`}
+                          height={350}
+                        />
+                      </Card>
+                    ) : (
+                      <Card>
+                        <SyncedChartPane
+                          panes={labChartTabData.chartPanes}
+                          upColor={chartPrefs.candleUp}
+                          downColor={chartPrefs.candleDown}
+                          upBorderColor={chartPrefs.candleUpBorder}
+                          gridLines={chartPrefs.gridLines}
+                          rightOffset={chartPrefs.rightOffset}
+                          timezone={chartPrefs.timezone}
+                          // No forming bar overlay — cache bars ARE WS
+                          formingBar={null}
+                          formingIndicators={null}
+                          formingStates={null}
+                          formingStateCrossTf={null}
+                        />
+                        <div className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>
+                          {labDataSource === 'ws-latest' && `WS cache (latest). ${labCacheLatest?.row_count ?? 0} bars.`}
+                          {labDataSource === 'ws-first' && `WS cache (first-write, decision-time). ${labCacheFirst?.row_count ?? 0} bars.`}
+                          {' '}<strong style={{ color: 'var(--orange)' }}>Phase 1 caveat:</strong> indicators &amp; heatmap above use REST values, not WS.
+                          Phase 2 (replay engine state from cache) will fix this.
+                        </div>
+                      </Card>
+                    )}
+                  </div>
+                </div>
 
                 {/* NEW: Price Divergence Panel — algo vs alert price gap per trade */}
                 <Card className="mb-4">
