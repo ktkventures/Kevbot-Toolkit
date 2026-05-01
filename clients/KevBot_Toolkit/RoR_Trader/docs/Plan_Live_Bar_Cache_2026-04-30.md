@@ -454,6 +454,37 @@ M8.7 is COMPLETE when:
 - Historical reconstruction from live ticks (would let us claim
   tick-level fidelity). Not worth the effort for current trading
   style.
+- **Polygon Snapshot endpoint as cache health probe.** Polygon
+  publishes a `/snapshot/locale/us/markets/stocks/tickers/{ticker}`
+  endpoint that returns the canonical "current state" view (last
+  trade, last quote, current/prev-day aggregates). Polygon docs
+  position it as the authoritative current-state query. We don't
+  use it today — our cache is fed by WS, never reconciled against
+  Snapshot. Potential future use: periodic health-check that
+  compares the most recent live_bars row against Snapshot's
+  current-day aggregate as a sanity probe. NOT in M8.7 scope. Worth
+  knowing it exists for later debugging if we ever doubt the cache.
+
+## Backtest-model-as-strategy-variable (idea recorded 2026-05-01)
+
+Kevin proposed treating the data source as an explicit, per-strategy
+configurable optimizable variable (alongside trigger packs, stop
+methods, exit packs, time-exit packs). Instead of one global default
+that changes when we ship cache cutover, each strategy declares
+which "model" it was authored against — backtest model + live model.
+
+Likely model values once we have data:
+- `rest_settled` (current behavior — Polygon REST aggregates)
+- `ws_settled`   (cache `close` — WS with rebroadcast corrections)
+- `ws_first`     (cache `first_close` — what the live engine actually saw)
+- `hifi_*`       (per-second / tick refinement, future)
+
+Benefits: existing strategies never break when defaults shift; we
+can backtest the same strategy on multiple models and pick what
+forward-tests best; Hi-Fi gates collapse from a separate UX axis
+into a model variant. Cost: cognitive surface for users + UI work
+to expose the choice. NOT scoped — record for the dual-source
+experiment outcome to inform whether this is worth building.
 
 ---
 

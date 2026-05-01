@@ -48,7 +48,8 @@ def fetch_cache(c, since_iso: str, symbol: str | None,
                 tf_seconds: int | None) -> list[dict]:
     q = c.table("live_bars").select(
         "symbol,timeframe_seconds,bar_start,open,high,low,close,volume,"
-        "source,written_at"
+        "first_open,first_high,first_low,first_close,first_volume,"
+        "source,written_at,last_updated_at"
     ).gte("bar_start", since_iso).order("bar_start")
     if symbol:
         q = q.eq("symbol", symbol)
@@ -150,6 +151,44 @@ def report_drift(rows: list[dict]) -> None:
               f"{mean_d:>10.4f} {p95_d:>10.4f} {max_d:>10.4f}")
 
 
+def report_first_vs_latest(rows: list[dict]) -> None:
+    """How often did Polygon rebroadcast a correction?
+
+    Compares first_close (value at first WS write) against close
+    (latest value in the cache, possibly after rebroadcast corrections
+    within the 15-min FINRA late-print window). Only meaningful for
+    rows written after the first_values migration was applied.
+    """
+    print("\n=== First vs latest (Polygon WS rebroadcast corrections) ===")
+    by_group: dict[tuple[str, int], list[dict]] = defaultdict(list)
+    for row in rows:
+        if row.get("source") != "ws":
+            continue
+        if row.get("first_close") is None:
+            continue  # pre-migration row, skip
+        by_group[(row["symbol"], row["timeframe_seconds"])].append(row)
+
+    if not any(by_group.values()):
+        print("  (no rows with first_close — migration not applied yet?)")
+        return
+
+    print(f"{'symbol/tf':<18} {'n':>5} {'corrected':>10} {'%corr':>7} "
+          f"{'mean|d|':>10} {'p95|d|':>10} {'max|d|':>10}")
+    for (sym, tf), group in sorted(by_group.items()):
+        n = len(group)
+        diffs = [abs(float(r["close"]) - float(r["first_close"]))
+                 for r in group
+                 if abs(float(r["close"]) - float(r["first_close"])) > 1e-6]
+        diffs.sort()
+        corrected = len(diffs)
+        pct = 100.0 * corrected / n if n else 0.0
+        mean_d = statistics.mean(diffs) if diffs else 0.0
+        p95_d = diffs[int(0.95 * len(diffs))] if diffs else 0.0
+        max_d = diffs[-1] if diffs else 0.0
+        print(f"{sym + '/' + str(tf) + 's':<18} {n:>5} {corrected:>10} "
+              f"{pct:>6.1f}% {mean_d:>10.4f} {p95_d:>10.4f} {max_d:>10.4f}")
+
+
 def report_coverage_gaps(rows: list[dict]) -> None:
     """Bars in REST but missing from cache, per (symbol, tf)."""
     print("\n=== Coverage gaps (bars in REST but missing from cache) ===")
@@ -213,6 +252,7 @@ def main() -> None:
     print(f"By source: {dict(by_source)}")
 
     report_freshness(rows)
+    report_first_vs_latest(rows)
     report_drift(rows)
     report_coverage_gaps(rows)
 
