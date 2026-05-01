@@ -1301,6 +1301,17 @@ class SymbolHub:
             if completed is None:
                 continue
 
+            # M8.7: record force-closed bar to live_bars. This is the
+            # path most sub-minute primary + non-AM-channel secondary
+            # bars actually take, since Polygon's per-second `A`
+            # events don't always arrive on the bar boundary itself.
+            try:
+                from live_bars_writer import write_bar as _live_bars_write
+                _live_bars_write(self.symbol, tf_seconds, completed,
+                                 source='ws')
+            except Exception:
+                pass
+
             # Update shared confluence buffer first (shadow or real monitor)
             shadow = self._shadow_engines.get(tf_seconds)
             if shadow and shadow.indicators._initialized:
