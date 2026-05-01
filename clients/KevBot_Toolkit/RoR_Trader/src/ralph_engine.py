@@ -1532,6 +1532,14 @@ class SymbolHub:
         # Accept the pre-built bar into the builder (handles gap-fill)
         builder.accept_bar(bar_dict)
 
+        # M8.7: record the WS-aggregated bar to live_bars (fire-and-forget).
+        # Gated by LIVE_BAR_CACHE_WRITE_ENABLED env flag.
+        try:
+            from live_bars_writer import write_bar as _live_bars_write
+            _live_bars_write(self.symbol, tf_seconds, bar_dict, source='ws')
+        except Exception:
+            pass  # never block bar processing on cache write
+
         self._run_monitor_pipeline_for_completed_bar(
             tf_seconds=tf_seconds,
             bar_dict=bar_dict,
@@ -1564,6 +1572,12 @@ class SymbolHub:
                 continue
             if completed is None:
                 continue
+            # M8.7: record the aggregated secondary-TF bar to live_bars.
+            try:
+                from live_bars_writer import write_bar as _live_bars_write
+                _live_bars_write(self.symbol, sec_tf, completed, source='ws')
+            except Exception:
+                pass
             shadow = self._shadow_engines.get(sec_tf)
             if shadow is None:
                 continue
@@ -1687,6 +1701,12 @@ class SymbolHub:
                 continue
             if completed is None:
                 continue
+            # M8.7: record sub-minute secondary-TF bar to live_bars.
+            try:
+                from live_bars_writer import write_bar as _live_bars_write
+                _live_bars_write(self.symbol, sec_tf, completed, source='ws')
+            except Exception:
+                pass
             shadow = self._shadow_engines.get(sec_tf)
             if shadow is None:
                 continue
@@ -1716,6 +1736,13 @@ class SymbolHub:
                 # Sub-minute: per-second is the canonical source. Aggregate.
                 completed = b.accept_second_bar(bar_dict, close_on_boundary=True)
                 if completed is not None:
+                    # M8.7: record sub-minute primary-TF bar to live_bars.
+                    try:
+                        from live_bars_writer import write_bar as _live_bars_write
+                        _live_bars_write(self.symbol, tf_seconds, completed,
+                                         source='ws')
+                    except Exception:
+                        pass
                     # Run the full monitor pipeline on the closed sub-minute bar
                     self._run_monitor_pipeline_for_completed_bar(
                         tf_seconds=tf_seconds,
@@ -1946,6 +1973,13 @@ class RalphEngine:
                             loop.create_task, stream.close())
                 except Exception:
                     pass
+        # M8.7: drain in-flight live_bars writes so we don't lose the
+        # last few seconds of data on engine restart.
+        try:
+            from live_bars_writer import shutdown as _live_bars_shutdown
+            _live_bars_shutdown(wait=True)
+        except Exception:
+            pass
 
     def _warmup_all(self):
         """Load historical data and initialize all monitors."""
@@ -2280,6 +2314,12 @@ class RalphEngine:
                                         'low': ev.get('l', 0),
                                         'close': ev.get('c', 0),
                                         'volume': ev.get('v', 0),
+                                        # Optional Polygon fields — kept if
+                                        # present so live_bars writes can
+                                        # capture them. Aggregated downstream
+                                        # bars don't carry these.
+                                        'vwap': ev.get('vw'),
+                                        'trade_count': ev.get('n'),
                                     }
 
                                     if ev_type in ('A', 'XAS'):

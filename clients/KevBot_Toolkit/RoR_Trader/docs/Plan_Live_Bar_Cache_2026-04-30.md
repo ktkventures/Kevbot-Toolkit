@@ -35,6 +35,129 @@ trade-set divergence we measured at ~5-15% (see
 **Gold standard (TradingView et al.):** one data source, one bar set.
 Live, chart, backtest all read the same bars.
 
+## Findings & open questions added 2026-04-30 (post-discussion)
+
+### Polygon explicitly does NOT claim WS = REST parity
+
+Researched Polygon's (now rebranded **Massive** — same vendor) official
+documentation. Three direct quotes that contradict our prior assumption:
+
+> *"Users sometimes notice that their own reconstructed OHLCV values
+> — whether built from tick data or from WebSocket trades — don't
+> always match the aggregates returned by Massive's Aggregates
+> endpoint... This is normal."*
+> — KB: How does Massive create aggregate bars?
+
+> *"FINRA... has up to 15 minutes to report a trade that happened on
+> any of the dark pools. ... if a trade comes in after that 15-minute
+> window, it will not be included in the candle until the end of the
+> day."*
+> — Blog: Understanding Aggregate Bar Delays
+
+> *"There is no universal standard for OHLC data across all vendors."*
+
+Community confirmation: GitHub `polygon-io/issues#88` ("Historical
+data never matches streaming data") documents real WS-vs-REST volume
+divergence in the wild.
+
+**Implication:** the comment in `_reconcile_with_rest` claiming
+"Polygon WS bars = REST bars by construction — no reconciliation
+needed" was an unfounded user assumption. Polygon's own docs say
+they will differ. The drift we measured (79.4% of bars differ,
+median $0.02, p95 $0.09, max $0.835) is consistent with their
+documented late-print mechanism.
+
+### The REST reconciliation safety net is currently disabled
+
+`ralph_engine._reconcile_with_rest` (line 2755) was built for the
+Alpaca era to correct WS-built bars against REST after settlement.
+When we migrated to Polygon (Phase 31), it was made a no-op based
+on the faulty assumption above. So we've been running without that
+safety net since Phase 31.
+
+**Re-enabling it is NOT the right fix** — it would retroactively
+rewrite bars the engine had already evaluated and fired alerts on,
+introducing a different kind of inconsistency. M8.7's cache is the
+correct architectural answer.
+
+### REST-as-consensus hypothesis (Kevin, 2026-04-30)
+
+Important counterweight to the "WS is more honest" framing:
+
+REST/settled data is what TradingView and most discretionary traders
+look at. If a strategy uses an indicator like "price crosses above
+9 EMA," **the 9 EMA those other traders see is the REST 9 EMA**, not
+our WS 9 EMA. Their trading decisions — and therefore the price
+action our strategy is reacting to — are anchored to REST-based
+indicators.
+
+Two coherent worldviews emerge:
+
+- **(A) Settled bars are truth** — what TV / REST / consensus shows.
+  Backtest-on-REST aligns with the indicators the broader market is
+  watching. Mild lookahead bias (data wasn't fully available in
+  real-time) but matches "what other traders saw."
+- **(B) Real-time tape is truth** — what our WS / live worker sees.
+  Honest about information available at decision time. May diverge
+  from consensus indicators by pennies-to-dimes.
+
+Neither is universally correct. The choice depends on whether your
+edge comes from following consensus (favors A) or from acting on
+information faster than consensus (favors B).
+
+### The dual-source forward-test experiment
+
+Plan: instead of pre-committing to one data source, build M8.7 such
+that **both REST and WS bars exist in the cache** (distinguished by
+`source` column: `'ws'` for live worker writes, `'rest_backfill'`
+for REST-derived rows). Then after 4-6 weeks of cache accumulation:
+
+1. Pick ~10 strategies that have been live throughout the cache window
+2. Run each backtest twice: once with REST data, once with cache (WS) data
+3. Compare each backtest's predictions to that strategy's actual
+   forward-test trades over the same window
+4. Whichever backtest source correlates better with forward results
+   wins for that strategy class
+
+This decides empirically — not by argument — which source is the
+better predictor. Possible outcomes:
+- WS-backtest wins → default everyone to cache, REST becomes fallback
+- REST-backtest wins → keep REST as default, WS-cache only for live-
+  alert-explanation
+- Mixed by indicator class (e.g., trend strategies prefer REST,
+  scalp strategies prefer WS) → expose per-strategy/per-pack toggle
+
+**No user-selectable toggle in v1.** Adds UI surface for a setting
+data may say isn't needed. Build the foundation, run the experiment,
+then decide. The two sources COEXIST naturally (REST is the existing
+backtest path; cache is what M8.7 adds), so we get the experiment
+for free without dual-rendering.
+
+### Heatmap and price chart are aligned for completed bars
+
+Confirmed by code trace. Both `chart-data` endpoint and the heatmap
+read from `prepare_data_with_indicators` (REST path). The forming
+bar at the right edge of the chart is the only WS-derived element,
+and the heatmap doesn't render a cell for the forming bar at all.
+So heatmap and chart are apples-to-apples for every completed bar
+shown in the UI today.
+
+After M8.7 cutover, both will read from cache for completed bars —
+still aligned, but now also aligned with what the live worker saw.
+
+### Concrete data flows for each surface (current state)
+
+| Surface | Bar source today |
+|---|---|
+| Live worker (alerts) | REST for 7-day warmup at startup, WS for everything since |
+| Backtest / algo history | 100% REST via `prepare_data_with_indicators` |
+| Price chart in UI | REST for completed bars; WS for forming bar (Supabase Realtime broadcast) |
+| Heatmap | 100% REST (same as backtest) |
+
+After M8.7 cutover, all four shift to cache-first with REST fallback.
+Alert history doesn't change (it's already authoritative WS). The
+others all align toward agreement.
+
 ## Architectural approach
 
 ### Layer 1 — Worker writes bars to a cache table
@@ -226,8 +349,12 @@ These have been agreed on with Kevin:
 2. **Symbols to cache: dynamic.** Whatever the worker is monitoring at
    any given moment. As strategies are added/removed, the set adapts.
 
-3. **Retention: 90 days default, configurable.** Older bars fall back
-   to REST. ~30K bars/day × 90 days = ~3M rows = ~500 MB. Fine.
+3. **Retention: indefinite (revised 2026-04-30).** Original plan said
+   90 days; reconsidered after recognizing the dual-source experiment
+   and the compounding-trust value of long cache history. Math: ~30K
+   bars/day × 365 = ~11M rows/year ≈ <1 GB/year. Negligible. Keep
+   indefinitely; revisit only if Postgres footprint becomes a real
+   concern. Partition by month later if needed.
 
 4. **Write frequency: per-bar.** Simpler. Revisit if Supabase write
    rate becomes a bottleneck (unlikely at <200 writes/min).
@@ -330,15 +457,19 @@ M8.7 is COMPLETE when:
 
 ---
 
-## Awaiting approval
+## Approved 2026-04-30 — implementation starting tonight
 
-This plan is the proposed approach. Before implementing:
-- Review the schema, write path, and read path for any concerns
-- Confirm the phased rollout (read-write → read-cache → cutover) is
-  acceptable
-- Decision points above are noted as RESOLVED, but flag any concerns
-- Verification checklist above — confirm coverage feels right
-- Approve the ~2-4 day timeline
+Tonight's scope (minimal, reversible):
+- 8.7a (schema + migration)
+- 8.7b (worker write path, fire-and-forget, behind
+  `LIVE_BAR_CACHE_WRITE_ENABLED` env flag)
+- 8.7c (validation script for tomorrow morning sanity check)
 
-Once approved, implementation starts with task 8.7a (schema +
-migration) and proceeds in order.
+Read path (8.7d–8.7f), gap detection, parity sweep, and frontend
+changes deferred to subsequent sessions. Tonight's deploy is pure
+recording — zero behavior change for anyone, full kill-switch via
+env flag.
+
+Tomorrow's three-way comparison (our WS cache vs Polygon REST vs
+TradingView SPY 1Min export) feeds back into the dual-source
+experiment plan documented above.
