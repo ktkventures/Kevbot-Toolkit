@@ -21,6 +21,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-05-02
 
+- **17:57 UTC (11:57 MT)** — `064f9a3` M8.7 M4+M5+M6: alert snapshots, Lab tab replay, engine-state capture
+  - Service(s) redeployed: Worker (M4 snapshot, M6 writer hook), api (no functional change), frontend (M4 tooltip, M5 replay)
+  - Observed cache gap: ~1-2 min during Worker restart (markets closed)
+  - Notes: M4-M6 of weekend plan. Required manual steps: (1) apply src/migrations/bar_engine_states_table.sql in Supabase, (2) set BAR_ENGINE_STATE_WRITE_ENABLED=true on Worker.
+
 - **16:49 UTC (10:49 MT)** — `8b40eff` M8.7 M3: backtest_model + live_model placeholder (schema + UI)
   - Service(s) redeployed: api (new endpoint + default fill), frontend (Models card + badges), Worker (no functional change)
   - Observed cache gap: ~1-2 min during Worker restart
