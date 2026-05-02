@@ -19,7 +19,24 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-05-02
+
+- **16:44 UTC (10:44 MT)** — `7bd71e7` M8.7 Phase 2: Lab tab Alert Lens uses cache-derived indicators + heatmap
+  - Service(s) redeployed: api (new endpoint + refactored helper), frontend (new hook + Lab tab wiring), Worker (no functional change)
+  - Observed cache gap: ~1-2 min during Worker container restart (markets closed)
+  - Notes: M2 of weekend plan. Closes the Phase 1 caveat — Alert Lens indicators/heatmap now computed from live_bars cache. New endpoint /chart-data-cache; refactored _build_chart_response_from_df shared with /chart-data.
+
+- **16:36 UTC (10:36 MT)** — `a15461f` M8.7 fix: handle Polygon WS rebroadcasts as corrections, not duplicates
+  - Service(s) redeployed: Worker (engine code change), api/frontend rebuilt
+  - Observed cache gap: ~1-2 min during Worker container restart (markets closed → no live trading impact)
+  - Notes: M1 of weekend plan. Fixes the duplicate-bar bug discovered Friday EOD. accept_bar/accept_second_bar now detect rebroadcasts and replace history rows instead of appending. IncrementalIndicatorEngine gets new recompute_from_history method. Worker restart rebuilds in-memory state from REST warmup (clean). Live validation deferred to Monday RTH.
+
 ## 2026-05-01
+
+- **20:13 UTC (14:13 MT)** — `671dd6b` EOD checkpoint: weekend plan, deploy log, M8.7 findings + TV-cache compare data
+  - Service(s) redeployed: all (docs-only push but Railway watchPatterns=[])
+  - Observed cache gap: ~1 min during Worker container restart
+  - Notes: pure documentation commit. No code/engine changes. Captures Friday's findings (duplicate-bar bug, TV≈REST, TF drift scaling) and Saturday's plan.
 
 - **19:41 UTC (13:41 MT)** — `5ba2dd7` Lab tab: Phase 1 — side-by-side Algo Lens / Alert Lens
   - Service(s) redeployed: frontend (Worker rebuilt but no functional change)

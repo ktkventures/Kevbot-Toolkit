@@ -189,6 +189,28 @@ export function useStrategyCacheBars(
   });
 }
 
+// M8.7 (2026-05-02): list of available backtest_model and live_model
+// values for the strategy edit/detail page. Static-ish data; long stale time.
+export interface StrategyModel {
+  label: string;
+  available: boolean;
+  default: boolean;
+  description: string;
+}
+export interface StrategyModelsResponse {
+  backtest_models: Record<string, StrategyModel>;
+  live_models: Record<string, StrategyModel>;
+  defaults: { backtest_model: string; live_model: string };
+}
+export function useStrategyModels() {
+  return useQuery({
+    queryKey: ['strategy-models'],
+    queryFn: () => apiFetch<StrategyModelsResponse>(`/api/strategies/models`),
+    staleTime: 600000, // 10 min — values change rarely
+    retry: 1,
+  });
+}
+
 // M8.7 Phase 2 (2026-05-02): full chart-data response (OHLCV + indicators
 // + heatmap) computed from live_bars cache. Used by the Alert Lens on the
 // Lab tab so the right-side chart's heatmap and indicators reflect what

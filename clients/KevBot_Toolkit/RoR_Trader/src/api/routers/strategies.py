@@ -347,6 +347,33 @@ def _augment_with_counts(strategies: list) -> None:
         s['forward_trades_count'] = fwd_counts.get(sid, 0)
 
 
+@router.get("/models")
+def list_strategy_models():
+    """M8.7 (2026-05-02): list available backtest_model and live_model
+    values for strategy configuration.
+
+    Used by the frontend strategy edit page to populate the model
+    selector dropdowns. Each entry includes label, availability flag,
+    and description for tooltip display.
+
+    Currently a placeholder — strategies record their model selection
+    but the engine does not yet differentiate behavior. Wiring comes
+    when M8.7d (cache read path) ships.
+    """
+    from strategy_models import (
+        BACKTEST_MODELS, LIVE_MODELS,
+        get_default_backtest_model, get_default_live_model,
+    )
+    return {
+        "backtest_models": BACKTEST_MODELS,
+        "live_models": LIVE_MODELS,
+        "defaults": {
+            "backtest_model": get_default_backtest_model(),
+            "live_model": get_default_live_model(),
+        },
+    }
+
+
 @router.post("")
 def create_strategy(strategy: dict = Body(...), user=Depends(get_current_user)):
     """Create a new strategy (typically after a backtest).
@@ -485,6 +512,25 @@ def get_strategy(strategy_id: int, date_range: str = "Strategy Default", user=De
     except Exception as _e:
         logger.warning(
             "[FIDELITY] detail attach failed for sid %s: %s", strategy_id, _e)
+
+    # M8.7 (2026-05-02): fill in default model selections for strategies
+    # that predate the models placeholder. New strategies will carry
+    # these in config; legacy ones get the defaults treatment so the
+    # frontend always has a value to render.
+    try:
+        from strategy_models import (
+            get_default_backtest_model, get_default_live_model,
+            is_valid_backtest_model, is_valid_live_model,
+        )
+        if not enriched.get('backtest_model') or \
+                not is_valid_backtest_model(enriched.get('backtest_model')):
+            enriched['backtest_model'] = get_default_backtest_model()
+        if not enriched.get('live_model') or \
+                not is_valid_live_model(enriched.get('live_model')):
+            enriched['live_model'] = get_default_live_model()
+    except Exception as _e:
+        logger.warning(
+            "[MODELS] default fill failed for sid %s: %s", strategy_id, _e)
 
     return _sanitize_json(enriched)
 

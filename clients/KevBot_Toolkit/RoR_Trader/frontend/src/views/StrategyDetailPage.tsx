@@ -11,7 +11,7 @@ import ChartPlaceholder from '@/components/ChartPlaceholder';
 import type { TradeMarker } from '@/charts/TradingChart';
 
 // Static imports for hooks — these are safe because the page uses ssr:false
-import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useStrategyCacheBars, useStrategyChartDataCache, useConfluenceChart, useTradeZoom } from '@/hooks/queries/useStrategies';
+import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useStrategyCacheBars, useStrategyChartDataCache, useStrategyModels, useConfluenceChart, useTradeZoom } from '@/hooks/queries/useStrategies';
 import { StrategyHealthBadge, StrategyHealthDrawer, StrategyFidelityBadges, type StrategyHealth } from './StrategiesPage';
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
@@ -2057,6 +2057,35 @@ export default function StrategyDetailPage({ strategyId }: Props) {
           strategy={strategy as any}
           variant="detail"
         />
+        {/* M8.7 (2026-05-02) Models placeholder badges. Display only —
+            doesn't drive engine behavior yet. Lets the user see which
+            backtest/live model is declared on this strategy. */}
+        {(apiStrategy as any)?.backtest_model && (
+          <span
+            className="text-[10px] px-2 py-0.5 rounded-full font-medium"
+            title={`Backtest model: ${(apiStrategy as any).backtest_model}\n(determines what data backtest uses; safe to change)`}
+            style={{
+              background: 'var(--bg-input)',
+              color: 'var(--text-muted)',
+              border: '1px solid var(--border)',
+            }}
+          >
+            BT: {(apiStrategy as any).backtest_model}
+          </span>
+        )}
+        {(apiStrategy as any)?.live_model && (
+          <span
+            className="text-[10px] px-2 py-0.5 rounded-full font-medium"
+            title={`Live model: ${(apiStrategy as any).live_model}\n(determines how live engine handles WS rebroadcasts; impacts alerts)`}
+            style={{
+              background: 'var(--bg-input)',
+              color: 'var(--text-muted)',
+              border: '1px solid var(--border)',
+            }}
+          >
+            Live: {(apiStrategy as any).live_model}
+          </span>
+        )}
         <button
           className="text-xs px-3 py-1 rounded font-medium"
           style={{
@@ -3696,6 +3725,16 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   </Card>
                 </div>
 
+                {/* M8.7 (2026-05-02) Models card — placeholder for the
+                    backtest/live model split. Behavior wiring comes later
+                    (cache read path / engine model dispatch). For now,
+                    the selection is recorded on the strategy so it stays
+                    valid when defaults shift. */}
+                <ModelsCard
+                  strategy={apiStrategy as any}
+                  strategyId={Number(strategy.id)}
+                />
+
                 {/* Confluence conditions with fidelity badges */}
                 <Card>
                   <h4 className="text-sm font-medium mb-3">Confluence Conditions</h4>
@@ -4831,6 +4870,124 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 // After saving, caller should separately hit the Refresh Data button to
 // regenerate stored_trades + equity_curve_data against the new boundary.
 // ============================================================================
+// ============================================================================
+// ModelsCard — M8.7 (2026-05-02) placeholder for backtest_model + live_model
+// selection. Reads available models from /api/strategies/models, displays two
+// dropdowns, PATCHes the strategy on change. Behavior wiring (engine
+// dispatch on the selected model) comes later.
+// ============================================================================
+function ModelsCard({
+  strategy,
+  strategyId,
+}: {
+  strategy: any;
+  strategyId: number;
+}) {
+  const { data: modelsResp } = useStrategyModels();
+  const queryClient = useQueryClient();
+  const [savingField, setSavingField] = useState<string | null>(null);
+
+  const handleChange = async (field: 'backtest_model' | 'live_model', value: string) => {
+    setSavingField(field);
+    const token = localStorage.getItem('ror_access_token') || '';
+    const base = process.env.NEXT_PUBLIC_API_URL || '';
+    try {
+      // Merge with existing strategy data (PUT replaces). Keep light —
+      // only send the changed field plus required identifiers.
+      const merged = { ...strategy, [field]: value };
+      const resp = await fetch(`${base}/api/strategies/${strategyId}`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(merged),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        alert(`Save failed: ${text.slice(0, 200)}`);
+        return;
+      }
+      queryClient.invalidateQueries({ queryKey: ['strategy', strategyId] });
+    } catch (e: any) {
+      alert(`Save failed: ${String(e?.message || e)}`);
+    } finally {
+      setSavingField(null);
+    }
+  };
+
+  if (!modelsResp) {
+    return (
+      <Card className="mb-6">
+        <h4 className="text-sm font-medium mb-2">Models <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>(placeholder)</span></h4>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Loading models...</p>
+      </Card>
+    );
+  }
+
+  const renderSelect = (
+    field: 'backtest_model' | 'live_model',
+    options: Record<string, any>,
+    currentValue: string,
+  ) => (
+    <div className="mb-3">
+      <label className="text-xs block mb-1" style={{ color: 'var(--text-muted)' }}>
+        {field === 'backtest_model' ? 'Backtest Model' : 'Live Model'}
+      </label>
+      <select
+        value={currentValue}
+        disabled={savingField === field}
+        onChange={(e) => handleChange(field, e.target.value)}
+        style={{
+          width: '100%',
+          padding: '6px 10px',
+          background: 'var(--bg-input)',
+          color: 'var(--text)',
+          border: '1px solid var(--border)',
+          borderRadius: 6,
+          fontSize: '0.85rem',
+          opacity: savingField === field ? 0.6 : 1,
+        }}
+      >
+        {Object.entries(options).map(([key, opt]: any) => (
+          <option key={key} value={key} disabled={!opt.available && key !== currentValue}>
+            {opt.label}{opt.available ? '' : ' (coming soon)'}
+          </option>
+        ))}
+      </select>
+      {/* Description for the currently-selected option */}
+      {options[currentValue] && (
+        <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)', lineHeight: 1.4 }}>
+          {options[currentValue].description}
+        </p>
+      )}
+    </div>
+  );
+
+  const currentBT = strategy?.backtest_model || modelsResp.defaults.backtest_model;
+  const currentLive = strategy?.live_model || modelsResp.defaults.live_model;
+
+  return (
+    <Card className="mb-6">
+      <h4 className="text-sm font-medium mb-1">
+        Models{' '}
+        <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+          (placeholder — selection recorded but engine dispatch not yet wired)
+        </span>
+      </h4>
+      <p className="text-xs mb-4" style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
+        Declared properties of this strategy. <strong>Backtest model</strong> determines what
+        data the algo-history view uses (safe to change — analytics only).{' '}
+        <strong>Live model</strong> determines how the live engine handles WS rebroadcasts
+        (impacts alert firing — change with care). When the cache read path ships,
+        these selections will start driving actual behavior.
+      </p>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {renderSelect('backtest_model', modelsResp.backtest_models, currentBT)}
+        {renderSelect('live_model', modelsResp.live_models, currentLive)}
+      </div>
+    </Card>
+  );
+}
+
+
 function ForwardTestStartEditor({
   strategyId,
   currentValue,
