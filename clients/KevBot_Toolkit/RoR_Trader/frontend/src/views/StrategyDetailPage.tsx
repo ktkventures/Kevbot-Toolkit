@@ -26,6 +26,7 @@ const PerformanceVsPlan = dynamic(() => import('@/charts/PerformanceVsPlan'), { 
 const TradeZoomModal = dynamic(() => import('@/components/TradeZoomModal'), { ssr: false });
 const DistributionChart = dynamic(() => import('@/charts/DistributionChart'), { ssr: false });
 const SyncedChartPane = dynamic(() => import('@/charts/SyncedChartPane'), { ssr: false });
+const ChartReplayCard = dynamic(() => import('@/components/ChartReplayCard'), { ssr: false });
 
 import { buildStrategyChartPanes } from '@/charts/buildStrategyChartPanes';
 
@@ -966,6 +967,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // The left side is always REST (Algo Lens); only the right side
   // (Alert Lens) is toggleable.
   const [labDataSource, setLabDataSource] = useState<'ws-latest' | 'ws-first'>('ws-first');
+  // M8.7 M5 (2026-05-02): Lab tab Alert Lens replay mode toggle.
+  // When true, replace the static SyncedChartPane with ChartReplayCard
+  // so the user can scrub bar-by-bar through cache history.
+  const [labReplayMode, setLabReplayMode] = useState<boolean>(false);
   // Phase 1 hooks — kept for the OHLCV-only path (still used as fallback
   // if the chart-data-cache fetch fails or returns no rows).
   const { data: labCacheLatest, isLoading: labCacheLatestLoading } = useStrategyCacheBars(
@@ -1026,6 +1031,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       holdDurationS: a.hold_duration_s ?? d.hold_duration_s ?? 0,
       behavior: a.behavior ?? d.behavior ?? 'B',
       status: a.webhook_sent ? 'Delivered' : a.acknowledged ? 'Acknowledged' : 'Pending',
+      // M8.7 M4 (2026-05-02): engine indicator state at fire moment.
+      // Lives in alerts.data.indicator_snapshot. Older alerts (pre-deploy)
+      // won't have this; the tooltip icon is conditional.
+      indicatorSnapshot: d.indicator_snapshot ?? null,
     };
   }), [alerts]);
 
@@ -1068,6 +1077,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
           r: rMult != null ? Math.round(rMult * 100) / 100 : null,
           result: rMult != null ? (rMult >= 0 ? 'Win' : 'Loss') : exitP > entryP ? 'Win' : exitP < entryP ? 'Loss' : '--',
           exitReason: evt.trigger || '--',
+          // M8.7 M4: indicator state at entry/exit fire moments
+          entryIndicatorSnapshot: entry?.indicatorSnapshot ?? null,
+          exitIndicatorSnapshot: evt?.indicatorSnapshot ?? null,
         });
       }
     }
@@ -1077,6 +1089,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
         entryBarTime: entry.barTime || entry.time || '--', exitBarTime: null,
         entryPrice: entry.price, exitPrice: null,
         r: null, result: 'Open', exitReason: null,
+        entryIndicatorSnapshot: entry.indicatorSnapshot ?? null,
+        exitIndicatorSnapshot: null,
       });
     }
     return paired.reverse();
@@ -3141,11 +3155,44 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                               }
                               return parts.join('\n');
                             };
+                            // M8.7 M4 (2026-05-02): tooltip showing engine indicator
+                            // state at the moment the alert fired. From alert.data.
+                            // indicator_snapshot. Alphabetical key order; floats
+                            // formatted with 4 decimals, bools as ✓/✗.
+                            const snapshotTooltip = (snap: Record<string, any> | null) => {
+                              if (!snap || Object.keys(snap).length === 0) return undefined;
+                              const lines: string[] = ['Engine state at fire moment:'];
+                              for (const k of Object.keys(snap).sort()) {
+                                const v = snap[k];
+                                let formatted: string;
+                                if (typeof v === 'boolean') formatted = v ? '✓' : '✗';
+                                else if (typeof v === 'number') formatted = v.toFixed(4);
+                                else formatted = String(v);
+                                lines.push(`  ${k}: ${formatted}`);
+                              }
+                              return lines.join('\n');
+                            };
+                            const entrySnapTip = snapshotTooltip(row.entryIndicatorSnapshot);
+                            const exitSnapTip = snapshotTooltip(row.exitIndicatorSnapshot);
                             return (
                               <tr key={i}>
-                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{renderTime(row.entryTime)}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                  {renderTime(row.entryTime)}
+                                  {entrySnapTip && (
+                                    <span title={entrySnapTip}
+                                          className="ml-1 cursor-help"
+                                          style={{ fontSize: '0.65rem', opacity: 0.7 }}>📊</span>
+                                  )}
+                                </td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.entryDelta) }}>{fmtDelta(m.entryDelta)}</td>
-                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>{renderTime(row.exitTime)}</td>
+                                <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.75rem' }}>
+                                  {renderTime(row.exitTime)}
+                                  {exitSnapTip && (
+                                    <span title={exitSnapTip}
+                                          className="ml-1 cursor-help"
+                                          style={{ fontSize: '0.65rem', opacity: 0.7 }}>📊</span>
+                                  )}
+                                </td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: deltaColor(m.exitDelta) }}>{fmtDelta(m.exitDelta)}</td>
                                 <td style={{ ...tdStyle, fontFamily: 'monospace', fontSize: '0.7rem', color: 'var(--text-muted)' }}>{alertHold}</td>
                                 <td style={{ ...tdStyle, cursor: row.entryTheoreticalPrice != null || row.entryActualPrice != null ? 'help' : 'default' }}
@@ -3289,6 +3336,20 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                             {opt === 'ws-first' ? 'First-write' : 'Latest'}
                           </button>
                         ))}
+                        {/* M8.7 M5: Replay mode toggle */}
+                        <button
+                          onClick={() => setLabReplayMode(v => !v)}
+                          title="Toggle bar-by-bar replay mode"
+                          className="px-2 py-0.5 rounded transition-colors ml-2"
+                          style={{
+                            background: labReplayMode ? 'var(--accent)' : 'var(--bg-input)',
+                            color: labReplayMode ? 'white' : 'var(--text-muted)',
+                            border: labReplayMode ? 'none' : '1px solid var(--border)',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          ▶ Replay
+                        </button>
                       </div>
                     </div>
                     {!labChartTabData.hasBars ? (
@@ -3300,6 +3361,33 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           height={350}
                         />
                       </Card>
+                    ) : labReplayMode ? (
+                      // M8.7 M5: bar-by-bar replay mode. Use the chart-data-cache
+                      // response directly (chart_data + overlay_indicators) so we
+                      // can scrub. Trade markers + heatmap not yet supported in
+                      // replay (defer to future multi-pane scrub).
+                      (() => {
+                        const cacheResp: any = labDataSource === 'ws-latest'
+                          ? labChartDataCacheLatest
+                          : labChartDataCacheFirst;
+                        const data: any[] = cacheResp?.chart_data || [];
+                        const overlayNames: string[] = cacheResp?.overlay_indicators || [];
+                        return (
+                          <ChartReplayCard
+                            chartData={data}
+                            overlayIndicators={overlayNames}
+                            oscillatorIndicators={cacheResp?.oscillator_indicators || []}
+                            candleColorColumn={cacheResp?.candle_color_column}
+                            upColor={chartPrefs.candleUp}
+                            downColor={chartPrefs.candleDown}
+                            gridLines={chartPrefs.gridLines}
+                            height={350}
+                            title={labDataSource === 'ws-first'
+                              ? 'Alert Lens — Replay (first-write)'
+                              : 'Alert Lens — Replay (latest)'}
+                          />
+                        );
+                      })()
                     ) : (
                       <Card>
                         <SyncedChartPane

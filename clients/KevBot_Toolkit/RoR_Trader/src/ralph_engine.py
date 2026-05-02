@@ -885,6 +885,14 @@ class AlertDispatcher:
             alert['entry_price'] = signal.get('entry_price')
             alert['entry_stop_price'] = signal.get('entry_stop_price')
 
+        # M8.7 M4 (2026-05-02): carry the indicator snapshot from
+        # _fire_alert through to the alert dict. _alert_to_row() routes
+        # any field not in ALERT_COLUMN_FIELDS into the alerts.data JSONB,
+        # so this lands as alert.data.indicator_snapshot in the DB.
+        snapshot = signal.get('indicator_snapshot')
+        if snapshot:
+            alert['indicator_snapshot'] = snapshot
+
         alert = enrich_signal_with_portfolio_context(alert, strategy['id'])
         alert = save_alert(alert)
 
@@ -1031,11 +1039,39 @@ class SymbolHub:
         per-second close we've seen for this symbol. Gap between
         actual_price and sig['price'] (engine's theoretical fill) =
         price slippage. Zero latency — in-memory dict lookup.
+
+        M8.7 M4 (2026-05-02): also snapshot the engine's indicator state
+        at this moment onto the signal. Lets the alert record carry a
+        precise "what did the engine see when it decided to fire" view
+        for later analysis. Flows through to the alert dict (and its
+        `data` JSONB) via the dispatch path.
         """
         if not alert_callback or not sig:
             return
         if self.latest_close is not None and 'actual_price' not in sig:
             sig['actual_price'] = self.latest_close
+        # Snapshot engine indicator state. monitor.indicators.state.current is
+        # a Dict[str, float|bool] populated by IncrementalIndicatorEngine
+        # (see unified_engine.py). Defensive copy + scalar coercion so the
+        # JSON serializer downstream never trips on numpy types.
+        try:
+            if hasattr(monitor, 'indicators') and \
+                    hasattr(monitor.indicators, 'state') and \
+                    'indicator_snapshot' not in sig:
+                src = monitor.indicators.state.current or {}
+                snapshot: dict = {}
+                for k, v in src.items():
+                    if isinstance(v, bool):
+                        snapshot[k] = bool(v)
+                    elif isinstance(v, (int, float)):
+                        snapshot[k] = float(v)
+                    else:
+                        snapshot[k] = str(v)
+                sig['indicator_snapshot'] = snapshot
+        except Exception as e:
+            logger.warning(
+                "Failed to snapshot indicator state for alert (sid=%s): %s",
+                getattr(monitor, 'strat_id', '?'), e)
         alert_callback(sig, monitor.strategy, config)
 
     def _gather_tentative_state(
@@ -1507,6 +1543,21 @@ class SymbolHub:
             signals, audit_data = monitor.on_bar_close(
                 bar_dict, bar_count,
                 mtf_confluence=self._mtf_confluence)
+
+            # M8.7 M6 (2026-05-02): capture engine indicator state at bar
+            # close for engine-truth replay/analysis. Fire-and-forget,
+            # gated by BAR_ENGINE_STATE_WRITE_ENABLED env flag. Skipped
+            # silently when disabled (default).
+            try:
+                from bar_engine_state_writer import write_state as _bes_write
+                _bes_write(
+                    strategy_id=monitor.strat_id,
+                    bar_start=bar_dict.get('timestamp'),
+                    indicator_state=dict(monitor.indicators.state.current or {}),
+                    source='ws',
+                )
+            except Exception:
+                pass  # never block bar processing on state capture
 
             pos_state = audit_data.get('position_state', '?')
             trigger_bools = audit_data.get('trigger_booleans', {})
@@ -2170,6 +2221,12 @@ class RalphEngine:
         try:
             from live_bars_writer import shutdown as _live_bars_shutdown
             _live_bars_shutdown(wait=True)
+        except Exception:
+            pass
+        # M8.7 M6 (2026-05-02): drain in-flight bar_engine_states writes too.
+        try:
+            from bar_engine_state_writer import shutdown as _bes_shutdown
+            _bes_shutdown(wait=True)
         except Exception:
             pass
 
