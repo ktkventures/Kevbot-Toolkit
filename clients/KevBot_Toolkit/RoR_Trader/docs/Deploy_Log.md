@@ -21,6 +21,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-05-02
 
+- **16:49 UTC (10:49 MT)** — `8b40eff` M8.7 M3: backtest_model + live_model placeholder (schema + UI)
+  - Service(s) redeployed: api (new endpoint + default fill), frontend (Models card + badges), Worker (no functional change)
+  - Observed cache gap: ~1-2 min during Worker restart
+  - Notes: M3 of weekend plan. Models abstraction recorded on each strategy; engine dispatch comes later. UI: ModelsCard on Config tab, read-only badges in page header.
+
 - **16:44 UTC (10:44 MT)** — `7bd71e7` M8.7 Phase 2: Lab tab Alert Lens uses cache-derived indicators + heatmap
   - Service(s) redeployed: api (new endpoint + refactored helper), frontend (new hook + Lab tab wiring), Worker (no functional change)
   - Observed cache gap: ~1-2 min during Worker container restart (markets closed)
