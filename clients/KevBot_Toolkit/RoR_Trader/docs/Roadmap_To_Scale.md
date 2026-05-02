@@ -663,49 +663,82 @@ Rather than recomputing indicators on every 1-second bar, piggyback on the exist
 
 ### Milestone 8.7: Live Bar Cache — Unified Data Source for Live + Backtest
 **Priority:** Required before live trading at scale
-**Effort:** 2-4 days
-**Status:** Plan drafted (`docs/Plan_Live_Bar_Cache_2026-04-30.md`), awaiting approval before implementation
-**Background:** `docs/Parity_Trust_Roadmap_2026-04-29.md`
+**Effort:** Larger than originally estimated due to scope expansion (data capture infrastructure for engine-truth precision + UI work)
+**Status:** **Substantially complete as of 2026-05-02.** Write path + cache backed Lab tab + alert/engine state capture all shipped this weekend. Read path for backtest (M8.7d) is what's left. See `docs/Plan_M8.7_Saturday_2026-05-02.md` for the full milestone-by-milestone record.
+**Background:** `docs/Parity_Trust_Roadmap_2026-04-29.md`, `docs/Plan_Live_Bar_Cache_2026-04-30.md`, `docs/Drift_Analysis_2026-04-30.md`
 
-**The problem:** Live worker uses Polygon **WebSocket** aggregated bars; backtest uses Polygon **REST** bars. They mostly agree but ~42% of bars differ by $0.01-$0.07 (verified on sid 136 alerts 2026-04-30). Engine math is correct on both paths, but EMA chains accumulate the small differences over time, so cumulative state drift causes sensitive triggers (e.g. `mlv2_cross_bull` line-vs-signal crosses) to fire differently between live (WS-history) and backtest (REST-history). Net effect: ~5-15% trade-set divergence between live alerts and a fresh backtest.
+**The problem:** Live worker uses Polygon **WebSocket** aggregated bars; backtest uses Polygon **REST** bars. Drift analysis 2026-04-30 confirmed 79.4% of 96h of entry+C alerts had differing bar close vs REST (median $0.02, p95 $0.09, max $0.835). Polygon's own docs (`massive.com`) explicitly state WS ≠ REST is normal — late-print mechanics differ between feeds. Engine math is correct on both paths, but EMA chains accumulate the small differences, so cumulative state drift causes sensitive triggers to fire differently between live (WS-history) and backtest (REST-history). Net effect: meaningful trade-set divergence between live alerts and a fresh backtest, especially on knife-edge sub-minute strategies.
 
-This is exactly what TradingView and other gold-standard platforms avoid by using ONE data source for chart, backtest, and live engine.
+**The approach:** Have the worker write its WS-aggregated bars to a Supabase `live_bars` table as they're built (`source='ws'`). Backtest can eventually read from this cache, falling back to REST only for bars older than the cache. Live and backtest then operate on identical OHLCV — engine state agrees by construction.
 
-**The approach:** Have the worker write its WS-aggregated bars to a Supabase `live_bars` table as they're built. Backtest reads from this cache first, falling back to REST only for bars older than the cache. Live and backtest then operate on identical OHLCV — engine state agrees by construction.
+Saturday 2026-05-02 expanded scope to also discover + fix a duplicate-bar bug in BarBuilder (Polygon WS rebroadcasts within 15-min FINRA window were being treated as new bars instead of corrections), plus build the Lab tab visualization, models placeholder, alert snapshots, and engine-state capture infrastructure.
 
-**Schema (proposed):**
+**Schema (shipped):**
 ```sql
+-- live_bars: per-bar OHLCV with first-write + latest-write columns
 CREATE TABLE live_bars (
     symbol TEXT, timeframe_seconds INT, bar_start TIMESTAMPTZ,
     open, high, low, close, volume DOUBLE PRECISION,
-    written_at TIMESTAMPTZ, source TEXT,  -- 'ws' or 'rest_backfill'
+    first_open, first_high, first_low, first_close, first_volume DOUBLE PRECISION,
+    written_at TIMESTAMPTZ, last_updated_at TIMESTAMPTZ,
+    source TEXT,  -- 'ws' or 'rest_backfill'
     PRIMARY KEY (symbol, timeframe_seconds, bar_start)
+);
+
+-- bar_engine_states: per-bar full indicator state per strategy (engine-truth precision)
+CREATE TABLE bar_engine_states (
+    strategy_id INT, bar_start TIMESTAMPTZ,
+    indicator_state JSONB,
+    source TEXT, written_at TIMESTAMPTZ,
+    PRIMARY KEY (strategy_id, bar_start)
 );
 ```
 
 **Tasks (Required, in order):**
-- [ ] 8.7a. [Required] Schema + migration for `live_bars` table
-- [ ] 8.7b. [Required] Worker write path — BarBuilder bar-close hook writes to `live_bars` (admin client, best-effort, log + continue on failure)
-- [ ] 8.7c. [Required] Validation script — compare cache vs REST for last hour, surface disagreements
-- [ ] 8.7d. [Required] Backtest read path — `data_loader` checks cache first, REST fallback for gaps. Opt-in initially via flag
+- [x] 8.7a. [Required] Schema + migration for `live_bars` table — ✅ shipped 2026-04-30
+- [x] 8.7b. [Required] Worker write path (fire-and-forget) — ✅ shipped 2026-04-30
+- [x] 8.7c. [Required] Validation script (`_validate_live_bars_cache.py`) — ✅ shipped 2026-04-30
+- [x] 8.7-first. [Required] Add `first_*` columns + DB triggers preserving first-write values across upserts — ✅ shipped 2026-04-30
+- [x] 8.7-rebroadcast-fix. [Required] **Duplicate-bar bug fix** (M1 of Saturday's plan) — `accept_bar` + `accept_second_bar` detect Polygon WS rebroadcasts and replace history rows; new `IncrementalIndicatorEngine.recompute_from_history()` resets state then replays. Replay test (`test_rebroadcast_recompute.py`) validates Option B is mathematically equivalent. ✅ shipped 2026-05-02 (commit `a15461f`).
+- [x] 8.7-lab-phase2. [Required] **Lab tab Phase 2** (M2) — `prepare_data_with_indicators` accepts pre-loaded DataFrames; new `/chart-data-cache` endpoint computes indicators+heatmap from cache; Alert Lens right side shows what live engine actually sees. ✅ shipped 2026-05-02 (commit `7bd71e7`).
+- [x] 8.7-models-placeholder. [Required] **Models-as-strategy-variable** (M3) — `backtest_model` + `live_model` declared per strategy. Schema + UI shipped; engine dispatch on selection comes with M8.7d. ✅ shipped 2026-05-02 (commit `8b40eff`). Documented in `docs/Strategy_Models_2026-05-02.md`.
+- [x] 8.7-alert-snapshots. [Required] **Alert indicator snapshots** (M4) — Worker captures `monitor.indicators.state.current` at fire moment. Stored in `alerts.data.indicator_snapshot` JSONB. Frontend renders 📊 tooltip. ✅ shipped 2026-05-02 (commit `064f9a3`).
+- [x] 8.7-replay-mode. [Required] **Lab tab bar-by-bar replay** (M5) — New `ChartReplayCard` reusing existing ReplayableChart + ReplayControls. ▶ Replay toggle on Alert Lens. ✅ shipped 2026-05-02 (commit `064f9a3`).
+- [x] 8.7-engine-state-capture. [Required] **Engine-truth state capture foundation** (M6) — `bar_engine_states` table + `bar_engine_state_writer` (env-flag gated, fire-and-forget). Pure data-capture today; no read path yet. ✅ shipped 2026-05-02 (commit `064f9a3`).
+- [ ] 8.7d. [Required] **Backtest read path** — extend `load_market_data` (or service variant) to check `live_bars` first, REST fallback for gaps. Opt-in initially via flag. **NEXT SESSION** (Sunday or next week).
 - [ ] 8.7e. [Required] Gap detection + REST backfill — cache becomes self-healing
 - [ ] 8.7f. [Required] Cutover — flip `load_market_data` default to cache-first
 - [ ] 8.7g. [Required] Re-run parity sweep + Q3 fidelity drill — confirm fidelity ~100% on cached-period strategies
+- [ ] 8.7-engine-dispatch. [Required] Wire engine dispatch to honor `backtest_model` + `live_model` (currently models are recorded but engine ignores them)
 
 **Tasks (Polish):**
 - [ ] 8.7h. [Polish] Cache cleanup job — delete bars older than N days (90 default)
 - [ ] 8.7i. [Polish] Cache hit-rate metric in admin UI
 - [ ] 8.7j. [Polish] Worker restart gap handling — REST-backfill missed window on startup
+- [ ] 8.7-engine-truth-replay. [Polish] Wire `bar_engine_states` into Lab tab replay so the engine-truth-precision view becomes available (today the data is captured but not visualized)
+- [ ] 8.7-algo-history-redesign. [Polish] Algo history redesign — stop worker from writing trades table, scheduled refresh, per-strategy `last_backtest_through` checkpoint, append-only refreshes. Documented in plan doc + `docs/Plan_Weekend_2026-05-02.md`.
 
 **Tasks (Deferred):**
 - [ ] 8.7k. [Deferred] Strategy historical backfill — REST-fill 90 days for active strategies at cache start
 - [ ] 8.7l. [Deferred] Per-tick cache (massive volume; defer to Hi-Fi work)
+- [ ] 8.7-tv-test. [Monday] **TV stability test** — empirically resolve "TV locks at close vs silently revises" by screenshotting SPY 1Min OHLCV at T+0/T+5/T+15/T+30/T+1hr. Outcome informs whether to flip `live_model` default to `ws_first_lock` (Option C) instead of `ws_with_corrections` (Option B). Deferred from Friday; documented in plan doc.
 
 **Exit Criteria:**
-- Worker writes ~30K bars/day during RTH
-- `load_market_data` reads ~100% from cache for cached-period queries
-- Re-running parity sweep shows fidelity at ~100% on cached-period strategies
-- Live alerts match fresh local backtest on same bars within $0.0001
+- ✅ Worker writes bars across primary + secondary TFs during RTH (live_bars accumulating)
+- ✅ Worker correctly handles WS rebroadcasts as corrections, not duplicate bars
+- ✅ Lab tab Alert Lens shows cache-derived indicators + heatmap (matches what engine sees)
+- ✅ Per-alert indicator state captured in `alerts.data.indicator_snapshot`
+- ✅ Per-bar engine state captured in `bar_engine_states` (data-only foundation)
+- [ ] `load_market_data` reads from cache for cached-period queries (M8.7d)
+- [ ] Re-running parity sweep shows fidelity at ~100% on cached-period strategies (M8.7g)
+- [ ] Live alerts match fresh local backtest on same bars within $0.0001 (M8.7g)
+
+**Monday RTH validation queue (live data, can't be done Saturday):**
+- Mon-1: Run `_validate_live_bars_cache.py --hours-back 1` after 30+ min of trading. Confirm `first_close ≠ close` divergence on 1Min bars (~10-20% expected based on Friday's correction rates).
+- Mon-2: `SELECT id, data->'indicator_snapshot' FROM alerts ORDER BY id DESC LIMIT 5;` — confirm M4 snapshots populating.
+- Mon-3: `SELECT strategy_id, count(*) FROM bar_engine_states WHERE bar_start > now() - interval '1 hour' GROUP BY strategy_id;` — confirm ~14k rows/day capture rate.
+- Mon-4: TV stability test (see deferred tasks above).
+- Mon-5: Open Lab tab Replay mode on a strategy with morning data; scrub through and verify smooth indicator/heatmap evolution.
 
 ---
 
