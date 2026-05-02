@@ -21,6 +21,7 @@ import numpy as np
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from typing import Dict, Optional
 
 from data_loader import load_market_data, get_data_source, is_crypto
 from indicators import run_all_indicators, run_indicators_for_group
@@ -118,7 +119,9 @@ def prepare_data_with_indicators(
     symbol: str, days: int = 30, seed: int = 42,
     start_date=None, end_date=None,
     timeframe: str = "1Min", data_feed: str = "sip",
-    session: str = "RTH", secondary_tfs: tuple = ()
+    session: str = "RTH", secondary_tfs: tuple = (),
+    primary_df: Optional[pd.DataFrame] = None,
+    secondary_tf_dfs: Optional[Dict[str, pd.DataFrame]] = None,
 ) -> pd.DataFrame:
     """Load market data and run all indicators, interpreters, and trigger detection.
 
@@ -134,26 +137,45 @@ def prepare_data_with_indicators(
         data_feed: Alpaca data feed — "sip" or "iex" (also used as cache key)
         session: Trading session — "RTH", "Pre-Market", "After Hours", "Extended Hours"
         secondary_tfs: Tuple of secondary timeframes to compute for MTF confluence
+        primary_df: M8.7 (2026-05-02) — optional pre-loaded primary DataFrame.
+                    If provided, skip the load_market_data call and use this
+                    DataFrame as the OHLCV source. Used by the cache-backed
+                    chart endpoint to inject `live_bars` data instead of
+                    loading from Polygon REST. NOT cached (TTL cache only
+                    applies to the REST path because cache invalidation is
+                    keyed on inputs).
+        secondary_tf_dfs: M8.7 — optional dict of {tf_label: DataFrame} with
+                    pre-loaded secondary-TF OHLCV. If provided alongside
+                    secondary_tfs, the indicator pipeline runs on these
+                    rather than resampling primary_df. Used by the cache
+                    path to inject WS-aggregated secondary TFs (avoids the
+                    REST-resample-vs-WS-aggregation mismatch).
 
     Returns DataFrame ready for trade generation and analysis.
     """
     from data_loader import resample_to_timeframe, get_tf_label
 
-    # TTL-cache lookup. Strategy detail page fires several parallel requests
-    # for identical (symbol, timeframe, days) combos; without this they all
-    # ran the full pipeline independently and saturated the API process.
-    cache_key = _prepare_cache_key(
-        symbol, days, seed, start_date, end_date,
-        timeframe, data_feed, session, secondary_tfs)
-    cached = _prepare_cache_get(cache_key)
-    if cached is not None:
-        return cached
+    use_injected = primary_df is not None
 
-    # Load raw bars
-    df = load_market_data(symbol, days=days, seed=seed,
-                          start_date=start_date, end_date=end_date,
-                          timeframe=timeframe, feed=data_feed,
-                          session=session)
+    # TTL-cache lookup. Only applies to the REST path — the cache key is
+    # keyed on REST inputs (symbol, days, etc.), so injected DataFrames
+    # would silently collide with REST results otherwise.
+    if not use_injected:
+        cache_key = _prepare_cache_key(
+            symbol, days, seed, start_date, end_date,
+            timeframe, data_feed, session, secondary_tfs)
+        cached = _prepare_cache_get(cache_key)
+        if cached is not None:
+            return cached
+
+    # Load raw bars (or use the injected DataFrame)
+    if use_injected:
+        df = primary_df.copy()
+    else:
+        df = load_market_data(symbol, days=days, seed=seed,
+                              start_date=start_date, end_date=end_date,
+                              timeframe=timeframe, feed=data_feed,
+                              session=session)
 
     if len(df) == 0:
         return df
@@ -178,13 +200,20 @@ def prepare_data_with_indicators(
         col_name = gpack.get_condition_column()
         df[col_name] = gp_module.evaluate_condition(df, gpack)
 
-    # Multi-Timeframe: resample + run pipeline on secondary TFs
+    # Multi-Timeframe: resample + run pipeline on secondary TFs.
+    # M8.7: when secondary_tf_dfs is provided, use those DataFrames
+    # directly (skip the resample step) — supports cache-backed
+    # secondary TFs.
     if secondary_tfs and len(df) > 0:
         interp_keys = list(INTERPRETERS.keys())
         for sec_tf in secondary_tfs:
             try:
-                sec_df = resample_to_timeframe(
-                    df[['open', 'high', 'low', 'close', 'volume']].copy(), sec_tf)
+                if secondary_tf_dfs is not None and sec_tf in secondary_tf_dfs:
+                    sec_df = secondary_tf_dfs[sec_tf].copy()
+                else:
+                    sec_df = resample_to_timeframe(
+                        df[['open', 'high', 'low', 'close', 'volume']].copy(),
+                        sec_tf)
                 if len(sec_df) == 0:
                     continue
                 sec_df = run_all_indicators(sec_df)
@@ -208,10 +237,10 @@ def prepare_data_with_indicators(
             except Exception:
                 pass
 
-    # Cache the result so concurrent identical calls (chart-data + heatmap
-    # conditions all firing in parallel on strategy detail page open) share
-    # the work. TTL is 30s per _PREPARE_CACHE_TTL_SECONDS.
-    _prepare_cache_put(cache_key, df)
+    # Cache the result for the REST path only. Injected DataFrames bypass
+    # the cache (see use_injected above).
+    if not use_injected:
+        _prepare_cache_put(cache_key, df)
     return df
 
 

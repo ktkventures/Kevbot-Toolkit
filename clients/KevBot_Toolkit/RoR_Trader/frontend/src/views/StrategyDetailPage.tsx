@@ -11,7 +11,7 @@ import ChartPlaceholder from '@/components/ChartPlaceholder';
 import type { TradeMarker } from '@/charts/TradingChart';
 
 // Static imports for hooks — these are safe because the page uses ssr:false
-import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useStrategyCacheBars, useConfluenceChart, useTradeZoom } from '@/hooks/queries/useStrategies';
+import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useStrategyCacheBars, useStrategyChartDataCache, useConfluenceChart, useTradeZoom } from '@/hooks/queries/useStrategies';
 import { StrategyHealthBadge, StrategyHealthDrawer, StrategyFidelityBadges, type StrategyHealth } from './StrategiesPage';
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
@@ -966,10 +966,21 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // The left side is always REST (Algo Lens); only the right side
   // (Alert Lens) is toggleable.
   const [labDataSource, setLabDataSource] = useState<'ws-latest' | 'ws-first'>('ws-first');
+  // Phase 1 hooks — kept for the OHLCV-only path (still used as fallback
+  // if the chart-data-cache fetch fails or returns no rows).
   const { data: labCacheLatest, isLoading: labCacheLatestLoading } = useStrategyCacheBars(
     strategyId, 'latest', labDataSource === 'ws-latest'
   );
   const { data: labCacheFirst, isLoading: labCacheFirstLoading } = useStrategyCacheBars(
+    strategyId, 'first', labDataSource === 'ws-first'
+  );
+  // M8.7 Phase 2: full chart-data (with indicators + heatmap) computed
+  // from cache bars. Replaces the Phase 1 caveat — Alert Lens now shows
+  // what the live engine actually sees, not REST-derived overlays.
+  const { data: labChartDataCacheLatest } = useStrategyChartDataCache(
+    strategyId, 'latest', labDataSource === 'ws-latest'
+  );
+  const { data: labChartDataCacheFirst } = useStrategyChartDataCache(
     strategyId, 'first', labDataSource === 'ws-first'
   );
   const confluenceGroups = triggerAnalysis?.confluence_groups ?? EMPTY_CONFLUENCE_GROUPS;
@@ -1731,18 +1742,25 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     strategy?.direction,
   ]);
 
-  // M8.7 Lab tab: parallel chart-data computation that swaps the
-  // price bars based on labDataSource. Indicators/heatmap stay as
-  // computed by the chart-data endpoint (REST-derived) since they're
-  // expensive to recompute; only the candlesticks change source.
+  // M8.7 Phase 2 (2026-05-02): Lab tab right-side chart computes
+  // indicators+heatmap from `live_bars` cache (matches what live engine
+  // saw), with a Phase 1 fallback to REST overlays + cache OHLCV if the
+  // chart-data-cache endpoint hasn't returned bars yet.
   const labChartTabData = useMemo(() => {
-    // Right-side chart bars come from the cache. Toggle picks first vs latest.
-    let rawBars: any[] = [];
-    if (labDataSource === 'ws-latest') {
-      rawBars = labCacheLatest?.chart_data || [];
-    } else if (labDataSource === 'ws-first') {
-      rawBars = labCacheFirst?.chart_data || [];
-    }
+    // Pick the cache-derived chart-data response based on the toggle
+    const cacheResp: any = labDataSource === 'ws-latest'
+      ? labChartDataCacheLatest
+      : labChartDataCacheFirst;
+
+    // Phase 1 OHLCV-only fallback (used while chart-data-cache loading)
+    const cacheOhlcvOnly: any[] = labDataSource === 'ws-latest'
+      ? (labCacheLatest?.chart_data || [])
+      : (labCacheFirst?.chart_data || []);
+
+    // Bars: prefer chart-data-cache (has indicators baked in) over OHLCV-only
+    let rawBars: any[] = (cacheResp?.chart_data && cacheResp.chart_data.length > 0)
+      ? cacheResp.chart_data
+      : cacheOhlcvOnly;
     const bars = candleCount > 0 && rawBars.length > candleCount
       ? rawBars.slice(-candleCount)
       : rawBars;
@@ -1751,10 +1769,14 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       return { chartPanes: [] as PaneConfig[], overlayNames: [] as string[], hasBars: false };
     }
 
-    const overlayNames: string[] = (chartDataResp as any)?.overlay_indicators || [];
-    const oscNames: string[] = (chartDataResp as any)?.oscillator_indicators || [];
-    const heatmapConds: any[] = ((chartDataResp as any)?.heatmap_conditions || []).filter((c: any) => c.has_data);
-    const candleColorColumn: string | undefined = (chartDataResp as any)?.candle_color_column || undefined;
+    // Indicators/heatmap: prefer chart-data-cache (computed from cache
+    // bars — what the engine sees), fall back to REST-derived chartDataResp
+    const fromCache = cacheResp && cacheResp.chart_data && cacheResp.chart_data.length > 0;
+    const sourceResp: any = fromCache ? cacheResp : chartDataResp;
+    const overlayNames: string[] = sourceResp?.overlay_indicators || [];
+    const oscNames: string[] = sourceResp?.oscillator_indicators || [];
+    const heatmapConds: any[] = (sourceResp?.heatmap_conditions || []).filter((c: any) => c.has_data);
+    const candleColorColumn: string | undefined = sourceResp?.candle_color_column || undefined;
 
     const markerTrades = (btTrades.length > 0 || fwdTrades.length > 0)
       ? [...btTrades, ...fwdTrades].map((t: any) => ({
@@ -1793,6 +1815,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     return { chartPanes, overlayNames, hasBars: true };
   }, [
     labDataSource, labCacheLatest, labCacheFirst,
+    labChartDataCacheLatest, labChartDataCacheFirst,
     chartDataResp, barsData, candleCount, showConditions, showTriggers,
     chartPrefs, btTrades, fwdTrades, apiStrategy, recentAlerts, tfMs,
     strategy?.direction,
@@ -3153,12 +3176,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       Matches what the backtest engine sees. Same as the existing Chart &amp; Trades tab.
                     </li>
                     <li>
-                      <strong>Alert Lens (right)</strong> — WS bars from <code>live_bars</code> cache.
-                      Toggle <em>First-write</em> vs <em>Latest</em> to see decision-time vs post-rebroadcast values.
-                      <br />
-                      <strong style={{ color: 'var(--orange)' }}>Phase 1 caveat</strong>: indicators &amp; heatmap on the right side are
-                      currently computed from REST values, not WS. Phase 2 (engine-state replay from cache)
-                      will compute them properly so the heatmap matches what the live engine actually saw.
+                      <strong>Alert Lens (right)</strong> — WS bars + <strong>WS-derived indicators &amp; heatmap</strong> from
+                      the <code>live_bars</code> cache. Toggle <em>First-write</em> vs <em>Latest</em> to see decision-time
+                      values vs post-rebroadcast values. As of Phase 2 (2026-05-02), the right side
+                      computes indicators from cache bars — what the live engine actually saw.
+                      Falls back to REST overlays only when chart-data-cache hasn't loaded yet.
                     </li>
                     <li>
                       <strong>Price Divergence panel (below)</strong> — per-trade comparison of algo's bar-close price
@@ -3266,10 +3288,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           formingStateCrossTf={null}
                         />
                         <div className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>
-                          {labDataSource === 'ws-latest' && `WS cache (latest). ${labCacheLatest?.row_count ?? 0} bars.`}
-                          {labDataSource === 'ws-first' && `WS cache (first-write, decision-time). ${labCacheFirst?.row_count ?? 0} bars.`}
-                          {' '}<strong style={{ color: 'var(--orange)' }}>Phase 1 caveat:</strong> indicators &amp; heatmap above use REST values, not WS.
-                          Phase 2 (replay engine state from cache) will fix this.
+                          {labDataSource === 'ws-latest' && `WS cache (latest). ${labCacheLatest?.row_count ?? 0} OHLCV bars.`}
+                          {labDataSource === 'ws-first' && `WS cache (first-write, decision-time). ${labCacheFirst?.row_count ?? 0} OHLCV bars.`}
+                          {' '}<strong style={{ color: 'var(--green)' }}>Phase 2 active:</strong> indicators &amp; heatmap are computed from cache bars
+                          (what the live engine sees). Cache window: 2026-04-30 onwards.
                         </div>
                       </Card>
                     )}

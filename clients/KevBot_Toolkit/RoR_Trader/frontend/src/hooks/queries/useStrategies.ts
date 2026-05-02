@@ -189,6 +189,26 @@ export function useStrategyCacheBars(
   });
 }
 
+// M8.7 Phase 2 (2026-05-02): full chart-data response (OHLCV + indicators
+// + heatmap) computed from live_bars cache. Used by the Alert Lens on the
+// Lab tab so the right-side chart's heatmap and indicators reflect what
+// the live engine actually saw, not REST-derived values.
+export function useStrategyChartDataCache(
+  id: number | null,
+  valueType: 'latest' | 'first',
+  enabled: boolean = true,
+) {
+  return useQuery({
+    queryKey: ['strategy-chart-data-cache', id, valueType],
+    queryFn: () => apiFetch<ChartDataResponse>(
+      `/api/strategies/${id}/chart-data-cache?value_type=${valueType}`
+    ),
+    enabled: enabled && id !== null,
+    staleTime: 30000,
+    retry: 1,
+  });
+}
+
 export interface ConfluenceChartData {
   bars: Record<string, any>[];
   indicator_columns: string[];

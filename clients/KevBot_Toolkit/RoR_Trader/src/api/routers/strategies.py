@@ -1197,6 +1197,190 @@ def get_strategy_kpis(strategy_id: int, date_range: str = "Strategy Default", us
 # CHART DATA (OHLCV + indicator overlays)
 # =============================================================================
 
+_OVERLAY_TEMPLATES_CHART = {"ema_stack", "ema_price_position", "ema_price_position_v2", "vwap", "utbot", "utbot_v2"}
+_OSCILLATOR_TEMPLATES_CHART = {"macd_line", "macd_histogram", "rvol"}
+
+
+def _build_chart_response_from_df(df, strat, strategy_id, phases=None):
+    """M8.7 (2026-05-02) — factored from get_strategy_chart_data.
+
+    Given an enriched DataFrame (post-prepare_data_with_indicators) and the
+    strategy dict, builds the chart-data response shape:
+        {chart_data, overlay_indicators, oscillator_indicators,
+         heatmap_conditions, candle_color_column}
+
+    Used by both /chart-data (REST-derived df) and /chart-data-cache
+    (live_bars-derived df). The data-prep stage above this is what
+    differs; the indicator classification + serialization is identical.
+    """
+    import time as _time
+    if phases is None:
+        phases = {}
+
+    if len(df) == 0:
+        return {"chart_data": [], "overlay_indicators": [],
+                "oscillator_indicators": [], "heatmap_conditions": []}
+
+    from confluence_groups import get_enabled_groups, get_template
+
+    entry_conf_id = strat.get('entry_trigger_confluence_id') or ''
+    exit_conf_ids = strat.get('exit_trigger_confluence_ids') or []
+    confluence_records = list(strat.get('confluence', []))
+
+    # Extract interpreter keys from confluence records
+    confluence_interpreters = set()
+    for record in confluence_records:
+        if record.startswith("GEN-"):
+            continue
+        parts = record.split("-")
+        if len(parts) >= 2:
+            confluence_interpreters.add(parts[1])
+
+    overlay_cols = []
+    oscillator_cols = []
+
+    for group in get_enabled_groups():
+        gid_prefix = group.id + "_"
+        is_relevant = (
+            entry_conf_id.startswith(gid_prefix)
+            or any(cid.startswith(gid_prefix) for cid in exit_conf_ids)
+        )
+        if not is_relevant:
+            template = get_template(group.base_template)
+            if template:
+                for ik in template.get("interpreters", []):
+                    if ik in confluence_interpreters:
+                        is_relevant = True
+                        break
+        if not is_relevant:
+            continue
+
+        template = get_template(group.base_template)
+        if not template:
+            continue
+
+        raw_cols = template.get("indicator_columns", [])
+        resolved = []
+        for col in raw_cols:
+            if col in ("ema_short", "ema_mid", "ema_long"):
+                p = group.parameters
+                resolved_name = f"ema_{p.get('short_period', 9)}" if col == "ema_short" else \
+                                f"ema_{p.get('mid_period', 21)}" if col == "ema_mid" else \
+                                f"ema_{p.get('long_period', 200)}"
+                if resolved_name in df.columns:
+                    resolved.append(resolved_name)
+            elif col in df.columns:
+                resolved.append(col)
+
+        if group.base_template in _OVERLAY_TEMPLATES_CHART:
+            overlay_cols.extend(resolved)
+        elif group.base_template in _OSCILLATOR_TEMPLATES_CHART:
+            oscillator_cols.extend(resolved)
+        else:
+            dt = template.get("display_type", "overlay")
+            if dt == "oscillator":
+                oscillator_cols.extend(resolved)
+            else:
+                overlay_cols.extend(resolved)
+
+    overlay_cols = list(dict.fromkeys(overlay_cols))
+    oscillator_cols = list(dict.fromkeys(oscillator_cols))
+
+    # Ghost overlay: include `_prev` columns when their non-prev sibling is
+    # already in overlay_cols.
+    try:
+        for base_col in list(overlay_cols):
+            prev_col = f"{base_col}_prev"
+            if prev_col in df.columns and prev_col not in overlay_cols:
+                overlay_cols.append(prev_col)
+    except Exception as _e:
+        logger.debug("ghost overlay inclusion failed: %s", _e)
+
+    from api.services.backtest_service import classify_chart_indicators
+    overlay_cols, oscillator_cols, candle_color_column = \
+        classify_chart_indicators(df, overlay_cols, oscillator_cols, entry_conf_id)
+
+    all_indicator_cols = overlay_cols + oscillator_cols
+    if candle_color_column and candle_color_column not in all_indicator_cols:
+        all_indicator_cols.append(candle_color_column)
+
+    # Build heatmap condition data
+    from data_loader import get_tf_label
+    primary_tf = get_tf_label(strat.get('timeframe', '1Min')).lower()
+    all_conditions = list(strat.get('confluence', [])) + list(strat.get('general_confluences', []))
+    cb_set = set(strat.get('cb_conditions', []))
+
+    heatmap_conditions = []
+    for record in all_conditions:
+        clean_record = record.replace('[CB]', '').replace('[PB]', '')
+        parts = clean_record.split('-', 2)
+        if len(parts) < 3:
+            continue
+        rec_tf, interp_key, needed_state = parts
+        is_general = rec_tf == 'GEN'
+        is_cross_tf = not is_general and rec_tf.lower() != primary_tf
+
+        if is_general:
+            col_name = f"GP_{interp_key}"
+        elif is_cross_tf:
+            col_name = f"{interp_key}__{rec_tf.lower()}"
+        else:
+            col_name = interp_key
+
+        is_cb = clean_record in cb_set or '[CB]' in record
+        fidelity = 'CB' if is_cb else 'PB'
+
+        heatmap_conditions.append({
+            "label": f"{clean_record} [{fidelity}]",
+            "column": col_name,
+            "needed_state": needed_state,
+            "fidelity": fidelity,
+            "has_data": col_name in df.columns,
+        })
+
+    # Serialize: OHLCV + indicators + interpreter state columns for heatmap
+    state_cols = [c["column"] for c in heatmap_conditions if c["has_data"]]
+    from api.services.backtest_service import _serialize_chart_data
+
+    _t = _time.time()
+    chart_data = _serialize_chart_data(df, all_indicator_cols)
+    phases["serialize"] = _time.time() - _t
+
+    # Vectorized state injection
+    _t = _time.time()
+    if state_cols:
+        present_cols = [sc for sc in state_cols if sc in df.columns]
+        for sc in state_cols:
+            if sc not in df.columns:
+                logger.warning("[CHART:%s] heatmap state_col=%s NOT FOUND in df",
+                               strategy_id, sc)
+
+        col_values: dict[str, list] = {}
+        for sc in present_cols:
+            series = df[sc]
+            mask = series.notna().tolist()
+            vals = series.astype(object).tolist()
+            col_values[sc] = [
+                str(v) if m else None for v, m in zip(vals, mask)
+            ]
+
+        n = min(len(chart_data), len(df))
+        for sc in present_cols:
+            col_list = col_values[sc]
+            key = f"_state_{sc}"
+            for i in range(n):
+                chart_data[i][key] = col_list[i]
+    phases["state_inject"] = _time.time() - _t
+
+    return {
+        "chart_data": chart_data,
+        "overlay_indicators": overlay_cols,
+        "oscillator_indicators": oscillator_cols,
+        "heatmap_conditions": heatmap_conditions,
+        "candle_color_column": candle_color_column,
+    }
+
+
 @router.get("/{strategy_id}/chart-data")
 def get_strategy_chart_data(
     strategy_id: int,
@@ -1213,11 +1397,7 @@ def get_strategy_chart_data(
     """
     strat = _get_or_404(strategy_id, user)
     import services as svc
-    import pandas as pd
     import time as _time
-
-    OVERLAY_TEMPLATES = {"ema_stack", "ema_price_position", "ema_price_position_v2", "vwap", "utbot", "utbot_v2"}
-    OSCILLATOR_TEMPLATES = {"macd_line", "macd_histogram", "rvol"}
 
     _t_start = _time.time()
     _phases: dict = {}
@@ -1249,199 +1429,23 @@ def get_strategy_chart_data(
         _phases["prepare"] = _time.time() - _t
         logger.warning("[CHART-DATA:%s] prepare_data_with_indicators=%.2fs bars=%d",
                        strategy_id, _phases["prepare"], len(df))
-        if len(df) == 0:
-            return {"chart_data": [], "overlay_indicators": [], "oscillator_indicators": [], "heatmap_conditions": []}
 
-        from confluence_groups import get_enabled_groups, get_template
-
-        entry_conf_id = strat.get('entry_trigger_confluence_id') or ''
-        exit_conf_ids = strat.get('exit_trigger_confluence_ids') or []
-        confluence_records = list(strat.get('confluence', []))
-
-        # Extract interpreter keys from confluence records
-        confluence_interpreters = set()
-        for record in confluence_records:
-            if record.startswith("GEN-"):
-                continue
-            parts = record.split("-")
-            if len(parts) >= 2:
-                confluence_interpreters.add(parts[1])
-
-        overlay_cols = []
-        oscillator_cols = []
-
-        for group in get_enabled_groups():
-            gid_prefix = group.id + "_"
-            is_relevant = (
-                entry_conf_id.startswith(gid_prefix)
-                or any(cid.startswith(gid_prefix) for cid in exit_conf_ids)
-            )
-            if not is_relevant:
-                template = get_template(group.base_template)
-                if template:
-                    for ik in template.get("interpreters", []):
-                        if ik in confluence_interpreters:
-                            is_relevant = True
-                            break
-            if not is_relevant:
-                continue
-
-            template = get_template(group.base_template)
-            if not template:
-                continue
-
-            raw_cols = template.get("indicator_columns", [])
-            resolved = []
-            for col in raw_cols:
-                if col in ("ema_short", "ema_mid", "ema_long"):
-                    p = group.parameters
-                    resolved_name = f"ema_{p.get('short_period', 9)}" if col == "ema_short" else \
-                                    f"ema_{p.get('mid_period', 21)}" if col == "ema_mid" else \
-                                    f"ema_{p.get('long_period', 200)}"
-                    if resolved_name in df.columns:
-                        resolved.append(resolved_name)
-                elif col in df.columns:
-                    resolved.append(col)
-
-            if group.base_template in OVERLAY_TEMPLATES:
-                overlay_cols.extend(resolved)
-            elif group.base_template in OSCILLATOR_TEMPLATES:
-                oscillator_cols.extend(resolved)
-            else:
-                dt = template.get("display_type", "overlay")
-                if dt == "oscillator":
-                    oscillator_cols.extend(resolved)
-                else:
-                    overlay_cols.extend(resolved)
-
-        # Deduplicate
-        overlay_cols = list(dict.fromkeys(overlay_cols))
-        oscillator_cols = list(dict.fromkeys(oscillator_cols))
-
-        # Ghost overlay: for v2 L-type triggers whose level column ends in
-        # `_prev` (e.g. utbot_stop_prev, ema_9_prev), include that column too.
-        # The actual fill level is the PREVIOUS bar's indicator value; the
-        # solid line shows the CURRENT bar. Plotting both lets the user see
-        # where the `+` marker actually landed without optical drift.
-        #
-        # Only include `_prev` columns whose non-prev sibling is already in
-        # overlay_cols — this scopes the ghost line to indicators the strategy
-        # actually uses, not every `_prev` column that happens to exist in df.
-        try:
-            for base_col in list(overlay_cols):
-                prev_col = f"{base_col}_prev"
-                if prev_col in df.columns and prev_col not in overlay_cols:
-                    overlay_cols.append(prev_col)
-        except Exception as _e:
-            logger.debug("ghost overlay inclusion failed: %s", _e)
-
-        # Apply the same filtering + candle_color_column detection that the
-        # /backtest endpoint uses. Without this, Strategy Detail renders
-        # boolean/string pack columns as overlay lines and misses candle
-        # coloring for packs like Swing 1-2-3.
-        from api.services.backtest_service import classify_chart_indicators
-        overlay_cols, oscillator_cols, candle_color_column = \
-            classify_chart_indicators(df, overlay_cols, oscillator_cols, entry_conf_id)
-
-        all_indicator_cols = overlay_cols + oscillator_cols
-        if candle_color_column and candle_color_column not in all_indicator_cols:
-            all_indicator_cols.append(candle_color_column)
-
-        # Build heatmap condition data
-        from data_loader import get_tf_label
-        primary_tf = get_tf_label(strat.get('timeframe', '1Min')).lower()
-        all_conditions = list(strat.get('confluence', [])) + list(strat.get('general_confluences', []))
-
-        # Determine which conditions use CB fidelity
-        cb_set = set(strat.get('cb_conditions', []))
-
-        heatmap_conditions = []
-        for record in all_conditions:
-            # Strip [CB] suffix if present (used in confluence array)
-            clean_record = record.replace('[CB]', '').replace('[PB]', '')
-            parts = clean_record.split('-', 2)
-            if len(parts) < 3:
-                continue
-            rec_tf, interp_key, needed_state = parts
-            is_general = rec_tf == 'GEN'
-            is_cross_tf = not is_general and rec_tf.lower() != primary_tf
-
-            if is_general:
-                col_name = f"GP_{interp_key}"
-            elif is_cross_tf:
-                col_name = f"{interp_key}__{rec_tf.lower()}"
-            else:
-                col_name = interp_key
-
-            # Determine fidelity: CB if in cb_conditions set or has [CB] suffix
-            is_cb = clean_record in cb_set or '[CB]' in record
-            fidelity = 'CB' if is_cb else 'PB'
-
-            heatmap_conditions.append({
-                "label": f"{clean_record} [{fidelity}]",
-                "column": col_name,
-                "needed_state": needed_state,
-                "fidelity": fidelity,
-                "has_data": col_name in df.columns,
-            })
-
-        # Serialize: OHLCV + indicators + interpreter state columns for heatmap
-        state_cols = [c["column"] for c in heatmap_conditions if c["has_data"]]
-        from api.services.backtest_service import _serialize_chart_data
-
-        # For state columns, serialize separately (they're categorical, not numeric)
-        _t = _time.time()
-        chart_data = _serialize_chart_data(df, all_indicator_cols)
-        _phases["serialize"] = _time.time() - _t
-
-        # Add interpreter state values to each bar for heatmap. Vectorized:
-        # extract each state column to a list once via .tolist(), then zip
-        # into chart_data in a single pass. The previous per-bar `.iloc[i]`
-        # lookup was ~6s for 49k bars (10Sec strategies) before this refactor.
-        _t = _time.time()
-        if state_cols:
-            present_cols = [sc for sc in state_cols if sc in df.columns]
-            for sc in state_cols:
-                if sc not in df.columns:
-                    logger.warning("[CHART-DATA:%s] heatmap state_col=%s NOT FOUND in df",
-                                   strategy_id, sc)
-
-            # Pre-extract each state column's values as a Python list. Skip
-            # pd.notna per-cell by precomputing the mask once per column.
-            col_values: dict[str, list] = {}
-            for sc in present_cols:
-                series = df[sc]
-                mask = series.notna().tolist()
-                vals = series.astype(object).tolist()
-                col_values[sc] = [
-                    str(v) if m else None for v, m in zip(vals, mask)
-                ]
-
-            n = min(len(chart_data), len(df))
-            for sc in present_cols:
-                col_list = col_values[sc]
-                key = f"_state_{sc}"
-                for i in range(n):
-                    chart_data[i][key] = col_list[i]
-        _phases["state_inject"] = _time.time() - _t
+        # M8.7 (2026-05-02): factored indicator classification + serialization
+        # into _build_chart_response_from_df, shared with /chart-data-cache.
+        result = _build_chart_response_from_df(df, strat, strategy_id, _phases)
 
         total = _time.time() - _t_start
         logger.warning(
             "[CHART-DATA:%s] DONE total=%.2fs prepare=%.2fs serialize=%.2fs "
-            "state_inject=%.2fs bars=%d state_cols=%d overlay=%d oscillator=%d",
+            "state_inject=%.2fs bars=%d overlay=%d oscillator=%d",
             strategy_id, total,
             _phases.get("prepare", 0), _phases.get("serialize", 0),
             _phases.get("state_inject", 0),
-            len(df), len(state_cols), len(overlay_cols), len(oscillator_cols)
+            len(df),
+            len(result.get("overlay_indicators", [])),
+            len(result.get("oscillator_indicators", []))
         )
-
-        return {
-            "chart_data": chart_data,
-            "overlay_indicators": overlay_cols,
-            "oscillator_indicators": oscillator_cols,
-            "heatmap_conditions": heatmap_conditions,
-            "candle_color_column": candle_color_column,
-        }
+        return result
     except Exception as e:
         elapsed = _time.time() - _t_start
         logger.exception(
@@ -1661,6 +1665,217 @@ TF_TO_SECONDS = {
     '10Min': 600, '15Min': 900, '30Min': 1800,
     '1Hour': 3600, '1Day': 86400,
 }
+
+
+@router.get("/{strategy_id}/chart-data-cache")
+def get_strategy_chart_data_from_cache(
+    strategy_id: int,
+    value_type: str = Query("latest", description="'latest' (default — post-rebroadcast WS values) or 'first' (decision-time WS values)"),
+    days: int = Query(None, description="Override data_days; capped by cache coverage"),
+    user=Depends(get_current_user),
+):
+    """Same shape as /chart-data, but bars + indicators + heatmap are
+    computed from the live_bars cache (WS-derived) instead of Polygon REST.
+
+    M8.7 Phase 2 (2026-05-02): used by the Strategy Detail "Chart & Trades
+    (Lab)" tab Alert Lens to render what the live engine actually sees.
+    Indicators run on cache OHLCV (primary + cross-TF secondary) so the
+    heatmap and overlay lines match what live execution observed —
+    closing the gap that Phase 1 left as a caveat.
+
+    value_type:
+      - 'latest' = cache.close (post-rebroadcast WS values; 1Min may
+        differ from REST by Polygon's 15-min FINRA correction)
+      - 'first'  = cache.first_close (decision-time WS values; what the
+        engine SAW at the moment the bar first hit)
+
+    Returns same shape as /chart-data:
+        {chart_data, overlay_indicators, oscillator_indicators,
+         heatmap_conditions, candle_color_column}
+    """
+    strat = _get_or_404(strategy_id, user)
+    import services as svc
+    import time as _time
+    from datetime import datetime, timedelta, timezone
+    from db import set_admin_user_context
+
+    _t_start = _time.time()
+    _phases: dict = {}
+
+    try:
+        symbol = strat.get('symbol')
+        primary_tf = strat.get('timeframe', '1Min')
+        primary_tf_seconds = TF_TO_SECONDS.get(primary_tf)
+        if primary_tf_seconds is None:
+            return {"chart_data": [], "overlay_indicators": [],
+                    "oscillator_indicators": [], "heatmap_conditions": [],
+                    "note": f"Unknown primary timeframe '{primary_tf}'"}
+
+        # Determine secondary TFs from confluence records
+        from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+        req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+        sec_tfs = tuple(sorted(
+            get_tf_from_label(lbl) for lbl in req_labels
+            if get_tf_from_label(lbl)))
+
+        base_days = days or strat.get('data_days', 30)
+        end_dt = datetime.now(timezone.utc)
+        start_dt = end_dt - timedelta(days=base_days)
+
+        set_admin_user_context(user.get('id') or strat.get('user_id'))
+
+        # Fetch primary cache as DataFrame
+        _t = _time.time()
+        primary_df = fetch_cache_as_df(
+            symbol, primary_tf_seconds, start_dt, end_dt, value_type)
+        _phases["fetch_primary"] = _time.time() - _t
+
+        if len(primary_df) == 0:
+            logger.info(
+                "[CHART-CACHE:%s] no cache rows for %s/%ss in window — empty result",
+                strategy_id, symbol, primary_tf_seconds)
+            return {"chart_data": [], "overlay_indicators": [],
+                    "oscillator_indicators": [], "heatmap_conditions": [],
+                    "note": (f"No cache data for {symbol}/{primary_tf} in window. "
+                             f"Cache started recording 2026-04-30; older periods "
+                             f"have no rows.")}
+
+        # Fetch each secondary TF cache as DataFrame
+        _t = _time.time()
+        sec_tf_dfs: dict = {}
+        for sec_tf in sec_tfs:
+            sec_tf_seconds = TF_TO_SECONDS.get(sec_tf)
+            if sec_tf_seconds is None:
+                continue
+            sec_df = fetch_cache_as_df(
+                symbol, sec_tf_seconds, start_dt, end_dt, value_type)
+            if len(sec_df) > 0:
+                sec_tf_dfs[sec_tf] = sec_df
+        _phases["fetch_secondary"] = _time.time() - _t
+
+        logger.info(
+            "[CHART-CACHE:%s] fetched primary=%d bars, secondary=%s rows",
+            strategy_id, len(primary_df),
+            {tf: len(d) for tf, d in sec_tf_dfs.items()})
+
+        # Run indicator pipeline on injected DataFrames
+        _t = _time.time()
+        df = svc.prepare_data_with_indicators(
+            symbol,
+            days=base_days,
+            timeframe=primary_tf,
+            session=strat.get('trading_session', 'RTH'),
+            secondary_tfs=sec_tfs,
+            primary_df=primary_df,
+            secondary_tf_dfs=sec_tf_dfs if sec_tf_dfs else None,
+        )
+        _phases["prepare"] = _time.time() - _t
+
+        # Build response via shared helper
+        result = _build_chart_response_from_df(df, strat, strategy_id, _phases)
+        result["data_source"] = f"cache_{value_type}"
+        result["window_start"] = start_dt.isoformat()
+        result["window_end"] = end_dt.isoformat()
+        result["primary_cache_rows"] = len(primary_df)
+        result["secondary_cache_rows"] = {tf: len(d) for tf, d in sec_tf_dfs.items()}
+
+        total = _time.time() - _t_start
+        logger.warning(
+            "[CHART-CACHE:%s] DONE total=%.2fs fetch_primary=%.2fs "
+            "fetch_secondary=%.2fs prepare=%.2fs bars=%d value_type=%s",
+            strategy_id, total,
+            _phases.get("fetch_primary", 0), _phases.get("fetch_secondary", 0),
+            _phases.get("prepare", 0), len(df), value_type)
+        return result
+
+    except Exception as e:
+        elapsed = _time.time() - _t_start
+        logger.exception(
+            "[CHART-CACHE:%s] FAILED after %.2fs phases=%s: %s",
+            strategy_id, elapsed, _phases, e)
+        raise HTTPException(
+            status_code=504,
+            detail=f"Chart data (cache) computation failed: {str(e)[:200]}")
+
+
+def fetch_cache_as_df(
+    symbol: str,
+    tf_seconds: int,
+    start_dt,
+    end_dt,
+    value_type: str = 'latest',
+):
+    """Pull `live_bars` rows for (symbol, tf_seconds, time range) and return
+    a DataFrame with UTC DatetimeIndex and OHLCV columns.
+
+    M8.7 (2026-05-02): used by chart-data-cache endpoint to inject WS-
+    aggregated bars into the indicator pipeline. Picks `first_*` columns
+    when value_type='first' (decision-time view); falls back to `*` cols
+    if first_* is NULL (pre-migration rows).
+
+    Returns empty DataFrame if no rows in window.
+    """
+    import pandas as _pd
+    from db import get_admin_client, set_admin_user_context as _ctx
+
+    c = get_admin_client()
+    cols = ("bar_start,open,high,low,close,volume,"
+            "first_open,first_high,first_low,first_close,first_volume,source")
+    rows = []
+    page_size = 1000
+    offset = 0
+    while True:
+        try:
+            r = c.table('live_bars').select(cols) \
+                .eq('symbol', symbol) \
+                .eq('timeframe_seconds', tf_seconds) \
+                .gte('bar_start', start_dt.isoformat()) \
+                .lte('bar_start', end_dt.isoformat()) \
+                .order('bar_start') \
+                .range(offset, offset + page_size - 1) \
+                .execute()
+        except Exception as e:
+            logger.warning("fetch_cache_as_df: fetch failed offset=%d: %s",
+                           offset, e)
+            break
+        batch = r.data or []
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+
+    if not rows:
+        return _pd.DataFrame(
+            columns=['open', 'high', 'low', 'close', 'volume'])
+
+    use_first = value_type == 'first'
+    out_rows = []
+    timestamps = []
+    for row in rows:
+        if use_first and row.get('first_close') is not None:
+            o = row.get('first_open')
+            h = row.get('first_high')
+            l = row.get('first_low')
+            cl = row.get('first_close')
+            v = row.get('first_volume')
+        else:
+            o = row.get('open')
+            h = row.get('high')
+            l = row.get('low')
+            cl = row.get('close')
+            v = row.get('volume')
+        timestamps.append(_pd.Timestamp(row['bar_start']))
+        out_rows.append({
+            'open': float(o or 0), 'high': float(h or 0),
+            'low': float(l or 0), 'close': float(cl or 0),
+            'volume': float(v or 0),
+        })
+
+    df = _pd.DataFrame(out_rows, index=_pd.DatetimeIndex(
+        timestamps, name='timestamp'))
+    if df.index.tz is None:
+        df.index = df.index.tz_localize('UTC')
+    return df
 
 
 @router.get("/{strategy_id}/cache-bars")
