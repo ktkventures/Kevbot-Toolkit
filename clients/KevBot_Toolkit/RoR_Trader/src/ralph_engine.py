@@ -200,6 +200,14 @@ class BarBuilder:
         self.history: pd.DataFrame = pd.DataFrame()
         self._partial: Optional[PartialBar] = None
         self._bar_count = 0
+        # M8.7 rebroadcast handling (2026-05-02): set by accept_bar /
+        # accept_second_bar after each call. True if the incoming bar was
+        # a Polygon WS rebroadcast for the most recent history row (we
+        # replaced the row in place); False for a new bar (appended).
+        # Callers that care about duplicate-detection read this AFTER
+        # calling accept_*. Default False so existing callers (tests,
+        # audit scripts) work unchanged.
+        self.last_was_duplicate: bool = False
 
     def seed_history(self, df: pd.DataFrame):
         if df is not None and len(df) > 0:
@@ -284,6 +292,36 @@ class BarBuilder:
         sec_close = float(bar_dict['close'])
         sec_volume = float(bar_dict.get('volume', 0))
 
+        # M8.7 rebroadcast handling (2026-05-02): if the incoming bar's
+        # period_start matches the most recent history row, this is a
+        # Polygon WS rebroadcast (correction within the 15-min FINRA
+        # late-print window) for the most recently closed bar. Replace
+        # the row in place. Don't pollute the current partial. Only
+        # applies to close_on_boundary=True mode (where we maintain
+        # canonical history); for chart-visual mode (False) we don't
+        # have history to replace.
+        if close_on_boundary and len(self.history) > 0:
+            last_ts = self.history.index[-1]
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.tz_localize('UTC')
+            if last_ts == pd.Timestamp(period_start):
+                # Replace history row with corrected aggregation values.
+                # The CALLER (on_polygon_bar fan-out / on_second_bar
+                # primary) is feeding the post-correction full-period
+                # aggregation; we trust those values.
+                self.history.iloc[-1] = pd.Series({
+                    'open': sec_open, 'high': sec_high, 'low': sec_low,
+                    'close': sec_close, 'volume': sec_volume,
+                })
+                self.last_was_duplicate = True
+                # Return the corrected bar dict so caller knows this was a
+                # close-on-boundary (treats it like a completed-bar return).
+                return {
+                    'timestamp': period_start.isoformat(),
+                    'open': sec_open, 'high': sec_high, 'low': sec_low,
+                    'close': sec_close, 'volume': sec_volume,
+                }
+
         if self._partial is None or period_start > self._partial.bar_start:
             completed = None
             if self._partial is not None and close_on_boundary:
@@ -296,6 +334,7 @@ class BarBuilder:
             self._partial.close = sec_close
             self._partial.volume = sec_volume
             self._partial.tick_count = 1
+            self.last_was_duplicate = False
             return completed
 
         # Same period — aggregate into existing partial
@@ -304,6 +343,7 @@ class BarBuilder:
         self._partial.close = sec_close
         self._partial.volume += sec_volume
         self._partial.tick_count += 1
+        self.last_was_duplicate = False
         return None
 
     @property
@@ -350,11 +390,36 @@ class BarBuilder:
 
         Appends to history, increments bar count, gap-fills missing bars.
         Returns the bar dict for downstream consumption.
+
+        M8.7 rebroadcast handling (2026-05-02): if the incoming bar's
+        bar_start matches the most recent history row's timestamp, this
+        is a Polygon WS rebroadcast (correction within the 15-min FINRA
+        late-print window). We REPLACE the history row in place and set
+        `self.last_was_duplicate=True` for the caller. Otherwise we
+        append as before and set `last_was_duplicate=False`.
         """
         bar_ts = pd.Timestamp(bar_dict['timestamp'])
         if bar_ts.tzinfo is None:
             bar_ts = bar_ts.tz_localize('UTC')
         bar_start = self._align_to_period(bar_ts.to_pydatetime())
+
+        # Rebroadcast detection: same bar_start as the most recent history
+        # row. Replace, don't append. Don't increment bar_count.
+        if len(self.history) > 0:
+            last_ts = self.history.index[-1]
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.tz_localize('UTC')
+            if last_ts == pd.Timestamp(bar_start):
+                # Replace the row's OHLCV with the corrected values.
+                self.history.iloc[-1] = pd.Series({
+                    'open': float(bar_dict['open']),
+                    'high': float(bar_dict['high']),
+                    'low': float(bar_dict['low']),
+                    'close': float(bar_dict['close']),
+                    'volume': float(bar_dict.get('volume', 0)),
+                })
+                self.last_was_duplicate = True
+                return bar_dict
 
         # Gap-fill if there are missing bars between last history and this bar
         if len(self.history) > 0:
@@ -380,6 +445,7 @@ class BarBuilder:
         self._bar_count += 1
         # Clear partial since this bar is complete
         self._partial = None
+        self.last_was_duplicate = False
         return bar_dict
 
     def force_close_stale_bar(self, now: datetime) -> Optional[dict]:
@@ -1549,26 +1615,65 @@ class SymbolHub:
         if close:
             self.latest_close = float(close)
 
-        # Accept the pre-built bar into the builder (handles gap-fill)
+        # Accept the pre-built bar into the builder (handles gap-fill).
+        # M8.7 (2026-05-02): if Polygon WS rebroadcasts a correction for
+        # the most recent bar within the 15-min FINRA window, accept_bar
+        # replaces the history row in place and sets last_was_duplicate.
         builder.accept_bar(bar_dict)
+        was_duplicate = builder.last_was_duplicate
 
         # M8.7: record the WS-aggregated bar to live_bars (fire-and-forget).
-        # Gated by LIVE_BAR_CACHE_WRITE_ENABLED env flag.
+        # Always write — even on duplicate, since this is how cache.close
+        # captures Polygon's correction (the trigger preserves first_close).
         try:
             from live_bars_writer import write_bar as _live_bars_write
             _live_bars_write(self.symbol, tf_seconds, bar_dict, source='ws')
         except Exception:
             pass  # never block bar processing on cache write
 
-        self._run_monitor_pipeline_for_completed_bar(
-            tf_seconds=tf_seconds,
-            bar_dict=bar_dict,
-            bar_count=builder._bar_count,
-            alert_callback=alert_callback,
-            config=config,
-            auditor=auditor,
-            source_label='polygon',
-        )
+        if was_duplicate:
+            # Polygon rebroadcast: silently recompute indicator state from
+            # the corrected history so future bars use accurate values.
+            # Do NOT re-fire alerts — once an alert is saved it's fact;
+            # the corrected bar's own trigger evaluation was already done
+            # with the original values at the moment it first arrived.
+            for monitor in self.monitors.values():
+                if monitor.tf_seconds != tf_seconds:
+                    continue
+                try:
+                    monitor.indicators.recompute_from_history(builder.history)
+                except Exception as e:
+                    logger.warning(
+                        "Rebroadcast recompute failed for strat %s "
+                        "(tf=%ss): %s",
+                        monitor.strat_id, tf_seconds, e)
+                # User-pack engines: if the monitor has any, they live on
+                # IncrementalIndicatorEngine via _user_pack_engines; the
+                # __init__ called by recompute_from_history rebuilds them
+                # cleanly with fresh state.
+            # Also recompute any shadow engine for this TF
+            shadow_self = self._shadow_engines.get(tf_seconds)
+            if shadow_self is not None:
+                try:
+                    shadow_self.indicators.recompute_from_history(builder.history)
+                except Exception as e:
+                    logger.warning(
+                        "Rebroadcast recompute failed for shadow %ss: %s",
+                        tf_seconds, e)
+            logger.info(
+                "Rebroadcast applied: %s tf=%ss bar=%s — indicators "
+                "recomputed, no alerts fired",
+                self.symbol, tf_seconds, bar_dict.get('timestamp'))
+        else:
+            self._run_monitor_pipeline_for_completed_bar(
+                tf_seconds=tf_seconds,
+                bar_dict=bar_dict,
+                bar_count=builder._bar_count,
+                alert_callback=alert_callback,
+                config=config,
+                auditor=auditor,
+                source_label='polygon',
+            )
 
         # Phase 31 polygon path stops here for the primary TF only. Cross-TF
         # confluence shadows (e.g. 15Min secondary on a 10Sec primary) need
@@ -1592,6 +1697,7 @@ class SymbolHub:
                 continue
             if completed is None:
                 continue
+            sec_was_duplicate = sec_builder.last_was_duplicate
             # M8.7: record the aggregated secondary-TF bar to live_bars.
             try:
                 from live_bars_writer import write_bar as _live_bars_write
@@ -1601,6 +1707,25 @@ class SymbolHub:
             shadow = self._shadow_engines.get(sec_tf)
             if shadow is None:
                 continue
+
+            if sec_was_duplicate:
+                # M8.7 (2026-05-02): Polygon rebroadcast cascaded into the
+                # secondary TF aggregation. Recompute shadow indicators
+                # from corrected history; don't re-emit confluence records
+                # to the MTF buffer (the original confluence was used for
+                # primary-TF gating at original alert time; future bars
+                # will see the corrected state via the next on_bar_close).
+                try:
+                    shadow.indicators.recompute_from_history(sec_builder.history)
+                    logger.info(
+                        "Rebroadcast cascade: shadow %s/%ss recomputed",
+                        self.symbol, sec_tf)
+                except Exception as e:
+                    logger.warning(
+                        "shadow recompute_from_history failed (%ss): %s",
+                        sec_tf, e)
+                continue
+
             # Note: do NOT gate on shadow.indicators._initialized here.
             # shadow.on_bar_close → update_bar handles cold-start via the
             # incremental class's `_first` flag, and skipping when not
@@ -1721,6 +1846,7 @@ class SymbolHub:
                 continue
             if completed is None:
                 continue
+            sec_was_duplicate = sec_builder.last_was_duplicate
             # M8.7: record sub-minute secondary-TF bar to live_bars.
             try:
                 from live_bars_writer import write_bar as _live_bars_write
@@ -1730,6 +1856,23 @@ class SymbolHub:
             shadow = self._shadow_engines.get(sec_tf)
             if shadow is None:
                 continue
+
+            if sec_was_duplicate:
+                # M8.7 (2026-05-02): Polygon per-second rebroadcast for
+                # the most recent sub-minute period. Recompute shadow
+                # indicator state from corrected history; skip on_bar_close
+                # to avoid emitting confluence records that already fired.
+                try:
+                    shadow.indicators.recompute_from_history(sec_builder.history)
+                    logger.info(
+                        "Rebroadcast cascade: shadow %s/%ss recomputed",
+                        self.symbol, sec_tf)
+                except Exception as e:
+                    logger.warning(
+                        "shadow recompute_from_history failed (%ss): %s",
+                        sec_tf, e)
+                continue
+
             # Note: do NOT gate on shadow.indicators._initialized here.
             # shadow.on_bar_close → update_bar handles cold-start via the
             # incremental class's `_first` flag, and skipping when not
@@ -1756,6 +1899,7 @@ class SymbolHub:
                 # Sub-minute: per-second is the canonical source. Aggregate.
                 completed = b.accept_second_bar(bar_dict, close_on_boundary=True)
                 if completed is not None:
+                    primary_was_duplicate = b.last_was_duplicate
                     # M8.7: record sub-minute primary-TF bar to live_bars.
                     try:
                         from live_bars_writer import write_bar as _live_bars_write
@@ -1763,16 +1907,44 @@ class SymbolHub:
                                          source='ws')
                     except Exception:
                         pass
-                    # Run the full monitor pipeline on the closed sub-minute bar
-                    self._run_monitor_pipeline_for_completed_bar(
-                        tf_seconds=tf_seconds,
-                        bar_dict=completed,
-                        bar_count=b._bar_count,
-                        alert_callback=alert_callback,
-                        config=config,
-                        auditor=auditor,
-                        source_label='subm',
-                    )
+
+                    if primary_was_duplicate:
+                        # M8.7 (2026-05-02): Polygon per-second rebroadcast
+                        # for the most recent sub-minute primary bar. Recompute
+                        # indicator state silently; skip alert pipeline.
+                        for monitor in self.monitors.values():
+                            if monitor.tf_seconds != tf_seconds:
+                                continue
+                            try:
+                                monitor.indicators.recompute_from_history(b.history)
+                            except Exception as e:
+                                logger.warning(
+                                    "Rebroadcast recompute failed for strat %s "
+                                    "(tf=%ss): %s",
+                                    monitor.strat_id, tf_seconds, e)
+                        shadow_self = self._shadow_engines.get(tf_seconds)
+                        if shadow_self is not None:
+                            try:
+                                shadow_self.indicators.recompute_from_history(b.history)
+                            except Exception as e:
+                                logger.warning(
+                                    "Rebroadcast recompute failed for shadow "
+                                    "%ss: %s", tf_seconds, e)
+                        logger.info(
+                            "Rebroadcast applied: %s tf=%ss bar=%s — "
+                            "indicators recomputed (sub-minute), no alerts",
+                            self.symbol, tf_seconds, completed.get('timestamp'))
+                    else:
+                        # Run the full monitor pipeline on the closed sub-minute bar
+                        self._run_monitor_pipeline_for_completed_bar(
+                            tf_seconds=tf_seconds,
+                            bar_dict=completed,
+                            bar_count=b._bar_count,
+                            alert_callback=alert_callback,
+                            config=config,
+                            auditor=auditor,
+                            source_label='subm',
+                        )
                 # Publish forming snapshot of the (new) partial bar, with
                 # tentative indicators + interpreter states so the frontend
                 # heatmap / oscillator / overlay panes stay in sync with

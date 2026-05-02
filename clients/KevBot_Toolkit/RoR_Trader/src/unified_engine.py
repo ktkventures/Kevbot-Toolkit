@@ -784,6 +784,32 @@ class IncrementalIndicatorEngine:
 
         self._initialized = True
 
+    def recompute_from_history(self, df: pd.DataFrame) -> None:
+        """Reset all indicator state and replay every bar in df.
+
+        M8.7 rebroadcast handling (2026-05-02): when Polygon WS rebroadcasts
+        a corrected version of the most recent bar (within their 15-min
+        FINRA late-print window), the BarBuilder replaces the history row
+        in place via accept_bar's duplicate detection. The indicator
+        engine's accumulated state, however, was incrementally computed
+        from the OLD (uncorrected) bar values. Calling this method after
+        a duplicate-detected accept_bar resets state from scratch and
+        replays the corrected history — equivalent to a fresh engine
+        warmup against the corrected df. O(N) per correction; acceptable
+        for typical N≈few-hundred bar history sizes.
+
+        Equivalent to: discard self, build a fresh engine with the same
+        required_indicators+params, call warmup(df) on it, swap in.
+        Implementation just re-runs __init__ and warmup in place.
+        """
+        # Re-run __init__ logic to reset state and re-instantiate user
+        # pack engines. We pass the same required_indicators and params
+        # captured at original instantiation.
+        IncrementalIndicatorEngine.__init__(
+            self, self.required, self.params)
+        # Now replay the corrected history.
+        self.warmup(df)
+
     def update_bar(self, bar: dict) -> Dict[str, float]:
         """Incremental O(1) update for a new completed bar.
 
