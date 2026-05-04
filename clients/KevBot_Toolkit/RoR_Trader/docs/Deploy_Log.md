@@ -21,6 +21,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-05-04
 
+- **18:20 UTC (12:20 MT)** — `8232289` M8.7 M5 fix: Replay parity (candleCount slice + trade markers + rightOffset)
+  - Service(s) redeployed: frontend (next.js)
+  - Observed cache gap: N/A (frontend-only)
+  - Notes: Monday smoke test found V1 Replay rendering candles only. Fix slices to candleCount, builds entry/exit markers, forwards rightOffset, and keys chart id on overlay count. Plan + memory updated. Backup branch `dev-backup-pre-replay-fix-2026-05-04` pushed.
+
 - **15:13 UTC (09:13 MT)** — `53cac54` M8.7 M4 fix: carry indicator_snapshot through DBAlertDispatcher
   - Service(s) redeployed: Worker
   - Observed cache gap: TBD (RTH push — expect ~1-2 min reconnect window)
