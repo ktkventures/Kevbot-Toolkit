@@ -76,14 +76,54 @@ function panesExtent(panes: PaneConfig[]): [number, number] {
 /** Apples-to-apples extent: only show the time range where BOTH lenses have
  * data. Algo Lens (REST) typically settles ~15 min behind WS, so naive max
  * picks the Alert end and leaves the Algo chart stretched/empty on the right.
- * Intersection ensures both lenses share the same start AND end candles. */
+ * Intersection ensures both lenses share the same start AND end candles.
+ *
+ * Edge cases (covered):
+ *  - One lens entirely empty → use the other's extent (still useful)
+ *  - Lenses don't overlap (rare; e.g. cache first-write window doesn't
+ *    intersect REST window) → fall back to the lens with the more recent
+ *    data so the user sees something diagnostic instead of an error
+ */
 function computeFullExtent(algoPanes: PaneConfig[], alertPanes: PaneConfig[]): [number, number] {
   const [algoLo, algoHi] = panesExtent(algoPanes);
   const [alertLo, alertHi] = panesExtent(alertPanes);
-  // If a lens is empty (extent = [0,0]), fall through to the other lens's extent.
+  if (algoHi <= 0 && alertHi <= 0) return [0, 0];
   if (algoHi <= 0) return [alertLo, alertHi];
   if (alertHi <= 0) return [algoLo, algoHi];
-  return [Math.max(algoLo, alertLo), Math.min(algoHi, alertHi)];
+  const lo = Math.max(algoLo, alertLo);
+  const hi = Math.min(algoHi, alertHi);
+  if (lo >= hi) {
+    // No overlap — pick the lens with the more recent data so the user
+    // gets a usable chart + diagnostic info instead of a blank "no bars"
+    // card. The Bar-Counts header line will surface the asymmetry.
+    return algoHi >= alertHi ? [algoLo, algoHi] : [alertLo, alertHi];
+  }
+  return [lo, hi];
+}
+
+/** Count candle bars in a panes array (for diagnostic display). */
+function panesBarCount(panes: PaneConfig[]): number {
+  let n = 0;
+  for (const pane of panes) {
+    for (const s of pane.series) {
+      if (s.type === 'Candlestick') n += s.data.length;
+    }
+  }
+  return n;
+}
+
+/** datetime-local <input> uses local-tz "YYYY-MM-DDTHH:MM:SS" — convert to/from Unix sec. */
+function unixToLocalInputValue(unixSec: number): string {
+  if (!isFinite(unixSec) || unixSec <= 0) return '';
+  const d = new Date(unixSec * 1000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function localInputValueToUnix(s: string): number {
+  if (!s) return 0;
+  const t = new Date(s).getTime();
+  return isFinite(t) ? Math.floor(t / 1000) : 0;
 }
 
 interface LabReplayPanelProps {
@@ -111,6 +151,7 @@ const PRESET_WINDOWS = [
   { label: 'Last 4h', seconds: 4 * 3600 },
   { label: 'Today', seconds: 0 },        // special — handled below
   { label: 'All', seconds: -1 },
+  { label: 'Custom', seconds: -2 },      // user-provided start/end
 ] as const;
 
 export default function LabReplayPanel({
@@ -144,9 +185,25 @@ export default function LabReplayPanel({
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [interval, setIntervalState] = useState<number>(defaultIntervalSec);
 
+  // Custom start/end input buffer.  Held separately so typing in the
+  // datetime-local field doesn't immediately fire-hose the chart on every
+  // keystroke — only commits when the user clicks Apply (or hits Enter).
+  const [customStartInput, setCustomStartInput] = useState<string>('');
+  const [customEndInput, setCustomEndInput] = useState<string>('');
+
   // Apply preset to window whenever data extent changes or user picks one.
+  // Custom is special — it doesn't auto-derive from the extent; it uses
+  // whatever the user committed via the Apply button.
   useEffect(() => {
     if (!isFinite(fullStart) || !isFinite(fullEnd) || fullEnd <= fullStart) return;
+    if (windowPreset === 'Custom') {
+      // Pre-fill the inputs with the current window so the user has a
+      // sensible starting point to tweak.  Don't overwrite if the user
+      // has already set custom values.
+      if (!customStartInput) setCustomStartInput(unixToLocalInputValue(windowStart || fullStart));
+      if (!customEndInput) setCustomEndInput(unixToLocalInputValue(windowEnd || fullEnd));
+      return;
+    }
     let s = fullStart;
     let e = fullEnd;
     if (windowPreset === 'Last 1h') s = Math.max(fullStart, fullEnd - 3600);
@@ -159,7 +216,21 @@ export default function LabReplayPanel({
     setWindowStart(s);
     setWindowEnd(e);
     setCurrentTime(e); // start fully revealed
+    // Keep the Custom inputs in sync with the current window so switching
+    // to Custom mid-flight inherits the visible range.
+    setCustomStartInput(unixToLocalInputValue(s));
+    setCustomEndInput(unixToLocalInputValue(e));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fullStart, fullEnd, windowPreset]);
+
+  const applyCustomWindow = () => {
+    const s = localInputValueToUnix(customStartInput);
+    const e = localInputValueToUnix(customEndInput);
+    if (!isFinite(s) || !isFinite(e) || s <= 0 || e <= 0 || s >= e) return;
+    setWindowStart(s);
+    setWindowEnd(e);
+    setCurrentTime(e);
+  };
 
   // Filter both panes to the active window so each lens' chart only
   // contains points the user wants to inspect.  Scrub-mode within
@@ -181,11 +252,23 @@ export default function LabReplayPanel({
   const seek = (t: number) => setCurrentTime(Math.max(windowStart, Math.min(windowEnd, t)));
   const reset = () => setCurrentTime(windowStart);
 
+  // Diagnostic bar counts — surfaces "alert lens has 0 bars" cases (e.g.
+  // strategy 149 with first-write source on a symbol where cache hasn't
+  // recorded first-write values) so the user knows WHY the chart is empty.
+  const algoBars = useMemo(() => panesBarCount(algoPanes), [algoPanes]);
+  const alertBars = useMemo(() => panesBarCount(alertPanes), [alertPanes]);
+
   if (fullEnd <= fullStart) {
     return (
       <Card>
-        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        <p className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
           No bars to compare yet.
+        </p>
+        <p className="text-[10px]" style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
+          Algo Lens: <strong>{algoBars}</strong> bars · Alert Lens: <strong>{alertBars}</strong> bars.
+          {' '}{algoBars === 0 && alertBars === 0 && 'Both sources empty — REST + cache still loading or no data for this symbol/window.'}
+          {' '}{algoBars > 0 && alertBars === 0 && 'Cache has no rows for the selected source — try toggling Latest vs First-write.'}
+          {' '}{algoBars === 0 && alertBars > 0 && 'REST not loaded yet.'}
         </p>
       </Card>
     );
@@ -193,13 +276,14 @@ export default function LabReplayPanel({
 
   return (
     <Card>
-      {/* Header — preset selectors + window summary */}
+      {/* Header — preset selectors + window summary + bar counts */}
       <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
         <h4 className="text-sm font-medium">
           Lab Replay
           <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
             ({Math.round((windowEnd - windowStart) / 60)} min window · scrub head{' '}
-            {new Date(currentTime * 1000).toISOString().slice(11, 19)} UTC)
+            {new Date(currentTime * 1000).toISOString().slice(11, 19)} UTC ·{' '}
+            Algo {algoBars} / Alert {alertBars} bars)
           </span>
         </h4>
         <div className="flex items-center gap-1 text-xs">
@@ -220,6 +304,64 @@ export default function LabReplayPanel({
           ))}
         </div>
       </div>
+
+      {/* Custom datetime picker — only visible when Custom preset is active. */}
+      {windowPreset === 'Custom' && (
+        <div className="flex items-center gap-2 mb-3 text-xs flex-wrap" style={{ color: 'var(--text-muted)' }}>
+          <span>Window:</span>
+          <label className="flex items-center gap-1">
+            <span>start</span>
+            <input
+              type="datetime-local"
+              step="1"
+              value={customStartInput}
+              onChange={e => setCustomStartInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') applyCustomWindow(); }}
+              className="px-2 py-0.5 rounded"
+              style={{
+                background: 'var(--bg-input)',
+                border: '1px solid var(--border)',
+                color: 'var(--text-primary)',
+                fontFamily: 'monospace',
+                fontSize: '11px',
+              }}
+            />
+          </label>
+          <label className="flex items-center gap-1">
+            <span>end</span>
+            <input
+              type="datetime-local"
+              step="1"
+              value={customEndInput}
+              onChange={e => setCustomEndInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') applyCustomWindow(); }}
+              className="px-2 py-0.5 rounded"
+              style={{
+                background: 'var(--bg-input)',
+                border: '1px solid var(--border)',
+                color: 'var(--text-primary)',
+                fontFamily: 'monospace',
+                fontSize: '11px',
+              }}
+            />
+          </label>
+          <button
+            onClick={applyCustomWindow}
+            className="px-3 py-0.5 rounded transition-colors"
+            style={{
+              background: 'var(--accent)',
+              color: 'white',
+              border: 'none',
+              cursor: 'pointer',
+            }}
+          >
+            Apply
+          </button>
+          <span className="ml-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+            (browser-local time, second precision · press Enter or Apply to commit)
+          </span>
+        </div>
+      )}
 
       {/* Side-by-side lenses */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
