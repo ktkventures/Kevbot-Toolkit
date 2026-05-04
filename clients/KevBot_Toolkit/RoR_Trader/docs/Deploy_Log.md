@@ -21,6 +21,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-05-04
 
+- **22:50 UTC (16:50 MT)** — `2d6ea98` M8.7 M5: Custom timestamp picker + bar-count diagnostic
+  - Service(s) redeployed: frontend (next.js)
+  - Observed cache gap: N/A (frontend-only)
+  - Notes: Adds explicit start/end datetime-local inputs (sec precision) so trader can target a specific trade window for forensic diagnosis. Plus robust empty/inverted-intersection handling and per-lens bar counts in header — strat 149 first-write empty case now shows "Algo X / Alert 0 bars" with diagnostic message instead of blank card. Backup branch `dev-backup-pre-timestamp-picker-2026-05-04` pushed pre-change.
+
 - **22:25 UTC (16:25 MT)** — `0c368e8` M8.7 M5: lens-extent intersection + trigger_prefix relevance match
   - Service(s) redeployed: frontend (next.js), api (strategies router)
   - Observed cache gap: N/A (frontend + API logic only)
