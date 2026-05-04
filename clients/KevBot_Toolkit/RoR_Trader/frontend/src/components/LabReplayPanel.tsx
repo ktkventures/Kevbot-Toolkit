@@ -112,18 +112,65 @@ function panesBarCount(panes: PaneConfig[]): number {
   return n;
 }
 
-/** datetime-local <input> uses local-tz "YYYY-MM-DDTHH:MM:SS" — convert to/from Unix sec. */
-function unixToLocalInputValue(unixSec: number): string {
-  if (!isFinite(unixSec) || unixSec <= 0) return '';
-  const d = new Date(unixSec * 1000);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+/** Mirror of SyncedChartPane's alias map so timezone props match what the
+ * chart axis labels use.  Keep in sync if either is updated. */
+const _TIMEZONE_ALIAS_TO_IANA: Record<string, string> = {
+  'US/Eastern': 'America/New_York',
+  'US/Central': 'America/Chicago',
+  'US/Mountain': 'America/Denver',
+  'US/Pacific': 'America/Los_Angeles',
+  'US/Alaska': 'America/Anchorage',
+  'US/Hawaii': 'Pacific/Honolulu',
+};
+
+function resolveTz(tz: string | null | undefined): string {
+  if (!tz) return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return _TIMEZONE_ALIAS_TO_IANA[tz] || tz;
 }
 
-function localInputValueToUnix(s: string): number {
+/** Compute the offset (seconds) of `tz` at the given UTC instant.
+ * Positive = tz ahead of UTC, negative = behind. */
+function tzOffsetSecs(date: Date, tz: string): number {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const parts = dtf.formatToParts(date);
+  const get = (type: string) => parseInt(parts.find(p => p.type === type)?.value ?? '0', 10);
+  const asUtc = Date.UTC(get('year'), get('month') - 1, get('day'),
+                         get('hour'), get('minute'), get('second'));
+  return Math.round((asUtc - date.getTime()) / 1000);
+}
+
+/** Format a Unix-second timestamp as "YYYY-MM-DDTHH:MM:SS" in the user's
+ * timezone — used to populate <input type="datetime-local"> fields with
+ * values the user expects (matches chart axis labels). */
+function unixToInputValueTz(unixSec: number, tz: string): string {
+  if (!isFinite(unixSec) || unixSec <= 0) return '';
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const parts = dtf.formatToParts(new Date(unixSec * 1000));
+  const get = (type: string) => parts.find(p => p.type === type)?.value ?? '00';
+  return `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}`;
+}
+
+/** Parse "YYYY-MM-DDTHH:MM:SS" interpreted as wall-clock time in `tz`,
+ * return Unix seconds.  Two-pass refinement handles DST edges. */
+function inputValueToUnixTz(s: string, tz: string): number {
   if (!s) return 0;
-  const t = new Date(s).getTime();
-  return isFinite(t) ? Math.floor(t / 1000) : 0;
+  // Step 1: parse as if UTC to get a baseline ms
+  const asIfUtcMs = Date.parse(s + 'Z');
+  if (!isFinite(asIfUtcMs)) return 0;
+  // Step 2: get tz offset at that baseline
+  let offsetSec = tzOffsetSecs(new Date(asIfUtcMs), tz);
+  // Step 3: refine — offset at the candidate time may differ near DST
+  let candidateMs = asIfUtcMs - offsetSec * 1000;
+  offsetSec = tzOffsetSecs(new Date(candidateMs), tz);
+  return Math.floor(asIfUtcMs / 1000) - offsetSec;
 }
 
 interface LabReplayPanelProps {
@@ -191,6 +238,10 @@ export default function LabReplayPanel({
   const [customStartInput, setCustomStartInput] = useState<string>('');
   const [customEndInput, setCustomEndInput] = useState<string>('');
 
+  // Resolve the user's preferred timezone once.  Falls back to the
+  // browser's resolved timezone if the prop is null.
+  const resolvedTz = useMemo(() => resolveTz(timezone), [timezone]);
+
   // Apply preset to window whenever data extent changes or user picks one.
   // Custom is special — it doesn't auto-derive from the extent; it uses
   // whatever the user committed via the Apply button.
@@ -200,8 +251,8 @@ export default function LabReplayPanel({
       // Pre-fill the inputs with the current window so the user has a
       // sensible starting point to tweak.  Don't overwrite if the user
       // has already set custom values.
-      if (!customStartInput) setCustomStartInput(unixToLocalInputValue(windowStart || fullStart));
-      if (!customEndInput) setCustomEndInput(unixToLocalInputValue(windowEnd || fullEnd));
+      if (!customStartInput) setCustomStartInput(unixToInputValueTz(windowStart || fullStart, resolvedTz));
+      if (!customEndInput) setCustomEndInput(unixToInputValueTz(windowEnd || fullEnd, resolvedTz));
       return;
     }
     let s = fullStart;
@@ -218,14 +269,14 @@ export default function LabReplayPanel({
     setCurrentTime(e); // start fully revealed
     // Keep the Custom inputs in sync with the current window so switching
     // to Custom mid-flight inherits the visible range.
-    setCustomStartInput(unixToLocalInputValue(s));
-    setCustomEndInput(unixToLocalInputValue(e));
+    setCustomStartInput(unixToInputValueTz(s, resolvedTz));
+    setCustomEndInput(unixToInputValueTz(e, resolvedTz));
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fullStart, fullEnd, windowPreset]);
+  }, [fullStart, fullEnd, windowPreset, resolvedTz]);
 
   const applyCustomWindow = () => {
-    const s = localInputValueToUnix(customStartInput);
-    const e = localInputValueToUnix(customEndInput);
+    const s = inputValueToUnixTz(customStartInput, resolvedTz);
+    const e = inputValueToUnixTz(customEndInput, resolvedTz);
     if (!isFinite(s) || !isFinite(e) || s <= 0 || e <= 0 || s >= e) return;
     setWindowStart(s);
     setWindowEnd(e);
@@ -358,7 +409,7 @@ export default function LabReplayPanel({
             Apply
           </button>
           <span className="ml-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
-            (browser-local time, second precision · press Enter or Apply to commit)
+            ({resolvedTz}, second precision · press Enter or Apply to commit)
           </span>
         </div>
       )}
@@ -370,7 +421,15 @@ export default function LabReplayPanel({
             <strong style={{ color: 'var(--text-primary)' }}>{algoLabel}</strong>
             {algoFooter ? <span className="ml-2">{algoFooter}</span> : null}
           </div>
+          {/* `key` forces a chart instance rebuild whenever the window
+              commits — that triggers fitContent on the new data extent.
+              Without it, LWC's setData preserves the previous visible
+              range, so a window jump (e.g. Apply with a different day)
+              leaves the chart showing blank space.  Currentime changes
+              do NOT remount because they don't affect the key — only
+              window commits do. */}
           <SyncedChartPane
+            key={`algo-${windowStart}-${windowEnd}`}
             panes={algoWindowed}
             upColor={upColor}
             downColor={downColor}
@@ -392,6 +451,7 @@ export default function LabReplayPanel({
             {alertFooter ? <span className="ml-2">{alertFooter}</span> : null}
           </div>
           <SyncedChartPane
+            key={`alert-${windowStart}-${windowEnd}`}
             panes={alertWindowed}
             upColor={upColor}
             downColor={downColor}
