@@ -55,24 +55,35 @@ function filterPanesByWindow(panes: PaneConfig[], start: number, end: number): P
   }));
 }
 
-/** Compute global [min, max] times across both panes' candle series. */
-function computeFullExtent(algoPanes: PaneConfig[], alertPanes: PaneConfig[]): [number, number] {
+/** Compute the candle time extent of a single panes array. */
+function panesExtent(panes: PaneConfig[]): [number, number] {
   let lo = Infinity;
   let hi = -Infinity;
-  for (const panes of [algoPanes, alertPanes]) {
-    for (const pane of panes) {
-      for (const s of pane.series) {
-        if (s.type !== 'Candlestick') continue;
-        for (const d of s.data) {
-          const t = toUnixSec(d.time ?? d.timestamp);
-          if (!isFinite(t)) continue;
-          if (t < lo) lo = t;
-          if (t > hi) hi = t;
-        }
+  for (const pane of panes) {
+    for (const s of pane.series) {
+      if (s.type !== 'Candlestick') continue;
+      for (const d of s.data) {
+        const t = toUnixSec(d.time ?? d.timestamp);
+        if (!isFinite(t)) continue;
+        if (t < lo) lo = t;
+        if (t > hi) hi = t;
       }
     }
   }
   return [isFinite(lo) ? lo : 0, isFinite(hi) ? hi : 0];
+}
+
+/** Apples-to-apples extent: only show the time range where BOTH lenses have
+ * data. Algo Lens (REST) typically settles ~15 min behind WS, so naive max
+ * picks the Alert end and leaves the Algo chart stretched/empty on the right.
+ * Intersection ensures both lenses share the same start AND end candles. */
+function computeFullExtent(algoPanes: PaneConfig[], alertPanes: PaneConfig[]): [number, number] {
+  const [algoLo, algoHi] = panesExtent(algoPanes);
+  const [alertLo, alertHi] = panesExtent(alertPanes);
+  // If a lens is empty (extent = [0,0]), fall through to the other lens's extent.
+  if (algoHi <= 0) return [alertLo, alertHi];
+  if (alertHi <= 0) return [algoLo, algoHi];
+  return [Math.max(algoLo, alertLo), Math.min(algoHi, alertHi)];
 }
 
 interface LabReplayPanelProps {

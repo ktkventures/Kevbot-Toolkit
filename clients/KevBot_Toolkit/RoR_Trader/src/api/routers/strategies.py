@@ -1287,21 +1287,37 @@ def _build_chart_response_from_df(df, strat, strategy_id, phases=None):
 
     for group in get_enabled_groups():
         gid_prefix = group.id + "_"
+        template = get_template(group.base_template)
+
+        # Relevance = group's indicator columns should appear on the chart.
+        # Three matching paths:
+        #   1. group.id is the prefix of the strategy's entry/exit trigger
+        #      conf id (works for legacy templates where group.id == trigger_prefix)
+        #   2. group's interpreters intersect the strategy's confluence-record
+        #      interpreters (catches confluence-only groups)
+        #   3. template's `trigger_prefix` is the prefix of an entry/exit
+        #      conf id (fixes user packs where group.id ≠ trigger_prefix —
+        #      e.g. EPP v4: group `ema_pp_v4_default`, trigger_prefix `eppv4`,
+        #      conf id `eppv4_default_cross_short_up`)
         is_relevant = (
             entry_conf_id.startswith(gid_prefix)
             or any(cid.startswith(gid_prefix) for cid in exit_conf_ids)
         )
-        if not is_relevant:
-            template = get_template(group.base_template)
-            if template:
-                for ik in template.get("interpreters", []):
-                    if ik in confluence_interpreters:
-                        is_relevant = True
-                        break
+        if not is_relevant and template:
+            for ik in template.get("interpreters", []):
+                if ik in confluence_interpreters:
+                    is_relevant = True
+                    break
+        if not is_relevant and template:
+            tp = template.get("trigger_prefix", "")
+            if tp:
+                tp_prefix = tp + "_"
+                if entry_conf_id.startswith(tp_prefix) \
+                        or any(cid.startswith(tp_prefix) for cid in exit_conf_ids):
+                    is_relevant = True
         if not is_relevant:
             continue
 
-        template = get_template(group.base_template)
         if not template:
             continue
 
