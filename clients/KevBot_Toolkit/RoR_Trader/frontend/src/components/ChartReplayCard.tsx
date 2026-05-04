@@ -23,14 +23,32 @@ const ReplayableChart = dynamic(() => import('@/charts/ReplayableChart'), { ssr:
 
 const INDICATOR_COLORS = ['#2196F3', '#FF9800', '#4CAF50', '#E040FB', '#00BCD4'];
 
+/** Price-level marker series — invisible line + cross/xcross markers
+ * at exact (time, price) coordinates. Mirrors buildStrategyChartPanes'
+ * algoEntry/algoExit/alertEntry/alertExit pattern so Replay matches the
+ * static Chart & Trades / Lab visualization. */
+export interface PriceLevelMarkerSeries {
+  /** Line data points at trade prices: {time: ISO/unix, value: price} */
+  data: { time: any; value: number }[];
+  /** LWC marker objects keyed off the same time field */
+  markers: any[];
+  /** Stroke color for the (invisible) line — used for legend swatch only */
+  color?: string;
+  /** Legend label */
+  label?: string;
+}
+
 interface ChartReplayCardProps {
   /** chart-data-cache response or equivalent */
   chartData: any[];
   overlayIndicators: string[];
   oscillatorIndicators?: string[];  // not yet rendered; reserved
   candleColorColumn?: string;
-  /** Optional trade markers to draw on the candle series */
+  /** Optional trade markers to draw on the candle series (entry/exit arrows) */
   candleMarkers?: any[];
+  /** Price-level marker series (algo + and alert × crosses).
+   *  Each becomes an invisible LWC Line series with markers attached. */
+  priceLevelSeries?: PriceLevelMarkerSeries[];
   /** Theme/visual prefs (subset of chartPrefs) */
   upColor?: string;
   downColor?: string;
@@ -53,6 +71,7 @@ export default function ChartReplayCard({
   oscillatorIndicators: _osc = [],
   candleColorColumn,
   candleMarkers = [],
+  priceLevelSeries = [],
   upColor,
   downColor,
   gridLines = true,
@@ -60,12 +79,13 @@ export default function ChartReplayCard({
   height = 420,
   title = 'Replay',
 }: ChartReplayCardProps) {
-  // ID keyed on data length + overlay count so the underlying chart re-creates
-  // (with the right number of line series) when the dataset or indicator set
-  // changes — e.g. when cache response loads after initial render.
+  // ID keyed on data length + overlay count + price-level series count so
+  // the underlying chart re-creates (with the right number of line series)
+  // when the dataset, indicator set, or marker-series count changes — e.g.
+  // when cache response loads after initial render.
   const chartId = useMemo(
-    () => `replay-${title.replace(/\s+/g, '-')}-${chartData.length}-${overlayIndicators.length}`,
-    [title, chartData.length, overlayIndicators.length],
+    () => `replay-${title.replace(/\s+/g, '-')}-${chartData.length}-${overlayIndicators.length}-${priceLevelSeries.length}`,
+    [title, chartData.length, overlayIndicators.length, priceLevelSeries.length],
   );
 
   // Time bounds (Unix seconds) from full data set
@@ -99,9 +119,12 @@ export default function ChartReplayCard({
   const reset = () => setCurrentTime(startTime);
 
   // Truncate chart data + overlays to currentTime
-  const { truncatedCandles, truncatedOverlayData, truncatedMarkers } = useMemo(() => {
+  const { truncatedCandles, truncatedOverlayData, truncatedMarkers, truncatedPriceLevels } = useMemo(() => {
     if (chartData.length === 0) {
-      return { truncatedCandles: [], truncatedOverlayData: [], truncatedMarkers: [] };
+      return {
+        truncatedCandles: [], truncatedOverlayData: [], truncatedMarkers: [],
+        truncatedPriceLevels: [] as PriceLevelMarkerSeries[],
+      };
     }
     // Find cutoff index
     const cutoff = chartData.findIndex(
@@ -133,14 +156,25 @@ export default function ChartReplayCard({
     // Trade markers — only show those at-or-before currentTime
     const markers = candleMarkers.filter((m: any) => toUnixSec(m.time) <= currentTime);
 
+    // Price-level markers (algo + / alert ×) — filter both data points
+    // and markers by currentTime so they reveal as the user scrubs forward.
+    const priceLevels: PriceLevelMarkerSeries[] = priceLevelSeries.map(s => ({
+      ...s,
+      data: s.data.filter(d => toUnixSec(d.time) <= currentTime),
+      markers: s.markers.filter(m => toUnixSec(m.time) <= currentTime),
+    }));
+
     return {
       truncatedCandles: candles,
       truncatedOverlayData: overlayData,
       truncatedMarkers: markers,
+      truncatedPriceLevels: priceLevels,
     };
-  }, [chartData, currentTime, overlayIndicators, candleColorColumn, candleMarkers]);
+  }, [chartData, currentTime, overlayIndicators, candleColorColumn, candleMarkers, priceLevelSeries]);
 
-  // Build ReplayableChart props
+  // Build ReplayableChart props.
+  // Layout: candle, then overlay lines, then 4 invisible price-level lines
+  // for + (algo entry/exit) and × (alert entry/exit) cross markers.
   const seriesSetup: SeriesSetup[] = useMemo(() => {
     const setup: SeriesSetup[] = [
       { type: 'Candlestick' },
@@ -151,17 +185,30 @@ export default function ChartReplayCard({
           lineWidth: 1.5,
         },
       })),
+      ...priceLevelSeries.map(s => ({
+        type: 'Line' as const,
+        options: {
+          color: s.color || 'rgba(255,255,255,0.2)',
+          lineVisible: false,
+          pointMarkersVisible: false,
+          priceLineVisible: false,
+          crosshairMarkerVisible: false,
+          lastValueVisible: false,
+          title: '',
+        },
+      })),
     ];
     return setup;
-  }, [overlayIndicators]);
+  }, [overlayIndicators, priceLevelSeries]);
 
   const seriesData: SeriesDataInput[] = useMemo(() => {
     const data: SeriesDataInput[] = [
       { data: truncatedCandles, markers: truncatedMarkers },
       ...truncatedOverlayData.map(o => ({ data: o.data })),
+      ...truncatedPriceLevels.map(s => ({ data: s.data, markers: s.markers })),
     ];
     return data;
-  }, [truncatedCandles, truncatedMarkers, truncatedOverlayData]);
+  }, [truncatedCandles, truncatedMarkers, truncatedOverlayData, truncatedPriceLevels]);
 
   if (chartData.length === 0) {
     return (

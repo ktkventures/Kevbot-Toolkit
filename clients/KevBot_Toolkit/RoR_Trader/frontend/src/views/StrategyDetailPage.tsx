@@ -3363,12 +3363,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       </Card>
                     ) : labReplayMode ? (
                       // M8.7 M5 (2026-05-02): bar-by-bar replay mode.
-                      // 2026-05-04 fix: Match the static Alert Lens window
-                      // (slice to candleCount) and build entry/exit arrow
-                      // markers from the same trade list. Without these,
-                      // Replay loaded all ~5 days of cache (~70k 10Sec
-                      // bars) so overlay lines were visually flat and
-                      // markers were absent.
+                      // 2026-05-04 fix #1: slice to candleCount, build
+                      // entry/exit arrows so Replay matches static Alert
+                      // Lens window. Fix #2 (same day): add price-level
+                      // + (algo) and × (alert) cross markers, mirroring
+                      // buildStrategyChartPanes' algoEntry/algoExit/
+                      // alertEntry/alertExit Line series so users can see
+                      // the divergence between algo and alert fills.
                       (() => {
                         const cacheResp: any = labDataSource === 'ws-latest'
                           ? labChartDataCacheLatest
@@ -3379,8 +3380,6 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           ? rawData.slice(-candleCount)
                           : rawData;
 
-                        // Build entry/exit arrow markers — mirror of
-                        // buildStrategyChartPanes' tradeMarkers (lines 99-132).
                         const dir = strategy?.direction || 'LONG';
                         const firstBarMs = data.length > 0
                           ? new Date(data[0].timestamp || data[0].time).getTime()
@@ -3388,6 +3387,19 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         const lastBarMs = data.length > 0
                           ? new Date(data[data.length - 1].timestamp || data[data.length - 1].time).getTime()
                           : Infinity;
+                        const barTimestamps = data.map((b: any) => b.timestamp || b.time);
+                        const snapToBar = (t: string): string | null => {
+                          const tms = new Date(t).getTime();
+                          let bestTs: string | null = barTimestamps[0] ?? null;
+                          let bestDist = Infinity;
+                          for (const ts of barTimestamps) {
+                            const d = Math.abs(new Date(ts).getTime() - tms);
+                            if (d < bestDist) { bestDist = d; bestTs = ts; }
+                          }
+                          return bestDist < 120000 ? bestTs : null;
+                        };
+
+                        // ---- Entry/exit arrow markers (attached to candle series) ----
                         const trades = labChartTabData.markerTrades || [];
                         const candleMarkers: any[] = [];
                         for (const t of trades) {
@@ -3419,6 +3431,88 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           }
                         }
 
+                        // ---- Price-level + (algo) cross markers ----
+                        const algoEntryData: any[] = [];
+                        const algoEntryMarkers: any[] = [];
+                        const algoExitData: any[] = [];
+                        const algoExitMarkers: any[] = [];
+                        const seenAlgoEntry = new Set<string>();
+                        const seenAlgoExit = new Set<string>();
+                        for (const t of trades) {
+                          const entryTime = t.entry_fill_ts || t.entryFillTs;
+                          const exitTime = t.exit_fill_ts || t.exitFillTs;
+                          const entryPrice = t.entry_price ?? t.entryPrice ?? 0;
+                          const exitPrice = t.exit_price ?? t.exitPrice ?? 0;
+                          const rMult = t.r_multiple ?? t.rMultiple ?? t.pnlR ?? 0;
+                          const exitReason = t.exit_reason || t.exitReason || '';
+                          if (entryTime && entryTime !== '--' && entryPrice > 0) {
+                            const snapped = snapToBar(entryTime);
+                            if (snapped && !seenAlgoEntry.has(snapped)) {
+                              seenAlgoEntry.add(snapped);
+                              algoEntryData.push({ time: snapped, value: entryPrice });
+                              algoEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color: chartPrefs.entryColor, text: '', size: 1 });
+                            }
+                          }
+                          if (exitTime && exitTime !== '--' && exitPrice > 0) {
+                            const snapped = snapToBar(exitTime);
+                            if (snapped && !seenAlgoExit.has(snapped)) {
+                              seenAlgoExit.add(snapped);
+                              let color = rMult >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
+                              if (exitReason === 'stop_loss') color = chartPrefs.exitStopColor;
+                              else if (exitReason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
+                              algoExitData.push({ time: snapped, value: exitPrice });
+                              algoExitMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color, text: '', size: 1 });
+                            }
+                          }
+                        }
+
+                        // ---- Price-level × (alert/live) cross markers ----
+                        const alertEntryData: any[] = [];
+                        const alertEntryMarkers: any[] = [];
+                        const alertExitData: any[] = [];
+                        const alertExitMarkers: any[] = [];
+                        const seenAlertEntry = new Set<string>();
+                        const seenAlertExit = new Set<string>();
+                        for (const a of recentAlerts) {
+                          const entryAnchor = a.entryBarTime || a.entryTime;
+                          const exitAnchor = a.exitBarTime || a.exitTime;
+                          if (entryAnchor && entryAnchor !== '--' && a.entryPrice > 0) {
+                            const entryMs = new Date(entryAnchor).getTime();
+                            if (entryMs >= firstBarMs && entryMs <= lastBarMs + tfMs) {
+                              const snapped = snapToBar(entryAnchor);
+                              if (snapped && !seenAlertEntry.has(snapped)) {
+                                seenAlertEntry.add(snapped);
+                                alertEntryData.push({ time: snapped, value: a.entryPrice });
+                                alertEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color: 'rgba(33,150,243,0.8)', text: '', size: 1 });
+                              }
+                            }
+                          }
+                          if (exitAnchor && exitAnchor !== '--' && a.exitPrice > 0) {
+                            const exitMs = new Date(exitAnchor).getTime();
+                            if (exitMs >= firstBarMs && exitMs <= lastBarMs + tfMs) {
+                              const snapped = snapToBar(exitAnchor);
+                              if (snapped && !seenAlertExit.has(snapped)) {
+                                seenAlertExit.add(snapped);
+                                const reason = a.exitReason || '';
+                                let color: string;
+                                if (reason === 'stop' || reason === 'stop_loss') color = 'rgba(244,67,54,0.8)';
+                                else if (reason === 'bar_count_exit' || reason === 'max_hold_bars') color = 'rgba(38,166,154,0.8)';
+                                else if (reason === 'eod_exit' || reason === 'time_of_day_exit' || reason === 'session_exit') color = 'rgba(255,152,0,0.8)';
+                                else color = a.r != null && a.r >= 0 ? 'rgba(76,175,80,0.8)' : 'rgba(244,67,54,0.8)';
+                                alertExitData.push({ time: snapped, value: a.exitPrice });
+                                alertExitMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color, text: '', size: 1 });
+                              }
+                            }
+                          }
+                        }
+
+                        const priceLevelSeries = [
+                          { data: algoEntryData, markers: algoEntryMarkers, color: chartPrefs.entryColor, label: 'Algo entry (+)' },
+                          { data: algoExitData, markers: algoExitMarkers, color: chartPrefs.exitWinColor, label: 'Algo exit (+)' },
+                          { data: alertEntryData, markers: alertEntryMarkers, color: 'rgba(33,150,243,0.6)', label: 'Alert entry (×)' },
+                          { data: alertExitData, markers: alertExitMarkers, color: 'rgba(76,175,80,0.6)', label: 'Alert exit (×)' },
+                        ];
+
                         return (
                           <ChartReplayCard
                             chartData={data}
@@ -3426,6 +3520,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                             oscillatorIndicators={cacheResp?.oscillator_indicators || []}
                             candleColorColumn={cacheResp?.candle_color_column}
                             candleMarkers={candleMarkers}
+                            priceLevelSeries={priceLevelSeries}
                             upColor={chartPrefs.candleUp}
                             downColor={chartPrefs.candleDown}
                             gridLines={chartPrefs.gridLines}
