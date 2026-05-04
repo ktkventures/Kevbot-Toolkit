@@ -26,7 +26,7 @@ const PerformanceVsPlan = dynamic(() => import('@/charts/PerformanceVsPlan'), { 
 const TradeZoomModal = dynamic(() => import('@/components/TradeZoomModal'), { ssr: false });
 const DistributionChart = dynamic(() => import('@/charts/DistributionChart'), { ssr: false });
 const SyncedChartPane = dynamic(() => import('@/charts/SyncedChartPane'), { ssr: false });
-const ChartReplayCard = dynamic(() => import('@/components/ChartReplayCard'), { ssr: false });
+const LabReplayPanel = dynamic(() => import('@/components/LabReplayPanel'), { ssr: false });
 
 import { buildStrategyChartPanes } from '@/charts/buildStrategyChartPanes';
 
@@ -967,10 +967,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // The left side is always REST (Algo Lens); only the right side
   // (Alert Lens) is toggleable.
   const [labDataSource, setLabDataSource] = useState<'ws-latest' | 'ws-first'>('ws-first');
-  // M8.7 M5 (2026-05-02): Lab tab Alert Lens replay mode toggle.
-  // When true, replace the static SyncedChartPane with ChartReplayCard
-  // so the user can scrub bar-by-bar through cache history.
-  const [labReplayMode, setLabReplayMode] = useState<boolean>(false);
+  // M8.7 M5 (2026-05-04): Replay scrub state moved into LabReplayPanel —
+  // both lenses now share the renderer and one set of replay controls,
+  // so a top-level toggle is no longer needed.
   // Phase 1 hooks — kept for the OHLCV-only path (still used as fallback
   // if the chart-data-cache fetch fails or returns no rows).
   const { data: labCacheLatest, isLoading: labCacheLatestLoading } = useStrategyCacheBars(
@@ -3269,295 +3268,65 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   </ul>
                 </div>
 
-                {/* Side-by-side: Algo Lens (REST) | Alert Lens (WS) */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-                  {/* LEFT: Algo Lens — what backtest engine sees (REST) */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <h4 className="text-sm font-medium">
-                        Algo Lens
-                        <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
-                          (what backtest sees — REST)
-                        </span>
-                      </h4>
-                    </div>
-                    {!chartTabData.hasBars ? (
-                      <Card>
-                        <ChartPlaceholder label={stratSymbol ? `Loading ${stratSymbol}...` : 'OHLC chart'} height={350} />
-                      </Card>
-                    ) : (
-                      <Card>
-                        <SyncedChartPane
-                          panes={chartTabData.chartPanes}
-                          upColor={chartPrefs.candleUp}
-                          downColor={chartPrefs.candleDown}
-                          upBorderColor={chartPrefs.candleUpBorder}
-                          gridLines={chartPrefs.gridLines}
-                          rightOffset={chartPrefs.rightOffset}
-                          timezone={chartPrefs.timezone}
-                          formingBar={formingBarProp}
-                          formingIndicators={formingIndicators}
-                          formingStates={formingStates}
-                          formingStateCrossTf={formingStateCrossTf}
-                        />
-                        <div className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>
-                          REST historical bars + WS forming bar (right edge). Indicators &amp; heatmap from REST.
-                        </div>
-                      </Card>
-                    )}
-                  </div>
-
-                  {/* RIGHT: Alert Lens — what live engine sees (WS bars) */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-                      <h4 className="text-sm font-medium">
-                        Alert Lens
-                        <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
-                          (what live engine sees — WS cache)
-                        </span>
-                      </h4>
-                      {/* First/latest sub-toggle for the alert side */}
-                      <div className="flex items-center gap-1 text-xs">
-                        {(['ws-first', 'ws-latest'] as const).map(opt => (
-                          <button
-                            key={opt}
-                            onClick={() => setLabDataSource(opt)}
-                            title={opt === 'ws-first'
-                              ? "first_close — bar at first WS write (decision-time)"
-                              : "close — bar after Polygon rebroadcast corrections within 15 min"}
-                            className="px-2 py-0.5 rounded transition-colors"
-                            style={{
-                              background: labDataSource === opt ? 'var(--accent)' : 'var(--bg-input)',
-                              color: labDataSource === opt ? 'white' : 'var(--text-muted)',
-                              border: labDataSource === opt ? 'none' : '1px solid var(--border)',
-                              cursor: 'pointer',
-                            }}
-                          >
-                            {opt === 'ws-first' ? 'First-write' : 'Latest'}
-                          </button>
-                        ))}
-                        {/* M8.7 M5: Replay mode toggle */}
+                {/* M8.7 M5 (2026-05-04): unified Lab Replay panel —
+                    both lenses share the renderer (SyncedChartPane scrub mode)
+                    and one set of replay controls. Replaces the V1 stripped-down
+                    ChartReplayCard path. */}
+                <Card className="mb-4">
+                  <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                    <h4 className="text-sm font-medium">
+                      Lab Replay
+                      <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
+                        (Algo REST · Alert cache · shared scrub)
+                      </span>
+                    </h4>
+                    <div className="flex items-center gap-1 text-xs">
+                      <span style={{ color: 'var(--text-muted)' }}>Alert data:</span>
+                      {(['ws-first', 'ws-latest'] as const).map(opt => (
                         <button
-                          onClick={() => setLabReplayMode(v => !v)}
-                          title="Toggle bar-by-bar replay mode"
-                          className="px-2 py-0.5 rounded transition-colors ml-2"
+                          key={opt}
+                          onClick={() => setLabDataSource(opt)}
+                          title={opt === 'ws-first'
+                            ? "first_close — bar at first WS write (decision-time)"
+                            : "close — bar after Polygon rebroadcast corrections within 15 min"}
+                          className="px-2 py-0.5 rounded transition-colors"
                           style={{
-                            background: labReplayMode ? 'var(--accent)' : 'var(--bg-input)',
-                            color: labReplayMode ? 'white' : 'var(--text-muted)',
-                            border: labReplayMode ? 'none' : '1px solid var(--border)',
+                            background: labDataSource === opt ? 'var(--accent)' : 'var(--bg-input)',
+                            color: labDataSource === opt ? 'white' : 'var(--text-muted)',
+                            border: labDataSource === opt ? 'none' : '1px solid var(--border)',
                             cursor: 'pointer',
                           }}
                         >
-                          ▶ Replay
+                          {opt === 'ws-first' ? 'First-write' : 'Latest'}
                         </button>
-                      </div>
+                      ))}
                     </div>
-                    {!labChartTabData.hasBars ? (
-                      <Card>
-                        <ChartPlaceholder
-                          label={(labCacheLatestLoading || labCacheFirstLoading)
-                            ? `Loading ${stratSymbol} cache bars...`
-                            : `No cache data for ${stratSymbol} yet (cache started 2026-04-30)`}
-                          height={350}
-                        />
-                      </Card>
-                    ) : labReplayMode ? (
-                      // M8.7 M5 (2026-05-02): bar-by-bar replay mode.
-                      // 2026-05-04 fix #1: slice to candleCount, build
-                      // entry/exit arrows so Replay matches static Alert
-                      // Lens window. Fix #2 (same day): add price-level
-                      // + (algo) and × (alert) cross markers, mirroring
-                      // buildStrategyChartPanes' algoEntry/algoExit/
-                      // alertEntry/alertExit Line series so users can see
-                      // the divergence between algo and alert fills.
-                      (() => {
-                        const cacheResp: any = labDataSource === 'ws-latest'
-                          ? labChartDataCacheLatest
-                          : labChartDataCacheFirst;
-                        const rawData: any[] = cacheResp?.chart_data || [];
-                        const overlayNames: string[] = cacheResp?.overlay_indicators || [];
-                        const data = candleCount > 0 && rawData.length > candleCount
-                          ? rawData.slice(-candleCount)
-                          : rawData;
-
-                        const dir = strategy?.direction || 'LONG';
-                        const firstBarMs = data.length > 0
-                          ? new Date(data[0].timestamp || data[0].time).getTime()
-                          : 0;
-                        const lastBarMs = data.length > 0
-                          ? new Date(data[data.length - 1].timestamp || data[data.length - 1].time).getTime()
-                          : Infinity;
-                        const barTimestamps = data.map((b: any) => b.timestamp || b.time);
-                        const snapToBar = (t: string): string | null => {
-                          const tms = new Date(t).getTime();
-                          let bestTs: string | null = barTimestamps[0] ?? null;
-                          let bestDist = Infinity;
-                          for (const ts of barTimestamps) {
-                            const d = Math.abs(new Date(ts).getTime() - tms);
-                            if (d < bestDist) { bestDist = d; bestTs = ts; }
-                          }
-                          return bestDist < 120000 ? bestTs : null;
-                        };
-
-                        // ---- Entry/exit arrow markers (attached to candle series) ----
-                        const trades = labChartTabData.markerTrades || [];
-                        const candleMarkers: any[] = [];
-                        for (const t of trades) {
-                          const entryTime = t.entry_fill_ts || t.entryFillTs;
-                          const exitTime = t.exit_fill_ts || t.exitFillTs;
-                          const entryMs = entryTime && entryTime !== '--' ? new Date(entryTime).getTime() : 0;
-                          const exitMs = exitTime && exitTime !== '--' ? new Date(exitTime).getTime() : 0;
-                          const rMult = t.r_multiple ?? t.rMultiple ?? t.pnlR ?? 0;
-                          const exitReason = t.exit_reason || t.exitReason || '';
-                          if (entryMs >= firstBarMs && entryMs <= lastBarMs + tfMs) {
-                            candleMarkers.push({
-                              time: entryTime, position: dir === 'LONG' ? 'belowBar' : 'aboveBar',
-                              shape: dir === 'LONG' ? 'arrowUp' : 'arrowDown',
-                              color: chartPrefs.entryColor,
-                              text: chartPrefs.showLabels ? 'Entry' : '', size: 1,
-                            });
-                          }
-                          if (exitMs >= firstBarMs && exitMs <= lastBarMs + tfMs) {
-                            let color = rMult >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
-                            if (exitReason === 'stop_loss') color = chartPrefs.exitStopColor;
-                            else if (exitReason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
-                            else if (exitReason === 'opposite_signal' || exitReason === 'time_exit') color = chartPrefs.exitHybridColor || '#FF9800';
-                            candleMarkers.push({
-                              time: exitTime, position: dir === 'LONG' ? 'aboveBar' : 'belowBar',
-                              shape: 'arrowDown', color,
-                              text: chartPrefs.showLabels ? `${rMult >= 0 ? '+' : ''}${rMult.toFixed(1)}R` : '',
-                              size: 1,
-                            });
-                          }
-                        }
-
-                        // ---- Price-level + (algo) cross markers ----
-                        const algoEntryData: any[] = [];
-                        const algoEntryMarkers: any[] = [];
-                        const algoExitData: any[] = [];
-                        const algoExitMarkers: any[] = [];
-                        const seenAlgoEntry = new Set<string>();
-                        const seenAlgoExit = new Set<string>();
-                        for (const t of trades) {
-                          const entryTime = t.entry_fill_ts || t.entryFillTs;
-                          const exitTime = t.exit_fill_ts || t.exitFillTs;
-                          const entryPrice = t.entry_price ?? t.entryPrice ?? 0;
-                          const exitPrice = t.exit_price ?? t.exitPrice ?? 0;
-                          const rMult = t.r_multiple ?? t.rMultiple ?? t.pnlR ?? 0;
-                          const exitReason = t.exit_reason || t.exitReason || '';
-                          if (entryTime && entryTime !== '--' && entryPrice > 0) {
-                            const snapped = snapToBar(entryTime);
-                            if (snapped && !seenAlgoEntry.has(snapped)) {
-                              seenAlgoEntry.add(snapped);
-                              algoEntryData.push({ time: snapped, value: entryPrice });
-                              algoEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color: chartPrefs.entryColor, text: '', size: 1 });
-                            }
-                          }
-                          if (exitTime && exitTime !== '--' && exitPrice > 0) {
-                            const snapped = snapToBar(exitTime);
-                            if (snapped && !seenAlgoExit.has(snapped)) {
-                              seenAlgoExit.add(snapped);
-                              let color = rMult >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
-                              if (exitReason === 'stop_loss') color = chartPrefs.exitStopColor;
-                              else if (exitReason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
-                              algoExitData.push({ time: snapped, value: exitPrice });
-                              algoExitMarkers.push({ time: snapped, position: 'inBar', shape: 'cross', color, text: '', size: 1 });
-                            }
-                          }
-                        }
-
-                        // ---- Price-level × (alert/live) cross markers ----
-                        const alertEntryData: any[] = [];
-                        const alertEntryMarkers: any[] = [];
-                        const alertExitData: any[] = [];
-                        const alertExitMarkers: any[] = [];
-                        const seenAlertEntry = new Set<string>();
-                        const seenAlertExit = new Set<string>();
-                        for (const a of recentAlerts) {
-                          const entryAnchor = a.entryBarTime || a.entryTime;
-                          const exitAnchor = a.exitBarTime || a.exitTime;
-                          if (entryAnchor && entryAnchor !== '--' && a.entryPrice > 0) {
-                            const entryMs = new Date(entryAnchor).getTime();
-                            if (entryMs >= firstBarMs && entryMs <= lastBarMs + tfMs) {
-                              const snapped = snapToBar(entryAnchor);
-                              if (snapped && !seenAlertEntry.has(snapped)) {
-                                seenAlertEntry.add(snapped);
-                                alertEntryData.push({ time: snapped, value: a.entryPrice });
-                                alertEntryMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color: 'rgba(33,150,243,0.8)', text: '', size: 1 });
-                              }
-                            }
-                          }
-                          if (exitAnchor && exitAnchor !== '--' && a.exitPrice > 0) {
-                            const exitMs = new Date(exitAnchor).getTime();
-                            if (exitMs >= firstBarMs && exitMs <= lastBarMs + tfMs) {
-                              const snapped = snapToBar(exitAnchor);
-                              if (snapped && !seenAlertExit.has(snapped)) {
-                                seenAlertExit.add(snapped);
-                                const reason = a.exitReason || '';
-                                let color: string;
-                                if (reason === 'stop' || reason === 'stop_loss') color = 'rgba(244,67,54,0.8)';
-                                else if (reason === 'bar_count_exit' || reason === 'max_hold_bars') color = 'rgba(38,166,154,0.8)';
-                                else if (reason === 'eod_exit' || reason === 'time_of_day_exit' || reason === 'session_exit') color = 'rgba(255,152,0,0.8)';
-                                else color = a.r != null && a.r >= 0 ? 'rgba(76,175,80,0.8)' : 'rgba(244,67,54,0.8)';
-                                alertExitData.push({ time: snapped, value: a.exitPrice });
-                                alertExitMarkers.push({ time: snapped, position: 'inBar', shape: 'xcross', color, text: '', size: 1 });
-                              }
-                            }
-                          }
-                        }
-
-                        const priceLevelSeries = [
-                          { data: algoEntryData, markers: algoEntryMarkers, color: chartPrefs.entryColor, label: 'Algo entry (+)' },
-                          { data: algoExitData, markers: algoExitMarkers, color: chartPrefs.exitWinColor, label: 'Algo exit (+)' },
-                          { data: alertEntryData, markers: alertEntryMarkers, color: 'rgba(33,150,243,0.6)', label: 'Alert entry (×)' },
-                          { data: alertExitData, markers: alertExitMarkers, color: 'rgba(76,175,80,0.6)', label: 'Alert exit (×)' },
-                        ];
-
-                        return (
-                          <ChartReplayCard
-                            chartData={data}
-                            overlayIndicators={overlayNames}
-                            oscillatorIndicators={cacheResp?.oscillator_indicators || []}
-                            candleColorColumn={cacheResp?.candle_color_column}
-                            candleMarkers={candleMarkers}
-                            priceLevelSeries={priceLevelSeries}
-                            upColor={chartPrefs.candleUp}
-                            downColor={chartPrefs.candleDown}
-                            gridLines={chartPrefs.gridLines}
-                            rightOffset={chartPrefs.rightOffset}
-                            height={350}
-                            title={labDataSource === 'ws-first'
-                              ? 'Alert Lens — Replay (first-write)'
-                              : 'Alert Lens — Replay (latest)'}
-                          />
-                        );
-                      })()
-                    ) : (
-                      <Card>
-                        <SyncedChartPane
-                          panes={labChartTabData.chartPanes}
-                          upColor={chartPrefs.candleUp}
-                          downColor={chartPrefs.candleDown}
-                          upBorderColor={chartPrefs.candleUpBorder}
-                          gridLines={chartPrefs.gridLines}
-                          rightOffset={chartPrefs.rightOffset}
-                          timezone={chartPrefs.timezone}
-                          // No forming bar overlay — cache bars ARE WS
-                          formingBar={null}
-                          formingIndicators={null}
-                          formingStates={null}
-                          formingStateCrossTf={null}
-                        />
-                        <div className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>
-                          {labDataSource === 'ws-latest' && `WS cache (latest). ${labCacheLatest?.row_count ?? 0} OHLCV bars.`}
-                          {labDataSource === 'ws-first' && `WS cache (first-write, decision-time). ${labCacheFirst?.row_count ?? 0} OHLCV bars.`}
-                          {' '}<strong style={{ color: 'var(--green)' }}>Phase 2 active:</strong> indicators &amp; heatmap are computed from cache bars
-                          (what the live engine sees). Cache window: 2026-04-30 onwards.
-                        </div>
-                      </Card>
-                    )}
                   </div>
-                </div>
+                  {(!chartTabData.hasBars && !labChartTabData.hasBars) ? (
+                    <ChartPlaceholder
+                      label={stratSymbol ? `Loading ${stratSymbol}...` : 'OHLC chart'}
+                      height={350}
+                    />
+                  ) : (
+                    <LabReplayPanel
+                      algoPanes={chartTabData.chartPanes}
+                      alertPanes={labChartTabData.chartPanes}
+                      algoLabel="Algo Lens (REST)"
+                      alertLabel={`Alert Lens (cache · ${labDataSource === 'ws-first' ? 'first-write' : 'latest'})`}
+                      alertFooter={labDataSource === 'ws-latest'
+                        ? `${labCacheLatest?.row_count ?? 0} bars (post-rebroadcast)`
+                        : `${labCacheFirst?.row_count ?? 0} bars (decision-time)`}
+                      upColor={chartPrefs.candleUp}
+                      downColor={chartPrefs.candleDown}
+                      upBorderColor={chartPrefs.candleUpBorder}
+                      gridLines={chartPrefs.gridLines}
+                      rightOffset={chartPrefs.rightOffset}
+                      timezone={chartPrefs.timezone}
+                      defaultIntervalSec={Math.max(1, Math.round((tfMs || 60000) / 1000))}
+                      height={350}
+                    />
+                  )}
+                </Card>
 
                 {/* NEW: Price Divergence Panel — algo vs alert price gap per trade */}
                 <Card className="mb-4">

@@ -117,6 +117,13 @@ interface SyncedChartPaneProps {
    * Drives time-axis tick labels and crosshair tooltip. Falls back to
    * the user's browser locale when absent. */
   timezone?: string | null;
+  /** M8.7 M5 (2026-05-04): Replay scrub mode.
+   * When set (Unix seconds), every series' data + markers are sliced to
+   * entries with time ≤ currentTime before being pushed to LWC. Forming-bar
+   * updates are also suppressed so the scrub head is the sole source of
+   * truth for the rightmost edge.  Null/undefined = normal live mode (all
+   * existing callers unaffected). */
+  currentTime?: number | null;
 }
 
 // Alias → IANA map matching StrategyDetailPage's TZ_MAP so everything
@@ -183,7 +190,10 @@ function SyncedChartPaneInner({
   formingStates = null,
   formingStateCrossTf = null,
   timezone = null,
+  currentTime = null,
 }: SyncedChartPaneProps) {
+  // Scrub mode is active when currentTime is a finite Unix-seconds number.
+  const scrubActive = currentTime != null && isFinite(currentTime);
   // Resolve the user's timezone to a canonical IANA name LWC/Intl accept.
   // Empty string disables the explicit tz (Intl falls back to browser).
   const resolvedTz = useMemo(() => {
@@ -506,10 +516,26 @@ function SyncedChartPaneInner({
         // underlying inputs haven't changed. This avoids re-pushing 200+
         // candle points to LWC every time an unrelated dep (e.g. alerts
         // refetch) triggers a chartTabData re-run.
+        //
+        // Scrub mode bypasses this cache: the same `cfg.data` reference is
+        // re-used across scrubs, only the slice changes — so we always
+        // re-push when scrubActive.
         const lastData = lastDataRef.current[pi]?.[si];
-        if (cfg.data !== lastData) {
+        const dataChanged = cfg.data !== lastData;
+        if (dataChanged || scrubActive) {
           try {
-            const data = transformSeriesData(cfg);
+            // M8.7 M5: in scrub mode, slice both data and markers to the
+            // current scrub head. transformSeriesData handles transformation
+            // post-slice so the LWC payload only contains points up to and
+            // including currentTime.
+            const sliceByTime = scrubActive
+              ? <T extends { time?: any; timestamp?: any }>(arr: T[]) =>
+                  arr.filter(d => toUnixTime(d.time ?? d.timestamp) <= (currentTime as number))
+              : <T,>(arr: T[]) => arr;
+            const slicedCfg: SeriesConfig = scrubActive
+              ? { ...cfg, data: sliceByTime(cfg.data) }
+              : cfg;
+            const data = transformSeriesData(slicedCfg);
             series.setData(data);
             if (lastDataRef.current[pi]) lastDataRef.current[pi][si] = cfg.data;
             // Record the last historical timestamp so the forming-bar
@@ -521,8 +547,11 @@ function SyncedChartPaneInner({
               }
             }
             // Re-apply forming bar on the primary candle series — setData
-            // just wiped whatever live update was painted there.
-            if (series === primaryCandleSeriesRef.current && formingBarRef.current) {
+            // just wiped whatever live update was painted there.  Skipped
+            // entirely in scrub mode so the scrub head owns the right edge.
+            if (!scrubActive
+                && series === primaryCandleSeriesRef.current
+                && formingBarRef.current) {
               const fb = formingBarRef.current;
               const ft = toUnixTime(fb.time);
               const lastHistMs = data.length > 0
@@ -553,7 +582,11 @@ function SyncedChartPaneInner({
         // reference was unstable across chartTabData re-runs. Small cost,
         // guarantees correctness.
         try {
-          const valid = cfg.markers ? transformMarkers(cfg.markers) : [];
+          const rawMarkers = cfg.markers || [];
+          const slicedMarkers = scrubActive
+            ? rawMarkers.filter(m => toUnixTime(m.time) <= (currentTime as number))
+            : rawMarkers;
+          const valid = transformMarkers(slicedMarkers);
           (series as any).setMarkers(valid);
         } catch (e) {
           console.warn('[SyncedChartPane] setMarkers failed for pane=%d series=%d type=%s: %o',
@@ -577,7 +610,8 @@ function SyncedChartPaneInner({
       }
       hasRenderedInitialDataRef.current = true;
     }
-  }, [panes]);
+    // M8.7 M5: also re-run when scrub head moves so data slices forward.
+  }, [panes, currentTime, scrubActive]);
 
   // ---- LIVE FORMING-BAR EFFECT ----
   // Primary candle + every overlay / oscillator / heatmap cell that declared
@@ -595,6 +629,10 @@ function SyncedChartPaneInner({
   // each chart auto-advances each pane independently and they stay in sync.
   useEffect(() => {
     formingBarRef.current = formingBar || null;
+    // M8.7 M5: scrub mode owns the right edge — never apply live forming-bar
+    // updates while scrubbing. The data effect explicitly skips the
+    // primary-candle re-apply path too.
+    if (scrubActive) return;
     if (!formingBar) return;
     const t = toUnixTime(formingBar.time);
     if (!isFinite(t)) return;
@@ -697,7 +735,7 @@ function SyncedChartPaneInner({
     } finally {
       syncingRef.current = prevSyncing;
     }
-  }, [formingBar, formingIndicators, formingStates, formingStateCrossTf, panes]);
+  }, [formingBar, formingIndicators, formingStates, formingStateCrossTf, panes, scrubActive]);
 
   if (panes.length === 0) {
     return (
