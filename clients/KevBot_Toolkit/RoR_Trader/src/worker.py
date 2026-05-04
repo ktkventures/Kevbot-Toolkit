@@ -351,6 +351,16 @@ class DBAlertDispatcher:
             logger.warning("Portfolio enrichment failed: %s", e)
             alert['portfolio_context'] = []
 
+        # M8.7 M4 (2026-05-04): carry the indicator snapshot from
+        # _fire_alert through to the alert dict. _alert_to_row() routes
+        # any field not in ALERT_COLUMN_FIELDS into the alerts.data JSONB,
+        # so this lands as alert.data.indicator_snapshot in the DB. The
+        # mirror of this lives in ralph_engine.py AlertDispatcher.dispatch,
+        # but DBAlertDispatcher overrides that one in production.
+        snapshot = signal_data.get('indicator_snapshot')
+        if snapshot:
+            alert['indicator_snapshot'] = snapshot
+
         # Save alert to DB
         try:
             alert = save_alert_admin(alert, self.user_id)
