@@ -45,40 +45,84 @@ def _rth_start(now_utc: datetime) -> datetime:
                     13, 30, 0, tzinfo=timezone.utc)
 
 
+def _parse_iso_or_unix(s: str | None) -> datetime | None:
+    """Accept ISO 8601 ('2026-05-04T18:30:00Z') or Unix-sec string."""
+    if not s:
+        return None
+    s = s.strip()
+    # Try Unix integer first
+    try:
+        return datetime.fromtimestamp(int(s), tz=timezone.utc)
+    except (ValueError, TypeError):
+        pass
+    # ISO — accept trailing Z
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 @router.get("")
 def get_data_health(
     user=Depends(get_current_user),
     minutes: int = Query(1440, description="History window for full scan (default 24h)"),
+    start: str | None = Query(None, description="Custom window start (ISO 8601 or Unix sec). When set with `end`, replaces rolling windows with single 'custom' window."),
+    end: str | None = Query(None, description="Custom window end (ISO 8601 or Unix sec)."),
 ):
-    """Return per-(symbol, tf) coverage metrics over rolling windows.
+    """Return per-(symbol, tf) coverage metrics.
+
+    Default mode: rolling windows {1h, 4h, rth, 24h}.
+
+    Custom mode: when `start` AND `end` are both provided, the response
+    contains a single 'custom' window scoped to that range.  Useful for
+    "show me coverage since the last deploy" without rolling-window noise.
 
     Response shape:
         {
-          "now": "2026-05-04T22:00:00Z",
+          "now": "...",
+          "scan_minutes": 1440,
+          "mode": "rolling" | "custom",
+          "window_start": "..." (custom mode only),
+          "window_end":   "..." (custom mode only),
           "rows": [
             {
               "symbol": "SPY", "timeframe_seconds": 60,
               "subscribers": 9,
               "windows": {
-                "1h":  {"expected": 60,  "actual": 23, "coverage": 0.383, "ws": 23, "rest_backfill": 0, "other": 0},
-                "4h":  {"expected": 240, "actual": 91, "coverage": 0.379, "ws": 91, "rest_backfill": 0, "other": 0},
-                "rth": {"expected": 569, "actual": 218, "coverage": 0.383, ...},
-                "24h": {"expected": 1440, "actual": 220, "coverage": 0.153, ...}
+                <label>: {"expected": N, "actual": M, "coverage": M/N,
+                          "ws": x, "rest_backfill": y, "other": z}
               },
-              "latest_bar": "2026-05-04T21:58:00Z",
-              "latest_bar_age_sec": 142,
-              "gap_events_4h": 18,
-              "bars_missing_4h": 49
-            },
-            ...
+              "latest_bar": "...",
+              "latest_bar_age_sec": N,
+              "gap_events_4h": N,
+              "bars_missing_4h": N
+            }, ...
           ]
         }
+
+    Note: gap_events / bars_missing always reflect the last 4h window even
+    in custom mode — they're a separate diagnostic, not gated by the
+    rolling/custom toggle.
     """
     from db import get_admin_client
 
     c = get_admin_client()
     now = datetime.now(timezone.utc)
-    scan_start = now - timedelta(minutes=minutes)
+
+    # Resolve custom window if both start + end provided
+    custom_start = _parse_iso_or_unix(start)
+    custom_end = _parse_iso_or_unix(end)
+    is_custom = (custom_start is not None and custom_end is not None
+                 and custom_start < custom_end)
+
+    # Scan must cover whichever is wider — the rolling windows or the
+    # explicit custom range.
+    if is_custom:
+        # Pull from min(custom_start, now-4h) so the gap-analysis 4h window
+        # is still computable
+        scan_start = min(custom_start, now - timedelta(hours=4))
+    else:
+        scan_start = now - timedelta(minutes=minutes)
 
     # Pull a single page of rows per (symbol, tf) is hard via PostgREST without
     # group_by, so just paginate through the recent rows.  At ~9k rows/day for
@@ -118,23 +162,35 @@ def get_data_health(
         if tf_secs is not None and s.get("symbol"):
             sub_counts[(s["symbol"], tf_secs)] += 1
 
-    # Compute per-key metrics
+    # Compute per-key metrics.
+    # In rolling mode: use the predefined WINDOWS list.
+    # In custom mode: a single 'custom' window scoped to [start, end].
     out_rows: List[Dict[str, Any]] = []
     rth_anchor = _rth_start(now)
+
+    if is_custom:
+        active_windows: list[tuple[str, datetime, float]] = [
+            ("custom", custom_start, max(1, (custom_end - custom_start).total_seconds()))
+        ]
+    else:
+        active_windows = []
+        for label, secs in WINDOWS:
+            if label == "rth":
+                active_windows.append((label, rth_anchor,
+                                       max(1, (now - rth_anchor).total_seconds())))
+            else:
+                active_windows.append((label, now - timedelta(seconds=secs), float(secs)))
+
     for (sym, tf), key_rows in sorted(by_key.items()):
         windows_out: Dict[str, Dict[str, Any]] = {}
 
-        for label, secs in WINDOWS:
-            if label == "rth":
-                window_start = rth_anchor
-                window_secs = max(1, (now - rth_anchor).total_seconds())
-            else:
-                window_start = now - timedelta(seconds=secs)
-                window_secs = secs
-
+        for label, window_start, window_secs in active_windows:
+            # In custom mode, also bound by `end` (rolling mode end is now)
+            window_end_dt = custom_end if is_custom else now
             window_rows = [
                 r for r in key_rows
-                if datetime.fromisoformat(r["bar_start"].replace("Z", "+00:00")) >= window_start
+                if window_start <= datetime.fromisoformat(
+                    r["bar_start"].replace("Z", "+00:00")) <= window_end_dt
             ]
             actual = len(window_rows)
             expected = max(1, int(window_secs // tf))
@@ -204,7 +260,7 @@ def get_data_health(
             "subscribers": n_subs,
             "windows": {label: {"expected": 0, "actual": 0, "coverage": 0.0,
                                 "ws": 0, "rest_backfill": 0, "other": 0}
-                        for label, _ in WINDOWS},
+                        for label, _, _ in active_windows},
             "latest_bar": None,
             "latest_bar_age_sec": None,
             "gap_events_4h": 0,
@@ -213,8 +269,13 @@ def get_data_health(
 
     out_rows.sort(key=lambda r: (r["symbol"], r["timeframe_seconds"]))
 
-    return {
+    response: Dict[str, Any] = {
         "now": now.isoformat(),
         "scan_minutes": minutes,
+        "mode": "custom" if is_custom else "rolling",
         "rows": out_rows,
     }
+    if is_custom:
+        response["window_start"] = custom_start.isoformat()
+        response["window_end"] = custom_end.isoformat()
+    return response
