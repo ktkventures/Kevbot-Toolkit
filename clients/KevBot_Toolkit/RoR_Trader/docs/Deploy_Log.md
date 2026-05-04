@@ -21,6 +21,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-05-04
 
+- **22:25 UTC (16:25 MT)** — `0c368e8` M8.7 M5: lens-extent intersection + trigger_prefix relevance match
+  - Service(s) redeployed: frontend (next.js), api (strategies router)
+  - Observed cache gap: N/A (frontend + API logic only)
+  - Notes: Two fixes from v2 smoke test. (a) LabReplayPanel uses INTERSECTION of both lenses' candle extents — Algo and Alert now share start AND end candles, eliminating the REST-trailing-WS visual mismatch. (b) `_build_chart_response_from_df` relevance check gains a third path: match via template's `trigger_prefix`. Fixes EPP v4 (and any user pack where group.id ≠ trigger_prefix) — affects both Chart & Trades and Lab tab.
+
 - **22:00 UTC (16:00 MT)** — `14e211a` M8.7 M5 v2: unified Lab Replay panel
   - Service(s) redeployed: frontend (next.js)
   - Observed cache gap: N/A (frontend-only)
