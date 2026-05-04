@@ -21,6 +21,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-05-04
 
+- **22:00 UTC (16:00 MT)** — `14e211a` M8.7 M5 v2: unified Lab Replay panel
+  - Service(s) redeployed: frontend (next.js)
+  - Observed cache gap: N/A (frontend-only)
+  - Notes: Architectural pivot after smoke-test feedback. SyncedChartPane gets a `currentTime` prop for scrub mode (additive); new LabReplayPanel wraps two SyncedChartPanes (Algo REST + Alert cache) sharing one scrub head + window picker (Last 1h / 4h / Today / All). Replaces V1 ChartReplayCard's parallel renderer — indicators, oscillators, heatmap and markers all render identically on both lenses now. Net -290 lines on StrategyDetailPage.
+
 - **19:40 UTC (13:40 MT)** — `dc91ba9` M8.7 M5: Replay marker parity (algo + and alert × price-level crosses)
   - Service(s) redeployed: frontend (next.js)
   - Observed cache gap: N/A (frontend-only)
