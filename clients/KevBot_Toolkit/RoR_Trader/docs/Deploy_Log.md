@@ -19,6 +19,13 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-05-04
+
+- **15:13 UTC (09:13 MT)** — `53cac54` M8.7 M4 fix: carry indicator_snapshot through DBAlertDispatcher
+  - Service(s) redeployed: Worker
+  - Observed cache gap: TBD (RTH push — expect ~1-2 min reconnect window)
+  - Notes: Monday RTH validation found 0/15 recent alerts had `data.indicator_snapshot`. Saturday's M4 only patched `AlertDispatcher.dispatch` in ralph_engine.py, but worker.py overrides `engine.dispatcher` with `DBAlertDispatcher`. Mirror added — same 3-line pattern. Validate post-restart by checking `data->indicator_snapshot` on next RTH alerts.
+
 ## 2026-05-02
 
 - **18:30 UTC (12:30 MT)** — `5515401` Archive M8.7 Saturday plan + update Roadmap_To_Scale with M1-M6 status
