@@ -21,6 +21,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-05-04
 
+- **19:40 UTC (13:40 MT)** — `dc91ba9` M8.7 M5: Replay marker parity (algo + and alert × price-level crosses)
+  - Service(s) redeployed: frontend (next.js)
+  - Observed cache gap: N/A (frontend-only)
+  - Notes: Round 2 of M5 smoke-test feedback. Replay now mirrors Chart & Trades' price-level cross markers (4 invisible Line series with shape='cross' for algo, 'xcross' for alert; filtered by replay scrub time). Indicator overlays still empty for strats whose user packs don't expose chart columns (e.g. ema_pp_v4) — separate backend issue.
+
 - **18:20 UTC (12:20 MT)** — `8232289` M8.7 M5 fix: Replay parity (candleCount slice + trade markers + rightOffset)
   - Service(s) redeployed: frontend (next.js)
   - Observed cache gap: N/A (frontend-only)
