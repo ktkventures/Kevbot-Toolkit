@@ -102,6 +102,7 @@ const navItems: NavItem[] = [
       { href: '/admin', label: 'Platform Overview' },
       { href: '/admin/users', label: 'Users' },
       { href: '/admin/curation', label: 'Curation' },
+      { href: '/admin/data-health', label: 'Data Health' },
     ],
   },
   {
