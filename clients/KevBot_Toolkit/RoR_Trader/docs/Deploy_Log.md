@@ -21,6 +21,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-05-04
 
+- **23:30 UTC (17:30 MT)** — `6291a9a` M8.7 admin/data-health: per-(symbol, tf) cache coverage dashboard
+  - Service(s) redeployed: api (new router), frontend (new page + sidebar entry)
+  - Observed cache gap: N/A (read-only diagnostic page)
+  - Notes: Backs the "is data being collected" question. Surfaces AM-stream loss pattern (AAPL/AMD/SPY 1Min ~35-40% coverage vs 10Sec 97%) plus subscribed-but-empty entries (GME, INTC, NVDA, TSLA/1Min). Backup branch `dev-backup-pre-data-health-2026-05-04` pushed.
+
 - **23:15 UTC (17:15 MT)** — `1cca741` M8.7 M5: Custom picker uses user's tz + Apply forces refit
   - Service(s) redeployed: frontend (next.js)
   - Observed cache gap: N/A (frontend-only)
