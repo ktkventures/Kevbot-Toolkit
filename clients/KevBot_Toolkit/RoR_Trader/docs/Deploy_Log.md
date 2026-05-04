@@ -21,6 +21,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-05-04
 
+- **23:35 UTC (17:35 MT)** — `e30bfc6` M8.7 admin/data-health: custom date range filter
+  - Service(s) redeployed: api (data_health router accepts start/end), frontend (V1 mode toggle + datetime picker)
+  - Observed cache gap: N/A (read-only diagnostic)
+  - Notes: Rolling mode (1h/4h/RTH/24h) is default; Custom mode reveals datetime-local inputs in user's chartPrefs.timezone with sec precision. Useful for "show me coverage since the last deploy without rolling-window noise." TV CSV stability test result also recorded — TV revises closed bars within ~5 min, confirming `live_model='latest'` should remain default.
+
 - **23:30 UTC (17:30 MT)** — `6291a9a` M8.7 admin/data-health: per-(symbol, tf) cache coverage dashboard
   - Service(s) redeployed: api (new router), frontend (new page + sidebar entry)
   - Observed cache gap: N/A (read-only diagnostic page)
