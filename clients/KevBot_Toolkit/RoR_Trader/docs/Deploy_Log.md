@@ -21,6 +21,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-05-04
 
+- **23:15 UTC (17:15 MT)** — `1cca741` M8.7 M5: Custom picker uses user's tz + Apply forces refit
+  - Service(s) redeployed: frontend (next.js)
+  - Observed cache gap: N/A (frontend-only)
+  - Notes: Custom datetime inputs now format/parse using `chartPrefs.timezone` (matches chart axis 1:1) with DST-aware two-pass refinement. Apply button now triggers chart refit by remounting via React `key` keyed on `${windowStart}-${windowEnd}` — fixes the silent-no-update bug where setData preserved the previous visible range across window commits.
+
 - **22:50 UTC (16:50 MT)** — `2d6ea98` M8.7 M5: Custom timestamp picker + bar-count diagnostic
   - Service(s) redeployed: frontend (next.js)
   - Observed cache gap: N/A (frontend-only)
