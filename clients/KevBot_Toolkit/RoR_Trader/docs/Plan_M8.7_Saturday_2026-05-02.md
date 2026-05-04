@@ -595,15 +595,21 @@ After markets open Monday RTH:
 - Spot-check JSONB content has expected indicator keys
 
 ### Mon-4 — TV stability test (deferred from Friday)
-- Pick SPY 1Min, screenshot OHLCV at T+0/T+5/T+15/T+30/T+1hr after a fresh bar close
-- Compare across screenshots — does TV revise the bar within 15 min?
-- Outcome informs whether to flip `live_model` default to `ws_first_lock` (Option C in the rebroadcast handling design)
-- Document inline in `Plan_Weekend_2026-05-02.md`
+**Method (refined 2026-05-04):** Set a 5-minute repeating timer. Each interval, download the SPY 1Min bar export from TV as a CSV (the "Save Chart Data" / export feature on TV's chart toolbar). Naming convention: `tv_spy_1min_NN_HH-MM.csv` where NN is sequential (01, 02, 03, …) and HH-MM is the snapshot time (UTC or ET, just be consistent).
+- Drop CSVs into `docs/reference_images/tv_stability_2026-05-04/` (or wherever Kevin chooses)
+- Continue for at least 90 minutes — covers any 15-min late-print window plus tail
+- Once collected, diff a fixed bar (e.g. 9:35 ET close) across all CSVs; any cell change between snapshots = TV revises silently. Identical = TV locks.
+
+**Why CSV instead of screenshots:** more precise (digits not pixels), grep-able diff, easier to scale across many bars instead of just one.
+
+**Outcome informs:** whether to flip `live_model` default to `ws_first_lock` (Option C in the rebroadcast handling design). If TV locks at first close, that's evidence that "decision-time WS values" are the right anchor. If TV revises, then the FINRA late-print correction is the industry norm and we should keep `latest` as default.
 
 ### Mon-5 — Sanity-check Lab tab replay
 - Open Lab tab on a strategy with cache data through Monday morning
 - Toggle Replay on Alert Lens, scrub through the morning
 - Confirm indicators/heatmap evolve smoothly (no jumps, no missing data)
+
+**2026-05-04 update:** smoke test surfaced that V1 was rendering candles only — no overlays, no markers, and the time window ignored `candleCount` so it loaded all ~5 days of cache (~70k 10Sec bars). Fix shipped (commit TBD): caller now slices to `candleCount`, builds entry/exit arrow markers from the same trade list the static Alert Lens uses, and forwards `rightOffset`. ChartReplayCard's chart `id` keys on overlay count too, so seriesSetup changes after initial render trigger chart re-creation. Re-test on next Railway redeploy.
 
 ---
 

@@ -1826,7 +1826,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       chartPrefs,
     });
 
-    return { chartPanes, overlayNames, hasBars: true };
+    return { chartPanes, overlayNames, hasBars: true, bars, markerTrades };
   }, [
     labDataSource, labCacheLatest, labCacheFirst,
     labChartDataCacheLatest, labChartDataCacheFirst,
@@ -3362,25 +3362,74 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                         />
                       </Card>
                     ) : labReplayMode ? (
-                      // M8.7 M5: bar-by-bar replay mode. Use the chart-data-cache
-                      // response directly (chart_data + overlay_indicators) so we
-                      // can scrub. Trade markers + heatmap not yet supported in
-                      // replay (defer to future multi-pane scrub).
+                      // M8.7 M5 (2026-05-02): bar-by-bar replay mode.
+                      // 2026-05-04 fix: Match the static Alert Lens window
+                      // (slice to candleCount) and build entry/exit arrow
+                      // markers from the same trade list. Without these,
+                      // Replay loaded all ~5 days of cache (~70k 10Sec
+                      // bars) so overlay lines were visually flat and
+                      // markers were absent.
                       (() => {
                         const cacheResp: any = labDataSource === 'ws-latest'
                           ? labChartDataCacheLatest
                           : labChartDataCacheFirst;
-                        const data: any[] = cacheResp?.chart_data || [];
+                        const rawData: any[] = cacheResp?.chart_data || [];
                         const overlayNames: string[] = cacheResp?.overlay_indicators || [];
+                        const data = candleCount > 0 && rawData.length > candleCount
+                          ? rawData.slice(-candleCount)
+                          : rawData;
+
+                        // Build entry/exit arrow markers — mirror of
+                        // buildStrategyChartPanes' tradeMarkers (lines 99-132).
+                        const dir = strategy?.direction || 'LONG';
+                        const firstBarMs = data.length > 0
+                          ? new Date(data[0].timestamp || data[0].time).getTime()
+                          : 0;
+                        const lastBarMs = data.length > 0
+                          ? new Date(data[data.length - 1].timestamp || data[data.length - 1].time).getTime()
+                          : Infinity;
+                        const trades = labChartTabData.markerTrades || [];
+                        const candleMarkers: any[] = [];
+                        for (const t of trades) {
+                          const entryTime = t.entry_fill_ts || t.entryFillTs;
+                          const exitTime = t.exit_fill_ts || t.exitFillTs;
+                          const entryMs = entryTime && entryTime !== '--' ? new Date(entryTime).getTime() : 0;
+                          const exitMs = exitTime && exitTime !== '--' ? new Date(exitTime).getTime() : 0;
+                          const rMult = t.r_multiple ?? t.rMultiple ?? t.pnlR ?? 0;
+                          const exitReason = t.exit_reason || t.exitReason || '';
+                          if (entryMs >= firstBarMs && entryMs <= lastBarMs + tfMs) {
+                            candleMarkers.push({
+                              time: entryTime, position: dir === 'LONG' ? 'belowBar' : 'aboveBar',
+                              shape: dir === 'LONG' ? 'arrowUp' : 'arrowDown',
+                              color: chartPrefs.entryColor,
+                              text: chartPrefs.showLabels ? 'Entry' : '', size: 1,
+                            });
+                          }
+                          if (exitMs >= firstBarMs && exitMs <= lastBarMs + tfMs) {
+                            let color = rMult >= 0 ? chartPrefs.exitWinColor : chartPrefs.exitLossColor;
+                            if (exitReason === 'stop_loss') color = chartPrefs.exitStopColor;
+                            else if (exitReason === 'bar_count_exit') color = chartPrefs.exitBarCountColor;
+                            else if (exitReason === 'opposite_signal' || exitReason === 'time_exit') color = chartPrefs.exitHybridColor || '#FF9800';
+                            candleMarkers.push({
+                              time: exitTime, position: dir === 'LONG' ? 'aboveBar' : 'belowBar',
+                              shape: 'arrowDown', color,
+                              text: chartPrefs.showLabels ? `${rMult >= 0 ? '+' : ''}${rMult.toFixed(1)}R` : '',
+                              size: 1,
+                            });
+                          }
+                        }
+
                         return (
                           <ChartReplayCard
                             chartData={data}
                             overlayIndicators={overlayNames}
                             oscillatorIndicators={cacheResp?.oscillator_indicators || []}
                             candleColorColumn={cacheResp?.candle_color_column}
+                            candleMarkers={candleMarkers}
                             upColor={chartPrefs.candleUp}
                             downColor={chartPrefs.candleDown}
                             gridLines={chartPrefs.gridLines}
+                            rightOffset={chartPrefs.rightOffset}
                             height={350}
                             title={labDataSource === 'ws-first'
                               ? 'Alert Lens — Replay (first-write)'

@@ -35,6 +35,7 @@ interface ChartReplayCardProps {
   upColor?: string;
   downColor?: string;
   gridLines?: boolean;
+  rightOffset?: number;
   height?: number;
   /** Card title (e.g., "Alert Lens — Replay") */
   title?: string;
@@ -55,14 +56,16 @@ export default function ChartReplayCard({
   upColor,
   downColor,
   gridLines = true,
+  rightOffset = 3,
   height = 420,
   title = 'Replay',
 }: ChartReplayCardProps) {
-  // Stable ID per mount (chart instance keyed off the title + length to
-  // avoid colliding when multiple ChartReplayCards exist)
+  // ID keyed on data length + overlay count so the underlying chart re-creates
+  // (with the right number of line series) when the dataset or indicator set
+  // changes — e.g. when cache response loads after initial render.
   const chartId = useMemo(
-    () => `replay-${title.replace(/\s+/g, '-')}-${chartData.length}`,
-    [title, chartData.length],
+    () => `replay-${title.replace(/\s+/g, '-')}-${chartData.length}-${overlayIndicators.length}`,
+    [title, chartData.length, overlayIndicators.length],
   );
 
   // Time bounds (Unix seconds) from full data set
@@ -188,6 +191,7 @@ export default function ChartReplayCard({
         upColor={upColor}
         downColor={downColor}
         gridLines={gridLines}
+        rightOffset={rightOffset}
       />
 
       <div className="mt-3">
