@@ -28,6 +28,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Observed cache gap: ~1-2 min during Worker restart
   - Notes: Activates the WsAggMinuteBuilder shipped at `ace1fe7`. After warmup, expect `source='ws_agg'` 1Min rows to appear in live_bars for SPY (10Sec subs already trigger A.* subscription) and TSLA. Backup branch `dev-backup-pre-wsagg-flag-on-2026-05-05` pushed pre-flip.
 
+- **18:55 UTC (12:55 MT)** — `74ff56c` M8.7 Phase C: live engine dispatch + universal A.* subscription
+  - Service(s) redeployed: Worker
+  - Observed cache gap: ~1-2 min during Worker restart (RTH session active)
+  - Notes: Wires live_model into StrategyMonitor + bar-close gate + ws_agg dispatch path. A.* subscription gate gains has_ws_agg condition (selecting ws_agg_locked on a strategy auto-subscribes A.<symbol>). Flipped ws_agg_locked.available=True so ModelsCard offers it. Default UNCHANGED at ws_with_corrections to avoid re-triggering M8.5 forming-bar latency regression. Backup branch `dev-backup-pre-phase-c-2026-05-05` pushed pre-change.
+
 - **16:30 UTC (10:30 MT)** — `2ee8a24` M8.7 Phase A+B: strategy model registry + admin pages
   - Service(s) redeployed: api (new strategy_models_admin router), frontend (two new admin pages + sidebar entries)
   - Observed cache gap: N/A (additive, no engine code changes)
