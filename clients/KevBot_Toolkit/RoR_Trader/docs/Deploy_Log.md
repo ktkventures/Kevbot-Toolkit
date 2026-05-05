@@ -23,6 +23,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-05-05
 
+- **16:05 UTC (10:05 MT)** — env flag `WS_AGG_SHADOW_ENABLED=true` set on Worker (no commit)
+  - Service(s) redeployed: Worker (auto-triggered by env-var change)
+  - Observed cache gap: ~1-2 min during Worker restart
+  - Notes: Activates the WsAggMinuteBuilder shipped at `ace1fe7`. After warmup, expect `source='ws_agg'` 1Min rows to appear in live_bars for SPY (10Sec subs already trigger A.* subscription) and TSLA. Backup branch `dev-backup-pre-wsagg-flag-on-2026-05-05` pushed pre-flip.
+
 - **15:50 UTC (09:50 MT)** — `ace1fe7` WsAggMinuteBuilder shadow (disabled by default)
   - Service(s) redeployed: Worker (no-op until `WS_AGG_SHADOW_ENABLED=true`)
   - Observed cache gap: N/A (additive code path, env flag off)
