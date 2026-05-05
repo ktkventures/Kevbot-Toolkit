@@ -28,6 +28,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Observed cache gap: ~1-2 min during Worker restart
   - Notes: Activates the WsAggMinuteBuilder shipped at `ace1fe7`. After warmup, expect `source='ws_agg'` 1Min rows to appear in live_bars for SPY (10Sec subs already trigger A.* subscription) and TSLA. Backup branch `dev-backup-pre-wsagg-flag-on-2026-05-05` pushed pre-flip.
 
+- **19:45 UTC (13:45 MT)** — `f971eeb` + `b1ad5c0` M8.7 Phase C: live_model default flipped to ws_agg_locked + bulk DB migration
+  - Service(s) redeployed: Worker (auto-rebuilds on default flip code change)
+  - Observed cache gap: ~1-2 min during Worker restart
+  - Notes: Default live_model flipped from ws_with_corrections → ws_agg_locked. Bulk update via _bulk_set_live_model.py set explicit `config.live_model='ws_agg_locked'` on all 39 strategies. End state: every monitor reports ws_agg_locked, A.* subscribes universally on next reconnect (4 → ~9 symbols, 2.25× per-second forming-bar load — within budget). Backup: `dev-backup-pre-phase-c-2026-05-05` + snapshot `/tmp/strategies_live_model_snapshot_20260505T194258Z.json`. Revert path: re-run `_bulk_set_live_model.py NULL` then revert default in code (~3 min). Supabase had a 522/525 outage during prep window; user restarted to recover.
+
 - **18:55 UTC (12:55 MT)** — `74ff56c` M8.7 Phase C: live engine dispatch + universal A.* subscription
   - Service(s) redeployed: Worker
   - Observed cache gap: ~1-2 min during Worker restart (RTH session active)
