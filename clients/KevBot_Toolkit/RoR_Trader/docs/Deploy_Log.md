@@ -28,6 +28,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Observed cache gap: ~1-2 min during Worker restart
   - Notes: Activates the WsAggMinuteBuilder shipped at `ace1fe7`. After warmup, expect `source='ws_agg'` 1Min rows to appear in live_bars for SPY (10Sec subs already trigger A.* subscription) and TSLA. Backup branch `dev-backup-pre-wsagg-flag-on-2026-05-05` pushed pre-flip.
 
+- **21:01 UTC (15:01 MT)** — `ee2c4c5` empty commit to recover from stuck/failed builds at 19:42-19:44
+  - Service(s) redeployed: Worker (clean rebuild), frontend (auto-recovered)
+  - Observed cache gap: ~3 min during Worker restart
+  - Notes: 3 rapid pushes earlier (Phase C wire + default flip + bulk script) caused Railway to queue 3 conflicting builds — 2 stuck BUILDING + 1 FAILED. Worker kept serving the 12:52 deploy (Phase C code, no default flip) until this empty-commit kicked a clean rebuild. Post-recovery verification: all 27 monitored strategies have explicit `config.live_model='ws_agg_locked'`, 12 Polygon channels subscribed (6 AM + 6 A), Phase C dispatch confirmed working for AAPL/AMD/SPY/TSLA. META/TSLL ws_agg=0 due to A.* events only firing on actual trade activity (low post-market volume) — expected behavior, will normalize during RTH. 1Min alerts silent post-market because most are session=RTH and we're past 16:00 ET — also expected.
+
 - **19:45 UTC (13:45 MT)** — `f971eeb` + `b1ad5c0` M8.7 Phase C: live_model default flipped to ws_agg_locked + bulk DB migration
   - Service(s) redeployed: Worker (auto-rebuilds on default flip code change)
   - Observed cache gap: ~1-2 min during Worker restart
