@@ -781,6 +781,137 @@ class StrategyMonitor:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# WS_AGG SHADOW MINUTE BUILDER — client-side 1Min from Polygon A.* per-second
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Live_Model_Decision.md Mode 2 candidate.  Aggregates Polygon's per-second
+# `A.<symbol>` events into 1Min bars on our side and writes them to
+# `live_bars` with source='ws_agg', alongside the existing source='ws' rows
+# from `AM.<symbol>` events.  Purely additive: NEVER routes to monitors,
+# NEVER fires alerts, NEVER affects engine decisions.  Exists only to
+# generate the comparison dataset that picks between AM-only / A-agg /
+# AM-with-fallback as the production live source.
+#
+# Scope:
+#   - Only fires on symbols where the worker is already subscribed to
+#     `A.<symbol>` (i.e. has at least one L-type or sub-minute strategy).
+#     For SPY today this means we get rich comparison data; pure-1Min
+#     symbols like AAPL/AMD wait for a Phase 2 subscription expansion.
+#   - Gated by env flag `WS_AGG_SHADOW_ENABLED=true` so the change is
+#     reversible at deploy time without code edits.
+#
+# Aggregation rules (textbook):
+#   open  = first per-second bar's open
+#   high  = max of all per-second highs in the minute
+#   low   = min of all per-second lows in the minute
+#   close = last per-second bar's close
+#   volume = sum of per-second volumes
+#
+# Boundaries are floor-to-minute on the per-second bar's UTC timestamp.
+
+class WsAggMinuteBuilder:
+    """Aggregate per-second bars into 1Min bars at minute boundaries."""
+
+    __slots__ = (
+        'symbol', '_current_minute_unix', '_open', '_high', '_low',
+        '_close', '_volume', '_tick_count',
+    )
+
+    def __init__(self, symbol: str):
+        self.symbol = symbol
+        self._current_minute_unix: int = -1
+        self._open: float = 0.0
+        self._high: float = 0.0
+        self._low: float = 0.0
+        self._close: float = 0.0
+        self._volume: float = 0.0
+        self._tick_count: int = 0
+
+    def accept_second_bar(self, bar_dict: dict) -> Optional[dict]:
+        """Feed one per-second bar.  Returns a completed 1Min bar dict
+        when the minute boundary closes (i.e. a per-second bar arrives
+        for the next minute), otherwise None.
+
+        Returned dict shape mirrors what `live_bars_writer.write_bar`
+        already accepts: {timestamp, open, high, low, close, volume}.
+        """
+        ts_raw = bar_dict.get('timestamp', '')
+        if not ts_raw:
+            return None
+        try:
+            if isinstance(ts_raw, str):
+                ts = datetime.fromisoformat(ts_raw.replace('Z', '+00:00'))
+            elif isinstance(ts_raw, datetime):
+                ts = ts_raw
+            else:
+                ts = pd.Timestamp(ts_raw).to_pydatetime()
+        except (ValueError, TypeError):
+            return None
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+
+        minute_unix = int(ts.timestamp()) // 60 * 60
+
+        completed: Optional[dict] = None
+        if self._current_minute_unix < 0:
+            # First bar ever — start the current minute.
+            self._reset_to(minute_unix, bar_dict)
+        elif minute_unix == self._current_minute_unix:
+            # Same minute — accumulate.
+            try:
+                h = float(bar_dict.get('high', self._high))
+                lo = float(bar_dict.get('low', self._low))
+                c = float(bar_dict.get('close', self._close))
+                v = float(bar_dict.get('volume', 0))
+            except (TypeError, ValueError):
+                return None
+            if h > self._high:
+                self._high = h
+            if lo < self._low:
+                self._low = lo
+            self._close = c
+            self._volume += v
+            self._tick_count += 1
+        elif minute_unix > self._current_minute_unix:
+            # Boundary crossed — flush previous minute, start new.
+            if self._tick_count > 0:
+                completed = {
+                    'timestamp': datetime.fromtimestamp(
+                        self._current_minute_unix, tz=timezone.utc
+                    ).isoformat(),
+                    'open': self._open,
+                    'high': self._high,
+                    'low': self._low,
+                    'close': self._close,
+                    'volume': self._volume,
+                }
+            self._reset_to(minute_unix, bar_dict)
+        # else: minute_unix < current — out-of-order per-second event
+        # (rebroadcast or replay).  Don't disturb the running aggregate.
+        return completed
+
+    def _reset_to(self, minute_unix: int, bar_dict: dict) -> None:
+        try:
+            self._open = float(bar_dict.get('open', 0))
+            self._high = float(bar_dict.get('high', 0))
+            self._low = float(bar_dict.get('low', 0))
+            self._close = float(bar_dict.get('close', 0))
+            self._volume = float(bar_dict.get('volume', 0))
+        except (TypeError, ValueError):
+            self._open = self._high = self._low = self._close = 0.0
+            self._volume = 0.0
+        self._current_minute_unix = minute_unix
+        self._tick_count = 1
+
+
+def _ws_agg_shadow_enabled() -> bool:
+    """Env flag — disabled by default.  Flip to 'true' on Railway worker
+    to start writing source='ws_agg' rows to live_bars."""
+    val = os.environ.get('WS_AGG_SHADOW_ENABLED', '').strip().lower()
+    return val in ('1', 'true', 'yes', 'on')
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # SHADOW INDICATOR ENGINE — secondary TF interpreter state for MTF confluence
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1030,6 +1161,11 @@ class SymbolHub:
         # exceptions are swallowed by the caller's own error handling.
         self.on_bar_close_hook: Optional[Callable] = None
         self._pending_bar_close_tasks: Set['asyncio.Task'] = set()
+        # WS_AGG shadow builder (Live_Model_Decision.md Mode 2 candidate).
+        # Aggregates per-second A.* bars into 1Min on our side; writes to
+        # live_bars with source='ws_agg'.  Lazy-init on first use so hubs
+        # for symbols that never see A events don't allocate the builder.
+        self._ws_agg_minute: Optional[WsAggMinuteBuilder] = None
 
     def _fire_alert(self, sig: dict, monitor: 'StrategyMonitor',
                     config: dict, alert_callback: Optional[Callable]) -> None:
@@ -1830,6 +1966,27 @@ class SymbolHub:
         close = bar_dict.get('close')
         if close:
             self.latest_close = float(close)
+
+        # ---- (0) WS_AGG SHADOW BUILDER (Live_Model_Decision.md Mode 2) ----
+        # Purely additive: aggregate per-second bars into 1Min on our side
+        # and write to live_bars with source='ws_agg'.  NEVER routes to
+        # monitors.  Sets up the comparison dataset that picks AM-only vs
+        # A-agg vs AM-with-fallback as the production live source.
+        # Gated by env flag — disabled by default until rolled out.
+        if _ws_agg_shadow_enabled():
+            try:
+                if self._ws_agg_minute is None:
+                    self._ws_agg_minute = WsAggMinuteBuilder(self.symbol)
+                completed_min = self._ws_agg_minute.accept_second_bar(bar_dict)
+                if completed_min is not None:
+                    from live_bars_writer import write_bar as _live_bars_write
+                    _live_bars_write(self.symbol, 60, completed_min,
+                                     source='ws_agg')
+            except Exception as e:
+                # Shadow builder must NEVER affect live alerting.  Log and
+                # continue.
+                logger.warning("ws_agg shadow write failed for %s: %s",
+                               self.symbol, e)
 
         # Find which TF's bar_count to use (use the primary 60s builder)
         builder = self.builders.get(60)
