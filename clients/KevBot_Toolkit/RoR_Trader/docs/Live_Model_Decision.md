@@ -117,14 +117,59 @@ To get minute-level resolution:
   60 seconds for ~30 min. Same methodology, finer poll. Will tell us
   whether revisions cluster at minute 1 or spread evenly through the
   5-min window.
-- **Test #3 (1-min cadence, 10Sec bars):** pull SPY 10Sec from TV every
-  60 seconds for ~20 min. Tests the same question on the timeframe
-  where we know per-second data is healthy. Also useful for sanity:
-  10-sec bars on TV during extended hours skip when there's no trading
-  activity — does that pattern match how our cache handles it?
+- **Test #3 (per-candle cadence, 10Sec bars):** ✅ **DONE 2026-05-05.**
+  See "10Sec follow-up" section below.
 
 Neither test is blocking. They'd refine the stabilization-window
 estimate but won't change the decision (TV revises, period).
+
+### 10Sec follow-up (Test #3, completed 2026-05-05)
+
+**Method:** SPY 10Sec exported per-candle (~every 10 seconds) for ~5
+minutes. 33 CSVs in `docs/tv_data/5-5 10s test/`. Last bar of each
+snapshot dropped (forming, taken a few seconds into the candle).
+Source script: `/tmp/tv_10s_analysis.py`.
+
+**Result:** 343 bars compared. **Zero revisions.** No close, volume,
+high/low, or open change after the first non-forming observation.
+
+**Caveat:** the per-candle polling means the first observation of any
+given bar is ~8–18 seconds after that bar's close (the time it took to
+re-pull the next candle). So the test cannot detect revisions that
+happen in the first 0–10s post-close. What it CAN say is that TV does
+not revise 10Sec bars more than ~15s after close.
+
+**Asymmetry vs 1Min:**
+
+| Bar timeframe | Revision rate | Post-close stabilization |
+|---------------|---------------|--------------------------|
+| 1Min  | 9.6% revised  | Within ~5 min |
+| 10Sec | 0% revised    | Within ~15s   |
+
+Plausible explanations:
+
+1. **Different aggregation pipelines.** TV likely derives 10Sec bars
+   directly from per-trade or per-second data and seals them quickly,
+   while 1Min goes through a longer aggregation step vulnerable to
+   late prints rolling in within FINRA's 15-min window.
+2. **Late-print impact is timeframe-dependent.** A late print that
+   shifts a 1Min volume by 10% might be invisible in a 10Sec window
+   that doesn't even contain that print's effective time.
+
+**Implication for live model:**
+
+- **Sub-minute strategies (5/10/30Sec)**: `first_write` is effectively
+  as accurate as `latest` — values don't change post-close. Matches
+  what our cache already shows (SPY/TSLA 10Sec: 100% `first_close ==
+  close` in Mon-1 validation).
+- **1Min+ strategies**: keep `latest` as default — revisions happen,
+  fast (~5 min) but real.
+
+Net: the per-strategy `live_bar_source` flag we'll add as part of the
+Mode 2/3 rollout could also expose `revision_anchor: first|latest`
+defaulting to `first` for sub-minute and `latest` for 1Min+. Or we
+keep it implicit since the divergence is structurally small for
+sub-minute.
 
 ---
 
