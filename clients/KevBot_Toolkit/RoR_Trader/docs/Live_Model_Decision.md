@@ -165,36 +165,64 @@ the bar in the moment. Trades stay missed.
 So REST backfill is good hygiene (Lab tab + Data Health stop showing
 gaps), but it is NOT the fix for the trade-execution problem.
 
-### Why per-second aggregation probably IS the fix
+### Three candidate modes for sourcing 1Min bars
 
 The same Polygon stream that's losing 60% of `AM` events is delivering
-97%+ of `A` (per-second) events. We can subscribe to `A.<symbol>` for
-every symbol the worker tracks (already done for symbols with sub-minute
-strategies — just extend to all 1Min strategies too) and aggregate
-those per-second bars into 1Min bars on our side. The engine consumes
-the aggregated 1Min bars instead of waiting for `AM` events to arrive
-cleanly.
+97%+ of `A` (per-second) events. So instead of "AM only," we have three
+realistic options. The right pick isn't obvious without measurement —
+that's what tomorrow's shadow-mode test resolves.
 
-Latency cost: ~0–1s extra (we wait for the last per-second bar of the
-minute before closing the 1Min bar). Acceptable for trade decision-
-making.
+**Note on storage:** all three modes write the SAME row count to
+`live_bars` (one per minute, idempotent on `(symbol, tf, bar_start)`).
+Only the `source` label differs. This is a latency / accuracy /
+reliability trade, not a database-size trade.
 
-Open questions before committing:
+| Mode | How it works | Latency after minute close | Reliability | Accuracy assumption |
+|------|--------------|---------------------------:|-------------|---------------------|
+| **1 — AM-only (current default)** | Engine waits for Polygon's `AM.<symbol>` event, uses whatever arrives. | ~0–4s when it arrives (Polygon's docs note up to 4s aggregation lag); ∞ when it doesn't | **38%** for high-volume 1Min | Polygon's gold standard — includes any late prints they aggregated upstream |
+| **2 — A-agg only** | Worker aggregates per-second `A.*` events client-side at minute boundaries. AM is ignored. | ~1s (wait for last per-second bar to land) | **97%** | Whatever Polygon delivered to `A` by the second the minute closed — may miss late prints that `AM` would have included via its 4-sec window |
+| **3 — AM-preferred with A-agg fallback** | Wait up to N seconds for `AM`. If it arrives → use it. If not → fall back to A-agg. | Constant ~N+1 sec (set N=5) | **97%+** (97% from A-agg fallback, plus AM accuracy on the 38% where AM arrives) | Best of both — Polygon's accuracy on bars where AM arrives, A-agg's reliability where it doesn't |
 
-1. **Drift vs Polygon's `AM`:** are aggregated-from-`A` bars
-   bit-identical to `AM` bars, or do they differ slightly (rounding,
-   late prints that arrive after the minute closed but are still
-   included in `AM`)? Probably immaterial for trigger evaluation,
-   but we should measure.
-2. **Source-of-truth in cache:** the writer needs to know whether a
-   1Min row came from `AM` directly or was aggregated from `A`, so the
-   Data Health dashboard distinguishes them. Add a `source='ws_agg'`
-   value alongside `'ws'` and `'rest_backfill'`.
-3. **Validation strategy:** run aggregated-from-`A` in shadow mode
-   for a session — write the aggregated bars to cache with a different
-   source label, and on bars where we have BOTH (`AM` arrived AND
-   we aggregated from `A`), diff the OHLCV. Quantifies the divergence
-   before we flip any strategy to consume the aggregated stream.
+### What the shadow test will tell us
+
+Run mode 2 in shadow alongside mode 1 (current production) for a
+session. Cache writes both — `source='ws'` for AM, `source='ws_agg'`
+for the aggregated bar. On bars where BOTH exist (i.e. AM did arrive
+AND we also aggregated A), diff the OHLCV cell-by-cell.
+
+Three possible outcomes and what they mean:
+
+- **(a) Bit-identical or trivially different (e.g. ≤$0.01 close drift,
+  identical open):** Mode 2 is the answer. Simpler, faster, more
+  reliable. Just always use A-agg. AM becomes irrelevant.
+- **(b) Materially different (e.g. close drift > $0.01 routinely, or
+  volume diverges meaningfully):** Mode 3 is the answer. The 4-sec
+  AM-aggregation window genuinely captures something A-agg misses, so
+  we want AM when we can get it. The fallback covers the 60% AM-loss
+  cases.
+- **(c) Pathological: A-agg sometimes wildly off:** investigate the
+  aggregation code; don't ship either yet.
+
+### Open questions
+
+1. **Source-of-truth in cache:** writer gains a `source='ws_agg'`
+   value alongside `'ws'` and `'rest_backfill'`. Data Health
+   dashboard then shows the source split per (symbol, tf), so the
+   migration is auditable.
+2. **Sub-minute strategies are unaffected.** 10Sec/30Sec strategies
+   already consume A directly via `on_second_bar`. Only the 1Min path
+   is in question.
+3. **Per-strategy choice or platform default?** Once we pick a winning
+   mode, two flavors:
+   - **Platform default**: flip the worker to the new mode, all 1Min
+     strategies switch at once. Simple, less to maintain.
+   - **Per-strategy flag**: `strategy.live_bar_source: 'am'|'ws_agg'|'am_with_fallback'`
+     defaulting to the platform pick. Lets the user A/B specific
+     strategies; surfaces in Data Health alongside coverage.
+   We can decide after seeing the divergence numbers — if (a) wins
+   cleanly, platform default makes sense. If (b) and there's a
+   meaningful gap, per-strategy flag preserves opt-out for anyone
+   running latency-sensitive setups.
 
 ### Pairing with REST backfill
 
@@ -224,25 +252,31 @@ Markets are open tomorrow. Strategy:
    isn't a one-day artifact.
 2. **TV Tests #2 and #3:** Kevin pulls the 1-min-cadence CSVs in
    parallel while the engine work is in progress.
-3. **Per-second aggregation, shadow-mode rollout:**
+3. **Shadow-mode rollout for Mode 2 (A-agg):**
    - Add `WsAggBarBuilder` that consumes `A.*` callbacks and emits
      1Min bars at minute boundaries
    - Wire it into `SymbolHub` alongside the existing `on_polygon_bar`
      (`AM`) path
    - Cache writer accepts `source='ws_agg'` so Data Health distinguishes
-   - Don't route to monitors yet — we're collecting comparison data
-4. **Validation pass mid-session:** query for bars where both `ws` and
-   `ws_agg` exist for the same `(symbol, timeframe_seconds, bar_start)`.
-   Diff OHLCV. If divergence is < 0.01% on close + identical on open,
-   we have green light to flip strategies onto the aggregated source.
-5. **Per-strategy cutover:** add a strategy-level flag
-   `live_bar_source: 'am' | 'ws_agg'` (default `'am'` for backwards
-   compat). User can opt strategies into the aggregated source one at
-   a time. The Data Health dashboard shows which strategies are on
-   which source so the migration is auditable.
+   - **Don't route to monitors yet** — we're collecting comparison data
+4. **Validation pass mid-session:** query for bars where both `ws`
+   (mode 1, `AM`) and `ws_agg` (mode 2, A-aggregated) exist for the
+   same `(symbol, timeframe_seconds, bar_start)`. Diff OHLCV
+   cell-by-cell. The result decides which mode wins:
+   - **Diff is trivial → Mode 2.** Always use A-agg. Simplest.
+   - **Diff is material → Mode 3.** Build the AM-preferred-with-A-agg-
+     fallback wrapper next. Gets us AM accuracy when it arrives, A-agg
+     reliability when it doesn't.
+   - **Diff is wild → halt and investigate aggregation code.**
+5. **Per-strategy cutover (after we pick a winning mode):** add
+   `strategy.live_bar_source: 'am' | 'ws_agg' | 'am_with_fallback'`
+   defaulting to whichever mode wins. User can opt strategies in or
+   out one at a time during transition. Data Health surfaces which
+   strategies are on which source so the migration is auditable.
 
 REST backfill is **not** in tomorrow's scope. Queued behind the engine
-work.
+work — once we're confident in the live source we'll add REST backfill
+to retroactively fill cache gaps for chart/dashboard completeness.
 
 ---
 
