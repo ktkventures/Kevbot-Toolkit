@@ -310,7 +310,7 @@ Order of operations:
 
 ---
 
-## Plan for 2026-05-05 RTH
+## Plan for 2026-05-05 RTH (EXECUTED — see status below)
 
 Markets are open tomorrow. Strategy:
 
@@ -345,6 +345,92 @@ Markets are open tomorrow. Strategy:
 REST backfill is **not** in tomorrow's scope. Queued behind the engine
 work — once we're confident in the live source we'll add REST backfill
 to retroactively fill cache gaps for chart/dashboard completeness.
+
+---
+
+## EOD 2026-05-05 status — Phase A + B + C SHIPPED
+
+The plan above executed end-to-end in one day. Summary:
+
+**Step 1 (morning sanity)** — confirmed pattern persists. AAPL/AMD/SPY/TSLA
+1Min coverage at 35-50% of expected during early RTH (vs prior day's
+38%); META/TSLL healthy as before. No one-day artifact.
+
+**Step 2 (TV tests)** — Test #2 (1-min cadence on 1Min) deferred. Test
+#3 ran on 10Sec exports → 0 revisions detected at >15s post-close.
+Asymmetry vs 1Min documented in 10Sec section above.
+
+**Step 3 (shadow rollout)** — `WsAggMinuteBuilder` shipped 09:50 MT
+(`ace1fe7`). Flag flipped to live at 10:05 MT.
+
+**Step 4 (mid-session validation)** — REST-backed validator
+(`src/_validate_ws_agg_vs_rest.py`) confirmed close bit-identical to
+Polygon REST canonical on 468/468 paired bars across 4 symbols. OHL
+diffs sub-cent typical, volume p50 < 4%. **Decision: Mode 2 (A-agg
+locked).**
+
+**Step 5 (cutover)** — went further than originally planned. Phases
+A+B+C all shipped same day:
+
+- **Phase A** (`2ee8a24` 10:30 MT) — registry refresh. Removed three
+  unused M3 placeholder backtest IDs. Added `cache_locked` /
+  `cache_corrected` (backtest, gated to Phase E) and `ws_agg_locked` /
+  `ws_agg_with_rest_backfill` (live, gated to C/D). Added
+  `get_model_status` helper.
+- **Phase B** (same commit) — `/admin/live-models` and
+  `/admin/backtest-models` admin pages, plus
+  `/api/admin/strategy-models/*` endpoints. User-packs-styled card
+  list + click-through detail view with usage counts.
+- **Phase C** (`74ff56c` 12:55 MT + `f971eeb` 13:42 MT + `b1ad5c0`
+  13:44 MT + `ee2c4c5` 15:01 MT recovery) — engine dispatch wired:
+  - StrategyMonitor declares live_model on construction
+  - Symmetric source-label gate inside
+    `_run_monitor_pipeline_for_completed_bar` (ws_agg_locked monitors
+    skip on `polygon`, ws_with_corrections monitors skip on `ws_agg`)
+  - on_second_bar's WsAggMinuteBuilder block now also dispatches
+    completed minute bars to the monitor pipeline when any monitor
+    on the symbol has opted in
+  - A.* subscription gate gains `has_ws_agg` clause so opting in to
+    ws_agg_locked auto-pulls the symbol into the per-second stream
+  - `ws_agg_locked.available = True` and `default = True`
+  - Bulk DB migration set explicit `config.live_model='ws_agg_locked'`
+    on all 39 strategies (revert: `python _bulk_set_live_model.py
+    NULL`)
+
+**Worker recovery saga** — three rapid pushes (74ff56c → f971eeb →
+b1ad5c0 in 2 min) caused Railway to queue conflicting builds, two
+stuck BUILDING + one FAILED. Worker kept serving the 12:55 deploy
+(Phase C wired but no default flip seen) until empty commit `ee2c4c5`
+kicked a clean rebuild at 15:01 MT. All four services SUCCESS post-
+recovery.
+
+**End-of-day verification (post-RTH at 15:00 MT):**
+- 12 Polygon channels subscribed (6 AM + 6 A) — confirms gate expansion
+- ws_agg writes flowing for AAPL/AMD/SPY/TSLA (high-volume → constant
+  trade activity → A events every second → builder accumulates and
+  closes minute bars)
+- ws_agg = 0 for META/TSLL (low-volume post-market, A events sparse —
+  expected; will normalize during RTH tomorrow when trade activity
+  resumes)
+- 1Min strategy alerts silent because 19 of 22 active 1Min strategies
+  are session=RTH and we're past 16:00 ET — also expected
+- 10Sec Extended Hours strategies firing normally (~56 alerts in 10
+  min on SPY 10Sec)
+
+**Real validation:** RTH open 2026-05-06 13:30 UTC. What we're
+watching for:
+1. 1Min RTH strategies activating, BAR_CLOSE logs with their strat IDs
+2. META/TSLL ws_agg writes resuming as trade activity picks up
+3. AM coverage on AAPL/AMD/SPY/TSLA — if it stays at 0% during RTH,
+   the migration was the right call
+
+**Outstanding:**
+- Phase D (REST backfill writer) and Phase E (backtest dispatch wiring)
+  still queued per the plan file at
+  `~/.claude/plans/synchronous-tickling-yeti.md`
+- vwap_v2 user pack warning (`'str' object has no attribute 'timestamp'`)
+  fires every few seconds in worker logs — pre-existing, not Phase C
+  related, worth fixing when convenient
 
 ---
 
