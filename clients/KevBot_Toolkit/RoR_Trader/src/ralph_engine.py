@@ -506,6 +506,22 @@ class StrategyMonitor:
         else:
             self.session = strategy.get('trading_session', 'RTH')
 
+        # Phase C (2026-05-05): live_model selection drives bar-source
+        # routing in _run_monitor_pipeline_for_completed_bar's gate.
+        # `ws_with_corrections` (default) consumes Polygon AM events only;
+        # `ws_agg_locked` / `ws_agg_with_rest_backfill` consume client-side
+        # 1Min bars built from per-second A.* events (lock at minute close).
+        # Strategies with stale or unknown live_model values fall back to
+        # the platform default — never crash on a deleted experimental ID.
+        from strategy_models import (
+            get_default_live_model, is_valid_live_model
+        )
+        declared = strategy.get('live_model') or strategy.get('config', {}).get('live_model')
+        self.live_model = (
+            declared if (declared and is_valid_live_model(declared))
+            else get_default_live_model()
+        )
+
         # Resolve requirements (uses confluence mapping for trigger IDs)
         req_ind, req_interp, req_trig, params = (
             resolve_strategy_requirements(strategy))
@@ -1675,6 +1691,21 @@ class SymbolHub:
                 continue
             if not _is_in_session(self.last_tick_time, monitor.session):
                 continue
+            # Phase C (2026-05-05): live_model gate — symmetric skip sets
+            # so each monitor only fires on its declared bar source.
+            #   ws_with_corrections → consume only AM-source bars (polygon)
+            #   ws_agg_locked / ws_agg_with_rest_backfill → consume only
+            #     ws_agg-source bars (client-side per-second aggregation)
+            # Existing source labels: 'polygon' (on_polygon_bar AM events),
+            # 'subm' (on_second_bar sub-minute primary), 'ws_agg' (Phase C
+            # ws_agg dispatch from on_second_bar).  'subm' is sub-minute
+            # only and never reaches 1Min monitors, so it's gate-irrelevant.
+            if source_label == 'polygon' and monitor.live_model in (
+                'ws_agg_locked', 'ws_agg_with_rest_backfill'
+            ):
+                continue
+            if source_label == 'ws_agg' and monitor.live_model == 'ws_with_corrections':
+                continue
 
             signals, audit_data = monitor.on_bar_close(
                 bar_dict, bar_count,
@@ -1967,12 +1998,24 @@ class SymbolHub:
         if close:
             self.latest_close = float(close)
 
-        # ---- (0) WS_AGG SHADOW BUILDER (Live_Model_Decision.md Mode 2) ----
-        # Purely additive: aggregate per-second bars into 1Min on our side
-        # and write to live_bars with source='ws_agg'.  NEVER routes to
-        # monitors.  Sets up the comparison dataset that picks AM-only vs
-        # A-agg vs AM-with-fallback as the production live source.
-        # Gated by env flag — disabled by default until rolled out.
+        # ---- (0) WS_AGG BUILDER + DISPATCH (Phase B + C) ----
+        # Aggregate Polygon's per-second A.* events into 1Min on our side.
+        # Two side effects on each completed-minute boundary:
+        #   1. Write to live_bars with source='ws_agg' (cache-side data
+        #      collection — feeds dashboards, REST diff validator, future
+        #      backtest models cache_locked / cache_corrected).
+        #   2. Phase C: dispatch the completed bar through the standard
+        #      monitor pipeline if any monitor on this symbol declared
+        #      live_model in (ws_agg_locked, ws_agg_with_rest_backfill).
+        #      _run_monitor_pipeline_for_completed_bar's gate filters
+        #      monitors by source_label='ws_agg' so only opted-in monitors
+        #      receive it; ws_with_corrections monitors keep firing on
+        #      AM events as before.
+        # Both behaviors gated by WS_AGG_SHADOW_ENABLED env flag — set on
+        # the Worker container.  Independent of monitor opt-in: the cache
+        # write happens regardless of whether any monitor consumes it
+        # (lets us collect comparison data even when no strategy uses
+        # ws_agg yet).
         if _ws_agg_shadow_enabled():
             try:
                 if self._ws_agg_minute is None:
@@ -1982,10 +2025,47 @@ class SymbolHub:
                     from live_bars_writer import write_bar as _live_bars_write
                     _live_bars_write(self.symbol, 60, completed_min,
                                      source='ws_agg')
+                    # Phase C dispatch: only invoke monitor pipeline when
+                    # at least one 1Min monitor on this symbol opted in.
+                    # Avoids the cost of running the pipeline (with a
+                    # source_label='ws_agg' that all ws_with_corrections
+                    # monitors would skip anyway) when nobody's listening.
+                    eligible = any(
+                        m.live_model in ('ws_agg_locked', 'ws_agg_with_rest_backfill')
+                        and m.tf_seconds == 60
+                        for m in self.monitors.values()
+                    )
+                    if eligible:
+                        builder = self.builders.get(60)
+                        bar_count = builder._bar_count if builder is not None else 0
+                        # Append to the canonical builder history so a
+                        # later AM rebroadcast (if AM ever recovers) sees
+                        # the bar already in place and updates indicator
+                        # state cleanly via accept_bar's duplicate path.
+                        if builder is not None:
+                            try:
+                                builder.accept_bar(completed_min)
+                            except Exception as _e:
+                                logger.debug(
+                                    "ws_agg accept_bar into builder failed "
+                                    "for %s: %s", self.symbol, _e)
+                        try:
+                            self._run_monitor_pipeline_for_completed_bar(
+                                tf_seconds=60,
+                                bar_dict=completed_min,
+                                bar_count=bar_count,
+                                alert_callback=alert_callback,
+                                config=config,
+                                source_label='ws_agg',
+                                auditor=auditor,
+                            )
+                        except Exception as _pe:
+                            logger.warning(
+                                "ws_agg pipeline dispatch failed for %s: %s",
+                                self.symbol, _pe)
             except Exception as e:
-                # Shadow builder must NEVER affect live alerting.  Log and
-                # continue.
-                logger.warning("ws_agg shadow write failed for %s: %s",
+                # Builder must NEVER take down live alerting.  Log + continue.
+                logger.warning("ws_agg pipeline failed for %s: %s",
                                self.symbol, e)
 
         # Find which TF's bar_count to use (use the primary 60s builder)
@@ -2603,11 +2683,15 @@ class RalphEngine:
 
                 # Build subscription channels
                 # AM.{ticker} = per-minute aggregates (stocks)
-                # A.{ticker}  = per-second aggregates — only subscribed when
-                #   a strategy on this symbol actually needs sub-minute data:
+                # A.{ticker}  = per-second aggregates — subscribed when ANY
+                #   monitor on this symbol needs per-second data:
                 #     * L-type intrabar trigger (level-cross detection), or
-                #     * sub-minute primary TF (5s/10s/15s/30s aggregation).
-                #   Unconditional A.{ticker} flooded the event loop with
+                #     * sub-minute primary TF (5s/10s/15s/30s aggregation), or
+                #     * Phase C live_model in (ws_agg_locked,
+                #       ws_agg_with_rest_backfill) — the engine consumes
+                #       client-side 1Min bars built from per-second A bars.
+                #   Avoids unconditional A subscription on every symbol —
+                #   the unconditional version flooded the event loop with
                 #   per-second forming-bar work and was the main contributor
                 #   to the post-M8.5 alert-latency regression. See
                 #   docs/Alert_Recovery_Plan_2026-04-17.md Phase 2.
@@ -2624,7 +2708,13 @@ class RalphEngine:
                     )
                     has_subminute = any(
                         m.tf_seconds < 60 for m in hub.monitors.values())
-                    if has_ltype or has_subminute:
+                    has_ws_agg = any(
+                        getattr(m, 'live_model', None) in (
+                            'ws_agg_locked', 'ws_agg_with_rest_backfill'
+                        )
+                        for m in hub.monitors.values()
+                    )
+                    if has_ltype or has_subminute or has_ws_agg:
                         stock_channels.append(f"A.{sym}")
                 crypto_channels = [f"XA.X:{s.replace('/', '')}" for s in crypto_symbols]
 

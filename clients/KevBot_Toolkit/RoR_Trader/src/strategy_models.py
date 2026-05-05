@@ -117,7 +117,7 @@ LIVE_MODELS = {
     },
     'ws_agg_locked': {
         'label': 'A-aggregated (locked)',
-        'available': False,  # flipped True when Phase C ships
+        'available': True,  # Phase C shipped 2026-05-05
         'default': False,
         'description': (
             'Engine consumes 1Min bars built client-side from '
@@ -125,8 +125,8 @@ LIVE_MODELS = {
             'close — no rebroadcast corrections. Best for symbols '
             'where AM coverage is unreliable (e.g. AAPL/AMD/SPY '
             'have ~60% AM loss while A is 97%+). Latency: ~1s after '
-            'minute close. Coming soon — needs Phase C (live engine '
-            'dispatch wiring).'
+            'minute close. Selecting this on a strategy automatically '
+            'subscribes the worker to A.<symbol> if not already.'
         ),
     },
     'ws_agg_with_rest_backfill': {
