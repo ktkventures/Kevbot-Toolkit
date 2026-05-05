@@ -28,6 +28,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Observed cache gap: ~1-2 min during Worker restart
   - Notes: Activates the WsAggMinuteBuilder shipped at `ace1fe7`. After warmup, expect `source='ws_agg'` 1Min rows to appear in live_bars for SPY (10Sec subs already trigger A.* subscription) and TSLA. Backup branch `dev-backup-pre-wsagg-flag-on-2026-05-05` pushed pre-flip.
 
+- **16:30 UTC (10:30 MT)** — `2ee8a24` M8.7 Phase A+B: strategy model registry + admin pages
+  - Service(s) redeployed: api (new strategy_models_admin router), frontend (two new admin pages + sidebar entries)
+  - Observed cache gap: N/A (additive, no engine code changes)
+  - Notes: Refreshes strategy_models.py with ws_agg_locked / ws_agg_with_rest_backfill (live) and cache_locked / cache_corrected (backtest), all `available=False` until Phase C/D/E ship. Removes 3 unused M3 placeholder backtest IDs. New admin routes /admin/live-models and /admin/backtest-models surface usage counts + per-model strategy lists. Backup branch `dev-backup-pre-strategy-models-2026-05-05` pushed pre-change. Plan archived at `~/.claude/plans/synchronous-tickling-yeti.md`.
+
 - **15:50 UTC (09:50 MT)** — `ace1fe7` WsAggMinuteBuilder shadow (disabled by default)
   - Service(s) redeployed: Worker (no-op until `WS_AGG_SHADOW_ENABLED=true`)
   - Observed cache gap: N/A (additive code path, env flag off)
