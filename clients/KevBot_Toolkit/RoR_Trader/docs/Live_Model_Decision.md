@@ -81,6 +81,29 @@ close (which would argue for a `ws_first_lock` default)?
 **Open is locked at first tick** — that's a clean invariant.
 Close, volume, and high/low get revised within minutes.
 
+#### Note on reproducing this result (added 2026-05-05)
+
+The original analysis loaded 21 CSVs from `docs/tv_data_5-4/`. After
+folder reorg (2026-05-05) the path moved to `docs/tv_data/` and snap 1
+was lost. Running the same script against the surviving 20 snaps
+returns **0 revisions** — not because TV behavior changed, but because
+the revisions were anchored on snap 1's view of bars that closed within
+seconds of that pull. By snap 2 (5 min later), TV had already rolled
+in the late-print corrections, so subsequent snaps all see the stable
+post-revision values.
+
+This is consistent with — and actually strengthens — the original
+finding: TV revises **fast** (within ~5 min and likely much sooner),
+and after that the values are sealed. The bars that showed revision
+weren't forming-bar artifacts (the script's `_excluded_last` filter
+was verified by audit on 2026-05-05); they were closed bars whose
+OHLCV got refined post-close.
+
+Future tests should keep ALL snapshots in version control to allow
+re-derivation, and pull at a sub-minute cadence to nail down the
+actual stabilization window (currently bounded as "somewhere between
+0 and 5 min").
+
 ### Comparison to Polygon
 
 |        | Revision behavior | Stabilization window |
