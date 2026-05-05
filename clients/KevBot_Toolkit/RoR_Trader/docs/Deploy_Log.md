@@ -21,6 +21,15 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-05-04
 
+## 2026-05-05
+
+- **15:50 UTC (09:50 MT)** — `ace1fe7` WsAggMinuteBuilder shadow (disabled by default)
+  - Service(s) redeployed: Worker (no-op until `WS_AGG_SHADOW_ENABLED=true`)
+  - Observed cache gap: N/A (additive code path, env flag off)
+  - Notes: Lands the Mode-2 candidate aggregator + validator. To activate: `WS_AGG_SHADOW_ENABLED=true` on Railway Worker, restart, wait ~30 min for paired bars, run `src/_validate_ws_agg.py` from inside `src/`. Backup branch `dev-backup-pre-wsagg-2026-05-05` pushed pre-change. Phase 1 scope: only writes for symbols where A.* is already subscribed (SPY, TSLA today).
+
+## 2026-05-04
+
 - **23:35 UTC (17:35 MT)** — `e30bfc6` M8.7 admin/data-health: custom date range filter
   - Service(s) redeployed: api (data_health router accepts start/end), frontend (V1 mode toggle + datetime picker)
   - Observed cache gap: N/A (read-only diagnostic)
