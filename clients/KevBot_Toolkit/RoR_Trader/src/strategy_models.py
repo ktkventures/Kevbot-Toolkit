@@ -92,15 +92,17 @@ LIVE_MODELS = {
     'ws_with_corrections': {
         'label': 'AM with corrections',
         'available': True,
-        'default': True,
+        'default': False,  # was True; demoted 2026-05-05 in favor of ws_agg_locked
         'description': (
             'Engine consumes Polygon AM.<symbol> per-minute events. '
             'Polygon rebroadcast corrections within the 15-min FINRA '
             'window are applied via recompute-from-history (Option '
-            'B, 2026-05-02 fix). Default. Indicator state updates '
-            'silently as corrections arrive; original alerts remain '
-            'fact. Note: AM coverage on high-volume symbols can be '
-            'unreliable — see `ws_agg_locked` for an alternative.'
+            'B, 2026-05-02 fix). NOT recommended on high-volume '
+            'symbols today — Mon-1/Tue-1 validation showed AAPL/AMD/'
+            'SPY/TSLA AM coverage falls to ~0% during RTH. Use '
+            'ws_agg_locked instead for those symbols. Kept available '
+            'for low-volume tickers (META, TSLL) where AM is healthy '
+            'and saves the per-second processing cost.'
         ),
     },
     'ws_first_lock': {
@@ -118,15 +120,18 @@ LIVE_MODELS = {
     'ws_agg_locked': {
         'label': 'A-aggregated (locked)',
         'available': True,  # Phase C shipped 2026-05-05
-        'default': False,
+        'default': True,    # promoted 2026-05-05 — AM proven unreliable on high-volume symbols
         'description': (
             'Engine consumes 1Min bars built client-side from '
             'Polygon A.<symbol> per-second events. Locks at minute '
-            'close — no rebroadcast corrections. Best for symbols '
-            'where AM coverage is unreliable (e.g. AAPL/AMD/SPY '
-            'have ~60% AM loss while A is 97%+). Latency: ~1s after '
-            'minute close. Selecting this on a strategy automatically '
-            'subscribes the worker to A.<symbol> if not already.'
+            'close — no rebroadcast corrections. Default as of '
+            '2026-05-05 after AM was observed delivering ~0% on '
+            'high-volume RTH symbols (AAPL/AMD/SPY/TSLA). Latency: '
+            '~1s after minute close. Selecting this on a strategy '
+            'automatically subscribes the worker to A.<symbol> if '
+            'not already. Close values are bit-identical to Polygon '
+            'REST canonical 1Min on validated samples; OHL/volume '
+            'diffs are sub-cent typical, structural late-print effect.'
         ),
     },
     'ws_agg_with_rest_backfill': {
