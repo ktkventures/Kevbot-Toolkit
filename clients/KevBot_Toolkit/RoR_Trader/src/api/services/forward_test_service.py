@@ -17,8 +17,8 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from datetime import datetime, timezone
-from typing import Any, Dict
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -441,3 +441,409 @@ def _serialize_trades(trades_df) -> list[dict]:
                 record[col] = val
         records.append(record)
     return records
+
+
+# ============================================================
+# Algo-history incremental writer (M8.7 — 2026-05-06)
+# ============================================================
+#
+# Replaces two legacy paths with one cron-driven append-only path:
+#   1. DBAlertDispatcher._persist_algo_trade — synchronous single-trade
+#      INSERT on every exit alert. Writes sub-second L-type fill ts,
+#      which then drifts when manual Refresh overwrites with bar-aligned
+#      ts — the source of "algo-history row a few seconds before the
+#      alert" confusion.
+#   2. Manual Refresh button (recompute_and_persist_stored_trades) —
+#      DELETE+INSERT all trades. Wipes Hi-Fi pass refinements + slow at
+#      scale.
+#
+# New cron path semantics:
+#   - Runs every ALGO_HISTORY_CRON_INTERVAL_SECONDS (default 300 = 5min)
+#   - Processes trades with exit_fill_ts <= now - ALGO_HISTORY_LAG_MINUTES
+#     (default 15min). The lag protects against FINRA late-print
+#     corrections — only commits trades after the bar can no longer
+#     change.
+#   - Set-diff against existing trades-table rows by
+#     (entry_fill_ts, exit_fill_ts) tuple — INSERTs only what's new.
+#     Idempotent. Hi-Fi-refined rows are preserved.
+#   - Stamps strategy.config.last_recompute_until_ts so subsequent runs
+#     can skip cheaply when the lag window hasn't advanced.
+
+_ALGO_HISTORY_LAG_MINUTES = int(
+    os.environ.get('ALGO_HISTORY_LAG_MINUTES', '15'))
+
+
+def _algo_history_cron_enabled() -> bool:
+    val = os.environ.get('ALGO_HISTORY_CRON_ENABLED', '').strip().lower()
+    if val in ('0', 'false', 'no', 'off'):
+        return False
+    return True  # default on
+
+
+def _stamp_config(strategy_id: int, user_id: str, cfg: dict) -> None:
+    """Write a fully-merged config dict back via the raw admin client.
+
+    Bypasses update_strategy_admin to avoid the partial-JSONB-wipe bug
+    documented in feedback_jsonb_partial_updates.md.
+
+    Defensive shrink-guard: re-fetches the current config from DB and
+    REFUSES the write if the new dict has materially fewer keys than
+    what's already stored. Caused a config wipe on 2026-05-06 when an
+    upstream caller passed a tiny dict (because they read config from
+    the flattened strat shape that returns None). Loud failure here
+    would have prevented data loss.
+    """
+    try:
+        from db import get_admin_client
+        _client = get_admin_client()
+        # Pre-check: read current config and bail if we'd be shrinking
+        # the dict by more than 1 key (we expect to be ADDING
+        # last_recompute_until_ts; loss of any other key is a bug).
+        try:
+            cur_resp = _client.table('strategies').select('config') \
+                .eq('id', strategy_id).eq('user_id', user_id).single().execute()
+            cur_cfg = (cur_resp.data or {}).get('config') or {}
+        except Exception:
+            cur_cfg = {}
+        cur_keys = set(cur_cfg.keys())
+        new_keys = set(cfg.keys())
+        lost = cur_keys - new_keys
+        if lost and len(cur_cfg) > 2:
+            logger.error(
+                "[ALGO-APPEND] strategy=%s REFUSING config write: would "
+                "lose %d keys (%s) — caller built an incomplete merge. "
+                "current=%d keys, new=%d keys.",
+                strategy_id, len(lost), sorted(lost),
+                len(cur_cfg), len(cfg))
+            return
+        _client.table('strategies').update({'config': cfg}) \
+            .eq('id', strategy_id).eq('user_id', user_id).execute()
+    except Exception as e:
+        logger.warning(
+            "[ALGO-APPEND] strategy=%s config stamp failed: %s",
+            strategy_id, e)
+
+
+def append_new_trades_for_strategy(
+    strategy_id: int,
+    user_id: str,
+    lag_minutes: int = None,
+) -> Dict[str, Any]:
+    """Run the unified engine and INSERT only trades newer than what's
+    already in the trades table for this strategy. Append-only.
+
+    Idempotent. Safe to call repeatedly. Skips strategies whose
+    ``config.last_recompute_until_ts`` is already past ``now - lag``.
+
+    Returns:
+        {"status": "skipped"|"appended"|"no_new_trades"|"first_run",
+         "inserted": int, "cutoff": iso, "elapsed_s": float}
+    """
+    import time as _time
+    import pandas as pd
+
+    if lag_minutes is None:
+        lag_minutes = _ALGO_HISTORY_LAG_MINUTES
+
+    from db import (
+        USE_DB,
+        get_strategy_by_id_admin,
+        update_strategy_admin,
+        set_admin_user_context,
+        get_current_user_id,
+        clear_current_user,
+    )
+    import services as svc
+
+    if not USE_DB:
+        return {'status': 'skipped', 'reason': 'USE_DB is False',
+                'inserted': 0}
+
+    strat = get_strategy_by_id_admin(strategy_id, user_id)
+    if strat is None:
+        return {'status': 'skipped',
+                'reason': f'strategy {strategy_id} not found',
+                'inserted': 0}
+
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+    cutoff = now_dt - timedelta(minutes=lag_minutes)
+    cutoff_iso = cutoff.isoformat()
+
+    # CRITICAL: get_strategy_by_id_admin returns a FLATTENED strat dict
+    # — it spreads config fields to top-level, so strat.get('config')
+    # returns None even when the JSONB column has 20+ fields. Reading it
+    # that way and merging back wipes the column. Read the raw JSONB
+    # directly to get the actual current config dict.
+    from db import get_admin_client
+    _raw_client = get_admin_client()
+    _raw_resp = _raw_client.table('strategies').select('config') \
+        .eq('id', strategy_id).eq('user_id', user_id).single().execute()
+    cfg = dict(_raw_resp.data.get('config') or {}) if _raw_resp.data else {}
+    last_until = cfg.get('last_recompute_until_ts')
+    is_first_run = not last_until
+
+    # Skip if this strategy was processed within the last cron interval.
+    # cutoff_iso is now-lag (advances every call), so comparing to it
+    # would never trigger a skip. We want: "if I just ran on this
+    # strategy within the cron interval, no point re-running yet."
+    if last_until:
+        try:
+            last_dt = datetime.fromisoformat(last_until)
+            recent_window = datetime.now(timezone.utc) - timedelta(
+                seconds=int(os.environ.get(
+                    'ALGO_HISTORY_CRON_INTERVAL_SECONDS', '300')))
+            if last_dt >= recent_window:
+                return {'status': 'skipped',
+                        'reason': 'recently_processed',
+                        'inserted': 0,
+                        'last_recompute_until_ts': last_until,
+                        'cutoff': cutoff_iso}
+        except Exception:
+            pass  # fall through to engine run on parse failure
+
+    # Engine context — same admin-mode swap as recompute_and_persist
+    _prev_user = get_current_user_id()
+    _need_ctx_swap = _prev_user != user_id
+    if _need_ctx_swap:
+        set_admin_user_context(user_id)
+
+    t0 = _time.time()
+    try:
+        try:
+            all_trades_df = svc.get_strategy_trades(strat)
+        except Exception as e:
+            logger.warning(
+                "[ALGO-APPEND] strategy=%s engine run failed: %s",
+                strategy_id, e)
+            return {'status': 'error', 'reason': f'engine: {e}',
+                    'inserted': 0}
+
+        if all_trades_df is None or len(all_trades_df) == 0:
+            # Stamp last_recompute_until_ts so we don't re-run engine
+            # next cycle for a strategy that has no trades.
+            cfg['last_recompute_until_ts'] = now_iso
+            _stamp_config(strategy_id, user_id, cfg)
+            return {'status': 'no_new_trades', 'inserted': 0,
+                    'cutoff': cutoff_iso,
+                    'elapsed_s': round(_time.time() - t0, 2)}
+
+        # Filter: only commit closed trades whose exit_fill_ts is past
+        # the lag boundary. Open trades stay live in engine; partially-
+        # late-printed bars excluded.
+        if 'exit_fill_ts' not in all_trades_df.columns:
+            return {'status': 'error',
+                    'reason': 'engine output missing exit_fill_ts column',
+                    'inserted': 0}
+
+        closed_mask = all_trades_df['exit_fill_ts'].notna()
+        closed = all_trades_df[closed_mask].copy()
+        if len(closed) == 0:
+            cfg['last_recompute_until_ts'] = now_iso
+            _stamp_config(strategy_id, user_id, cfg)
+            return {'status': 'no_new_trades', 'inserted': 0,
+                    'cutoff': cutoff_iso, 'open_only': True,
+                    'elapsed_s': round(_time.time() - t0, 2)}
+
+        # Coerce exit_fill_ts to UTC-aware Timestamp for comparison
+        exit_ts_col = pd.to_datetime(closed['exit_fill_ts'], utc=True,
+                                     errors='coerce')
+        closed = closed[exit_ts_col <= pd.Timestamp(cutoff)]
+        if len(closed) == 0:
+            cfg['last_recompute_until_ts'] = now_iso
+            _stamp_config(strategy_id, user_id, cfg)
+            return {'status': 'no_new_trades', 'inserted': 0,
+                    'cutoff': cutoff_iso, 'reason': 'all_in_lag_window',
+                    'elapsed_s': round(_time.time() - t0, 2)}
+
+        # Set-diff against existing DB trades
+        from trades_store import load_trades_for_strategy, insert_trade
+        existing = load_trades_for_strategy(strategy_id, user_id) or []
+        existing_keys: set = set()
+        for t in existing:
+            ek = t.get('entry_fill_ts')
+            xk = t.get('exit_fill_ts')
+            if ek and xk:
+                existing_keys.add((str(ek), str(xk)))
+
+        new_records = []
+        for _, row in closed.iterrows():
+            ek_raw = row.get('entry_fill_ts')
+            xk_raw = row.get('exit_fill_ts')
+            if pd.isna(ek_raw) or pd.isna(xk_raw):
+                continue
+            ek = ek_raw.isoformat() if hasattr(ek_raw, 'isoformat') else str(ek_raw)
+            xk = xk_raw.isoformat() if hasattr(xk_raw, 'isoformat') else str(xk_raw)
+            if (ek, xk) in existing_keys:
+                continue
+            new_records.append(row)
+
+        # Convert new records to JSON-safe dicts (re-uses existing
+        # _serialize_trades for shape consistency with manual Refresh).
+        if new_records:
+            new_df = pd.DataFrame(new_records)
+            new_serialized = _serialize_trades(new_df)
+        else:
+            new_serialized = []
+
+        inserted = 0
+        for rec in new_serialized:
+            try:
+                if insert_trade(strategy_id, user_id, rec):
+                    inserted += 1
+            except Exception as e:
+                logger.warning(
+                    "[ALGO-APPEND] strategy=%s insert_trade failed: %s",
+                    strategy_id, e)
+
+        # Update kpis + equity_curve from full engine output (most
+        # accurate snapshot). Skip if no new trades AND not first run —
+        # save the JSONB write.
+        do_full_update = (inserted > 0) or is_first_run
+        update_payload: Dict[str, Any] = {}
+
+        if do_full_update:
+            trading_days = all_trades_df.attrs.get('trading_days') \
+                if hasattr(all_trades_df, 'attrs') else None
+            if not trading_days or trading_days < 1:
+                trading_days = 1
+            try:
+                kpis = svc.calculate_kpis(all_trades_df,
+                                          total_trading_days=trading_days)
+            except Exception as e:
+                logger.warning(
+                    "[ALGO-APPEND] strategy=%s calc_kpis failed: %s",
+                    strategy_id, e)
+                kpis = None
+
+            try:
+                from api.services.backtest_service import _build_equity_curve
+                eq_data = _build_equity_curve(all_trades_df)
+                boundary_index = None
+                if strat.get('forward_test_start'):
+                    fwd_start = datetime.fromisoformat(
+                        strat['forward_test_start'])
+                    bt_portion, _ = svc.split_trades_at_boundary(
+                        all_trades_df, fwd_start)
+                    boundary_index = (len(bt_portion)
+                                      if len(bt_portion) > 0 else None)
+                equity_curve_data = {
+                    'exit_times': [p.get('timestamp', '') for p in eq_data],
+                    'cumulative_r': [p.get('cumulative_r', 0)
+                                     for p in eq_data],
+                    'boundary_index': boundary_index,
+                }
+            except Exception as e:
+                logger.warning(
+                    "[ALGO-APPEND] strategy=%s build_equity failed: %s",
+                    strategy_id, e)
+                equity_curve_data = None
+
+            if kpis is not None:
+                update_payload['kpis'] = kpis
+                update_payload['kpis_computed_at'] = cutoff_iso
+                update_payload['kpis_stale_since'] = None
+            if equity_curve_data is not None:
+                update_payload['equity_curve_data'] = equity_curve_data
+            update_payload['data_refreshed_at'] = cutoff_iso
+
+        # Column-only update via update_strategy_admin (handles trades-
+        # table redirect, etc). Config update goes through raw admin
+        # client below to dodge the partial-JSONB wipe bug
+        # (feedback_jsonb_partial_updates.md): update_strategy_admin
+        # treats unknown keys as a config REPLACEMENT, which would erase
+        # live_model and other config fields. Caller-side full-merge is
+        # the documented safe pattern.
+        if update_payload:
+            update_strategy_admin(strategy_id, user_id, update_payload)
+
+        # Stamp last_recompute_until_ts via direct config merge.
+        cfg['last_recompute_until_ts'] = now_iso
+        _stamp_config(strategy_id, user_id, cfg)
+
+        elapsed_s = round(_time.time() - t0, 2)
+        return {
+            'status': 'appended' if inserted > 0 else 'no_new_trades',
+            'inserted': inserted,
+            'cutoff': cutoff_iso,
+            'elapsed_s': elapsed_s,
+            'kpis_updated': bool(do_full_update),
+        }
+    finally:
+        if _need_ctx_swap:
+            clear_current_user()
+
+
+def append_recent_trades_for_user(
+    user_id: str,
+    lag_minutes: int = None,
+    max_seconds: float = 240.0,
+) -> Dict[str, Any]:
+    """Iterate strategies for a user and append recent trades for each.
+
+    ``max_seconds`` caps total wall time to avoid blocking the cron
+    longer than one cycle. When exceeded, processing stops and remaining
+    strategies are picked up next cycle (their last_recompute_until_ts
+    won't advance, so they get priority).
+
+    Returns a summary dict suitable for log inspection.
+    """
+    import time as _time
+
+    if not _algo_history_cron_enabled():
+        return {'status': 'disabled', 'processed': 0}
+
+    if lag_minutes is None:
+        lag_minutes = _ALGO_HISTORY_LAG_MINUTES
+
+    from db import load_strategies_admin
+
+    try:
+        strategies = load_strategies_admin(user_id) or []
+    except Exception as e:
+        return {'status': 'error', 'reason': f'load_strategies: {e}',
+                'processed': 0}
+
+    # Skip strategies that obviously can't produce trades (no
+    # entry_trigger_confluence_id) — same gate the engine enforces.
+    eligible = [s for s in strategies
+                if 'entry_trigger_confluence_id' in s and s.get('id')]
+
+    # Sort by last_recompute_until_ts (oldest first → fairness across
+    # cycles when budget runs out).
+    def _sort_key(s):
+        cfg = s.get('config') or {}
+        return cfg.get('last_recompute_until_ts') or ''
+    eligible.sort(key=_sort_key)
+
+    summary: Dict[str, Any] = {
+        'status': 'ok',
+        'processed': 0,
+        'inserted_total': 0,
+        'skipped': 0,
+        'errors': 0,
+        'budget_exhausted': False,
+        'detail': [],
+    }
+    t0 = _time.time()
+    for s in eligible:
+        if _time.time() - t0 > max_seconds:
+            summary['budget_exhausted'] = True
+            break
+        sid = s.get('id')
+        try:
+            r = append_new_trades_for_strategy(sid, user_id, lag_minutes)
+        except Exception as e:
+            logger.exception(
+                "[ALGO-APPEND-USER] strategy=%s crashed: %s", sid, e)
+            r = {'status': 'error', 'reason': str(e), 'inserted': 0}
+        summary['processed'] += 1
+        summary['inserted_total'] += int(r.get('inserted') or 0)
+        if r.get('status') == 'skipped':
+            summary['skipped'] += 1
+        elif r.get('status') == 'error':
+            summary['errors'] += 1
+        summary['detail'].append({'sid': sid, **r})
+
+    summary['elapsed_s'] = round(_time.time() - t0, 2)
+    return summary

@@ -709,7 +709,12 @@ CREATE TABLE bar_engine_states (
 - [ ] 8.7e. [Required] Gap detection + REST backfill — cache becomes self-healing
 - [ ] 8.7f. [Required] Cutover — flip `load_market_data` default to cache-first
 - [ ] 8.7g. [Required] Re-run parity sweep + Q3 fidelity drill — confirm fidelity ~100% on cached-period strategies
-- [ ] 8.7-engine-dispatch. [Required] Wire engine dispatch to honor `backtest_model` + `live_model` (currently models are recorded but engine ignores them)
+- [x] 8.7-engine-dispatch. [Required] **Phase C — Live engine dispatch** ✅ shipped 2026-05-05 (commit `74ff56c` + `f971eeb` + `b1ad5c0`). `StrategyMonitor.live_model` declared from config; symmetric source-label gate in `_run_monitor_pipeline_for_completed_bar`; `WsAggMinuteBuilder` dispatches `ws_agg`-source 1Min bars; A.* subscription gate expanded with `has_ws_agg`. Default flipped to `ws_agg_locked`; all 39 strategies bulk-migrated. Live-verified 2026-05-05 (strategy 166 round-trip + 8/8 bit-identical closes vs Polygon REST) and 2026-05-06 RTH open (META/TSLL/SPY/TSLA: 100% ws_agg coverage; AAPL/AMD AM-only ~30% as predicted). See `docs/Live_Model_Decision.md`.
+- [x] 8.7-tv-validation-2026-05-06. [Validation] **TradingView vs ws_agg comparison** ✅ 2026-05-06. SPY 1Min: 300 paired bars, close 99.7% bit-identical (max diff $0.03), open 94.7% bit-identical. SPY 10Sec (`ws` source — same A.*-aggregation as `ws_agg` but at sub-minute): close median diff $0.0299 (different aggregator: TV=CBOE/TRF, us=Polygon SIP); structural, not a bug.
+- [ ] 8.7-algo-history-incremental. [Required] **Algo-history incremental writer** (5-min cron, 15-min lag) — replaces current dual-write (DELETE+INSERT on Refresh + live `_persist_algo_trade` in worker). New: `last_recompute_until_ts` column; cron in worker.py; append-only INSERTs only. Removes the "algo entry appears a few seconds before alert" confusion. **IN PROGRESS 2026-05-06.**
+- [ ] 8.7-reset-alerts-bulk. [Polish] Wire bulk-select Reset Alerts button on My Strategies (current global "Reset All Alerts" button is a dead `<button>` with no onClick).
+- [ ] 8.7-silent-strategies. [Investigate later] 6 Mass-builder mirrors (147/146/145/141/140/137) fired 0 alerts in 7d while siblings on same symbols fire 40+/h. Likely overly-restrictive confluence. Not blocking — sibling strategies cover same symbols.
+- [ ] 8.7-strategy-144-card-bug. [Polish] Strategy 144 alerts count: My Strategies card shows 0, detail page shows 4. `/strategies/enrich` count diverges from alerts list. Cosmetic.
 
 **Tasks (Polish):**
 - [ ] 8.7h. [Polish] Cache cleanup job — delete bars older than N days (90 default)
@@ -721,7 +726,7 @@ CREATE TABLE bar_engine_states (
 **Tasks (Deferred):**
 - [ ] 8.7k. [Deferred] Strategy historical backfill — REST-fill 90 days for active strategies at cache start
 - [ ] 8.7l. [Deferred] Per-tick cache (massive volume; defer to Hi-Fi work)
-- [ ] 8.7-tv-test. [Monday] **TV stability test** — empirically resolve "TV locks at close vs silently revises" by screenshotting SPY 1Min OHLCV at T+0/T+5/T+15/T+30/T+1hr. Outcome informs whether to flip `live_model` default to `ws_first_lock` (Option C) instead of `ws_with_corrections` (Option B). Deferred from Friday; documented in plan doc.
+- [x] 8.7-tv-test. [Done 2026-05-04/05] **TV stability test** ✅ 1Min revises within ~5 min; 10Sec doesn't revise after ~15s. Established the 15-min late-print window as the safe "lock-and-forget" boundary. Informed default flip to `ws_agg_locked`.
 
 **Exit Criteria:**
 - ✅ Worker writes bars across primary + secondary TFs during RTH (live_bars accumulating)

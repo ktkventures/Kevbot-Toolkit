@@ -76,6 +76,8 @@ POLL_INTERVAL = 15          # seconds between desired_state polls
 HEARTBEAT_INTERVAL = 30     # seconds between heartbeat writes
 CONFIG_CHECK_INTERVAL = 30  # seconds between alert_config change checks
 RESTART_BACKOFF_MAX = 300   # max seconds to wait before restarting crashed engine
+ALGO_HISTORY_CRON_INTERVAL = int(
+    os.environ.get('ALGO_HISTORY_CRON_INTERVAL_SECONDS', '300'))  # 5min default
 
 
 # ============================================================
@@ -409,21 +411,26 @@ class DBAlertDispatcher:
             # worst case, next entry's BP qty is slightly wrong.
             logger.warning("Deployed-capital update failed: %s", e)
 
-        # Atomic algo-history append. Exit signals from the unified engine
-        # carry a fully-formed trade_record (PositionStateMachine.
-        # get_trade_record). Appending here — in the same dispatch that
-        # saves the alert — keeps algo history and the alerts table in
-        # lockstep. Refresh button still re-runs the full backtest via
-        # forward_test_service.recompute_and_persist_stored_trades.
-        # Reverts b83629b's write-inversion (see
-        # docs/Alert_Recovery_Plan_2026-04-17.md, Phase 1).
-        if sig_type == 'exit_signal':
+        # Algo-history dual-write removed 2026-05-06 (M8.7). Live alert
+        # dispatch only writes the alerts table now; the trades table is
+        # populated by the algo-history cron in WorkerManager (see
+        # api/services/forward_test_service.append_new_trades_for_strategy).
+        # Why: the dual-write here used sub-second L-type fill timestamps,
+        # while manual Refresh + cron use bar-aligned timestamps — the
+        # mismatch produced near-duplicate algo-history rows differing by
+        # a few seconds, which Kevin found confusing. Clean separation:
+        # alerts = live, sub-second; algo-history = backtest, bar-aligned,
+        # 15-min lag for late-print stability. The _persist_algo_trade
+        # method is retained on this class for hot-revert via env flag if
+        # the cron path proves unreliable in production.
+        if sig_type == 'exit_signal' and os.environ.get(
+                'ALGO_HISTORY_LIVE_DUAL_WRITE_ENABLED', '').strip().lower() \
+                in ('1', 'true', 'yes', 'on'):
             try:
                 self._persist_algo_trade(strategy, signal_data)
             except Exception as e:
                 logger.error("ALGO TRADE PERSIST FAILED [%s]: %s — %s",
                              self.user_id[:8], strategy.get('name'), e)
-                # Alert is already saved; don't fail the whole dispatch.
 
         # Webhook delivery — fires immediately on save for all exec types.
         # Trade_Timestamps_Spec (revised 2026-04-20): the webhook fire
@@ -1083,6 +1090,13 @@ class WorkerManager:
         self._instances: Dict[str, UserRalphInstance] = {}
         self._config_timestamps: Dict[str, str] = {}
         self._last_config_check = 0.0
+        # Algo-history cron (M8.7 — 2026-05-06). Runs in its own
+        # background thread so a long cycle (e.g. 39 strategies × engine
+        # replay) doesn't block the main poll loop. Single-threaded
+        # within itself — sequential per user, fairness via oldest-first
+        # ordering inside append_recent_trades_for_user.
+        self._algo_history_thread: Optional[threading.Thread] = None
+        self._algo_history_stop = threading.Event()
 
     def run(self):
         """Main loop — poll DB, start/stop engines, write heartbeats."""
@@ -1092,8 +1106,12 @@ class WorkerManager:
         def handle_signal(signum, frame):
             logger.info("Received signal %d — shutting down", signum)
             self._running = False
+            self._algo_history_stop.set()
         signal.signal(signal.SIGTERM, handle_signal)
         signal.signal(signal.SIGINT, handle_signal)
+
+        # Spin up algo-history cron in its own thread.
+        self._start_algo_history_cron()
 
         while self._running:
             try:
@@ -1112,6 +1130,87 @@ class WorkerManager:
 
         self._shutdown_all()
         logger.info("Worker manager stopped")
+
+    def _start_algo_history_cron(self):
+        """Launch the algo-history append cron in a background thread.
+
+        Runs every ALGO_HISTORY_CRON_INTERVAL seconds. Behind env flag
+        ALGO_HISTORY_CRON_ENABLED (default ON; set to 'false' to
+        disable). Lag enforced via ALGO_HISTORY_LAG_MINUTES (default 15).
+
+        Thread is daemon so process can exit cleanly without joining.
+        """
+        val = os.environ.get('ALGO_HISTORY_CRON_ENABLED', '').strip().lower()
+        if val in ('0', 'false', 'no', 'off'):
+            logger.info("Algo-history cron disabled via env var")
+            return
+
+        def loop():
+            logger.info(
+                "Algo-history cron started (interval=%ss, lag=%smin)",
+                ALGO_HISTORY_CRON_INTERVAL,
+                int(os.environ.get('ALGO_HISTORY_LAG_MINUTES', '15')),
+            )
+            # Stagger first run by 60s so worker startup completes first.
+            self._algo_history_stop.wait(60.0)
+            while not self._algo_history_stop.is_set():
+                try:
+                    self._run_algo_history_cycle()
+                except Exception as e:
+                    logger.error(
+                        "Algo-history cycle crashed: %s", e, exc_info=True)
+                # Wait next interval (interruptible)
+                self._algo_history_stop.wait(ALGO_HISTORY_CRON_INTERVAL)
+
+        self._algo_history_thread = threading.Thread(
+            target=loop, daemon=True, name="algo-history-cron")
+        self._algo_history_thread.start()
+
+    def _run_algo_history_cycle(self):
+        """Iterate active users + invoke append_recent_trades_for_user.
+
+        Active = engine instance is alive. Skips users whose engine is
+        crashed / not running, since their strategies aren't producing
+        new trades anyway.
+        """
+        active_uids = [uid for uid, inst in list(self._instances.items())
+                       if inst.is_alive]
+        if not active_uids:
+            logger.debug("Algo-history cron: no active users, skipping")
+            return
+
+        try:
+            from api.services.forward_test_service import \
+                append_recent_trades_for_user
+        except Exception as e:
+            logger.error("Algo-history import failed: %s", e)
+            return
+
+        # Budget per user: cycle interval - 60s margin. Distributes
+        # evenly when multiple users are active.
+        budget = max(60.0, ALGO_HISTORY_CRON_INTERVAL - 60.0)
+        per_user_budget = budget / max(1, len(active_uids))
+
+        for uid in active_uids:
+            try:
+                summary = append_recent_trades_for_user(
+                    uid, max_seconds=per_user_budget)
+                logger.info(
+                    "[%s] Algo-history: processed=%s inserted=%s "
+                    "skipped=%s errors=%s elapsed=%.1fs%s",
+                    uid[:8],
+                    summary.get('processed', 0),
+                    summary.get('inserted_total', 0),
+                    summary.get('skipped', 0),
+                    summary.get('errors', 0),
+                    summary.get('elapsed_s', 0.0),
+                    ' (BUDGET EXHAUSTED)'
+                    if summary.get('budget_exhausted') else '',
+                )
+            except Exception as e:
+                logger.error(
+                    "[%s] Algo-history user-cycle crashed: %s",
+                    uid[:8], e, exc_info=True)
 
     def _poll_and_reconcile(self):
         """Check desired_state for all users, start/stop instances."""
