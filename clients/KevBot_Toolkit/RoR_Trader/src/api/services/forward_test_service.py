@@ -658,6 +658,51 @@ def append_new_trades_for_strategy(
         except Exception:
             pass  # fall through to engine run on parse failure
 
+    # Alerts-gate (M8.7 throughput fix, 2026-05-06): skip the expensive
+    # engine run when no exit_signal alerts have fired for this strategy
+    # since last_recompute_until_ts. Reasoning: closed trades only
+    # materialize when the engine emits an exit signal — and the LIVE
+    # engine writes that to the alerts table. If no exit alerts since
+    # last cron, the engine has no new closed trades to discover, and
+    # the ~30-40s engine replay would just redundantly produce the same
+    # set we already have in the trades table.
+    #
+    # Tradeoff: this gate skips "missed trades" (algo-only trades the
+    # live engine didn't emit). Manual Refresh button still picks those
+    # up if user requests. Acceptable for v1 since missed trades are a
+    # divergence-investigation concern, not a per-minute concern.
+    #
+    # Drops cycle time from ~25-30 min full-coverage to <1 min when most
+    # strategies have no recent exits (typical case outside of high-vol
+    # RTH windows).
+    since_check_iso = last_until or (
+        datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    try:
+        # alerts.side='exit' identifies exit alerts; event_type is always
+        # 'fill' regardless of side. Verified 2026-05-06 against schema.
+        _alerts_check = _raw_client.table('alerts').select('id') \
+            .eq('strategy_id', strategy_id) \
+            .eq('side', 'exit') \
+            .gte('fill_ts', since_check_iso).limit(1).execute()
+        recent_exits_count = len(_alerts_check.data or [])
+    except Exception as e:
+        logger.warning(
+            "[ALGO-APPEND] strategy=%s alerts-gate query failed: %s — "
+            "falling through to full engine run",
+            strategy_id, e)
+        recent_exits_count = -1  # gate disabled on error
+
+    if recent_exits_count == 0:
+        # No new closed trades possible — stamp + skip
+        cfg['last_recompute_until_ts'] = now_iso
+        _stamp_config(strategy_id, user_id, cfg)
+        return {'status': 'skipped',
+                'reason': 'no_recent_exits',
+                'inserted': 0,
+                'cutoff': cutoff_iso,
+                'since_check': since_check_iso,
+                'elapsed_s': 0.0}
+
     # Engine context — same admin-mode swap as recompute_and_persist
     _prev_user = get_current_user_id()
     _need_ctx_swap = _prev_user != user_id
