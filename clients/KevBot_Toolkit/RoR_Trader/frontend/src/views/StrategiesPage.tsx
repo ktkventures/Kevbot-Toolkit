@@ -1305,33 +1305,51 @@ export default function StrategiesPage() {
             style={{ ...btnSecondary, opacity: refreshing ? 0.6 : 1 }}
             className="text-sm"
             disabled={refreshing || selectedIds.size === 0}
-            title="Append only NEW closed trades (last ~16 min). Fast — no full backtest. Same as the cron does every 5 min."
+            title="Append only NEW closed trades. Fast on previously-stamped strategies (~5s); slow on first-run since engine replays full forward-test history (~30s-5min for sub-minute strategies)."
             onClick={async () => {
               if (refreshing || selectedIds.size === 0) return;
               const ids = Array.from(selectedIds).map(Number);
               setRefreshing(true);
+              setRefreshCount(0);
+              setRefreshTotal(ids.length);
               const token = localStorage.getItem('ror_access_token') || '';
               const base = process.env.NEXT_PUBLIC_API_URL || '';
-              try {
-                const resp = await fetch(`${base}/api/strategies/append-recent-trades-bulk`, {
-                  method: 'POST',
-                  headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ strategy_ids: ids }),
-                });
-                const result = await resp.json();
-                alert(`Update New Data complete\n\n` +
-                      `Strategies: ${result.total_strategies}\n` +
-                      `New trades inserted: ${result.total_inserted}\n` +
-                      `Skipped (no new exits): ${result.total_skipped}\n` +
-                      `Failed: ${result.total_failed}`);
-              } catch (e: any) {
-                alert(`Update New Data failed: ${e?.message || e}`);
+              let totalInserted = 0;
+              let totalSkipped = 0;
+              let totalFailed = 0;
+              const perStrategyDetail: string[] = [];
+              for (let i = 0; i < ids.length; i++) {
+                const t0 = performance.now();
+                try {
+                  const resp = await fetch(`${base}/api/strategies/append-recent-trades-bulk`, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ strategy_ids: [ids[i]] }),
+                  });
+                  const result = await resp.json();
+                  totalInserted += result.total_inserted || 0;
+                  totalSkipped += result.total_skipped || 0;
+                  totalFailed += result.total_failed || 0;
+                  const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+                  const r0 = (result.results && result.results[0]) || {};
+                  perStrategyDetail.push(`sid ${ids[i]}: ${r0.status || 'unknown'} (${r0.inserted || 0} new, ${elapsed}s)`);
+                } catch (e: any) {
+                  totalFailed++;
+                  perStrategyDetail.push(`sid ${ids[i]}: error (${e?.message || e})`);
+                }
+                setRefreshCount(i + 1);
               }
               setRefreshing(false);
+              alert(`Update New Data complete\n\n` +
+                    `Strategies: ${ids.length}\n` +
+                    `New trades inserted: ${totalInserted}\n` +
+                    `Skipped (no new exits): ${totalSkipped}\n` +
+                    `Failed: ${totalFailed}\n\n` +
+                    perStrategyDetail.join('\n'));
               window.location.reload();
             }}
           >
-            Update New Data
+            {refreshing ? `Updating ${refreshCount}/${refreshTotal}...` : 'Update New Data'}
           </button>
           <button
             style={{ ...btnSecondary, opacity: refreshing ? 0.6 : 1 }}
