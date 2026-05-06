@@ -62,6 +62,7 @@ const navItems: NavItem[] = [
       { href: '/strategies', label: 'My Strategies' },
       { href: '/mass-builder', label: 'Mass Builder' },
       { href: '/mass-results', label: 'Mass Results' },
+      { href: '/jobs', label: 'Jobs' },
     ],
   },
   {

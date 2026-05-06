@@ -1104,6 +1104,7 @@ export default function StrategiesPage() {
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
   const [resetAlertsConfirm, setResetAlertsConfirm] = useState(false);
   const [resettingAlerts, setResettingAlerts] = useState(false);
+  const [queueing, setQueueing] = useState(false);
 
   // Derived filter options
   const allTickers = useMemo(() => Array.from(new Set(strategies.map((s) => s.symbol))).sort(), [strategies]);
@@ -1302,82 +1303,68 @@ export default function StrategiesPage() {
             Update Portfolio
           </button>
           <button
-            style={{ ...btnSecondary, opacity: refreshing ? 0.6 : 1 }}
+            style={{ ...btnSecondary, opacity: queueing ? 0.6 : 1 }}
             className="text-sm"
-            disabled={refreshing || selectedIds.size === 0}
-            title="Append only NEW closed trades. Fast on previously-stamped strategies (~5s); slow on first-run since engine replays full forward-test history (~30s-5min for sub-minute strategies)."
+            disabled={queueing || selectedIds.size === 0}
+            title="Queue an append job in the background. Fast on stamped strategies; slow on cold-start. Returns immediately — view progress on /jobs."
             onClick={async () => {
-              if (refreshing || selectedIds.size === 0) return;
+              if (queueing || selectedIds.size === 0) return;
               const ids = Array.from(selectedIds).map(Number);
-              setRefreshing(true);
-              setRefreshCount(0);
-              setRefreshTotal(ids.length);
+              setQueueing(true);
               const token = localStorage.getItem('ror_access_token') || '';
               const base = process.env.NEXT_PUBLIC_API_URL || '';
-              let totalInserted = 0;
-              let totalSkipped = 0;
-              let totalFailed = 0;
-              const perStrategyDetail: string[] = [];
-              for (let i = 0; i < ids.length; i++) {
-                const t0 = performance.now();
-                try {
-                  const resp = await fetch(`${base}/api/strategies/append-recent-trades-bulk`, {
-                    method: 'POST',
-                    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ strategy_ids: [ids[i]] }),
-                  });
-                  const result = await resp.json();
-                  totalInserted += result.total_inserted || 0;
-                  totalSkipped += result.total_skipped || 0;
-                  totalFailed += result.total_failed || 0;
-                  const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
-                  const r0 = (result.results && result.results[0]) || {};
-                  perStrategyDetail.push(`sid ${ids[i]}: ${r0.status || 'unknown'} (${r0.inserted || 0} new, ${elapsed}s)`);
-                } catch (e: any) {
-                  totalFailed++;
-                  perStrategyDetail.push(`sid ${ids[i]}: error (${e?.message || e})`);
+              try {
+                const resp = await fetch(`${base}/api/jobs/recompute`, {
+                  method: 'POST',
+                  headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ strategy_ids: ids, job_type: 'append_recent' }),
+                });
+                const result = await resp.json();
+                if (resp.ok && result.job_id) {
+                  window.location.href = `/jobs?highlight=${result.job_id}`;
+                } else {
+                  alert(`Queue failed: ${result?.detail || 'unknown error'}`);
                 }
-                setRefreshCount(i + 1);
+              } catch (e: any) {
+                alert(`Queue failed: ${e?.message || e}`);
+              } finally {
+                setQueueing(false);
               }
-              setRefreshing(false);
-              alert(`Update New Data complete\n\n` +
-                    `Strategies: ${ids.length}\n` +
-                    `New trades inserted: ${totalInserted}\n` +
-                    `Skipped (no new exits): ${totalSkipped}\n` +
-                    `Failed: ${totalFailed}\n\n` +
-                    perStrategyDetail.join('\n'));
-              window.location.reload();
             }}
           >
-            {refreshing ? `Updating ${refreshCount}/${refreshTotal}...` : 'Update New Data'}
+            {queueing ? 'Queueing…' : 'Update New Data'}
           </button>
           <button
-            style={{ ...btnSecondary, opacity: refreshing ? 0.6 : 1 }}
+            style={{ ...btnSecondary, opacity: queueing ? 0.6 : 1 }}
             className="text-sm"
-            disabled={refreshing || selectedIds.size === 0}
-            title="Reruns the FULL backtest for each selected strategy. Slow — replaces all trades. Use after editing strategy config."
+            disabled={queueing || selectedIds.size === 0}
+            title="Queue a full-backtest job in the background. Reruns the entire backtest per strategy — slow but exhaustive. Returns immediately — view progress on /jobs."
             onClick={async () => {
-              if (refreshing || selectedIds.size === 0) return;
-              const ids = Array.from(selectedIds);
-              setRefreshing(true);
-              setRefreshCount(0);
-              setRefreshTotal(ids.length);
+              if (queueing || selectedIds.size === 0) return;
+              const ids = Array.from(selectedIds).map(Number);
+              setQueueing(true);
               const token = localStorage.getItem('ror_access_token') || '';
               const base = process.env.NEXT_PUBLIC_API_URL || '';
-              for (let i = 0; i < ids.length; i++) {
-                try {
-                  await fetch(`${base}/api/strategies/${ids[i]}/refresh`, {
-                    method: 'POST',
-                    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                  });
-                } catch (e) { /* skip failures */ }
-                setRefreshCount(i + 1);
+              try {
+                const resp = await fetch(`${base}/api/jobs/recompute`, {
+                  method: 'POST',
+                  headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ strategy_ids: ids, job_type: 'full_recompute' }),
+                });
+                const result = await resp.json();
+                if (resp.ok && result.job_id) {
+                  window.location.href = `/jobs?highlight=${result.job_id}`;
+                } else {
+                  alert(`Queue failed: ${result?.detail || 'unknown error'}`);
+                }
+              } catch (e: any) {
+                alert(`Queue failed: ${e?.message || e}`);
+              } finally {
+                setQueueing(false);
               }
-              setRefreshing(false);
-              window.location.reload();
             }}
           >
-            {refreshing ? `Refreshing ${refreshCount}/${refreshTotal}...` : 'Update All Data'}
+            {queueing ? 'Queueing…' : 'Update All Data'}
           </button>
           <button
             style={{ ...btnSecondary, opacity: refreshing ? 0.6 : 1 }}
