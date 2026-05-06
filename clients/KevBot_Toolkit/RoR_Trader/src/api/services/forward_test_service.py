@@ -204,6 +204,34 @@ def _do_recompute(
             'kpis_stale_since': None,
         })
 
+    # Phase-E preview (M8.7 — 2026-05-06): when strategy opted in via
+    # backtest_model='rest_hifi', auto-run Hi-Fi Pass 2 after the
+    # recompute so manual Refresh stays consistent with cron behavior.
+    # Without this, a Refresh would replace cron's Hi-Fi-refined L-type
+    # timestamps with bar-level approximations, breaking the live-vs-
+    # algo timestamp comparison the user actually cares about.
+    bt_model = (strat.get('config') or {}).get('backtest_model') \
+        if isinstance(strat.get('config'), dict) else None
+    if bt_model is None:
+        bt_model = strat.get('backtest_model')
+    hifi_summary = None
+    if bt_model == 'rest_hifi' and len(stored) > 0:
+        try:
+            from api.routers.strategies import run_hifi_pass2
+            hifi_summary = run_hifi_pass2(
+                strategy_id, user={'id': user_id})
+            logger.info(
+                "[FT-RECOMPUTE] strategy=%s Hi-Fi pass: refined "
+                "entries=%s exits=%s persisted=%s",
+                strategy_id,
+                hifi_summary.get('entries_refined', 0),
+                hifi_summary.get('exits_refined', 0),
+                hifi_summary.get('persisted', 0))
+        except Exception as e:
+            logger.warning(
+                "[FT-RECOMPUTE] strategy=%s Hi-Fi pass failed: %s",
+                strategy_id, e)
+
     # Parity is now a distinct user-triggered action — mirrors the
     # Run Hi-Fi button pattern. Refresh writes stored_trades + KPIs and
     # returns. The user clicks "Run Parity Test" separately when they
@@ -212,12 +240,19 @@ def _do_recompute(
     # but is no longer auto-triggered here. queue_parity_for_strategy()
     # is the entrypoint for the new button.
 
-    return {
+    result = {
         'status': 'refreshed',
         'trades': len(stored),
         'kpis': kpis,
         'refreshed_at': refreshed_at,
     }
+    if hifi_summary is not None:
+        result['hifi'] = {
+            'entries_refined': hifi_summary.get('entries_refined', 0),
+            'exits_refined': hifi_summary.get('exits_refined', 0),
+            'persisted': hifi_summary.get('persisted', 0),
+        }
+    return result
 
 
 def queue_parity_for_strategy(strategy_id: int, user_id: str) -> Dict[str, Any]:
@@ -696,6 +731,32 @@ def append_new_trades_for_strategy(
                     "[ALGO-APPEND] strategy=%s insert_trade failed: %s",
                     strategy_id, e)
 
+        # Auto-Hi-Fi when strategy opted in via backtest_model=rest_hifi.
+        # Refines L-type entry/exit timestamps from bar-level to per-second
+        # precision so algo history matches the live alert table at sub-
+        # second resolution. _hifi_resolve_trades is idempotent (skips
+        # rows already flagged hifi_resolved=True), so calling it on
+        # every cycle is cheap when there's nothing new to refine.
+        # Failure here NEVER blocks the cron — alert table is the source
+        # of truth for live; algo history is best-effort backtest mirror.
+        hifi_summary = None
+        if inserted > 0 and cfg.get('backtest_model') == 'rest_hifi':
+            try:
+                from api.routers.strategies import run_hifi_pass2
+                hifi_summary = run_hifi_pass2(
+                    strategy_id, user={'id': user_id})
+                logger.info(
+                    "[ALGO-APPEND] strategy=%s Hi-Fi pass: refined "
+                    "entries=%s exits=%s persisted=%s",
+                    strategy_id,
+                    hifi_summary.get('entries_refined', 0),
+                    hifi_summary.get('exits_refined', 0),
+                    hifi_summary.get('persisted', 0))
+            except Exception as e:
+                logger.warning(
+                    "[ALGO-APPEND] strategy=%s Hi-Fi pass failed: %s",
+                    strategy_id, e)
+
         # Update kpis + equity_curve from full engine output (most
         # accurate snapshot). Skip if no new trades AND not first run —
         # save the JSONB write.
@@ -762,13 +823,20 @@ def append_new_trades_for_strategy(
         _stamp_config(strategy_id, user_id, cfg)
 
         elapsed_s = round(_time.time() - t0, 2)
-        return {
+        result = {
             'status': 'appended' if inserted > 0 else 'no_new_trades',
             'inserted': inserted,
             'cutoff': cutoff_iso,
             'elapsed_s': elapsed_s,
             'kpis_updated': bool(do_full_update),
         }
+        if hifi_summary is not None:
+            result['hifi'] = {
+                'entries_refined': hifi_summary.get('entries_refined', 0),
+                'exits_refined': hifi_summary.get('exits_refined', 0),
+                'persisted': hifi_summary.get('persisted', 0),
+            }
+        return result
     finally:
         if _need_ctx_swap:
             clear_current_user()
