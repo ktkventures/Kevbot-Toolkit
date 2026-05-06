@@ -64,6 +64,7 @@ def create_app() -> FastAPI:
     from api.routers.execution_types import router as execution_types_router
     from api.routers.data_health import router as data_health_router
     from api.routers.strategy_models_admin import router as strategy_models_admin_router
+    from api.routers.recompute_jobs import router as recompute_jobs_router
 
     app.include_router(auth_router)
     app.include_router(settings_router)
@@ -83,6 +84,7 @@ def create_app() -> FastAPI:
     app.include_router(execution_types_router)
     app.include_router(data_health_router)
     app.include_router(strategy_models_admin_router)
+    app.include_router(recompute_jobs_router)
 
     # Load user packs at startup — registers indicators, interpreters,
     # triggers, and intra-bar level maps. DB group creation is skipped
