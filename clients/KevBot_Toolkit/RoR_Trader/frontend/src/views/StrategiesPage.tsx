@@ -1305,6 +1305,39 @@ export default function StrategiesPage() {
             style={{ ...btnSecondary, opacity: refreshing ? 0.6 : 1 }}
             className="text-sm"
             disabled={refreshing || selectedIds.size === 0}
+            title="Append only NEW closed trades (last ~16 min). Fast — no full backtest. Same as the cron does every 5 min."
+            onClick={async () => {
+              if (refreshing || selectedIds.size === 0) return;
+              const ids = Array.from(selectedIds).map(Number);
+              setRefreshing(true);
+              const token = localStorage.getItem('ror_access_token') || '';
+              const base = process.env.NEXT_PUBLIC_API_URL || '';
+              try {
+                const resp = await fetch(`${base}/api/strategies/append-recent-trades-bulk`, {
+                  method: 'POST',
+                  headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ strategy_ids: ids }),
+                });
+                const result = await resp.json();
+                alert(`Update New Data complete\n\n` +
+                      `Strategies: ${result.total_strategies}\n` +
+                      `New trades inserted: ${result.total_inserted}\n` +
+                      `Skipped (no new exits): ${result.total_skipped}\n` +
+                      `Failed: ${result.total_failed}`);
+              } catch (e: any) {
+                alert(`Update New Data failed: ${e?.message || e}`);
+              }
+              setRefreshing(false);
+              window.location.reload();
+            }}
+          >
+            Update New Data
+          </button>
+          <button
+            style={{ ...btnSecondary, opacity: refreshing ? 0.6 : 1 }}
+            className="text-sm"
+            disabled={refreshing || selectedIds.size === 0}
+            title="Reruns the FULL backtest for each selected strategy. Slow — replaces all trades. Use after editing strategy config."
             onClick={async () => {
               if (refreshing || selectedIds.size === 0) return;
               const ids = Array.from(selectedIds);
@@ -1326,7 +1359,7 @@ export default function StrategiesPage() {
               window.location.reload();
             }}
           >
-            {refreshing ? `Refreshing ${refreshCount}/${refreshTotal}...` : 'Update Data'}
+            {refreshing ? `Refreshing ${refreshCount}/${refreshTotal}...` : 'Update All Data'}
           </button>
           <button
             style={{ ...btnSecondary, opacity: refreshing ? 0.6 : 1 }}

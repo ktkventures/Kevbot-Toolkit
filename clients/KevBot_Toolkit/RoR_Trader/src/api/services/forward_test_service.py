@@ -693,9 +693,21 @@ def append_new_trades_for_strategy(
         recent_exits_count = -1  # gate disabled on error
 
     if recent_exits_count == 0:
-        # No new closed trades possible — stamp + skip
+        # No new closed trades possible — stamp + skip.
+        # Also bump data_refreshed_at on the strategies row so the
+        # "Updated X ago" UI tag reflects cron activity (visual proof
+        # the cron is alive even when no trades changed). This is a
+        # column update — does NOT touch config JSONB.
         cfg['last_recompute_until_ts'] = now_iso
         _stamp_config(strategy_id, user_id, cfg)
+        try:
+            update_strategy_admin(strategy_id, user_id, {
+                'data_refreshed_at': now_iso,
+            })
+        except Exception as e:
+            logger.warning(
+                "[ALGO-APPEND] strategy=%s data_refreshed_at bump failed: %s",
+                strategy_id, e)
         return {'status': 'skipped',
                 'reason': 'no_recent_exits',
                 'inserted': 0,

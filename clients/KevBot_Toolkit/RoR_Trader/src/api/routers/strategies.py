@@ -795,6 +795,89 @@ def run_hifi_pass2(strategy_id: int, user=Depends(get_current_user)):
     }
 
 
+@router.post("/append-recent-trades-bulk")
+def append_recent_trades_bulk(
+    body: dict = Body(...),
+    user=Depends(get_current_user),
+):
+    """Manual trigger for the algo-history append cron, scoped to the
+    given strategy IDs. Bypasses the recently_processed gate so a user
+    click always produces fresh output (vs the cron's 5-min throttle).
+
+    Each strategy: load only the recent window of bars, run engine,
+    set-diff INSERT new closed trades. ~30s per strategy worst case
+    (full engine replay), <100ms when alerts-gate determines no new
+    closed trades possible.
+
+    Body: {"strategy_ids": [int, ...]}.
+    Returns per-strategy summary + aggregate counts.
+    """
+    from db import get_admin_client
+    from api.services.forward_test_service import (
+        append_new_trades_for_strategy,
+    )
+
+    sids = body.get('strategy_ids') or []
+    if not isinstance(sids, list) or not sids:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide non-empty strategy_ids list")
+    try:
+        sids = [int(x) for x in sids]
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail="strategy_ids must be integers")
+
+    user_id = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="missing user_id")
+
+    # Bypass recently_processed gate by clearing last_recompute_until_ts
+    # before each call. Cron will re-stamp it. Safer than adding a
+    # bypass parameter (one source of truth for skip logic).
+    client = get_admin_client()
+    results: list = []
+    total_inserted = 0
+    total_failed = 0
+    total_skipped = 0
+    for sid in sids:
+        try:
+            # Clear last_recompute_until_ts so the recently_processed
+            # check falls through (alerts-gate still applies)
+            r0 = client.table('strategies').select('config') \
+                .eq('id', sid).eq('user_id', user_id).single().execute()
+            cfg = dict((r0.data or {}).get('config') or {})
+            cfg.pop('last_recompute_until_ts', None)
+            client.table('strategies').update({'config': cfg}) \
+                .eq('id', sid).eq('user_id', user_id).execute()
+
+            r = append_new_trades_for_strategy(sid, user_id)
+            results.append({
+                "strategy_id": sid,
+                "status": r.get("status"),
+                "inserted": r.get("inserted", 0),
+                "reason": r.get("reason"),
+            })
+            total_inserted += int(r.get('inserted') or 0)
+            if r.get('status') == 'skipped':
+                total_skipped += 1
+        except Exception as e:
+            total_failed += 1
+            results.append({
+                "strategy_id": sid,
+                "status": "error",
+                "detail": str(e),
+            })
+    return {
+        "results": results,
+        "total_strategies": len(sids),
+        "total_inserted": total_inserted,
+        "total_skipped": total_skipped,
+        "total_failed": total_failed,
+    }
+
+
 @router.post("/run-hifi-pass2-bulk")
 def run_hifi_pass2_bulk(
     body: dict = Body(...),
