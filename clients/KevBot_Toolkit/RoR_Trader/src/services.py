@@ -403,6 +403,114 @@ def split_trades_at_boundary(trades_df: pd.DataFrame, boundary_dt: datetime):
     return backtest, forward
 
 
+def get_strategy_trades_for_window(
+    strat: dict,
+    since_dt: datetime,
+    until_dt: datetime,
+    warmup_bars: int = 100,
+    data_feed: str = "sip",
+) -> pd.DataFrame:
+    """Run the unified engine over a small windowed slice of bars.
+
+    Mirrors get_strategy_trades return shape but loads only:
+      [since_dt - warmup_period, until_dt]
+    Where warmup_period scales with the strategy's primary timeframe so
+    indicators have enough history to converge before since_dt.
+
+    Returns trades with entry_time > since_dt only — caller doesn't need
+    to filter again. This is the FastAPI port of Streamlit's
+    `_generate_incremental_trades` (`src/app.py:682`); the only behavior
+    difference is signature shape (datetime in/out vs Streamlit's
+    pd.Timestamp).
+
+    Used by the cron + manual incremental-refresh paths to avoid
+    re-running the engine over the strategy's full forward-test history
+    on every cycle. For 1Min strategies this drops engine time from
+    ~30-60s (90 days) to ~3-5s (1-2 days).
+
+    LIMITATION: 100-bar warmup isn't enough for strategies whose
+    confluence references long-cycle secondary TFs (1Hour or larger).
+    Caller should detect those and either bump warmup_bars OR fall back
+    to get_strategy_trades. See `get_required_tfs_from_confluence` in
+    data_loader.
+    """
+    import math
+    from data_loader import (
+        BARS_PER_DAY, get_required_tfs_from_confluence, get_tf_from_label,
+    )
+
+    if 'entry_trigger_confluence_id' not in strat:
+        return pd.DataFrame()
+    if strat.get('strategy_origin') == 'webhook_inbound':
+        return trades_df_from_stored(strat.get('stored_trades', []))
+
+    timeframe = strat.get('timeframe', '1Min')
+    bpd = BARS_PER_DAY.get(timeframe, 390)
+    # Translate warmup-bars to calendar days. Use 365/252 multiplier to
+    # account for non-trading days inside the warmup window.
+    warmup_days = max(1, math.ceil(warmup_bars / max(bpd, 1) * 365 / 252))
+
+    # Strip tz for comparison if since_dt carries one — prepare_data_with_indicators
+    # accepts naive or aware; staying naive matches the Streamlit pattern.
+    since_naive = since_dt.replace(tzinfo=None) if since_dt.tzinfo else since_dt
+    start_date = since_naive - timedelta(days=warmup_days)
+    end_date = until_dt.replace(tzinfo=None) if until_dt.tzinfo else until_dt
+
+    req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+    sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
+
+    df = prepare_data_with_indicators(
+        strat['symbol'],
+        seed=strat.get('data_seed', 42),
+        start_date=start_date,
+        end_date=end_date,
+        timeframe=timeframe,
+        data_feed=data_feed,
+        session=strat.get('trading_session', 'RTH'),
+        secondary_tfs=sec_tfs,
+    )
+    if len(df) == 0:
+        return pd.DataFrame()
+
+    trades = unified_trades(df, strat)
+    if len(trades) == 0:
+        return pd.DataFrame()
+
+    # Filter to trades that started AFTER since_dt — anything earlier
+    # was already in the existing trades set the caller fed in.
+    since_ts = pd.Timestamp(since_dt)
+    if 'entry_time' in trades.columns:
+        if trades['entry_time'].dt.tz is not None and since_ts.tz is None:
+            since_ts = since_ts.tz_localize('UTC')
+        trades = trades[trades['entry_time'] > since_ts]
+
+    # Attach trading_days from windowed source bars (kpi denominator
+    # gotcha — see feedback_trading_days_kpi.md). Caller should NOT
+    # use this for full-period kpi recompute; only for the windowed
+    # slice. KPI recompute should select all trades from DB and
+    # compute trading_days separately.
+    trades.attrs['trading_days'] = count_trading_days(df)
+    return trades
+
+
+def _has_long_cycle_secondary_tf(strat: dict) -> bool:
+    """Return True if strategy uses 1Hour or larger secondary TF.
+
+    Used by callers of get_strategy_trades_for_window to decide whether
+    100-bar warmup is sufficient or they need the full-history path.
+    A 1Hour secondary TF needs ~250 bars × 1 hour = ~10 days of warmup;
+    the windowed helper's default 100 bars at 1Min would only give
+    ~100 minutes, leaving the secondary indicators in undefined state.
+    """
+    from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+    req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+    for lbl in req_labels:
+        tf_seconds = get_tf_from_label(lbl)
+        if tf_seconds and tf_seconds >= 3600:  # 1 hour or larger
+            return True
+    return False
+
+
 def get_strategy_trades(strat: dict, data_feed: str = "sip") -> pd.DataFrame:
     """Get trades for any modern strategy (backtest-only or forward-testing).
 

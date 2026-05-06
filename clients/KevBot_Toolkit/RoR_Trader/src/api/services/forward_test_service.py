@@ -723,12 +723,41 @@ def append_new_trades_for_strategy(
 
     t0 = _time.time()
     try:
+        # Phase 1 (M8.7 — 2026-05-06): use the windowed engine helper
+        # when existing trades give us a `since_dt` cutoff. Drops engine
+        # cost from ~30-40s (full forward-test history) to ~3-5s
+        # (1-2 day window). Falls back to full backtest only on cold
+        # start (no existing trades to derive `since` from).
+        #
+        # Long-cycle secondary TFs (1Hour+) need more warmup than the
+        # 100-bar default — fall back to full path for those.
+        from trades_store import load_trades_for_strategy as _load_trades
+        existing_trades_for_window = _load_trades(strategy_id, user_id) or []
+        use_windowed = (
+            len(existing_trades_for_window) > 0
+            and not svc._has_long_cycle_secondary_tf(strat)
+        )
+        engine_path = 'windowed' if use_windowed else 'full'
+
         try:
-            all_trades_df = svc.get_strategy_trades(strat)
+            if use_windowed:
+                # Derive since_dt from the latest existing trade's
+                # entry_fill_ts (mirrors Streamlit's pattern at
+                # app.py:3173).
+                latest_entry_iso = max(
+                    str(t.get('entry_fill_ts'))
+                    for t in existing_trades_for_window
+                    if t.get('entry_fill_ts')
+                )
+                since_dt = datetime.fromisoformat(latest_entry_iso)
+                all_trades_df = svc.get_strategy_trades_for_window(
+                    strat, since_dt=since_dt, until_dt=now_dt)
+            else:
+                all_trades_df = svc.get_strategy_trades(strat)
         except Exception as e:
             logger.warning(
-                "[ALGO-APPEND] strategy=%s engine run failed: %s",
-                strategy_id, e)
+                "[ALGO-APPEND] strategy=%s engine run (%s) failed: %s",
+                strategy_id, engine_path, e)
             return {'status': 'error', 'reason': f'engine: {e}',
                     'inserted': 0}
 
@@ -738,7 +767,7 @@ def append_new_trades_for_strategy(
             cfg['last_recompute_until_ts'] = now_iso
             _stamp_config(strategy_id, user_id, cfg)
             return {'status': 'no_new_trades', 'inserted': 0,
-                    'cutoff': cutoff_iso,
+                    'cutoff': cutoff_iso, 'engine_path': engine_path,
                     'elapsed_s': round(_time.time() - t0, 2)}
 
         # Filter: only commit closed trades whose exit_fill_ts is past
@@ -835,19 +864,70 @@ def append_new_trades_for_strategy(
                     "[ALGO-APPEND] strategy=%s Hi-Fi pass failed: %s",
                     strategy_id, e)
 
-        # Update kpis + equity_curve from full engine output (most
-        # accurate snapshot). Skip if no new trades AND not first run —
-        # save the JSONB write.
+        # Update kpis + equity_curve. KPI source-of-truth differs by
+        # engine_path:
+        #   - 'full' (cold-start): all_trades_df IS the full backtest,
+        #     use it directly.
+        #   - 'windowed' (incremental): all_trades_df only contains the
+        #     small windowed slice. Load full trades from DB (now
+        #     including the inserted ones) and compute kpis from the
+        #     merged set. Otherwise kpis would reflect only recent
+        #     trades.
         do_full_update = (inserted > 0) or is_first_run
         update_payload: Dict[str, Any] = {}
 
         if do_full_update:
-            trading_days = all_trades_df.attrs.get('trading_days') \
-                if hasattr(all_trades_df, 'attrs') else None
-            if not trading_days or trading_days < 1:
-                trading_days = 1
             try:
-                kpis = svc.calculate_kpis(all_trades_df,
+                if engine_path == 'windowed':
+                    # Re-load all trades from DB for the strategy, build
+                    # a kpi-ready DataFrame from them.
+                    all_db_trades = load_trades_for_strategy(
+                        strategy_id, user_id) or []
+                    full_trades_df = svc.trades_df_from_stored(all_db_trades)
+                    # Trading days for KPI denominator: derive from the
+                    # FULL trades period (entry_time min → exit_time max),
+                    # not the windowed source bars. Fallback to 1 if
+                    # trades_df is empty / has no entry_time.
+                    if (len(full_trades_df) > 0 and
+                            'entry_time' in full_trades_df.columns):
+                        first_entry = full_trades_df['entry_time'].min()
+                        last_exit = full_trades_df.get(
+                            'exit_time', full_trades_df['entry_time']).max()
+                        if pd.notna(first_entry) and pd.notna(last_exit):
+                            # Use trading-day count between min entry and
+                            # max exit. svc.count_trading_days expects a
+                            # DataFrame with DatetimeIndex; build a quick
+                            # one for the date range.
+                            try:
+                                date_range = pd.date_range(
+                                    first_entry.normalize(),
+                                    last_exit.normalize(),
+                                    freq='B')
+                                trading_days = max(1, len(date_range))
+                            except Exception:
+                                trading_days = 1
+                        else:
+                            trading_days = 1
+                    else:
+                        trading_days = 1
+                    kpis_df = full_trades_df
+                else:
+                    # Full-engine path: use all_trades_df as-is
+                    trading_days = all_trades_df.attrs.get('trading_days') \
+                        if hasattr(all_trades_df, 'attrs') else None
+                    if not trading_days or trading_days < 1:
+                        trading_days = 1
+                    kpis_df = all_trades_df
+            except Exception as e:
+                logger.warning(
+                    "[ALGO-APPEND] strategy=%s kpi-source build failed: %s — "
+                    "falling back to engine output",
+                    strategy_id, e)
+                kpis_df = all_trades_df
+                trading_days = 1
+
+            try:
+                kpis = svc.calculate_kpis(kpis_df,
                                           total_trading_days=trading_days)
             except Exception as e:
                 logger.warning(
@@ -857,13 +937,13 @@ def append_new_trades_for_strategy(
 
             try:
                 from api.services.backtest_service import _build_equity_curve
-                eq_data = _build_equity_curve(all_trades_df)
+                eq_data = _build_equity_curve(kpis_df)
                 boundary_index = None
                 if strat.get('forward_test_start'):
                     fwd_start = datetime.fromisoformat(
                         strat['forward_test_start'])
                     bt_portion, _ = svc.split_trades_at_boundary(
-                        all_trades_df, fwd_start)
+                        kpis_df, fwd_start)
                     boundary_index = (len(bt_portion)
                                       if len(bt_portion) > 0 else None)
                 equity_curve_data = {
@@ -907,6 +987,7 @@ def append_new_trades_for_strategy(
             'cutoff': cutoff_iso,
             'elapsed_s': elapsed_s,
             'kpis_updated': bool(do_full_update),
+            'engine_path': engine_path,
         }
         if hifi_summary is not None:
             result['hifi'] = {
