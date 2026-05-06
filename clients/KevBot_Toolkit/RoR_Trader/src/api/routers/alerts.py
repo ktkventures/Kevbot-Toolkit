@@ -54,6 +54,67 @@ def clear_alerts(user=Depends(get_current_user)):
     return {"status": "cleared"}
 
 
+@router.post("/clear-by-strategies")
+def clear_alerts_by_strategies(
+    payload: dict = Body(...),
+    user=Depends(get_current_user),
+):
+    """Delete alerts for the given list of strategy IDs.
+
+    Body: {"strategy_ids": [int, int, ...]}.
+    User-scoped via the alerts.user_id RLS predicate; admin client is
+    used for the delete itself so RLS doesn't silently drop it. Caller
+    is responsible for selecting only their own strategies — backend
+    additionally filters strategy_ids belonging to the current user
+    before issuing the delete.
+    """
+    sids = payload.get("strategy_ids") or []
+    if not isinstance(sids, list) or not sids:
+        raise HTTPException(status_code=400,
+                            detail="strategy_ids must be a non-empty list")
+    try:
+        sids = [int(x) for x in sids]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400,
+                            detail="strategy_ids must be integers")
+
+    from db import get_admin_client
+    client = get_admin_client()
+    user_id = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="missing user_id")
+
+    # Restrict to strategies owned by this user — defense in depth
+    owned = client.table("strategies").select("id") \
+        .in_("id", sids).eq("user_id", user_id).execute()
+    owned_ids = [row["id"] for row in (owned.data or [])]
+    if not owned_ids:
+        return {"status": "noop", "deleted": 0,
+                "requested": len(sids), "owned": 0}
+
+    # Delete in chunks for safety on huge selections
+    deleted = 0
+    BATCH = 500
+    for i in range(0, len(owned_ids), BATCH):
+        chunk = owned_ids[i:i + BATCH]
+        # Page through alert ids for this chunk
+        while True:
+            r = client.table("alerts").select("id") \
+                .in_("strategy_id", chunk).limit(1000).execute()
+            ids = [row["id"] for row in (r.data or [])]
+            if not ids:
+                break
+            client.table("alerts").delete().in_("id", ids).execute()
+            deleted += len(ids)
+
+    return {
+        "status": "cleared",
+        "deleted": deleted,
+        "requested": len(sids),
+        "owned": len(owned_ids),
+    }
+
+
 # =============================================================================
 # ALERT CONFIG
 # =============================================================================

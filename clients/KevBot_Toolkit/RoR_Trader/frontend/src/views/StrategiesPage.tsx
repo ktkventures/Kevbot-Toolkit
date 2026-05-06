@@ -1102,6 +1102,8 @@ export default function StrategiesPage() {
   // Delete confirmation
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
+  const [resetAlertsConfirm, setResetAlertsConfirm] = useState(false);
+  const [resettingAlerts, setResettingAlerts] = useState(false);
 
   // Derived filter options
   const allTickers = useMemo(() => Array.from(new Set(strategies.map((s) => s.symbol))).sort(), [strategies]);
@@ -1232,7 +1234,6 @@ export default function StrategiesPage() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">My Strategies</h1>
         <div className="flex gap-3">
-          <button style={btnSecondary}>Reset All Alerts</button>
           <button
             style={{ ...btnSecondary, opacity: refreshing ? 0.6 : 1 }}
             disabled={refreshing}
@@ -1284,6 +1285,15 @@ export default function StrategiesPage() {
             onClick={() => setBulkDeleteConfirm(true)}
           >
             Delete Selected
+          </button>
+          <button
+            className="text-sm px-3 py-1 rounded"
+            style={{ background: 'var(--orange-muted)', color: 'var(--orange)', border: 'none', cursor: 'pointer', opacity: resettingAlerts ? 0.6 : 1 }}
+            disabled={resettingAlerts || selectedIds.size === 0}
+            onClick={() => setResetAlertsConfirm(true)}
+            title="Delete alert history for the selected strategies. Algo history (trades table) is unaffected."
+          >
+            {resettingAlerts ? 'Resetting…' : 'Reset Alerts'}
           </button>
           <button style={btnPrimary} className="text-sm">
             Create Portfolio
@@ -1486,6 +1496,60 @@ export default function StrategiesPage() {
             onClick={() => { bulkDeleteMut.mutate(Array.from(selectedIds).map(Number)); setBulkDeleteConfirm(false); clearSelection(); }}
           >
             Yes, Delete All
+          </button>
+        </div>
+      </Modal>
+
+      {/* ---- Bulk reset-alerts confirmation modal ---- */}
+      <Modal
+        title="Reset Alerts for Selected Strategies"
+        isOpen={resetAlertsConfirm}
+        onClose={() => setResetAlertsConfirm(false)}
+        width="480px"
+      >
+        <p className="text-sm mb-4" style={{ color: 'var(--text-secondary)' }}>
+          Delete alert history for {selectedIds.size} strategies? This
+          clears the alert feed but does not affect algo history (trades
+          table) or strategy configuration.
+        </p>
+        <p className="text-sm mb-6" style={{ color: 'var(--text-muted)' }}>
+          {strategies
+            .filter((s) => selectedIds.has(s.id))
+            .map((s) => s.name)
+            .join(', ')}
+        </p>
+        <div className="flex gap-3 justify-end">
+          <button style={btnSecondary} onClick={() => setResetAlertsConfirm(false)}>Cancel</button>
+          <button
+            style={{ ...btnPrimary, background: 'var(--orange)' }}
+            disabled={resettingAlerts}
+            onClick={async () => {
+              setResettingAlerts(true);
+              setResetAlertsConfirm(false);
+              const ids = Array.from(selectedIds).map(Number);
+              const token = localStorage.getItem('ror_access_token') || '';
+              const base = process.env.NEXT_PUBLIC_API_URL || '';
+              try {
+                const resp = await fetch(`${base}/api/alerts/clear-by-strategies`, {
+                  method: 'POST',
+                  headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({ strategy_ids: ids }),
+                });
+                const result = await resp.json();
+                alert(`Reset complete\n\nStrategies: ${result.owned ?? ids.length}\nAlerts deleted: ${result.deleted ?? 0}`);
+              } catch (e: any) {
+                alert(`Reset failed: ${e?.message || e}`);
+              } finally {
+                setResettingAlerts(false);
+                clearSelection();
+                window.location.reload();
+              }
+            }}
+          >
+            Yes, Reset Alerts
           </button>
         </div>
       </Modal>
