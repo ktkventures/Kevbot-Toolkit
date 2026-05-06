@@ -197,7 +197,12 @@ function apiToStrategy(s: any): Strategy {
     sigmaFwd: s.sigma_fwd ?? 0,
     sigmaAlert: s.sigma_alert ?? 0,
     equityCurveData: s.equity_curve_data || undefined,
-    updatedAt: s.updated_at || s.created_at || '',
+    // "Updated X ago" semantically means "when did the strategy's data
+    // last refresh" — prefer data_refreshed_at (bumped by every cron
+    // cycle + Update button + manual Refresh) over the Postgres
+    // updated_at column (only bumps on schema-style changes; doesn't
+    // fire from the recompute paths).
+    updatedAt: s.data_refreshed_at || s.updated_at || s.created_at || '',
     // Attached server-side by the list endpoint (count of portfolios whose
     // `strategies` array contains this strategy's id).
     portfolioCount: s.portfolio_count ?? 0,

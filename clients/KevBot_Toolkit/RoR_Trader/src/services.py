@@ -503,10 +503,14 @@ def _has_long_cycle_secondary_tf(strat: dict) -> bool:
     ~100 minutes, leaving the secondary indicators in undefined state.
     """
     from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+    # `get_tf_from_label` returns a CANONICAL TIMEFRAME LABEL string
+    # (e.g. "15Min", "1Hour", "1Day") — not seconds. Map these to a
+    # rough "long-cycle" set rather than parsing.
+    LONG_CYCLE = {'1Hour', '2Hour', '4Hour', '1Day', '1Week', '1Month'}
     req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
     for lbl in req_labels:
-        tf_seconds = get_tf_from_label(lbl)
-        if tf_seconds and tf_seconds >= 3600:  # 1 hour or larger
+        tf_label = get_tf_from_label(lbl)
+        if tf_label in LONG_CYCLE:
             return True
     return False
 
