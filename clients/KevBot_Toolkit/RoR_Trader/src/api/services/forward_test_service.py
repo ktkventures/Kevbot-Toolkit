@@ -204,6 +204,27 @@ def _do_recompute(
             'kpis_stale_since': None,
         })
 
+        # Also stamp last_recompute_until_ts on the config so the cron's
+        # "recently_processed" skip logic recognizes that this strategy
+        # was just refreshed and doesn't redundantly re-process on the
+        # next 5-min tick. Caller-side full-merge for partial JSONB
+        # safety (feedback_jsonb_partial_updates.md).
+        try:
+            from db import get_admin_client
+            _client = get_admin_client()
+            _cur = _client.table('strategies').select('config') \
+                .eq('id', strategy_id).eq('user_id', user_id) \
+                .single().execute()
+            _cfg = dict((_cur.data or {}).get('config') or {})
+            if _cfg or len(_cfg) == 0:
+                _cfg['last_recompute_until_ts'] = refreshed_at
+                _client.table('strategies').update({'config': _cfg}) \
+                    .eq('id', strategy_id).eq('user_id', user_id).execute()
+        except Exception as e:
+            logger.warning(
+                "[FT-RECOMPUTE] strategy=%s last_recompute stamp failed: %s",
+                strategy_id, e)
+
     # Phase-E preview (M8.7 — 2026-05-06): when strategy opted in via
     # backtest_model='rest_hifi', auto-run Hi-Fi Pass 2 after the
     # recompute so manual Refresh stays consistent with cron behavior.
