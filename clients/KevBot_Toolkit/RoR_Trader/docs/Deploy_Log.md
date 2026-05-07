@@ -19,6 +19,23 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-05-07
+
+- **19:47 UTC (13:47 MT)** — `1dbf334` + `57ec22a` + `2245cc7` M8.7 cron stats panel + pack manifest cleanup + EOD docs
+  - Service(s) redeployed: Worker (new DB writes), api (new endpoint + DB helpers), frontend (Jobs page CronStatsPanel)
+  - Observed cache gap: TBD — pushed at 19:47 UTC
+  - Notes: Three commits in one push. (1) `2245cc7` adds `trigger_levels_phase2` markers to 7 cross-style packs (cleanup; no engine path change). (2) `57ec22a` is the cron-cycle stats panel — Worker now writes one row per user per cycle to `algo_history_cron_cycles` (best-effort, swallows failures), prunes to last 200 rows every 10th cycle. New API endpoint `GET /api/jobs/cron-stats/algo-history`. Frontend: CronStatsPanel above Jobs list with Fresh/Normal/Stale buckets, last-5-cycle insertion totals, Starvation flag when oldest stamp >3x cycle interval. Migration `algo_history_cron_cycles.sql` already applied on Supabase by Kevin. (3) `1dbf334` is docs/EOD writeup + Roadmap milestones.
+
+- **18:01 UTC (12:01 MT)** — `508cb89` M8.7 AI pack-creation guardrail: trigger_levels enforcement
+  - Service(s) redeployed: api (pack_spec/pack_registry/pack_builder updates)
+  - Observed cache gap: none expected (additive validation)
+  - Notes: Three-layer guard — `pack_spec.audit_trigger_levels()` regex, install-time warnings via `pack_registry.scan_and_load_all`, AI builder treats audit warnings as errors in `validate_parsed_response`. New manifest schema field `trigger_levels_phase2` for intentional non-static markers.
+
+- **17:51 UTC (11:51 MT)** — `169df09` M8.7 Hi-Fi Phase 1: signal-exit refinement via user-pack trigger_levels
+  - Service(s) redeployed: api (Hi-Fi Pass 2 endpoints)
+  - Observed cache gap: none expected (refinement is endpoint-driven, not cron-fired automatically yet)
+  - Notes: New `_walk_1s_for_level_cross` walker + `pack_registry.get_trigger_level_spec()` resolver + `bar_df` plumbed into `_hifi_resolve_trades`. Covers `eppv3`/`eppv4`/`utv4` packs (declare static-level cross semantics). Phase 2 (indicator-vs-indicator / value-vs-threshold / dynamic) deferred — design seed includes new exec_type X discussion.
+
 ## 2026-05-04
 
 ## 2026-05-05
