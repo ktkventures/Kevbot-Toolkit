@@ -115,6 +115,64 @@ def clear_prepare_cache():
 # DATA PREPARATION
 # =============================================================================
 
+def _resolve_primary_df_for_backtest_model(
+    strat: dict,
+    start_date,
+    end_date,
+    timeframe: str,
+    secondary_tfs: tuple,
+):
+    """Phase E preview (2026-05-06): route cache-backed backtest models.
+
+    When the strategy's `config.backtest_model` is `cache_locked` or
+    `cache_corrected`, return (primary_df, secondary_tf_dfs) populated
+    from `live_bars` cache. Otherwise return (None, None) so the caller
+    falls back to the REST-default path in prepare_data_with_indicators.
+
+    Modular dispatch — adds new backtest models by extending this table:
+      - 'rest_only', 'rest_hifi', None: REST default (return None, None)
+      - 'cache_locked':  fetch from cache, sources=['ws', 'ws_agg']
+                         (decision-time view of what live engine saw)
+      - 'cache_corrected' (Phase D): fetch from cache, sources=None
+                          (includes rest_backfill rows)
+
+    Caller is responsible for handling empty cache gracefully — typical
+    pattern is to fall through to REST when cache returns empty DF.
+    """
+    bt_model = (strat.get('config') or {}).get('backtest_model') \
+        if isinstance(strat.get('config'), dict) else None
+    if not bt_model:
+        bt_model = strat.get('backtest_model')
+    if bt_model not in ('cache_locked', 'cache_corrected'):
+        return None, None
+
+    sources = (['ws', 'ws_agg']
+               if bt_model == 'cache_locked' else None)
+
+    from data_loader import fetch_cache_as_df, TF_TO_SECONDS
+    tf_seconds = TF_TO_SECONDS.get(timeframe)
+    if tf_seconds is None:
+        # Unknown timeframe — bail to REST default
+        return None, None
+    if start_date is None or end_date is None:
+        return None, None
+
+    primary_df = fetch_cache_as_df(
+        strat['symbol'], tf_seconds, start_date, end_date,
+        sources=sources)
+    sec_dfs: dict = {}
+    for sec_tf in secondary_tfs:
+        sec_seconds = TF_TO_SECONDS.get(sec_tf)
+        if sec_seconds is None:
+            continue
+        sec_df = fetch_cache_as_df(
+            strat['symbol'], sec_seconds, start_date, end_date,
+            sources=sources)
+        if len(sec_df) > 0:
+            sec_dfs[sec_tf] = sec_df
+    return primary_df, sec_dfs
+
+
 def prepare_data_with_indicators(
     symbol: str, days: int = 30, seed: int = 42,
     start_date=None, end_date=None,
@@ -122,6 +180,7 @@ def prepare_data_with_indicators(
     session: str = "RTH", secondary_tfs: tuple = (),
     primary_df: Optional[pd.DataFrame] = None,
     secondary_tf_dfs: Optional[Dict[str, pd.DataFrame]] = None,
+    strat: Optional[dict] = None,
 ) -> pd.DataFrame:
     """Load market data and run all indicators, interpreters, and trigger detection.
 
@@ -154,6 +213,29 @@ def prepare_data_with_indicators(
     Returns DataFrame ready for trade generation and analysis.
     """
     from data_loader import resample_to_timeframe, get_tf_label
+
+    # Phase E preview (2026-05-06): if caller passed `strat` and the
+    # strategy's backtest_model is cache-backed, resolve primary_df +
+    # secondary_tf_dfs from live_bars cache. Bypasses REST entirely.
+    # Honors `primary_df`/`secondary_tf_dfs` when explicitly passed by
+    # caller (chart-data-cache endpoint already resolves itself).
+    if primary_df is None and strat is not None:
+        try:
+            cache_primary, cache_secondary = \
+                _resolve_primary_df_for_backtest_model(
+                    strat, start_date, end_date, timeframe, secondary_tfs)
+            if cache_primary is not None and len(cache_primary) > 0:
+                primary_df = cache_primary
+                if secondary_tf_dfs is None and cache_secondary:
+                    secondary_tf_dfs = cache_secondary
+        except Exception as e:
+            # Cache lookup failure should NEVER block engine — fall
+            # through to REST default.
+            import logging as _l
+            _l.getLogger(__name__).warning(
+                "cache-backed backtest_model resolve failed for sid=%s: %s "
+                "— falling through to REST",
+                strat.get('id', '?'), e)
 
     use_injected = primary_df is not None
 
@@ -475,6 +557,7 @@ def get_strategy_trades_for_window(
         data_feed=data_feed,
         session=strat.get('trading_session', 'RTH'),
         secondary_tfs=sec_tfs,
+        strat=strat,  # Phase E preview: enables cache_locked dispatch
     )
     if len(df) == 0:
         return pd.DataFrame()
@@ -568,7 +651,8 @@ def get_strategy_trades(strat: dict, data_feed: str = "sip") -> pd.DataFrame:
             timeframe=strat.get('timeframe', '1Min'),
             data_feed=data_feed,
             session=strat.get('trading_session', 'RTH'),
-            secondary_tfs=sec_tfs)
+            secondary_tfs=sec_tfs,
+            strat=strat)  # Phase E preview: enables cache_locked dispatch
         if len(df) == 0:
             return pd.DataFrame()
         trades = unified_trades(df, strat)
@@ -615,6 +699,7 @@ def prepare_forward_test_data(
         timeframe=strat_timeframe, data_feed=data_feed,
         session=strat.get('trading_session', 'RTH'),
         secondary_tfs=sec_tfs,
+        strat=strat,  # Phase E preview: enables cache_locked dispatch
     )
 
     if len(df) == 0:

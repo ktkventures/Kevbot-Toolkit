@@ -836,6 +836,109 @@ CRYPTO_BARS_PER_DAY = {
 }
 
 
+# Map timeframe-string → seconds. Mirrors the table in strategies.py
+# (kept in sync) but lives here so cache-backed callers can resolve
+# without importing from api/routers.
+TF_TO_SECONDS = {
+    "5Sec": 5, "10Sec": 10, "15Sec": 15, "30Sec": 30,
+    "1Min": 60, "2Min": 120, "3Min": 180, "5Min": 300,
+    "10Min": 600, "15Min": 900, "30Min": 1800,
+    "1Hour": 3600, "2Hour": 7200, "4Hour": 14400,
+    "1Day": 86400, "1Week": 604800,
+}
+
+
+def fetch_cache_as_df(
+    symbol: str,
+    tf_seconds: int,
+    start_dt,
+    end_dt,
+    value_type: str = 'latest',
+    sources: list = None,
+):
+    """Pull `live_bars` rows for (symbol, tf_seconds, time range) and return
+    a DataFrame with UTC DatetimeIndex and OHLCV columns.
+
+    M8.7 (2026-05-02): used by chart-data-cache endpoint (Lab tab) to
+    inject WS-aggregated bars into the indicator pipeline. Picks
+    `first_*` columns when value_type='first' (decision-time view);
+    falls back to `*` cols if first_* is NULL (pre-migration rows).
+
+    M8.7 (2026-05-06, Phase E preview): added `sources` parameter for
+    `cache_locked` backtest model dispatch. When `sources` is a list
+    (e.g. ['ws', 'ws_agg']), filters rows to those sources only —
+    excludes `rest_backfill` rows so the result reflects what the
+    LIVE engine actually saw. Default None = all sources (used by
+    `cache_corrected` once Phase D ships, and the Lab tab via the
+    explicit ['ws', 'ws_agg'] filter).
+
+    Returns empty DataFrame if no rows in window.
+    """
+    import pandas as _pd
+    from db import get_admin_client
+
+    c = get_admin_client()
+    cols = ("bar_start,open,high,low,close,volume,"
+            "first_open,first_high,first_low,first_close,first_volume,source")
+    rows = []
+    page_size = 1000
+    offset = 0
+    while True:
+        try:
+            q = c.table('live_bars').select(cols) \
+                .eq('symbol', symbol) \
+                .eq('timeframe_seconds', tf_seconds) \
+                .gte('bar_start', start_dt.isoformat()) \
+                .lte('bar_start', end_dt.isoformat())
+            if sources:
+                q = q.in_('source', list(sources))
+            r = q.order('bar_start') \
+                 .range(offset, offset + page_size - 1) \
+                 .execute()
+        except Exception as e:
+            logger.warning("fetch_cache_as_df: fetch failed offset=%d: %s",
+                           offset, e)
+            break
+        batch = r.data or []
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+
+    if not rows:
+        return _pd.DataFrame(
+            columns=['open', 'high', 'low', 'close', 'volume'])
+
+    use_first = value_type == 'first'
+    out_rows = []
+    timestamps = []
+    for row in rows:
+        if use_first and row.get('first_close') is not None:
+            o = row.get('first_open')
+            h = row.get('first_high')
+            l = row.get('first_low')
+            cl = row.get('first_close')
+            v = row.get('first_volume')
+        else:
+            o = row.get('open')
+            h = row.get('high')
+            l = row.get('low')
+            cl = row.get('close')
+            v = row.get('volume')
+        timestamps.append(_pd.Timestamp(row['bar_start']))
+        out_rows.append({
+            'open': float(o or 0), 'high': float(h or 0),
+            'low': float(l or 0), 'close': float(cl or 0),
+            'volume': float(v or 0),
+        })
+
+    df = _pd.DataFrame(out_rows, index=_pd.DatetimeIndex(
+        timestamps, name='timestamp'))
+    if df.index.tz is None:
+        df.index = df.index.tz_localize('UTC')
+    return df
+
+
 def _bars_per_day(timeframe: str, session: str = "RTH", asset_type: str = "equity") -> float:
     """Return approximate trading bars per day for a timeframe and session."""
     if asset_type == "crypto":

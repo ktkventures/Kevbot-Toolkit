@@ -58,17 +58,19 @@ BACKTEST_MODELS = {
     },
     'cache_locked': {
         'label': 'Cache (locked at close)',
-        'available': False,  # flipped True when Phase E ships
+        'available': True,  # Phase E preview shipped 2026-05-06
         'default': False,
         'description': (
-            'Read 1Min bars from live_bars cache (source IN '
-            '("ws", "ws_agg")). Decision-time view of what the live '
-            'engine actually saw — no late-print corrections rolled '
-            'in. Best parity with what live alerts fired on. '
-            'Limited to dates after the cache started recording '
-            '(2026-04-30 onwards) and to symbols with active live '
-            'tracking. Coming soon — needs Phase E (backtest '
-            'dispatch wiring).'
+            'Read primary + secondary TF bars from live_bars cache '
+            '(source IN ("ws", "ws_agg")). Decision-time view of what '
+            'the live engine actually saw — no late-print corrections '
+            'rolled in. Best parity with what live alerts fired on, '
+            'including L-type sub-second exit timestamps. Limited to '
+            'dates after the cache started recording (2026-04-30 '
+            'onwards) and to symbols with active live tracking. '
+            'Cache volume runs ~5% under REST due to structural '
+            'late-print effect; RVOL-based confluence may evaluate '
+            'slightly differently than rest_only.'
         ),
     },
     'cache_corrected': {

@@ -1869,10 +1869,15 @@ def get_strategy_chart_data_from_cache(
 
         set_admin_user_context(user.get('id') or strat.get('user_id'))
 
-        # Fetch primary cache as DataFrame
+        # Fetch primary cache as DataFrame.
+        # Lab tab "Alert Lens" semantics: ONLY ws + ws_agg sources —
+        # exclude rest_backfill rows (Phase D, future) so this view
+        # reflects what the LIVE engine actually saw, not what the
+        # cache was retroactively patched with.
         _t = _time.time()
         primary_df = fetch_cache_as_df(
-            symbol, primary_tf_seconds, start_dt, end_dt, value_type)
+            symbol, primary_tf_seconds, start_dt, end_dt, value_type,
+            sources=['ws', 'ws_agg'])
         _phases["fetch_primary"] = _time.time() - _t
 
         if len(primary_df) == 0:
@@ -1893,7 +1898,8 @@ def get_strategy_chart_data_from_cache(
             if sec_tf_seconds is None:
                 continue
             sec_df = fetch_cache_as_df(
-                symbol, sec_tf_seconds, start_dt, end_dt, value_type)
+                symbol, sec_tf_seconds, start_dt, end_dt, value_type,
+                sources=['ws', 'ws_agg'])
             if len(sec_df) > 0:
                 sec_tf_dfs[sec_tf] = sec_df
         _phases["fetch_secondary"] = _time.time() - _t
@@ -1943,84 +1949,11 @@ def get_strategy_chart_data_from_cache(
             detail=f"Chart data (cache) computation failed: {str(e)[:200]}")
 
 
-def fetch_cache_as_df(
-    symbol: str,
-    tf_seconds: int,
-    start_dt,
-    end_dt,
-    value_type: str = 'latest',
-):
-    """Pull `live_bars` rows for (symbol, tf_seconds, time range) and return
-    a DataFrame with UTC DatetimeIndex and OHLCV columns.
-
-    M8.7 (2026-05-02): used by chart-data-cache endpoint to inject WS-
-    aggregated bars into the indicator pipeline. Picks `first_*` columns
-    when value_type='first' (decision-time view); falls back to `*` cols
-    if first_* is NULL (pre-migration rows).
-
-    Returns empty DataFrame if no rows in window.
-    """
-    import pandas as _pd
-    from db import get_admin_client, set_admin_user_context as _ctx
-
-    c = get_admin_client()
-    cols = ("bar_start,open,high,low,close,volume,"
-            "first_open,first_high,first_low,first_close,first_volume,source")
-    rows = []
-    page_size = 1000
-    offset = 0
-    while True:
-        try:
-            r = c.table('live_bars').select(cols) \
-                .eq('symbol', symbol) \
-                .eq('timeframe_seconds', tf_seconds) \
-                .gte('bar_start', start_dt.isoformat()) \
-                .lte('bar_start', end_dt.isoformat()) \
-                .order('bar_start') \
-                .range(offset, offset + page_size - 1) \
-                .execute()
-        except Exception as e:
-            logger.warning("fetch_cache_as_df: fetch failed offset=%d: %s",
-                           offset, e)
-            break
-        batch = r.data or []
-        rows.extend(batch)
-        if len(batch) < page_size:
-            break
-        offset += page_size
-
-    if not rows:
-        return _pd.DataFrame(
-            columns=['open', 'high', 'low', 'close', 'volume'])
-
-    use_first = value_type == 'first'
-    out_rows = []
-    timestamps = []
-    for row in rows:
-        if use_first and row.get('first_close') is not None:
-            o = row.get('first_open')
-            h = row.get('first_high')
-            l = row.get('first_low')
-            cl = row.get('first_close')
-            v = row.get('first_volume')
-        else:
-            o = row.get('open')
-            h = row.get('high')
-            l = row.get('low')
-            cl = row.get('close')
-            v = row.get('volume')
-        timestamps.append(_pd.Timestamp(row['bar_start']))
-        out_rows.append({
-            'open': float(o or 0), 'high': float(h or 0),
-            'low': float(l or 0), 'close': float(cl or 0),
-            'volume': float(v or 0),
-        })
-
-    df = _pd.DataFrame(out_rows, index=_pd.DatetimeIndex(
-        timestamps, name='timestamp'))
-    if df.index.tz is None:
-        df.index = df.index.tz_localize('UTC')
-    return df
+# fetch_cache_as_df moved to data_loader.py (2026-05-06, Phase E
+# preview) so services.py can import without circular dep through
+# api.routers.strategies. Kept this re-export for any legacy import
+# inside the same module.
+from data_loader import fetch_cache_as_df  # noqa: F401
 
 
 @router.get("/{strategy_id}/cache-bars")
