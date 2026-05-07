@@ -680,11 +680,16 @@ def get_strategy_trades(strat: dict, data_feed: str = "sip", model_override: str
 
 def prepare_forward_test_data(
     strat: dict, data_feed: str = "sip",
-    data_days_override: int = None
+    data_days_override: int = None,
+    model_override: str | None = None,
 ):
     """Load continuous data and split trades at forward test boundary.
 
     Extracted from app.py:825. The data_feed parameter replaces _get_data_feed().
+
+    `model_override` (2026-05-07): forces engine dispatch on a specific
+    backtest_model value instead of strategy.config.backtest_model. Used
+    by the cron path to run under algo_model.
 
     Returns (df, backtest_trades, forward_trades, forward_test_start_dt)
     """
@@ -717,6 +722,7 @@ def prepare_forward_test_data(
         session=strat.get('trading_session', 'RTH'),
         secondary_tfs=sec_tfs,
         strat=strat,  # Phase E preview: enables cache_locked dispatch
+        model_override=model_override,  # algo_model split (2026-05-07)
     )
 
     if len(df) == 0:

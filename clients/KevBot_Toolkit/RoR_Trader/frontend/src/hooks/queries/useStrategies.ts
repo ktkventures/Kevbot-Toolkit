@@ -199,8 +199,9 @@ export interface StrategyModel {
 }
 export interface StrategyModelsResponse {
   backtest_models: Record<string, StrategyModel>;
+  algo_models: Record<string, StrategyModel>;
   live_models: Record<string, StrategyModel>;
-  defaults: { backtest_model: string; live_model: string };
+  defaults: { backtest_model: string; algo_model: string; live_model: string };
 }
 export function useStrategyModels() {
   return useQuery({

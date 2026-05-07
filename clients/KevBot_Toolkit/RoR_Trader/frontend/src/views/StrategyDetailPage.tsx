@@ -5338,7 +5338,7 @@ function ModelsCard({
   const queryClient = useQueryClient();
   const [savingField, setSavingField] = useState<string | null>(null);
 
-  const handleChange = async (field: 'backtest_model' | 'live_model', value: string) => {
+  const handleChange = async (field: 'backtest_model' | 'algo_model' | 'live_model', value: string) => {
     setSavingField(field);
     const token = localStorage.getItem('ror_access_token') || '';
     const base = process.env.NEXT_PUBLIC_API_URL || '';
@@ -5357,6 +5357,7 @@ function ModelsCard({
         return;
       }
       queryClient.invalidateQueries({ queryKey: ['strategy', strategyId] });
+      queryClient.invalidateQueries({ queryKey: ['strategy-divergence', strategyId] });
     } catch (e: any) {
       alert(`Save failed: ${String(e?.message || e)}`);
     } finally {
@@ -5374,13 +5375,17 @@ function ModelsCard({
   }
 
   const renderSelect = (
-    field: 'backtest_model' | 'live_model',
+    field: 'backtest_model' | 'algo_model' | 'live_model',
     options: Record<string, any>,
     currentValue: string,
   ) => (
     <div className="mb-3">
       <label className="text-xs block mb-1" style={{ color: 'var(--text-muted)' }}>
-        {field === 'backtest_model' ? 'Backtest Model' : 'Live Model'}
+        {field === 'backtest_model'
+          ? 'Backtest Model'
+          : field === 'algo_model'
+          ? 'Algo Model'
+          : 'Live Model'}
       </label>
       <select
         value={currentValue}
@@ -5413,25 +5418,26 @@ function ModelsCard({
   );
 
   const currentBT = strategy?.backtest_model || modelsResp.defaults.backtest_model;
+  const currentAlgo = strategy?.algo_model || modelsResp.defaults?.algo_model || 'cache_locked';
   const currentLive = strategy?.live_model || modelsResp.defaults.live_model;
+  const algoOptions = (modelsResp as any).algo_models || modelsResp.backtest_models;
 
   return (
     <Card className="mb-6">
-      <h4 className="text-sm font-medium mb-1">
-        Models{' '}
-        <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
-          (placeholder — selection recorded but engine dispatch not yet wired)
-        </span>
-      </h4>
+      <h4 className="text-sm font-medium mb-1">Models</h4>
       <p className="text-xs mb-4" style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
-        Declared properties of this strategy. <strong>Backtest model</strong> determines what
-        data the algo-history view uses (safe to change — analytics only).{' '}
-        <strong>Live model</strong> determines how the live engine handles WS rebroadcasts
-        (impacts alert firing — change with care). When the cache read path ships,
-        these selections will start driving actual behavior.
+        Three independent model fields per the 2026-05-07 algo_model split.{' '}
+        <strong>Backtest</strong> = data source for the strategy's KPI baseline
+        (broadest historical coverage; default rest_hifi).{' '}
+        <strong>Algo</strong> = data source for the cron's incremental
+        algo-history append (live-accountability lane; default cache_locked).{' '}
+        <strong>Live</strong> = how the live engine sources bars and handles
+        rebroadcasts (default ws_agg_locked). Changes to Live affect alert
+        firing — change with care.
       </p>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {renderSelect('backtest_model', modelsResp.backtest_models, currentBT)}
+        {renderSelect('algo_model', algoOptions, currentAlgo)}
         {renderSelect('live_model', modelsResp.live_models, currentLive)}
       </div>
     </Card>
