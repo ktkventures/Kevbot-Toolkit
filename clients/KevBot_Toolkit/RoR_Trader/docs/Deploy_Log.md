@@ -21,6 +21,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-05-07
 
+- **21:25 UTC (15:25 MT)** — `cd58026` M8.7 Divergence tab: 3-lane comparison on Strategy Detail
+  - Service(s) redeployed: api (new endpoint + service), frontend (new tab + hook + types)
+  - Observed cache gap: TBD
+  - Notes: Adds GET /api/strategies/{id}/divergence-data + new "Divergence" tab on Strategy Detail. Three lanes today: Backtest (stored_trades JSONB) / Algo (trades table from cron) / Live (alerts). KPIs + drift stats (median/p95/max) per lane pair; color-coded ≤2s green / ≤30s yellow / >30s red. Real REST-vs-CACHE comparison deferred to v2 (needs dual-storage backend). Backup: `dev-backup-pre-divergence-tab-2026-05-07`.
+
 - **19:47 UTC (13:47 MT)** — `1dbf334` + `57ec22a` + `2245cc7` M8.7 cron stats panel + pack manifest cleanup + EOD docs
   - Service(s) redeployed: Worker (new DB writes), api (new endpoint + DB helpers), frontend (Jobs page CronStatsPanel)
   - Observed cache gap: TBD — pushed at 19:47 UTC
