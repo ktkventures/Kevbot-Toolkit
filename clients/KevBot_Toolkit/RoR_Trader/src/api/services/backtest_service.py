@@ -581,7 +581,12 @@ def _resolve_time_exit_from_pack(pack_id: str) -> dict | None:
 # HI-FI RESOLUTION (PASS 2)
 # =============================================================================
 
-def _hifi_resolve_trades(trades_df: pd.DataFrame, symbol: str, timeframe: str) -> pd.DataFrame:
+def _hifi_resolve_trades(
+    trades_df: pd.DataFrame,
+    symbol: str,
+    timeframe: str,
+    bar_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """Resolve every entry/exit with 1-second data for precise timing.
 
     For each trade:
@@ -592,6 +597,22 @@ def _hifi_resolve_trades(trades_df: pd.DataFrame, symbol: str, timeframe: str) -
     2. EXIT (original): walk 1-second bars in the exit bar window to find
        which level (stop or target) was hit first. Update exit_reason,
        exit_price, hold_time_seconds.
+    3. SIGNAL EXIT (added 2026-05-07): for L-type signal-exit triggers
+       (e.g. ``eppv4_cross_mid_down_ib``), walk 1-sec bars looking for
+       when price crossed the level the pack declares in its
+       manifest's ``trigger_levels`` block. Refines exit_fill_ts from
+       bar-aligned to per-second. Requires ``bar_df`` (the primary-TF
+       bar DataFrame with computed indicators) to read the level value
+       at the exit bar.
+
+    Args:
+        trades_df: trades to refine (modified in-place + returned).
+        symbol: strategy symbol.
+        timeframe: strategy primary TF (e.g. '1Min', '10Sec').
+        bar_df: OPTIONAL primary-TF bar DataFrame with indicator
+            columns. When provided, enables signal-exit refinement
+            (Phase 1 — 2026-05-07). When None, signal exits stay
+            bar-aligned (existing behavior).
 
     This is Pass 2 of the Hi-Fi backtest — runs after the normal engine Pass 1.
     """
@@ -601,6 +622,7 @@ def _hifi_resolve_trades(trades_df: pd.DataFrame, symbol: str, timeframe: str) -
     outcomes_changed = 0
     total_resolved = 0
     entries_refined = 0
+    signal_exits_refined = 0  # Phase 1 (2026-05-07)
 
     # Get timeframe duration in seconds for window calculation
     tf_seconds = _tf_to_seconds(timeframe)
@@ -700,6 +722,87 @@ def _hifi_resolve_trades(trades_df: pd.DataFrame, symbol: str, timeframe: str) -
         stop_et = trade.get('stop_exec_type', 'L')
         target_et = trade.get('target_exec_type', 'L')
         exit_reason = trade.get('exit_reason', '')
+
+        # Phase 1 signal-exit refinement (2026-05-07): when the trade
+        # exited via an L-type SIGNAL trigger (e.g. eppv4_cross_mid_down_ib)
+        # AND the user pack declares a trigger_levels entry for it AND
+        # we have the bar DataFrame to read the level value, walk 1-sec
+        # bars to find the per-second crossing moment.
+        # Branches off BEFORE the stop/target skip checks so signal exits
+        # don't get filtered out as "not stop_loss/target".
+        exit_trigger = trade.get('exit_trigger') or (trade.get('data') or {}).get('exit_trigger') or ''
+        is_ltype_signal_exit = (
+            isinstance(exit_trigger, str)
+            and exit_trigger.endswith('_ib')
+            and exit_reason not in ('stop_loss', 'stop', 'target')
+            and bar_df is not None
+        )
+        if is_ltype_signal_exit:
+            try:
+                from pack_registry import get_trigger_level_spec
+                spec = get_trigger_level_spec(exit_trigger)
+                if spec is not None:
+                    # Resolve exit bar timestamp + read level from bar_df
+                    exit_dt = _parse_dt(exit_time_str)
+                    if exit_dt is not None:
+                        # bar_df index is timestamps; align to UTC
+                        try:
+                            level_val = float(
+                                bar_df.loc[exit_dt, spec['level_column']])
+                        except (KeyError, ValueError, TypeError):
+                            level_val = None
+                        if level_val is not None and not pd.isna(level_val):
+                            window_start = exit_dt
+                            window_end = exit_dt + timedelta(seconds=tf_seconds)
+                            bars_1s = fetch_1s_bars_for_window(
+                                symbol, window_start, window_end,
+                                padding_seconds=2)
+                            if bars_1s is not None and len(bars_1s) > 0:
+                                resolved = _walk_1s_for_level_cross(
+                                    bars_1s, level_val,
+                                    spec['cross'], direction)
+                                if resolved is not None:
+                                    new_time = resolved['exit_time']
+                                    if hasattr(new_time, 'isoformat'):
+                                        new_time_iso = new_time.isoformat()
+                                    else:
+                                        new_time_iso = str(new_time)
+                                    # Only update if the per-second moment
+                                    # is later than the bar boundary.
+                                    if (new_time > exit_dt and
+                                            (new_time - exit_dt).total_seconds() <= tf_seconds + 5):
+                                        trades_df.at[idx, 'exit_fill_ts'] = new_time_iso
+                                        if 'exit_time' in trades_df.columns:
+                                            trades_df.at[idx, 'exit_time'] = new_time_iso
+                                        # Don't overwrite exit_price — the
+                                        # walker's gap-aware fill is for
+                                        # stop/target levels; for signal
+                                        # exits the price observed by live
+                                        # engine at the cross moment is
+                                        # better captured by the alert
+                                        # table (and the bar's close is
+                                        # what the engine recorded already).
+                                        # Mark as Hi-Fi resolved.
+                                        trades_df.at[idx, 'hifi_resolved'] = True
+                                        if 'behavior' in trades_df.columns:
+                                            trades_df.at[idx, 'behavior'] = 'HIFI'
+                                        signal_exits_refined += 1
+                                        logger.info(
+                                            "[HIFI-SIGNAL] Trade %s: %s "
+                                            "exit %s → %s (level=%.4f, "
+                                            "cross=%s, pack=%s)",
+                                            idx, exit_trigger,
+                                            exit_dt.isoformat(),
+                                            new_time_iso, level_val,
+                                            spec['cross'], spec['pack_slug'])
+            except Exception as e:
+                logger.warning(
+                    "[HIFI-SIGNAL] Trade %s (trigger=%s) refine failed: %s",
+                    idx, exit_trigger, e)
+            # Whether refinement succeeded or not, this trade has been
+            # handled — skip the stop/target walker below.
+            continue
+
         if exit_reason in ('stop_loss', 'stop') and stop_et != 'L':
             continue
         if exit_reason == 'target' and target_et != 'L':
@@ -765,9 +868,82 @@ def _hifi_resolve_trades(trades_df: pd.DataFrame, symbol: str, timeframe: str) -
 
     logger.info(
         "[HIFI] Resolved %d trades (exit), %d outcomes changed, "
-        "%d entry timestamps refined",
-        total_resolved, outcomes_changed, entries_refined)
+        "%d entry timestamps refined, %d signal-exit timestamps refined",
+        total_resolved, outcomes_changed, entries_refined,
+        signal_exits_refined)
     return trades_df
+
+
+def _walk_1s_for_level_cross(
+    bars_1s: pd.DataFrame,
+    level: float,
+    cross_direction: str,
+    direction: str,
+) -> dict | None:
+    """Walk 1-second bars to find when price first crossed `level`.
+
+    Phase 1 of signal-exit Hi-Fi (2026-05-07): refines L-type SIGNAL
+    exits (e.g. ``eppv4_cross_mid_down_ib``) by walking 1-sec price bars
+    looking for when price actually crossed the user-pack-declared
+    level (the indicator value frozen at the prior bar's close).
+
+    Mirrors ``_walk_1s_for_exit``'s structure + gap-aware fill convention
+    but takes a generic level + direction instead of stop/target.
+
+    Args:
+        bars_1s: 1-second OHLCV DataFrame, indexed by timestamp.
+        level: the price level the trigger fires on (from pack's
+               ``trigger_levels[base].level_column`` value at the
+               exit bar — typically the prior bar's indicator close).
+        cross_direction: ``'above'`` (trigger fires when price moves
+            from <=level to >level) or ``'below'`` (fires when price
+            moves from >=level to <level). Comes from manifest.
+        direction: ``'LONG'`` or ``'SHORT'`` — used only for fill-side
+            selection on gap. The trigger fires regardless of strategy
+            direction; this just picks which side of the bar to use as
+            the fill price.
+
+    Returns:
+        ``{'exit_time': ts, 'exit_price': float}`` or None if no
+        crossing detected within the walked window.
+
+    Gap-aware fill: if the 1-sec bar OPENS already on the wrong side
+    of the level (overnight gap, flash move), fill at the bar's open
+    rather than the level — matches existing _walk_1s_for_exit policy.
+    """
+    if level is None or pd.isna(level):
+        return None
+    if cross_direction not in ('above', 'below'):
+        return None
+
+    for ts, bar in bars_1s.iterrows():
+        bar_open = bar.get('open', 0)
+        high = bar.get('high', 0)
+        low = bar.get('low', 0)
+
+        if cross_direction == 'above':
+            # Trigger fires when price moves up through `level`. Detect
+            # by checking high — if any second's high reached or
+            # exceeded the level, the cross happened during that second.
+            if high >= level:
+                # Gap-aware: bar opens already above? fill at open
+                fill = max(level, bar_open) if bar_open > 0 else level
+                return {
+                    'exit_reason': 'signal_exit',
+                    'exit_price': fill,
+                    'exit_time': ts,
+                }
+        else:  # 'below'
+            if low <= level:
+                # Gap-aware: bar opens already below? fill at open
+                fill = min(level, bar_open) if bar_open > 0 else level
+                return {
+                    'exit_reason': 'signal_exit',
+                    'exit_price': fill,
+                    'exit_time': ts,
+                }
+
+    return None
 
 
 def _walk_1s_for_exit(bars_1s: pd.DataFrame, stop: float | None, target: float | None, direction: str) -> dict | None:

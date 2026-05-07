@@ -673,10 +673,63 @@ def run_hifi_pass2(strategy_id: int, user=Depends(get_current_user)):
         # Direction not stored on trade row — fall back to strategy direction
         trades_df['direction'] = strat.get('direction', 'LONG')
 
-    # Run Pass 2 (entries + exits)
+    # Phase 1 signal-exit refinement (2026-05-07): pre-compute the
+    # primary-TF bar DataFrame with indicators so Hi-Fi can read
+    # level-column values for signal-exit triggers. Skipped (None) if
+    # the strategy has no L-type signal exits — those trades already
+    # marked hifi_resolved=False fall through.
+    bar_df = None
+    has_ib_exits = any(
+        ((t.get('exit_trigger') or (t.get('data') or {}).get('exit_trigger') or '').endswith('_ib'))
+        for t in trades_list
+    )
+    if has_ib_exits:
+        try:
+            import services as _svc
+            bar_df = _svc.get_strategy_trades(strat).attrs.get('bar_df_for_hifi')
+            # Fallback: re-run prepare_data_with_indicators directly to
+            # get the bar DataFrame. get_strategy_trades returns trades,
+            # not bars; we need to call prepare_data_with_indicators
+            # ourselves to capture the bar DataFrame.
+            if bar_df is None:
+                from data_loader import (
+                    get_required_tfs_from_confluence,
+                    get_tf_from_label,
+                )
+                req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+                sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
+                # Use full data window — we need indicators converged
+                # for any trade in trades_df. Hi-Fi runs over the full
+                # trade history; bars must cover that.
+                # `datetime`/`timedelta`/`timezone` already imported at
+                # module level — DON'T re-import locally (would create a
+                # local-var shadow that breaks downstream references).
+                if strat.get('forward_test_start'):
+                    fwd_start = datetime.fromisoformat(strat['forward_test_start'])
+                    start_dt = fwd_start - timedelta(days=int(strat.get('data_days', 30)) * 2)
+                else:
+                    start_dt = datetime.now(timezone.utc) - timedelta(days=int(strat.get('data_days', 30)))
+                end_dt = datetime.now(timezone.utc)
+                bar_df = _svc.prepare_data_with_indicators(
+                    strat['symbol'],
+                    start_date=start_dt, end_date=end_dt,
+                    timeframe=timeframe,
+                    session=strat.get('trading_session', 'RTH'),
+                    secondary_tfs=sec_tfs,
+                    strat=strat,  # honors cache_locked dispatch
+                )
+        except Exception as e:
+            logger.warning(
+                "[HIFI-PASS2] Strategy %s: failed to load bar_df for "
+                "signal-exit refinement (will skip signal exits): %s",
+                strategy_id, e)
+            bar_df = None
+
+    # Run Pass 2 (entries + exits + signal exits)
     from api.services.backtest_service import _hifi_resolve_trades
     try:
-        refined_df = _hifi_resolve_trades(trades_df, symbol, timeframe)
+        refined_df = _hifi_resolve_trades(
+            trades_df, symbol, timeframe, bar_df=bar_df)
     except Exception as e:
         logger.exception("[HIFI-PASS2] Strategy %s crashed: %s",
                          strategy_id, e)

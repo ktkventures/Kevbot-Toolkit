@@ -441,6 +441,85 @@ def get_pack(slug: str) -> Optional[RegisteredPack]:
     return _user_packs.get(slug)
 
 
+def get_trigger_level_spec(trigger_id: str) -> Optional[dict]:
+    """Resolve a trigger_id to its pack manifest's `trigger_levels` entry.
+
+    Used by Hi-Fi Pass 2 to refine L-type SIGNAL exits (Phase 1 — 2026-05-07):
+    given a trigger like ``eppv4_cross_mid_down`` (or with `_ib`/`_lc`/`_hm`
+    /`_hl` exec-type suffix), returns the pack's declaration of which
+    column holds the level + which direction triggers the cross. Hi-Fi
+    then walks 1-second bars looking for that crossing.
+
+    Args:
+        trigger_id: e.g. ``eppv4_cross_mid_down``, ``eppv4_cross_mid_down_ib``,
+                    or ``utv4_bull_flip``.
+
+    Returns:
+        ``{'level_column': str, 'cross': 'above'|'below'}`` if the pack
+        declares ``trigger_levels`` for the matched base trigger, else None.
+        Caller falls back to bar-aligned exit timestamp when None.
+
+    Lookup logic:
+        1. Strip exec-type suffix (``_ib``, ``_lc``, ``_hm``, ``_hl``).
+        2. Find the registered pack whose ``trigger_prefix`` is the longest
+           prefix of the stripped trigger_id (longest-match handles e.g.
+           ``mlv2_cross_bull`` vs hypothetical ``ml_cross_bull``).
+        3. Strip the prefix + ``_`` to get the base trigger name.
+        4. Look up ``trigger_levels[base]`` on the pack manifest.
+
+    Returns None on:
+        - Unknown trigger_id (no pack matches)
+        - Pack found but ``trigger_levels`` block missing or doesn't
+          contain the base trigger
+        - Bad metadata (level_column missing, cross direction invalid)
+    """
+    if not trigger_id or not isinstance(trigger_id, str):
+        return None
+
+    # Strip exec-type suffix
+    base = trigger_id
+    for suffix in ('_ib', '_lc', '_hm', '_hl'):
+        if base.endswith(suffix):
+            base = base[:-len(suffix)]
+            break
+
+    # Find the pack with longest matching prefix
+    best_pack = None
+    best_prefix_len = 0
+    for slug, pack in _user_packs.items():
+        prefix = (pack.manifest or {}).get('trigger_prefix') or ''
+        if not prefix:
+            continue
+        if base.startswith(prefix + '_') and len(prefix) > best_prefix_len:
+            best_pack = pack
+            best_prefix_len = len(prefix)
+
+    if best_pack is None:
+        return None
+
+    # Extract base trigger name (strip prefix + '_')
+    pack_prefix = best_pack.manifest['trigger_prefix']
+    trigger_base = base[len(pack_prefix) + 1:]
+
+    # Look up trigger_levels block
+    levels = (best_pack.manifest or {}).get('trigger_levels') or {}
+    spec = levels.get(trigger_base)
+    if not isinstance(spec, dict):
+        return None
+
+    level_column = spec.get('level_column')
+    cross = spec.get('cross')
+    if not level_column or cross not in ('above', 'below'):
+        return None
+
+    return {
+        'level_column': level_column,
+        'cross': cross,
+        'pack_slug': best_pack.slug,  # for logging
+        'trigger_base': trigger_base,
+    }
+
+
 # =============================================================================
 # SAFE MODULE IMPORT
 # =============================================================================
