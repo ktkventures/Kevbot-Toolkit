@@ -225,26 +225,29 @@ def _do_recompute(
                 "[FT-RECOMPUTE] strategy=%s last_recompute stamp failed: %s",
                 strategy_id, e)
 
-    # Phase-E preview (M8.7 — 2026-05-06): when strategy opted in via
-    # backtest_model='rest_hifi', auto-run Hi-Fi Pass 2 after the
-    # recompute so manual Refresh stays consistent with cron behavior.
-    # Without this, a Refresh would replace cron's Hi-Fi-refined L-type
-    # timestamps with bar-level approximations, breaking the live-vs-
-    # algo timestamp comparison the user actually cares about.
+    # Phase-E preview (M8.7 — 2026-05-06; expanded 2026-05-07): when
+    # strategy opted into a Hi-Fi-eligible backtest_model, auto-run
+    # Hi-Fi Pass 2 after the recompute so manual Refresh stays
+    # consistent with cron behavior. Same coverage as cron path:
+    # rest_hifi (explicit opt-in) + cache_locked / cache_corrected
+    # (cache-aligned models also benefit from sub-second L-type
+    # refinement since cache_locked alone only fixes bar-parity, not
+    # the bar-vs-tick exit timing gap).
     bt_model = (strat.get('config') or {}).get('backtest_model') \
         if isinstance(strat.get('config'), dict) else None
     if bt_model is None:
         bt_model = strat.get('backtest_model')
+    HIFI_BACKTEST_MODELS = {'rest_hifi', 'cache_locked', 'cache_corrected'}
     hifi_summary = None
-    if bt_model == 'rest_hifi' and len(stored) > 0:
+    if bt_model in HIFI_BACKTEST_MODELS and len(stored) > 0:
         try:
             from api.routers.strategies import run_hifi_pass2
             hifi_summary = run_hifi_pass2(
                 strategy_id, user={'id': user_id})
             logger.info(
-                "[FT-RECOMPUTE] strategy=%s Hi-Fi pass: refined "
+                "[FT-RECOMPUTE] strategy=%s bt=%s Hi-Fi pass: refined "
                 "entries=%s exits=%s persisted=%s",
-                strategy_id,
+                strategy_id, bt_model,
                 hifi_summary.get('entries_refined', 0),
                 hifi_summary.get('exits_refined', 0),
                 hifi_summary.get('persisted', 0))
@@ -873,24 +876,32 @@ def append_new_trades_for_strategy(
                     "[ALGO-APPEND] strategy=%s insert_trade failed: %s",
                     strategy_id, e)
 
-        # Auto-Hi-Fi when strategy opted in via backtest_model=rest_hifi.
-        # Refines L-type entry/exit timestamps from bar-level to per-second
-        # precision so algo history matches the live alert table at sub-
-        # second resolution. _hifi_resolve_trades is idempotent (skips
-        # rows already flagged hifi_resolved=True), so calling it on
-        # every cycle is cheap when there's nothing new to refine.
-        # Failure here NEVER blocks the cron — alert table is the source
-        # of truth for live; algo history is best-effort backtest mirror.
+        # Auto-Hi-Fi for cache-aligned and Hi-Fi-opted-in backtest
+        # models. Refines L-type entry/exit timestamps from bar-level
+        # to per-second precision so algo history matches live alerts.
+        # _hifi_resolve_trades is idempotent (skips rows already
+        # hifi_resolved=True), so calling it every cycle is cheap.
+        # Failure NEVER blocks the cron — alert table is source of
+        # truth for live; algo history is best-effort backtest mirror.
+        #
+        # Coverage (2026-05-07 expansion):
+        # - rest_hifi:        explicit user opt-in
+        # - cache_locked:     bar parity is the goal AND L-type
+        #                     sub-second alignment is the win we want
+        # - cache_corrected:  same logic when Phase D ships
+        # - rest_only:        skip — fast bulk default
+        HIFI_BACKTEST_MODELS = {'rest_hifi', 'cache_locked', 'cache_corrected'}
         hifi_summary = None
-        if inserted > 0 and cfg.get('backtest_model') == 'rest_hifi':
+        bt_model = cfg.get('backtest_model')
+        if inserted > 0 and bt_model in HIFI_BACKTEST_MODELS:
             try:
                 from api.routers.strategies import run_hifi_pass2
                 hifi_summary = run_hifi_pass2(
                     strategy_id, user={'id': user_id})
                 logger.info(
-                    "[ALGO-APPEND] strategy=%s Hi-Fi pass: refined "
+                    "[ALGO-APPEND] strategy=%s bt=%s Hi-Fi pass: refined "
                     "entries=%s exits=%s persisted=%s",
-                    strategy_id,
+                    strategy_id, bt_model,
                     hifi_summary.get('entries_refined', 0),
                     hifi_summary.get('exits_refined', 0),
                     hifi_summary.get('persisted', 0))
