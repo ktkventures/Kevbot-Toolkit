@@ -584,6 +584,7 @@ def append_new_trades_for_strategy(
     strategy_id: int,
     user_id: str,
     lag_minutes: int = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """Run the unified engine and INSERT only trades newer than what's
     already in the trades table for this strategy. Append-only.
@@ -643,7 +644,9 @@ def append_new_trades_for_strategy(
     # cutoff_iso is now-lag (advances every call), so comparing to it
     # would never trigger a skip. We want: "if I just ran on this
     # strategy within the cron interval, no point re-running yet."
-    if last_until:
+    # `force=True` bypasses this gate (manual user click via Update New
+    # Data button — they want fresh work even if cron just ran).
+    if last_until and not force:
         try:
             last_dt = datetime.fromisoformat(last_until)
             recent_window = datetime.now(timezone.utc) - timedelta(
@@ -721,7 +724,10 @@ def append_new_trades_for_strategy(
             strategy_id, e)
         recent_exits_count = -1  # gate disabled on error
 
-    if recent_exits_count == 0:
+    # `force=True` (manual user click) bypasses the alerts-gate so the
+    # engine always runs — useful for catching missed trades (algo-only,
+    # no live alert) or just confirming the system is current.
+    if recent_exits_count == 0 and not force:
         # No new closed trades possible — stamp + skip.
         # Also bump data_refreshed_at on the strategies row so the
         # "Updated X ago" UI tag reflects cron activity (visual proof
@@ -1010,6 +1016,15 @@ def append_new_trades_for_strategy(
         _stamp_config(strategy_id, user_id, cfg)
 
         elapsed_s = round(_time.time() - t0, 2)
+        # Engine scope: how many bars the engine ran over (from the
+        # source DF in get_strategy_trades_for_window). Surfaced so the
+        # Jobs UI can show "scanned X bars over W days" — answers the
+        # "how far back did we look" question.
+        bars_processed = None
+        window_days = None
+        if hasattr(all_trades_df, 'attrs'):
+            bars_processed = all_trades_df.attrs.get('source_bar_count')
+            window_days = all_trades_df.attrs.get('window_days')
         result = {
             'status': 'appended' if inserted > 0 else 'no_new_trades',
             'inserted': inserted,
@@ -1017,6 +1032,8 @@ def append_new_trades_for_strategy(
             'elapsed_s': elapsed_s,
             'kpis_updated': bool(do_full_update),
             'engine_path': engine_path,
+            'bars_processed': bars_processed,
+            'window_days': window_days,
         }
         if hifi_summary is not None:
             result['hifi'] = {

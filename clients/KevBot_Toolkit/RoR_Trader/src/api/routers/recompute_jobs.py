@@ -61,6 +61,12 @@ def queue_recompute_job(
             detail="job_type must be 'append_recent' or 'full_recompute'")
 
     user_id = _resolve_user_id(user)
+    # `force=true` (default for the manual button) bypasses both the
+    # recently_processed gate AND the alerts-gate inside the worker so
+    # the engine ALWAYS runs. Catches missed trades (algo-only, no
+    # live alert) and gives the user immediate feedback that work
+    # happened. Cron path uses force=false (the default) for throughput.
+    force = bool(body.get('force', True))
 
     # Defense-in-depth: filter to strategies actually owned by this user
     from db import get_admin_client
@@ -80,7 +86,8 @@ def queue_recompute_job(
             rejected, user_id[:8])
 
     try:
-        job_id = submit_recompute_job(user_id, owned_ids, job_type)
+        job_id = submit_recompute_job(
+            user_id, owned_ids, job_type, force=force)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -92,6 +99,7 @@ def queue_recompute_job(
         'status': 'queued',
         'job_type': job_type,
         'strategy_count': len(owned_ids),
+        'force': force,
     }
 
 

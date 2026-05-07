@@ -497,6 +497,12 @@ def get_strategy_trades_for_window(
     # slice. KPI recompute should select all trades from DB and
     # compute trading_days separately.
     trades.attrs['trading_days'] = count_trading_days(df)
+    # M8.7 (2026-05-07): expose source-bar count so the Jobs UI can
+    # show "scanned N bars over W days" — answers the "how far back
+    # did we look" question for the user without confusing them about
+    # candles-vs-trades semantics.
+    trades.attrs['source_bar_count'] = len(df)
+    trades.attrs['window_days'] = (end_date - start_date).days
     return trades
 
 

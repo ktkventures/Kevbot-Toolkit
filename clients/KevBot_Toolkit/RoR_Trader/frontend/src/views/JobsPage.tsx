@@ -231,42 +231,75 @@ function JobCard({
             fontFamily: 'monospace',
           }}
         >
-          {job.per_strategy_results.map((r, i) => (
-            <div
-              key={i}
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                padding: '4px 0',
-                borderBottom: i < job.per_strategy_results.length - 1
-                  ? '1px solid var(--border)'
-                  : 'none',
-              }}
-            >
-              <span style={{ flex: 1, minWidth: 0 }}>
-                sid {r.strategy_id} · {r.strategy_name}
-              </span>
-              <span style={{ color: 'var(--text-muted)', marginRight: '8px' }}>
-                {r.engine_path && `(${r.engine_path}) `}
-                {r.elapsed_s}s
-              </span>
-              <span
+          {job.per_strategy_results.map((r, i) => {
+            // Build the engine-scope string. Skipped jobs don't have
+            // bars_processed (engine never ran). Show "scanned X bars
+            // over Y days" when present so user knows how far the
+            // windowed run looked.
+            const scope = (r.bars_processed != null && r.window_days != null)
+              ? `scanned ${r.bars_processed.toLocaleString()} bars · ${r.window_days}d window`
+              : (r.engine_path === 'full' ? 'full backtest' : null);
+            // Skip reason — surface 'recently_processed' / 'no_recent_exits'
+            // so the user knows why a row says skipped (was opaque before).
+            const skipDetail = r.status === 'skipped' && r.reason
+              ? r.reason.replace(/_/g, ' ')
+              : null;
+            return (
+              <div
+                key={i}
                 style={{
-                  color:
-                    r.status === 'appended' || r.status === 'refreshed'
-                      ? 'var(--green)'
-                      : r.status === 'error' || r.status === 'failed'
-                      ? 'var(--red)'
-                      : 'var(--text-muted)',
-                  fontWeight: 600,
-                  minWidth: '80px',
-                  textAlign: 'right',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  padding: '6px 0',
+                  borderBottom: i < job.per_strategy_results.length - 1
+                    ? '1px solid var(--border)'
+                    : 'none',
+                  gap: '2px',
                 }}
               >
-                {r.status} {r.inserted ? `(+${r.inserted})` : ''}
-              </span>
-            </div>
-          ))}
+                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    sid {r.strategy_id} · {r.strategy_name}
+                  </span>
+                  <span style={{ color: 'var(--text-muted)', marginRight: '8px' }}>
+                    {r.engine_path && `(${r.engine_path}) `}
+                    {r.elapsed_s}s
+                  </span>
+                  <span
+                    style={{
+                      color:
+                        r.status === 'appended' || r.status === 'refreshed'
+                          ? 'var(--green)'
+                          : r.status === 'error' || r.status === 'failed'
+                          ? 'var(--red)'
+                          : 'var(--text-muted)',
+                      fontWeight: 600,
+                      minWidth: '90px',
+                      textAlign: 'right',
+                    }}
+                  >
+                    {r.status} {r.inserted ? `(+${r.inserted})` : ''}
+                  </span>
+                </div>
+                {(scope || skipDetail || r.error) && (
+                  <div
+                    style={{
+                      fontSize: '11px',
+                      color: 'var(--text-muted)',
+                      paddingLeft: '8px',
+                    }}
+                  >
+                    {scope && <span>{scope}</span>}
+                    {scope && (skipDetail || r.error) && <span> · </span>}
+                    {skipDetail && <span>reason: {skipDetail}</span>}
+                    {r.error && (
+                      <span style={{ color: 'var(--red)' }}>error: {r.error}</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </Card>

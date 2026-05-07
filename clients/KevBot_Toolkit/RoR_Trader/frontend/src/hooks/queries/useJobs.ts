@@ -22,6 +22,9 @@ export interface PerStrategyResult {
   status: string | null;
   inserted: number;
   engine_path: 'windowed' | 'full' | null;
+  bars_processed: number | null;
+  window_days: number | null;
+  reason: string | null;  // skip reason: 'recently_processed' | 'no_recent_exits' | etc
   elapsed_s: number;
   error: string | null;
 }

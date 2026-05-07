@@ -92,6 +92,7 @@ def submit_recompute_job(
     user_id: str,
     strategy_ids: List[int],
     job_type: str,
+    force: bool = False,
 ) -> str:
     """Queue a recompute job and return its id immediately.
 
@@ -121,6 +122,7 @@ def submit_recompute_job(
         'user_id': user_id,
         'strategy_ids': list(strategy_ids),
         'job_type': job_type,
+        'force': bool(force),
         'status': 'queued',
         'created_at': now,
         'started_at': None,
@@ -239,6 +241,7 @@ def _run_job_worker(job_id: str) -> None:
     user_id = job['user_id']
     strategy_ids = job['strategy_ids']
     job_type = job['job_type']
+    force = bool(job.get('force'))
 
     _update_job(job_id, status='running', started_at=_now_iso(),
                 progress_label='starting')
@@ -293,7 +296,8 @@ def _run_job_worker(job_id: str) -> None:
                 # at once, one waits for the other to release.
                 with _get_strategy_lock(sid):
                     if job_type == 'append_recent':
-                        r = append_new_trades_for_strategy(sid, user_id)
+                        r = append_new_trades_for_strategy(
+                            sid, user_id, force=force)
                     else:  # full_recompute
                         r = recompute_and_persist_stored_trades(
                             sid, user_id, compute_parity=False)
@@ -310,8 +314,11 @@ def _run_job_worker(job_id: str) -> None:
                 'status': r.get('status'),
                 'inserted': r.get('inserted', r.get('trades', 0)) or 0,
                 'engine_path': r.get('engine_path'),
+                'bars_processed': r.get('bars_processed'),
+                'window_days': r.get('window_days'),
+                'reason': r.get('reason'),  # surface skip reason
                 'elapsed_s': elapsed,
-                'error': r.get('error') or r.get('reason'),
+                'error': r.get('error'),
             }
             per_results.append(per_entry)
 
