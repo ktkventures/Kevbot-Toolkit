@@ -44,6 +44,10 @@
     {"base": "overbought_long_exit",  "name": "RSI Overbought Exit Signal",    "direction": "BOTH", "type": "BOTH"},
     {"base": "oversold_short_exit",   "name": "RSI Oversold Exit Signal",      "direction": "BOTH", "type": "BOTH"}
   ],
+  "trigger_levels_phase2": {
+    "cross_into_overbought": {"reason": "value_vs_threshold (RSI vs overbought level) — Phase 2"},
+    "cross_into_oversold":   {"reason": "value_vs_threshold (RSI vs oversold level) — Phase 2"}
+  },
   "indicator_columns": ["rsi_z3", "rsi_z3_signal"],
   "column_color_map": {
     "rsi_z3": "rsi_color",

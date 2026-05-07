@@ -107,6 +107,14 @@
     {"base": "exit_long_midline_down",        "name": "Exit Long on Midline Cross Down",      "direction": "BOTH", "type": "BOTH"},
     {"base": "exit_short_midline_up",         "name": "Exit Short on Midline Cross Up",       "direction": "BOTH", "type": "BOTH"}
   ],
+  "trigger_levels_phase2": {
+    "cross_into_overbought":         {"reason": "value_vs_threshold (RSI vs overbought level) — Phase 2"},
+    "cross_into_oversold":           {"reason": "value_vs_threshold (RSI vs oversold level) — Phase 2"},
+    "cross_into_extreme_overbought": {"reason": "value_vs_threshold (RSI vs extreme OB level) — Phase 2"},
+    "cross_into_extreme_oversold":   {"reason": "value_vs_threshold (RSI vs extreme OS level) — Phase 2"},
+    "cross_above_midline":           {"reason": "value_vs_threshold (RSI vs midline) — Phase 2"},
+    "cross_below_midline":           {"reason": "value_vs_threshold (RSI vs midline) — Phase 2"}
+  },
   "indicator_columns": ["rsi_value"],
   "column_color_map": {"rsi_value": "rsi_color"},
   "plot_config": {

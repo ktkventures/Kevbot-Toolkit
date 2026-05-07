@@ -32,6 +32,10 @@
     {"base": "momentum_shift_up",   "name": "Momentum Shift Up (V-shape rising)",        "direction": "BOTH", "type": "BOTH"},
     {"base": "momentum_shift_down", "name": "Momentum Shift Down (inverted-V falling)",  "direction": "BOTH", "type": "BOTH"}
   ],
+  "trigger_levels_phase2": {
+    "flip_pos": {"reason": "value_vs_threshold (histogram vs zero) — Phase 2"},
+    "flip_neg": {"reason": "value_vs_threshold (histogram vs zero) — Phase 2"}
+  },
   "indicator_columns": ["mhv2_line", "mhv2_signal", "mhv2_hist"],
   "column_color_map": {"mhv2_hist": "hist_color"},
   "indicator_function": "calculate_macd_histogram_v2",

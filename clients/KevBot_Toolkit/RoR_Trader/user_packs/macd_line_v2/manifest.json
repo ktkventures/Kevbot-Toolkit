@@ -34,6 +34,12 @@
     {"base": "zero_cross_up",    "name": "MACD Crosses Above Zero",    "direction": "BOTH", "type": "BOTH"},
     {"base": "zero_cross_down",  "name": "MACD Crosses Below Zero",    "direction": "BOTH", "type": "BOTH"}
   ],
+  "trigger_levels_phase2": {
+    "cross_bull":      {"reason": "indicator_vs_indicator (MACD line vs signal line) — Phase 2"},
+    "cross_bear":      {"reason": "indicator_vs_indicator (MACD line vs signal line) — Phase 2"},
+    "zero_cross_up":   {"reason": "value_vs_threshold (MACD line vs zero) — Phase 2"},
+    "zero_cross_down": {"reason": "value_vs_threshold (MACD line vs zero) — Phase 2"}
+  },
   "indicator_columns": ["mlv2_line", "mlv2_signal", "mlv2_hist"],
   "column_color_map": {
     "mlv2_line":   "line_color",

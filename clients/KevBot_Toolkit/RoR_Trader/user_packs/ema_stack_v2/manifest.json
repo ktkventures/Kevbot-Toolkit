@@ -36,6 +36,12 @@
     {"base": "mid_cross_bull",  "name": "Mid Crosses Above Long",   "direction": "BOTH", "type": "BOTH"},
     {"base": "mid_cross_bear",  "name": "Mid Crosses Below Long",   "direction": "BOTH", "type": "BOTH"}
   ],
+  "trigger_levels_phase2": {
+    "cross_bull":     {"reason": "indicator_vs_indicator (short EMA vs mid EMA) — Phase 2"},
+    "cross_bear":     {"reason": "indicator_vs_indicator (short EMA vs mid EMA) — Phase 2"},
+    "mid_cross_bull": {"reason": "indicator_vs_indicator (mid EMA vs long EMA) — Phase 2"},
+    "mid_cross_bear": {"reason": "indicator_vs_indicator (mid EMA vs long EMA) — Phase 2"}
+  },
   "indicator_columns": ["esv2_short", "esv2_mid", "esv2_long"],
   "column_color_map": {
     "esv2_short": "short_color",

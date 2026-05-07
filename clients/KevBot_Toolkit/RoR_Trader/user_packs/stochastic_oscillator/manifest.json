@@ -61,6 +61,14 @@
     {"base": "k_cross_above_midline",      "name": "%K Crosses Above Midline",          "direction": "BOTH", "type": "BOTH"},
     {"base": "k_cross_below_midline",      "name": "%K Crosses Below Midline",          "direction": "BOTH", "type": "BOTH"}
   ],
+  "trigger_levels_phase2": {
+    "k_cross_above_d_oversold":   {"reason": "indicator_vs_indicator (%K vs %D in OS zone) — Phase 2"},
+    "k_cross_below_d_overbought": {"reason": "indicator_vs_indicator (%K vs %D in OB zone) — Phase 2"},
+    "k_cross_above_d_midrange":   {"reason": "indicator_vs_indicator (%K vs %D in midrange) — Phase 2"},
+    "k_cross_below_d_midrange":   {"reason": "indicator_vs_indicator (%K vs %D in midrange) — Phase 2"},
+    "k_cross_above_midline":      {"reason": "value_vs_threshold (%K vs midline) — Phase 2"},
+    "k_cross_below_midline":      {"reason": "value_vs_threshold (%K vs midline) — Phase 2"}
+  },
   "indicator_columns": ["stoch_k", "stoch_d"],
   "column_color_map": {
     "stoch_k": "k_color",
