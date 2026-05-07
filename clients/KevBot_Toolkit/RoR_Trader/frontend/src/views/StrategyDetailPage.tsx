@@ -11,7 +11,7 @@ import ChartPlaceholder from '@/components/ChartPlaceholder';
 import type { TradeMarker } from '@/charts/TradingChart';
 
 // Static imports for hooks — these are safe because the page uses ssr:false
-import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useStrategyCacheBars, useStrategyChartDataCache, useStrategyModels, useConfluenceChart, useTradeZoom } from '@/hooks/queries/useStrategies';
+import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useStrategyCacheBars, useStrategyChartDataCache, useStrategyModels, useConfluenceChart, useTradeZoom, useStrategyDivergence, type DivergenceRow } from '@/hooks/queries/useStrategies';
 import { StrategyHealthBadge, StrategyHealthDrawer, StrategyFidelityBadges, type StrategyHealth } from './StrategiesPage';
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
@@ -428,6 +428,7 @@ const TABS = [
   'Alert Analysis',
   'Unified Trades',
   'Parity',
+  'Divergence',
 ];
 
 /* ========================================================================= */
@@ -568,6 +569,363 @@ function PillTabs({ tabs, active, onChange }: { tabs: string[]; active: string; 
 /* ========================================================================= */
 /* COMPONENT                                                                   */
 /* ========================================================================= */
+
+/* ========================================================================= */
+/* Divergence Tab — 3-way comparison (Backtest / Algo / Live)                  */
+/* ========================================================================= */
+
+function fmtDriftSec(s: number | null | undefined): string {
+  if (s == null) return '—';
+  if (s < 60) return `${s.toFixed(1)}s`;
+  if (s < 3600) return `${(s / 60).toFixed(1)}m`;
+  return `${(s / 3600).toFixed(1)}h`;
+}
+
+function driftColor(s: number | null | undefined): string {
+  if (s == null) return 'var(--text-muted)';
+  if (s <= 2) return '#22c55e';
+  if (s <= 30) return '#eab308';
+  return '#ef4444';
+}
+
+function fmtAgeShort(iso: string | null | undefined): string {
+  if (!iso) return 'never';
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s ago`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`;
+  return `${Math.round(ms / 86_400_000)}d ago`;
+}
+
+const LANE_LABELS: Record<string, { label: string; color: string }> = {
+  '3way':       { label: '3-way',         color: '#22c55e' },
+  'rest_live':  { label: 'Backtest+Live', color: '#3b82f6' },
+  'cache_live': { label: 'Algo+Live',     color: '#3b82f6' },
+  'rest_cache': { label: 'Backtest+Algo', color: '#94a3b8' },
+  'rest_only':  { label: 'Backtest only', color: '#f59e0b' },
+  'cache_only': { label: 'Algo only',     color: '#f59e0b' },
+  'live_only':  { label: 'Live only (phantom)', color: '#ef4444' },
+  'empty':      { label: '—',             color: '#94a3b8' },
+};
+
+function DivergenceTabContent({ strategyId }: { strategyId: number }) {
+  const [forwardOnly, setForwardOnly] = useState(true);
+  const [tolerance, setTolerance] = useState(300);
+  const [laneFilter, setLaneFilter] = useState<string>('all');
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 30;
+
+  const { data, isLoading, error } = useStrategyDivergence(strategyId, {
+    forward_test_only: forwardOnly,
+    tolerance_seconds: tolerance,
+  });
+
+  const filteredRows = useMemo(() => {
+    if (!data) return [] as DivergenceRow[];
+    if (laneFilter === 'all') return data.rows;
+    if (laneFilter === 'matched') {
+      return data.rows.filter((r) =>
+        ['3way', 'rest_live', 'cache_live', 'rest_cache'].includes(r.lane_composition));
+    }
+    if (laneFilter === 'unmatched') {
+      return data.rows.filter((r) =>
+        ['rest_only', 'cache_only', 'live_only'].includes(r.lane_composition));
+    }
+    if (laneFilter === 'phantom') {
+      return data.rows.filter((r) => r.lane_composition === 'live_only');
+    }
+    return data.rows.filter((r) => r.lane_composition === laneFilter);
+  }, [data, laneFilter]);
+
+  if (isLoading) {
+    return (
+      <Card>
+        <div className="p-3 text-sm" style={{ color: 'var(--text-muted)' }}>
+          Loading divergence data…
+        </div>
+      </Card>
+    );
+  }
+  if (error || !data) {
+    return (
+      <Card>
+        <div className="p-3 text-sm" style={{ color: 'var(--red)' }}>
+          Failed to load: {(error as any)?.message || 'unknown'}
+        </div>
+      </Card>
+    );
+  }
+
+  const visible = filteredRows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* Header / context */}
+      <Card>
+        <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          Compare three trade-source lanes for this strategy. Drift between
+          <strong> Backtest </strong>and<strong> Algo </strong>signals
+          backtest staleness; drift between<strong> Algo </strong>and
+          <strong> Live </strong>signals real engine→alert divergence. Color
+          coding: <span style={{ color: '#22c55e' }}>green = ≤2s</span> ·{' '}
+          <span style={{ color: '#eab308' }}>yellow = ≤30s</span> ·{' '}
+          <span style={{ color: '#ef4444' }}>red = &gt;30s</span>.
+        </div>
+      </Card>
+
+      {/* Lane status row */}
+      <Card>
+        <div className="flex flex-col gap-2">
+          <LaneStatusRow
+            name="Backtest"
+            description="Last refresh output (stored_trades JSONB)"
+            count={data.backtest.count}
+            lastTs={data.backtest.last_trade_ts}
+            available={data.backtest.available}
+            model={data.backtest_model || 'rest_only'}
+            laneFilteredCount={data.lane_counts.rest}
+          />
+          <LaneStatusRow
+            name="Algo"
+            description="Cron-appended algo history (trades table)"
+            count={data.algo.count}
+            lastTs={data.algo.last_trade_ts}
+            available={data.algo.available}
+            model={null}
+            laneFilteredCount={data.lane_counts.cache}
+          />
+          <LaneStatusRow
+            name="Live"
+            description="Alerts that actually fired"
+            count={data.live.count}
+            lastTs={data.live.last_alert_ts}
+            available={data.live.count > 0}
+            model={data.live_model || 'ws_agg_locked'}
+            laneFilteredCount={data.lane_counts.live}
+          />
+        </div>
+      </Card>
+
+      {/* KPI cards */}
+      <Card>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          <KpiCard label="3-way matched" value={data.kpis.matched_3way} color="#22c55e" hint="all 3 lanes agree" />
+          <KpiCard label="Backtest+Live" value={data.kpis.matched_rest_live} color="#3b82f6" />
+          <KpiCard label="Algo+Live"     value={data.kpis.matched_cache_live} color="#3b82f6" />
+          <KpiCard label="Backtest+Algo" value={data.kpis.matched_rest_cache} color="#94a3b8" />
+          <KpiCard label="Backtest only" value={data.kpis.rest_only} color="#f59e0b" hint="no algo, no alert" />
+          <KpiCard label="Algo only"     value={data.kpis.cache_only} color="#f59e0b" hint="no backtest, no alert" />
+          <KpiCard label="Live only"     value={data.kpis.live_only}  color="#ef4444" hint="phantom alert" />
+        </div>
+      </Card>
+
+      {/* Drift summary */}
+      <Card>
+        <div className="text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>
+          Drift summary (matched events only, within {tolerance}s)
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
+          <DriftStat label="Backtest↔Algo (entry)" stats={data.kpis.drift_rest_cache_entry} />
+          <DriftStat label="Algo↔Live (entry)"     stats={data.kpis.drift_cache_live_entry} />
+          <DriftStat label="Backtest↔Live (entry)" stats={data.kpis.drift_rest_live_entry} />
+          <DriftStat label="Algo↔Live (exit)"      stats={data.kpis.drift_cache_live_exit} />
+          <DriftStat label="Backtest↔Live (exit)"  stats={data.kpis.drift_rest_live_exit} />
+        </div>
+      </Card>
+
+      {/* Filters */}
+      <Card>
+        <div className="flex flex-wrap items-center gap-3 text-xs">
+          <label className="flex items-center gap-1">
+            <input
+              type="checkbox"
+              checked={forwardOnly}
+              onChange={(e) => { setForwardOnly(e.target.checked); setPage(0); }}
+            />
+            Forward test only
+          </label>
+
+          <span>Tolerance:</span>
+          <select
+            value={tolerance}
+            onChange={(e) => { setTolerance(Number(e.target.value)); setPage(0); }}
+            style={{ padding: '4px 8px', borderRadius: 4, background: 'var(--bg-input)', color: 'var(--text-primary)' }}
+          >
+            <option value={30}>30s</option>
+            <option value={60}>1min</option>
+            <option value={300}>5min</option>
+            <option value={900}>15min</option>
+            <option value={3600}>1h</option>
+          </select>
+
+          <span>Show:</span>
+          <select
+            value={laneFilter}
+            onChange={(e) => { setLaneFilter(e.target.value); setPage(0); }}
+            style={{ padding: '4px 8px', borderRadius: 4, background: 'var(--bg-input)', color: 'var(--text-primary)' }}
+          >
+            <option value="all">All ({data.rows.length})</option>
+            <option value="matched">Matched (any 2+ lanes)</option>
+            <option value="unmatched">Unmatched (1 lane only)</option>
+            <option value="3way">3-way matches</option>
+            <option value="rest_live">Backtest+Live</option>
+            <option value="cache_live">Algo+Live</option>
+            <option value="rest_cache">Backtest+Algo</option>
+            <option value="rest_only">Backtest only</option>
+            <option value="cache_only">Algo only</option>
+            <option value="live_only">Live only (phantom)</option>
+          </select>
+
+          <span style={{ color: 'var(--text-muted)' }}>
+            Showing {Math.min(filteredRows.length, page * PAGE_SIZE + 1)}–{Math.min(filteredRows.length, (page + 1) * PAGE_SIZE)} of {filteredRows.length}
+          </span>
+        </div>
+      </Card>
+
+      {/* Comparison table */}
+      <Card>
+        <div style={{ overflowX: 'auto' }}>
+          <table className="w-full text-xs" style={{ fontFamily: 'monospace' }}>
+            <thead>
+              <tr style={{ color: 'var(--text-muted)', textAlign: 'left' }}>
+                <th className="py-2 pr-2">#</th>
+                <th className="py-2 pr-2">Anchor (entry)</th>
+                <th className="py-2 pr-2">Dir</th>
+                <th className="py-2 pr-2">Lanes</th>
+                <th className="py-2 pr-2">Backtest entry</th>
+                <th className="py-2 pr-2">Algo entry</th>
+                <th className="py-2 pr-2">Live entry</th>
+                <th className="py-2 pr-2">Δ B↔A</th>
+                <th className="py-2 pr-2">Δ A↔L</th>
+                <th className="py-2 pr-2">Δ B↔L</th>
+                <th className="py-2 pr-2">Exit reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((r) => {
+                const lane = LANE_LABELS[r.lane_composition] || LANE_LABELS.empty;
+                return (
+                  <tr key={r.row_id} style={{ borderTop: '1px solid var(--border)' }}>
+                    <td className="py-1 pr-2" style={{ color: 'var(--text-muted)' }}>{r.row_id}</td>
+                    <td className="py-1 pr-2">{r.anchor_entry_fill_ts?.slice(0, 19) || '—'}</td>
+                    <td className="py-1 pr-2">{r.direction || '—'}</td>
+                    <td className="py-1 pr-2">
+                      <span style={{ color: lane.color, fontWeight: 600 }}>{lane.label}</span>
+                    </td>
+                    <td className="py-1 pr-2">{r.rest?.entry_fill_ts?.slice(11, 19) || '—'}</td>
+                    <td className="py-1 pr-2">{r.cache?.entry_fill_ts?.slice(11, 19) || '—'}</td>
+                    <td className="py-1 pr-2">{r.live?.entry_fill_ts?.slice(11, 19) || '—'}</td>
+                    <td className="py-1 pr-2" style={{ color: driftColor(r.drift_rest_cache_entry_s) }}>
+                      {fmtDriftSec(r.drift_rest_cache_entry_s)}
+                    </td>
+                    <td className="py-1 pr-2" style={{ color: driftColor(r.drift_cache_live_entry_s) }}>
+                      {fmtDriftSec(r.drift_cache_live_entry_s)}
+                    </td>
+                    <td className="py-1 pr-2" style={{ color: driftColor(r.drift_rest_live_entry_s) }}>
+                      {fmtDriftSec(r.drift_rest_live_entry_s)}
+                    </td>
+                    <td className="py-1 pr-2" style={{ color: 'var(--text-muted)' }}>
+                      {r.cache?.exit_reason || r.live?.exit_reason || r.rest?.exit_reason || '—'}
+                    </td>
+                  </tr>
+                );
+              })}
+              {visible.length === 0 && (
+                <tr>
+                  <td colSpan={11} className="py-4 text-center" style={{ color: 'var(--text-muted)' }}>
+                    No rows for the current filter.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {totalPages > 1 && (
+          <div className="flex items-center gap-2 mt-3 text-xs">
+            <button
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              disabled={page === 0}
+              style={{ padding: '4px 10px', borderRadius: 4, background: 'var(--bg-input)', color: page === 0 ? 'var(--text-muted)' : 'var(--text-primary)' }}
+            >
+              ← Prev
+            </button>
+            <span style={{ color: 'var(--text-muted)' }}>Page {page + 1} of {totalPages}</span>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+              disabled={page >= totalPages - 1}
+              style={{ padding: '4px 10px', borderRadius: 4, background: 'var(--bg-input)', color: page >= totalPages - 1 ? 'var(--text-muted)' : 'var(--text-primary)' }}
+            >
+              Next →
+            </button>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function LaneStatusRow({
+  name, description, count, lastTs, available, model, laneFilteredCount,
+}: {
+  name: string;
+  description: string;
+  count: number;
+  lastTs: string | null;
+  available: boolean;
+  model: string | null;
+  laneFilteredCount: number;
+}) {
+  return (
+    <div className="flex items-center gap-3 text-xs">
+      <span style={{ width: 80, fontWeight: 600 }}>{name}</span>
+      <span style={{ width: 60, textAlign: 'right' }}>{count}</span>
+      {laneFilteredCount !== count && (
+        <span style={{ color: 'var(--text-muted)' }}>
+          ({laneFilteredCount} after filter)
+        </span>
+      )}
+      <span style={{ color: 'var(--text-muted)' }}>{fmtAgeShort(lastTs)}</span>
+      {model && (
+        <span style={{ background: 'var(--bg-input)', padding: '1px 6px', borderRadius: 3, color: 'var(--text-secondary)' }}>
+          {model}
+        </span>
+      )}
+      <span className="ml-auto" style={{ color: available ? 'var(--text-muted)' : 'var(--orange)' }}>
+        {available ? description : `${description} — empty`}
+      </span>
+    </div>
+  );
+}
+
+function KpiCard({ label, value, color, hint }: { label: string; value: number; color: string; hint?: string }) {
+  return (
+    <div style={{ background: 'var(--bg-input)', padding: '8px 12px', borderRadius: 6 }}>
+      <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{label}</div>
+      <div className="text-lg font-bold" style={{ color }}>{value}</div>
+      {hint && <div className="text-xs" style={{ color: 'var(--text-muted)' }}>{hint}</div>}
+    </div>
+  );
+}
+
+function DriftStat({ label, stats }: { label: string; stats: { count: number; median_s: number | null; p95_s: number | null; max_s: number | null } }) {
+  return (
+    <div style={{ background: 'var(--bg-input)', padding: '6px 10px', borderRadius: 4 }}>
+      <div style={{ color: 'var(--text-muted)' }}>{label}</div>
+      <div style={{ color: stats.count === 0 ? 'var(--text-muted)' : 'var(--text-primary)' }}>
+        n={stats.count}
+        {stats.count > 0 && (
+          <>
+            {' '}· median{' '}
+            <span style={{ color: driftColor(stats.median_s) }}>{fmtDriftSec(stats.median_s)}</span>
+            {' '}· p95 <span style={{ color: driftColor(stats.p95_s) }}>{fmtDriftSec(stats.p95_s)}</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 
 interface Props {
   strategyId: number;
@@ -4834,6 +5192,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   </p>
                 )}
               </div>
+            )}
+
+            {tab === 'Divergence' && (
+              <DivergenceTabContent strategyId={strategyId} />
             )}
           </div>
         )}

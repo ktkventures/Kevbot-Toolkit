@@ -1296,6 +1296,118 @@ def get_strategy_trades(
         raise HTTPException(status_code=504, detail=f"Trade computation timed out or failed: {str(e)[:200]}")
 
 
+@router.get("/{strategy_id}/divergence-data")
+def get_strategy_divergence_data(
+    strategy_id: int,
+    forward_test_only: bool = Query(True, description="Filter to trades after forward_test_start"),
+    direction: Optional[str] = Query(None, description="LONG / SHORT filter"),
+    tolerance_seconds: float = Query(300.0, ge=10.0, le=3600.0,
+        description="Max distance to consider two events 'matched'. Beyond this, lanes split into separate rows."),
+    user=Depends(get_current_user),
+):
+    """Three-lane comparison data for the Divergence tab.
+
+    Lanes (v1):
+      - **backtest** = strategy.stored_trades JSONB (last "Refresh" output;
+        the user's official backtest snapshot)
+      - **algo** = trades table rows (cron's incremental algo-history;
+        reflects current engine output on recent bars)
+      - **live** = alerts table rows (what actually fired live)
+
+    All three lanes are read from cached state — no engine runs in this
+    endpoint. Drift between backtest↔algo signals backtest staleness;
+    drift between algo↔live signals engine→alert divergence.
+
+    Future v2: a "Run Comparison Backtest" endpoint will run both
+    `rest_only` and `cache_locked` against the same window and surface
+    that as a separate REST↔CACHE divergence view.
+
+    When `forward_test_only=true` (default), each lane is filtered to
+    events at/after `forward_test_start` so the comparison only covers
+    the period when alerts could have fired.
+    """
+    strat = _get_or_404(strategy_id, user)
+    user_id = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
+
+    from db import get_alerts_for_strategy_db, load_trades_admin
+    from api.services.divergence_service import compute_three_way_divergence
+
+    fwd_start = strat.get('forward_test_start') if forward_test_only else None
+
+    backtest_trades = list(strat.get('stored_trades') or [])
+    backtest_last_ts = None
+    for t in backtest_trades:
+        ts = t.get('entry_fill_ts') or t.get('entryFillTime')
+        if ts and (backtest_last_ts is None or ts > backtest_last_ts):
+            backtest_last_ts = ts
+
+    try:
+        algo_trades = load_trades_admin(strategy_id, user_id) or []
+    except Exception as e:
+        logger.warning("[DIVERGENCE] algo trades load failed for sid=%s: %s",
+                       strategy_id, e)
+        algo_trades = []
+
+    algo_last_ts = None
+    for t in algo_trades:
+        ts = t.get('entry_fill_ts')
+        if ts and (algo_last_ts is None or str(ts) > str(algo_last_ts)):
+            algo_last_ts = ts
+
+    try:
+        alerts = get_alerts_for_strategy_db(strategy_id, limit=2000) or []
+    except Exception as e:
+        logger.warning("[DIVERGENCE] alert load failed for sid=%s: %s",
+                       strategy_id, e)
+        alerts = []
+
+    last_alert_ts = alerts[0].get('timestamp') if alerts else None
+
+    strat_direction = (
+        strat.get('direction')
+        or (strat.get('config') or {}).get('direction')
+        or 'LONG'
+    )
+
+    diverge = compute_three_way_divergence(
+        rest_trades=backtest_trades,
+        cache_trades=algo_trades,
+        alerts=alerts,
+        forward_test_start=fwd_start,
+        direction_filter=direction,
+        default_direction=strat_direction,
+        max_match_seconds=tolerance_seconds,
+    )
+
+    return {
+        'strategy_id': strategy_id,
+        'forward_test_start': strat.get('forward_test_start'),
+        'backtest_model': (strat.get('config') or {}).get('backtest_model')
+                          or strat.get('backtest_model'),
+        'live_model': (strat.get('config') or {}).get('live_model')
+                      or strat.get('live_model'),
+        'backtest': {
+            'count': len(backtest_trades),
+            'last_trade_ts': backtest_last_ts,
+            'available': len(backtest_trades) > 0,
+        },
+        'algo': {
+            'count': len(algo_trades),
+            'last_trade_ts': str(algo_last_ts) if algo_last_ts else None,
+            'available': len(algo_trades) > 0,
+        },
+        'live': {
+            'count': len(alerts),
+            'last_alert_ts': last_alert_ts,
+        },
+        'rows': diverge['rows'],
+        'kpis': diverge['kpis'],
+        'lane_counts': diverge['lane_counts'],
+        'forward_test_only': forward_test_only,
+        'direction_filter': direction,
+    }
+
+
 @router.get("/{strategy_id}/forward-test")
 def get_forward_test_data(strategy_id: int, user=Depends(get_current_user)):
     """Get forward test split: backtest trades, forward trades, boundary date.

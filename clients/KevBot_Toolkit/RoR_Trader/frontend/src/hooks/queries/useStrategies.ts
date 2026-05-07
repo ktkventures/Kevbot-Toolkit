@@ -285,3 +285,106 @@ export function useTriggerAnalysis(id: number | null) {
     enabled: id !== null,
   });
 }
+
+// ============================================================
+// Divergence tab (M8.7 — 2026-05-07)
+// ============================================================
+
+export interface DivergenceLaneTrade {
+  entry_fill_ts: string | null;
+  exit_fill_ts: string | null;
+  entry_price: number | null;
+  exit_price: number | null;
+  direction: string | null;
+  exit_reason: string | null;
+  data_source: string | null;
+}
+
+export type LaneComposition =
+  | '3way'
+  | 'rest_live'
+  | 'cache_live'
+  | 'rest_cache'
+  | 'rest_only'
+  | 'cache_only'
+  | 'live_only'
+  | 'empty';
+
+export interface DivergenceRow {
+  row_id: number;
+  rest: DivergenceLaneTrade | null;   // = backtest lane
+  cache: DivergenceLaneTrade | null;  // = algo lane
+  live: DivergenceLaneTrade | null;
+  lane_composition: LaneComposition;
+  anchor_entry_fill_ts: string | null;
+  direction: string | null;
+  drift_rest_live_entry_s: number | null;
+  drift_cache_live_entry_s: number | null;
+  drift_rest_cache_entry_s: number | null;
+  drift_rest_live_exit_s: number | null;
+  drift_cache_live_exit_s: number | null;
+}
+
+export interface DivergenceDriftStats {
+  count: number;
+  median_s: number | null;
+  p95_s: number | null;
+  max_s: number | null;
+}
+
+export interface DivergenceData {
+  strategy_id: number;
+  forward_test_start: string | null;
+  backtest_model: string | null;
+  live_model: string | null;
+  backtest: { count: number; last_trade_ts: string | null; available: boolean };
+  algo: { count: number; last_trade_ts: string | null; available: boolean };
+  live: { count: number; last_alert_ts: string | null };
+  rows: DivergenceRow[];
+  kpis: {
+    matched_3way: number;
+    matched_rest_live: number;
+    matched_cache_live: number;
+    matched_rest_cache: number;
+    rest_only: number;
+    cache_only: number;
+    live_only: number;
+    drift_rest_live_entry: DivergenceDriftStats;
+    drift_cache_live_entry: DivergenceDriftStats;
+    drift_rest_cache_entry: DivergenceDriftStats;
+    drift_rest_live_exit: DivergenceDriftStats;
+    drift_cache_live_exit: DivergenceDriftStats;
+  };
+  lane_counts: { rest: number; cache: number; live: number };
+  forward_test_only: boolean;
+  direction_filter: string | null;
+}
+
+export function useStrategyDivergence(
+  id: number | null,
+  opts: {
+    forward_test_only?: boolean;
+    direction?: 'LONG' | 'SHORT' | null;
+    tolerance_seconds?: number;
+    enabled?: boolean;
+  } = {},
+) {
+  const params = new URLSearchParams();
+  if (opts.forward_test_only !== undefined)
+    params.set('forward_test_only', String(opts.forward_test_only));
+  if (opts.direction) params.set('direction', opts.direction);
+  if (opts.tolerance_seconds !== undefined)
+    params.set('tolerance_seconds', String(opts.tolerance_seconds));
+  const qs = params.toString();
+
+  return useQuery({
+    queryKey: ['strategy-divergence', id, opts.forward_test_only, opts.direction, opts.tolerance_seconds],
+    queryFn: () =>
+      apiFetch<DivergenceData>(
+        `/api/strategies/${id}/divergence-data${qs ? '?' + qs : ''}`,
+      ),
+    enabled: (opts.enabled ?? true) && id !== null,
+    staleTime: 30_000,
+    placeholderData: (prev) => prev,
+  });
+}
