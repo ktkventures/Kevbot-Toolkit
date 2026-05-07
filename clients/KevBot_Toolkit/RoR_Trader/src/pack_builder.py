@@ -18,7 +18,10 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from pack_spec import validate_manifest, validate_python_file, validate_function_exists
+from pack_spec import (
+    validate_manifest, validate_python_file, validate_function_exists,
+    audit_trigger_levels,
+)
 
 
 # =============================================================================
@@ -303,12 +306,23 @@ def generate_code_prompt(
     parts.append("12. All triggers must use direction 'BOTH' and type 'BOTH' — triggers are neutral, users decide usage in Strategy Builder")
     parts.append("13. CRITICAL — Triggers carry NO `execution` field. Do not emit per-execution-type variants in the triggers array. "
                  "One trigger entry per logical signal. The system auto-materializes runtime variants C, L, LC, CC at install time based on the optional `trigger_levels` block (see #14).")
-    parts.append("14. For triggers that represent a meaningful intra-bar level cross (price crosses an indicator line — moving averages, bands, trailing stops, etc.), "
-                 "add a top-level `trigger_levels` block to the manifest. Format: "
+    parts.append("14. CRITICAL — `trigger_levels` is MANDATORY for triggers whose name matches a level-cross pattern "
+                 "(`cross_*`, `*_above_*`, `*_below_*`, `*_flip*`, `breaks_*`). The engine + Hi-Fi Pass 2 auto-refines "
+                 "exit/entry timestamps to sub-second resolution when this block is present. Format: "
                  "`{\"<trigger_base>\": {\"level_column\": \"<column_in_indicator_columns>\", \"cross\": \"above\"|\"below\"}}`. "
                  "The engine auto-generates L (intra-bar) and LC (level + close confirm) variants for every entry. "
-                 "Triggers without a `trigger_levels` entry only get C and CC variants. "
-                 "Pure pattern-based triggers, oscillator value transitions (RSI crossing 70), and bar-shape detections do NOT need a `trigger_levels` entry — they are bar-close events with no meaningful intra-bar level.")
+                 "Triggers without a `trigger_levels` entry only get C and CC variants AND skip Hi-Fi sub-second refinement.\n"
+                 "    14a. STATIC vs DYNAMIC triggers: only static-level price-vs-line crosses (price-vs-EMA, price-vs-VWAP, "
+                 "price-vs-trailing-stop) belong in `trigger_levels`. For indicator-vs-indicator triggers (MACD-line vs "
+                 "signal-line, EMA-vs-EMA crosses, K-vs-D crosses) OR dynamic-during-bar triggers (intra-bar VWAP), DECLARE the "
+                 "trigger base in a separate `trigger_levels_phase2` block instead. Format: "
+                 "`{\"<trigger_base>\": {\"reason\": \"indicator_vs_indicator\"|\"dynamic_intra_bar\", \"notes\": \"...\"}}`. "
+                 "This is a PLACEHOLDER for Phase 2 of Hi-Fi infrastructure (not yet implemented) — it marks the omission "
+                 "as INTENTIONAL so the install-time audit doesn't flag it as an oversight. Without one of these two "
+                 "blocks, the install-time audit emits a warning (non-blocking).\n"
+                 "    14b. Pure pattern-based triggers (oscillator value transitions like RSI crossing 70, bar-shape "
+                 "detections, state-machine fires like swing C2/C3) need NEITHER block — they're bar-close events with no "
+                 "meaningful intra-bar level. Their names should NOT match the level-cross patterns above.")
     parts.append("15. CRITICAL — Level column rules in indicator.py: "
                  "Use the `_prev` suffix on the column NAME for dynamic indicators where the line recalculates each bar (ATR trailing stops, adaptive support/resistance). "
                  "But DO NOT actually `.shift(1)` the values — the engine adds the 1-bar lag automatically by caching at bar N close and using on bar N+1. "
@@ -717,6 +731,24 @@ def validate_parsed_response(parsed: Dict) -> Tuple[bool, List[str]]:
     # 1. Validate manifest schema
     valid, manifest_errors = validate_manifest(manifest)
     errors.extend(manifest_errors)
+
+    # 1.5 trigger_levels coverage audit (Phase 1 Hi-Fi infrastructure):
+    # if any trigger names look like a level cross AND `trigger_levels`
+    # / `trigger_levels_phase2` doesn't cover them, we treat that as an
+    # ERROR in the AI builder path so the auto-fix loop catches it.
+    # Pack authors who genuinely intend Phase 2 detection acknowledge
+    # via `trigger_levels_phase2` (see prompt rule 14a).
+    #
+    # NOTE: at install time (pack_registry) the same audit emits a
+    # WARNING (non-blocking) — that path supports legacy packs that
+    # pre-date this convention. The AI builder is stricter because we
+    # can fix it before the pack lands on disk.
+    audit_warnings = audit_trigger_levels(manifest)
+    if audit_warnings:
+        errors.append(
+            "trigger_levels audit failed (rule 14 / 14a in prompt): "
+            + " ".join(audit_warnings)
+        )
 
     if not indicator_code:
         errors.append("No indicator code found")

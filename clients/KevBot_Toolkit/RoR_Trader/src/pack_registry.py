@@ -35,6 +35,7 @@ from pack_spec import (
     validate_manifest,
     validate_python_file,
     validate_function_exists,
+    audit_trigger_levels,
     SAFE_BUILTINS,
 )
 
@@ -59,6 +60,11 @@ class RegisteredPack:
     pack_dir: Path = field(default_factory=Path)
     is_valid: bool = False
     validation_errors: List[str] = field(default_factory=list)
+    # Non-blocking warnings surfaced at install time. Today's only
+    # populator is `audit_trigger_levels` — flags cross-style triggers
+    # missing from `trigger_levels`/`trigger_levels_phase2`. Pack still
+    # registers and runs normally; warnings are diagnostic only.
+    validation_warnings: List[str] = field(default_factory=list)
 
 
 # =============================================================================
@@ -320,6 +326,20 @@ def load_single_pack(pack_dir: Path) -> RegisteredPack:
         except Exception as e:
             errors.append(f"Failed to import interpreter.py: {e}")
 
+    # Run non-blocking audits (warnings, not errors). Surfaces gaps
+    # like missing trigger_levels for cross-style triggers — pack still
+    # registers + works, but Hi-Fi sub-second refinement won't be
+    # available until the gap is filled.
+    warnings = []
+    try:
+        warnings.extend(audit_trigger_levels(manifest))
+    except Exception as e:
+        # Audit failure should never block pack load
+        warnings.append(f"audit_trigger_levels crashed: {e}")
+    if warnings:
+        for w in warnings:
+            print(f"⚠️  [pack_registry] {slug}: {w}")
+
     return RegisteredPack(
         slug=slug,
         manifest=manifest,
@@ -330,6 +350,7 @@ def load_single_pack(pack_dir: Path) -> RegisteredPack:
         pack_dir=pack_dir,
         is_valid=len(errors) == 0,
         validation_errors=errors,
+        validation_warnings=warnings,
     )
 
 

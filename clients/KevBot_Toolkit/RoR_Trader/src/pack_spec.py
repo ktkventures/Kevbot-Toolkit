@@ -169,6 +169,90 @@ SAFE_BUILTINS = {
 # MANIFEST VALIDATION
 # =============================================================================
 
+# Trigger-base name patterns that suggest a static-level cross
+# (price-vs-line). Packs with triggers matching these patterns SHOULD
+# declare `trigger_levels` (or `trigger_levels_phase2` for explicit
+# non-static cases) so Hi-Fi Pass 2 can refine sub-second exit times.
+# This is a HEURISTIC — pack authors can override by listing the
+# trigger in `trigger_levels_phase2` to mark Phase-2 (indicator-vs-
+# indicator or dynamic-during-bar) intentionally.
+import re as _re
+_CROSS_STYLE_PATTERN = _re.compile(
+    r"(^|_)(cross|flip|above|below|breaks?|crosses?)(_|$)",
+    _re.IGNORECASE,
+)
+
+
+def looks_cross_style(trigger_base: str) -> bool:
+    """Return True if a trigger-base name looks like a level cross.
+
+    Heuristic for surfacing manifest gaps. Used by `audit_trigger_levels`
+    + the install-time warning hook in pack_registry.
+
+    Examples that match: cross_short_up, mid_cross_bull, bull_flip,
+    cross_above, breaks_above. Does NOT match: oversold,
+    bullish_c2_detected, max_hold_bars.
+    """
+    if not trigger_base or not isinstance(trigger_base, str):
+        return False
+    return bool(_CROSS_STYLE_PATTERN.search(trigger_base))
+
+
+def audit_trigger_levels(manifest: dict) -> List[str]:
+    """Return a list of WARNINGS (not errors) about trigger_levels coverage.
+
+    Phase 1 Hi-Fi infrastructure (2026-05-07) refines L-type signal
+    exits ONLY when the pack manifest declares `trigger_levels` for the
+    relevant trigger. This audit surfaces packs whose trigger-base
+    names look like static-level crosses (per `looks_cross_style`)
+    but lack a corresponding `trigger_levels` entry — likely an
+    oversight in AI-assisted pack creation, NOT a deliberate Phase-2
+    placement.
+
+    A pack author who genuinely intends Phase-2 detection (e.g. for
+    indicator-vs-indicator crosses in MACD, EMA stack, stochastic)
+    can suppress this warning by listing the trigger base in a
+    `trigger_levels_phase2` block (a separate top-level key).
+    `trigger_levels_phase2` is a placeholder schema today (any dict
+    is accepted); the audit only checks its KEYS to know which
+    triggers are intentionally non-static.
+
+    Returns: list of warning strings (one per omitted cross-style
+    trigger). Empty list = pack is consistent.
+    """
+    warnings = []
+    triggers = manifest.get("triggers", []) or []
+    if not isinstance(triggers, list):
+        return warnings
+    declared_levels = manifest.get("trigger_levels") or {}
+    declared_phase2 = manifest.get("trigger_levels_phase2") or {}
+    if not isinstance(declared_levels, dict):
+        declared_levels = {}
+    if not isinstance(declared_phase2, dict):
+        declared_phase2 = {}
+
+    for t in triggers:
+        if not isinstance(t, dict):
+            continue
+        base = t.get("base")
+        if not base:
+            continue
+        if not looks_cross_style(base):
+            continue
+        if base in declared_levels:
+            continue  # static-level cross declared, all good
+        if base in declared_phase2:
+            continue  # explicitly marked Phase 2, all good
+        warnings.append(
+            f"Trigger '{base}' looks like a level cross but is missing "
+            f"from both 'trigger_levels' (Phase 1 / static-level) and "
+            f"'trigger_levels_phase2' (intentional non-static marker). "
+            f"Hi-Fi Pass 2 will skip this trigger; sub-second exit "
+            f"refinement won't be available."
+        )
+    return warnings
+
+
 def validate_manifest(manifest: dict) -> Tuple[bool, List[str]]:
     """
     Validate a manifest dict against the Pack Spec schema.
