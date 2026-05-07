@@ -788,10 +788,19 @@ def append_new_trades_for_strategy(
                     if t.get('entry_fill_ts')
                 )
                 since_dt = datetime.fromisoformat(latest_entry_iso)
+                # Algo-model split (2026-05-07): cron dispatches under
+                # algo_model so the algo-history lane reflects what the
+                # live engine SHOULD have produced on the same data
+                # (cache_locked by default). Falls back to backtest_model
+                # for strategies that pre-date the algo_model field.
+                algo_model = cfg.get('algo_model') or cfg.get('backtest_model')
                 all_trades_df = svc.get_strategy_trades_for_window(
-                    strat, since_dt=since_dt, until_dt=now_dt)
+                    strat, since_dt=since_dt, until_dt=now_dt,
+                    model_override=algo_model)
             else:
-                all_trades_df = svc.get_strategy_trades(strat)
+                algo_model = cfg.get('algo_model') or cfg.get('backtest_model')
+                all_trades_df = svc.get_strategy_trades(
+                    strat, model_override=algo_model)
         except Exception as e:
             logger.warning(
                 "[ALGO-APPEND] strategy=%s engine run (%s) failed: %s",
@@ -890,18 +899,21 @@ def append_new_trades_for_strategy(
         #                     sub-second alignment is the win we want
         # - cache_corrected:  same logic when Phase D ships
         # - rest_only:        skip — fast bulk default
+        # Hi-Fi gate uses algo_model (2026-05-07) — this path produces
+        # the algo lane, so Hi-Fi eligibility follows that model not
+        # the backtest model.
         HIFI_BACKTEST_MODELS = {'rest_hifi', 'cache_locked', 'cache_corrected'}
         hifi_summary = None
-        bt_model = cfg.get('backtest_model')
-        if inserted > 0 and bt_model in HIFI_BACKTEST_MODELS:
+        algo_model_for_hifi = cfg.get('algo_model') or cfg.get('backtest_model')
+        if inserted > 0 and algo_model_for_hifi in HIFI_BACKTEST_MODELS:
             try:
                 from api.routers.strategies import run_hifi_pass2
                 hifi_summary = run_hifi_pass2(
                     strategy_id, user={'id': user_id})
                 logger.info(
-                    "[ALGO-APPEND] strategy=%s bt=%s Hi-Fi pass: refined "
+                    "[ALGO-APPEND] strategy=%s algo=%s Hi-Fi pass: refined "
                     "entries=%s exits=%s persisted=%s",
-                    strategy_id, bt_model,
+                    strategy_id, algo_model_for_hifi,
                     hifi_summary.get('entries_refined', 0),
                     hifi_summary.get('exits_refined', 0),
                     hifi_summary.get('persisted', 0))

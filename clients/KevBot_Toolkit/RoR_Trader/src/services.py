@@ -121,13 +121,17 @@ def _resolve_primary_df_for_backtest_model(
     end_date,
     timeframe: str,
     secondary_tfs: tuple,
+    model_override: str | None = None,
 ):
     """Phase E preview (2026-05-06): route cache-backed backtest models.
+    Algo split (2026-05-07): accepts `model_override` so callers can
+    dispatch under `algo_model` instead of `backtest_model` (cron uses
+    this to populate the algo lane).
 
-    When the strategy's `config.backtest_model` is `cache_locked` or
-    `cache_corrected`, return (primary_df, secondary_tf_dfs) populated
-    from `live_bars` cache. Otherwise return (None, None) so the caller
-    falls back to the REST-default path in prepare_data_with_indicators.
+    When the resolved model is `cache_locked` or `cache_corrected`,
+    return (primary_df, secondary_tf_dfs) populated from `live_bars`
+    cache. Otherwise return (None, None) so the caller falls back to
+    the REST-default path in prepare_data_with_indicators.
 
     Modular dispatch — adds new backtest models by extending this table:
       - 'rest_only', 'rest_hifi', None: REST default (return None, None)
@@ -139,10 +143,13 @@ def _resolve_primary_df_for_backtest_model(
     Caller is responsible for handling empty cache gracefully — typical
     pattern is to fall through to REST when cache returns empty DF.
     """
-    bt_model = (strat.get('config') or {}).get('backtest_model') \
-        if isinstance(strat.get('config'), dict) else None
-    if not bt_model:
-        bt_model = strat.get('backtest_model')
+    if model_override is not None:
+        bt_model = model_override
+    else:
+        bt_model = (strat.get('config') or {}).get('backtest_model') \
+            if isinstance(strat.get('config'), dict) else None
+        if not bt_model:
+            bt_model = strat.get('backtest_model')
     if bt_model not in ('cache_locked', 'cache_corrected'):
         return None, None
 
@@ -181,6 +188,7 @@ def prepare_data_with_indicators(
     primary_df: Optional[pd.DataFrame] = None,
     secondary_tf_dfs: Optional[Dict[str, pd.DataFrame]] = None,
     strat: Optional[dict] = None,
+    model_override: Optional[str] = None,
 ) -> pd.DataFrame:
     """Load market data and run all indicators, interpreters, and trigger detection.
 
@@ -223,7 +231,8 @@ def prepare_data_with_indicators(
         try:
             cache_primary, cache_secondary = \
                 _resolve_primary_df_for_backtest_model(
-                    strat, start_date, end_date, timeframe, secondary_tfs)
+                    strat, start_date, end_date, timeframe, secondary_tfs,
+                    model_override=model_override)
             if cache_primary is not None and len(cache_primary) > 0:
                 primary_df = cache_primary
                 if secondary_tf_dfs is None and cache_secondary:
@@ -491,6 +500,7 @@ def get_strategy_trades_for_window(
     until_dt: datetime,
     warmup_bars: int = 100,
     data_feed: str = "sip",
+    model_override: str | None = None,
 ) -> pd.DataFrame:
     """Run the unified engine over a small windowed slice of bars.
 
@@ -558,6 +568,7 @@ def get_strategy_trades_for_window(
         session=strat.get('trading_session', 'RTH'),
         secondary_tfs=sec_tfs,
         strat=strat,  # Phase E preview: enables cache_locked dispatch
+        model_override=model_override,  # algo_model split (2026-05-07)
     )
     if len(df) == 0:
         return pd.DataFrame()
@@ -611,11 +622,16 @@ def _has_long_cycle_secondary_tf(strat: dict) -> bool:
     return False
 
 
-def get_strategy_trades(strat: dict, data_feed: str = "sip") -> pd.DataFrame:
+def get_strategy_trades(strat: dict, data_feed: str = "sip", model_override: str | None = None) -> pd.DataFrame:
     """Get trades for any modern strategy (backtest-only or forward-testing).
 
     Extracted from app.py:892. The data_feed parameter replaces the
     Streamlit session-state lookup (_get_data_feed).
+
+    `model_override` (2026-05-07): forces the engine to dispatch on a
+    specific backtest_model value instead of strategy.config.backtest_model.
+    Used by the cron path to run under `algo_model` while leaving the
+    strategy's backtest_model alone.
     """
     # Webhook origin: use stored trades only
     if strat.get('strategy_origin') == 'webhook_inbound':
@@ -625,7 +641,8 @@ def get_strategy_trades(strat: dict, data_feed: str = "sip") -> pd.DataFrame:
         return pd.DataFrame()
 
     if strat.get('forward_testing') and strat.get('forward_test_start'):
-        df_full, bt, fw, _ = prepare_forward_test_data(strat, data_feed=data_feed)
+        df_full, bt, fw, _ = prepare_forward_test_data(
+            strat, data_feed=data_feed, model_override=model_override)
         trades = pd.concat([bt, fw], ignore_index=True)
         # Attach trading_days from the source bars so callers can compute
         # daily_r against the full period (matches Mass Builder semantics).

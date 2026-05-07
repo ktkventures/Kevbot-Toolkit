@@ -1,12 +1,24 @@
 """Strategy model definitions (M8.7).
 
-Each strategy declares two model properties:
+Each strategy declares THREE model properties (algo_model added 2026-05-07):
   - backtest_model: data source for `recompute_and_persist_stored_trades`
-                    (the algo-history view). Safe to change without
-                    affecting live execution; affects analytics only.
+                    (the strategy's KPI baseline / "what should this
+                    strategy theoretically produce on the broadest data").
+                    Default: 'rest_hifi'. Safe to change without affecting
+                    live execution.
+  - algo_model:     data source for the cron's incremental algo-history
+                    append (the strategy's "live-accountability" lane —
+                    what the live engine SHOULD have produced on the
+                    same data it saw). Default: 'cache_locked'. Decoupled
+                    from backtest_model 2026-05-07 so the Divergence tab
+                    can compare both lanes honestly.
   - live_model:     how the live engine sources 1Min bars and handles
-                    rebroadcasts.  Changes to live_model affect alert
-                    firing and should be made with care.
+                    rebroadcasts. Default: 'ws_agg_locked'. Changes
+                    affect alert firing — make with care.
+
+Same registry of models (BACKTEST_MODELS) drives both backtest_model
+and algo_model fields — they're two consumers of the same model
+catalogue.
 
 Modular framing: strategies authored under model X stay valid even
 when defaults shift — every strategy carries its declared models in
@@ -37,23 +49,27 @@ BACKTEST_MODELS = {
     'rest_only': {
         'label': 'REST default',
         'available': True,
-        'default': True,
+        'default': False,  # demoted 2026-05-07 in favor of rest_hifi
         'description': (
-            'Polygon REST canonical 1Min bars. Current default. '
+            'Polygon REST canonical 1Min bars. '
             'Includes all FINRA late-print corrections and '
             'end-of-day reconciliation. Recommended baseline for '
-            'historical backtests of any duration.'
+            'historical backtests of any duration. Faster than '
+            'rest_hifi but coarser timestamps on L-type events.'
         ),
     },
     'rest_hifi': {
         'label': 'REST + Hi-Fi Pass 2',
         'available': True,
-        'default': False,
+        'default': True,  # promoted 2026-05-07 — broadest data + sub-second L-type timestamps
         'description': (
             'REST bars with Hi-Fi 1-second refinement (Pass 2). '
             'Refines entry/exit timestamps using per-second data '
-            'where available. Best for sub-minute strategies on '
-            'REST data.'
+            'where available. Default backtest_model — broadest '
+            'historical coverage with sub-second L-type alignment '
+            'on packs declaring trigger_levels (eppv3/eppv4/utv4 '
+            'today). Confluence still bar-aligned (CB-fidelity is '
+            'future work).'
         ),
     },
     'cache_locked': {
@@ -158,17 +174,36 @@ def get_default_backtest_model() -> str:
     for k, v in BACKTEST_MODELS.items():
         if v.get('default'):
             return k
-    return 'rest_only'
+    return 'rest_hifi'
+
+
+def get_default_algo_model() -> str:
+    """Default `algo_model` field — what the cron uses for the algo
+    accountability lane. Distinct from backtest_model since 2026-05-07.
+
+    Returns 'cache_locked' as the explicit default — closest to what
+    the live engine actually sees, gives the strongest accountability
+    check against live alerts. Strategies on tickers without cache
+    coverage (cache_locked.available will eventually narrow per-symbol)
+    fall back to backtest_model at dispatch time.
+    """
+    return 'cache_locked'
 
 
 def get_default_live_model() -> str:
     for k, v in LIVE_MODELS.items():
         if v.get('default'):
             return k
-    return 'ws_with_corrections'
+    return 'ws_agg_locked'
 
 
 def is_valid_backtest_model(value: str) -> bool:
+    return value in BACKTEST_MODELS
+
+
+def is_valid_algo_model(value: str) -> bool:
+    """algo_model uses the same registry as backtest_model (same models,
+    different consumer). No separate ALGO_MODELS dict."""
     return value in BACKTEST_MODELS
 
 

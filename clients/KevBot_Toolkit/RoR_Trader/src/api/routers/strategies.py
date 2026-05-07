@@ -362,13 +362,15 @@ def list_strategy_models():
     """
     from strategy_models import (
         BACKTEST_MODELS, LIVE_MODELS,
-        get_default_backtest_model, get_default_live_model,
+        get_default_backtest_model, get_default_algo_model, get_default_live_model,
     )
     return {
         "backtest_models": BACKTEST_MODELS,
+        "algo_models": BACKTEST_MODELS,  # same registry, different consumer
         "live_models": LIVE_MODELS,
         "defaults": {
             "backtest_model": get_default_backtest_model(),
+            "algo_model": get_default_algo_model(),
             "live_model": get_default_live_model(),
         },
     }
@@ -519,12 +521,15 @@ def get_strategy(strategy_id: int, date_range: str = "Strategy Default", user=De
     # frontend always has a value to render.
     try:
         from strategy_models import (
-            get_default_backtest_model, get_default_live_model,
-            is_valid_backtest_model, is_valid_live_model,
+            get_default_backtest_model, get_default_algo_model, get_default_live_model,
+            is_valid_backtest_model, is_valid_algo_model, is_valid_live_model,
         )
         if not enriched.get('backtest_model') or \
                 not is_valid_backtest_model(enriched.get('backtest_model')):
             enriched['backtest_model'] = get_default_backtest_model()
+        if not enriched.get('algo_model') or \
+                not is_valid_algo_model(enriched.get('algo_model')):
+            enriched['algo_model'] = get_default_algo_model()
         if not enriched.get('live_model') or \
                 not is_valid_live_model(enriched.get('live_model')):
             enriched['live_model'] = get_default_live_model()
@@ -1384,6 +1389,8 @@ def get_strategy_divergence_data(
         'forward_test_start': strat.get('forward_test_start'),
         'backtest_model': (strat.get('config') or {}).get('backtest_model')
                           or strat.get('backtest_model'),
+        'algo_model': (strat.get('config') or {}).get('algo_model')
+                      or strat.get('algo_model'),
         'live_model': (strat.get('config') or {}).get('live_model')
                       or strat.get('live_model'),
         'backtest': {
@@ -2310,6 +2317,84 @@ def get_trigger_analysis(strategy_id: int, user=Depends(get_current_user)):
 # =============================================================================
 # REFRESH / UPDATE DATA
 # =============================================================================
+
+@router.post("/{strategy_id}/update")
+def update_strategy_lanes(
+    strategy_id: int,
+    mode: str = Query(..., regex="^(all|new)$",
+        description="'all' = full recompute; 'new' = forward append since last stamp"),
+    user=Depends(get_current_user),
+):
+    """Update strategy data on backtest + algo lanes (Option A — both lanes
+    fan-out from one button click).
+
+    `mode='all'`:
+      - Backtest lane: full recompute via `recompute_and_persist_stored_trades`
+        (uses backtest_model, writes stored_trades JSONB)
+      - Algo lane: forward append via `append_new_trades_for_strategy` with
+        force=True (uses algo_model, writes trades table)
+      - **Limitation:** "full algo recompute" (deletes + re-runs trades-table
+        rows under algo_model) is not yet implemented — deferred. Today's
+        cache_locked algo lane only has ~1-2 days of data anyway, so the
+        forward append covers approximately the same window.
+
+    `mode='new'`:
+      - Backtest lane: NO-OP for now (forward append on stored_trades is
+        deferred — full recompute remains the only backtest update path
+        until we implement extension semantics)
+      - Algo lane: forward append (uses algo_model, writes trades table)
+
+    Per Kevin 2026-05-07 design discussion: both buttons should fan to
+    both lanes (Option A). Two of the four lane×mode combinations are
+    deferred as documented above.
+    """
+    _get_or_404(strategy_id, user)
+    user_id = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
+
+    from api.services.forward_test_service import (
+        recompute_and_persist_stored_trades,
+        append_new_trades_for_strategy,
+    )
+
+    backtest_result = None
+    algo_result = None
+
+    try:
+        if mode == 'all':
+            try:
+                backtest_result = recompute_and_persist_stored_trades(strategy_id, user_id)
+            except Exception as e:
+                logger.exception("backtest lane failed for sid=%s", strategy_id)
+                backtest_result = {'status': 'error', 'reason': str(e)}
+
+            try:
+                algo_result = append_new_trades_for_strategy(
+                    strategy_id, user_id, force=True)
+            except Exception as e:
+                logger.exception("algo lane failed for sid=%s", strategy_id)
+                algo_result = {'status': 'error', 'reason': str(e)}
+
+        else:  # mode == 'new'
+            backtest_result = {
+                'status': 'skipped',
+                'reason': 'forward_append_on_backtest_lane_not_yet_implemented',
+            }
+            try:
+                algo_result = append_new_trades_for_strategy(
+                    strategy_id, user_id, force=True)
+            except Exception as e:
+                logger.exception("algo lane failed for sid=%s", strategy_id)
+                algo_result = {'status': 'error', 'reason': str(e)}
+
+        return {
+            'mode': mode,
+            'backtest': backtest_result,
+            'algo': algo_result,
+        }
+    except Exception as e:
+        logger.exception("update_strategy_lanes failed for sid=%s", strategy_id)
+        raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
+
 
 @router.post("/{strategy_id}/refresh")
 def refresh_strategy(strategy_id: int, user=Depends(get_current_user)):
