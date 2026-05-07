@@ -21,6 +21,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-05-07
 
+- **23:10 UTC (17:10 MT)** — `3bf6911` + `a6d0bb8` M8.7 algo_model split + live_model labeling + Divergence buttons
+  - Service(s) redeployed: api (algo_model field, /update endpoint, divergence response), Worker (DBAlertDispatcher + AlertDispatcher stamp live_model on alert fire), frontend (Update buttons + lane badges + Live model column)
+  - Observed cache gap: TBD
+  - Notes: TWO migrations need to run on Supabase: `alerts_live_model_column.sql` (adds live_model TEXT column to alerts) and previously-applied `algo_history_cron_cycles.sql`. Bulk migration `_bulk_set_algo_model.py --apply` already ran — all 20 strategies now backtest_model=rest_hifi + algo_model=cache_locked. Sid 152 flipped from cache_locked-backtest. Live alerts going forward carry live_model in payload; legacy alerts render "unknown" (no backfill). Backup: `dev-backup-pre-algo-model-2026-05-07-evening`. Two of four lane×mode update combinations deferred (forward backtest append + full algo recompute).
+
 - **21:25 UTC (15:25 MT)** — `cd58026` M8.7 Divergence tab: 3-lane comparison on Strategy Detail
   - Service(s) redeployed: api (new endpoint + service), frontend (new tab + hook + types)
   - Observed cache gap: TBD
