@@ -242,6 +242,10 @@ ALERT_COLUMN_FIELDS = {
     'actual_price',
     # Webhook delivery tracking — resolves pre-existing PGRST204 drift
     'webhook_deliveries',
+    # algo_model split (2026-05-07): which live_model produced this alert.
+    # Stamped at fire time so Divergence tab can attribute alerts to model.
+    # Legacy alerts (pre-2026-05-07) stay null and render as "unknown".
+    'live_model',
 }
 
 

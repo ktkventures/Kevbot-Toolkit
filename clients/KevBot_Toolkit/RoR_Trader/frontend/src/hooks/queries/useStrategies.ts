@@ -298,6 +298,7 @@ export interface DivergenceLaneTrade {
   direction: string | null;
   exit_reason: string | null;
   data_source: string | null;
+  live_model: string | null;
 }
 
 export type LaneComposition =
@@ -336,6 +337,7 @@ export interface DivergenceData {
   strategy_id: number;
   forward_test_start: string | null;
   backtest_model: string | null;
+  algo_model: string | null;
   live_model: string | null;
   backtest: { count: number; last_trade_ts: string | null; available: boolean };
   algo: { count: number; last_trade_ts: string | null; available: boolean };
@@ -358,6 +360,19 @@ export interface DivergenceData {
   lane_counts: { rest: number; cache: number; live: number };
   forward_test_only: boolean;
   direction_filter: string | null;
+}
+
+export interface UpdateLaneResult {
+  status: string;
+  reason?: string;
+  inserted?: number;
+  elapsed_s?: number;
+}
+
+export interface UpdateLanesResponse {
+  mode: 'all' | 'new';
+  backtest: UpdateLaneResult | null;
+  algo: UpdateLaneResult | null;
 }
 
 export function useStrategyDivergence(

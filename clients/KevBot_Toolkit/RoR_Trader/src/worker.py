@@ -220,6 +220,16 @@ class DBAlertDispatcher:
         fill_ts = signal_data.get(
             'entry_fill_ts' if is_entry else 'exit_fill_ts')
 
+        # algo_model split (2026-05-07): stamp the strategy's live_model on
+        # alert payload at fire time so the Divergence tab can attribute
+        # which live_model produced each alert. Future model switches affect
+        # alerts going forward only — historical alerts stay null and render
+        # as "unknown" per Kevin's "honesty over speed" guidance.
+        live_model_at_fire = (
+            (strategy.get('config') or {}).get('live_model')
+            or strategy.get('live_model')
+        )
+
         alert = {
             'type': sig_type,
             'trigger': signal_data.get('trigger', ''),
@@ -244,6 +254,7 @@ class DBAlertDispatcher:
             'timeframe': strategy.get('timeframe', '1Min'),
             'strategy_alerts_visible': True,
             'source': 'ralph',
+            'live_model': live_model_at_fire,
             # Top-level columns (post-migration) for the 4-field model.
             'event_type': 'fill',   # locked default; Behavior A cancels and
                                     # post-check validation_failed override

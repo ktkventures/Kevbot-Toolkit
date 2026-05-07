@@ -1008,6 +1008,15 @@ class AlertDispatcher:
         else:
             order_action = 'sell'
 
+        # algo_model split (2026-05-07): mirror of DBAlertDispatcher logic
+        # in worker.py — stamp strategy's live_model on alert payload at
+        # fire time. Per feedback_dispatcher_override_pitfall.md, both
+        # dispatcher classes must carry symmetric field-passing logic.
+        live_model_at_fire = (
+            (strategy.get('config') or {}).get('live_model')
+            or strategy.get('live_model')
+        )
+
         alert = {
             'type': sig_type,
             'trigger': signal.get('trigger', ''),
@@ -1026,6 +1035,7 @@ class AlertDispatcher:
             'timeframe': strategy.get('timeframe', '1Min'),
             'strategy_alerts_visible': True,
             'source': 'ralph',
+            'live_model': live_model_at_fire,
         }
 
         if signal['type'] == 'exit_signal':

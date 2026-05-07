@@ -123,6 +123,7 @@ def _pair_alerts_to_trades(alerts: list[dict]) -> list[dict]:
                 'direction': adir,
                 'entry_price': price,
                 'entry_alert_id': a.get('id'),
+                'live_model': a.get('live_model'),
             })
         elif 'exit' in atype:
             queue = open_entries_by_dir.get(adir, [])
@@ -138,6 +139,11 @@ def _pair_alerts_to_trades(alerts: list[dict]) -> list[dict]:
                     'entry_alert_id': entry.get('entry_alert_id'),
                     'exit_alert_id': a.get('id'),
                     '_lane': 'live',
+                    # Live model labeling (2026-05-07). Take ENTRY's live_model
+                    # since that's when the position was opened. Exit's model
+                    # would technically be different if user switched mid-trade,
+                    # but that's vanishingly rare and we're keeping it simple.
+                    'live_model': entry.get('live_model') or a.get('live_model'),
                 })
 
     for direction, queue in open_entries_by_dir.items():
@@ -153,6 +159,7 @@ def _pair_alerts_to_trades(alerts: list[dict]) -> list[dict]:
                 'exit_alert_id': None,
                 '_lane': 'live',
                 '_open': True,
+                'live_model': entry.get('live_model'),
             })
 
     return paired
@@ -224,6 +231,7 @@ def _shape_lane_trade(t: dict | None) -> dict | None:
         'direction': _trade_direction(t),
         'exit_reason': t.get('exit_reason') or t.get('exitReason'),
         'data_source': t.get('data_source'),
+        'live_model': t.get('live_model'),
     }
 
 

@@ -16,7 +16,7 @@ import { StrategyHealthBadge, StrategyHealthDrawer, StrategyFidelityBadges, type
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
 import { useLiveBar } from '@/hooks/queries/useLiveBar';
-import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy, useSetForwardTestStart } from '@/hooks/mutations/useStrategyMutations';
+import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy, useSetForwardTestStart, useUpdateStrategyLanes } from '@/hooks/mutations/useStrategyMutations';
 import { useDisplayStore } from '@/providers/StoreProvider';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
 
@@ -613,12 +613,32 @@ function DivergenceTabContent({ strategyId }: { strategyId: number }) {
   const [tolerance, setTolerance] = useState(300);
   const [laneFilter, setLaneFilter] = useState<string>('all');
   const [page, setPage] = useState(0);
+  const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const PAGE_SIZE = 30;
 
   const { data, isLoading, error } = useStrategyDivergence(strategyId, {
     forward_test_only: forwardOnly,
     tolerance_seconds: tolerance,
   });
+  const updateLanes = useUpdateStrategyLanes();
+
+  const handleUpdate = async (mode: 'all' | 'new') => {
+    setUpdateMsg(`${mode === 'all' ? 'Updating all data' : 'Updating new data'}…`);
+    try {
+      const res: any = await updateLanes.mutateAsync({ id: strategyId, mode });
+      const bt = res?.backtest;
+      const algo = res?.algo;
+      const parts: string[] = [];
+      if (bt?.status === 'skipped') parts.push('backtest skipped');
+      else if (bt?.status === 'error') parts.push(`backtest error: ${bt.reason}`);
+      else if (bt) parts.push(`backtest ${bt.status}`);
+      if (algo?.status === 'error') parts.push(`algo error: ${algo.reason}`);
+      else if (algo) parts.push(`algo ${algo.status} (+${algo.inserted ?? 0})`);
+      setUpdateMsg(parts.join(' · ') || 'done');
+    } catch (e: any) {
+      setUpdateMsg(`Failed: ${e?.message || String(e)}`);
+    }
+  };
 
   const filteredRows = useMemo(() => {
     if (!data) return [] as DivergenceRow[];
@@ -661,16 +681,53 @@ function DivergenceTabContent({ strategyId }: { strategyId: number }) {
 
   return (
     <div className="flex flex-col gap-3">
-      {/* Header / context */}
+      {/* Header / context + update buttons */}
       <Card>
-        <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          Compare three trade-source lanes for this strategy. Drift between
-          <strong> Backtest </strong>and<strong> Algo </strong>signals
-          backtest staleness; drift between<strong> Algo </strong>and
-          <strong> Live </strong>signals real engine→alert divergence. Color
-          coding: <span style={{ color: '#22c55e' }}>green = ≤2s</span> ·{' '}
-          <span style={{ color: '#eab308' }}>yellow = ≤30s</span> ·{' '}
-          <span style={{ color: '#ef4444' }}>red = &gt;30s</span>.
+        <div className="flex items-center justify-between gap-3 mb-2">
+          <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Compare three trade-source lanes for this strategy. Drift between
+            <strong> Backtest </strong>and<strong> Algo </strong>signals
+            backtest staleness; drift between<strong> Algo </strong>and
+            <strong> Live </strong>signals real engine→alert divergence. Color
+            coding: <span style={{ color: '#22c55e' }}>green = ≤2s</span> ·{' '}
+            <span style={{ color: '#eab308' }}>yellow = ≤30s</span> ·{' '}
+            <span style={{ color: '#ef4444' }}>red = &gt;30s</span>.
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => handleUpdate('new')}
+            disabled={updateLanes.isPending}
+            title="Forward append on algo lane only (forward backtest append is deferred — use Update All Data for full backtest refresh)"
+            style={{
+              padding: '6px 12px', borderRadius: 6,
+              background: 'var(--bg-input)', color: 'var(--text-primary)',
+              border: '1px solid var(--border)', fontSize: 13,
+              cursor: updateLanes.isPending ? 'not-allowed' : 'pointer',
+              opacity: updateLanes.isPending ? 0.6 : 1,
+            }}
+          >
+            {updateLanes.isPending ? 'Updating…' : 'Update New Data'}
+          </button>
+          <button
+            onClick={() => handleUpdate('all')}
+            disabled={updateLanes.isPending}
+            title="Full recompute on backtest lane (uses backtest_model) + forward append on algo lane (uses algo_model). Slow — make a coffee."
+            style={{
+              padding: '6px 12px', borderRadius: 6,
+              background: '#3b82f6', color: 'white',
+              border: 'none', fontSize: 13, fontWeight: 600,
+              cursor: updateLanes.isPending ? 'not-allowed' : 'pointer',
+              opacity: updateLanes.isPending ? 0.6 : 1,
+            }}
+          >
+            {updateLanes.isPending ? 'Updating…' : 'Update All Data'}
+          </button>
+          {updateMsg && (
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+              {updateMsg}
+            </span>
+          )}
         </div>
       </Card>
 
@@ -679,29 +736,32 @@ function DivergenceTabContent({ strategyId }: { strategyId: number }) {
         <div className="flex flex-col gap-2">
           <LaneStatusRow
             name="Backtest"
-            description="Last refresh output (stored_trades JSONB)"
+            description="stored_trades JSONB · KPI baseline"
             count={data.backtest.count}
             lastTs={data.backtest.last_trade_ts}
             available={data.backtest.available}
-            model={data.backtest_model || 'rest_only'}
+            model={data.backtest_model || 'rest_hifi'}
+            modelLabel="backtest_model"
             laneFilteredCount={data.lane_counts.rest}
           />
           <LaneStatusRow
             name="Algo"
-            description="Cron-appended algo history (trades table)"
+            description="trades table · cron-appended (live accountability)"
             count={data.algo.count}
             lastTs={data.algo.last_trade_ts}
             available={data.algo.available}
-            model={null}
+            model={(data as any).algo_model || 'cache_locked'}
+            modelLabel="algo_model"
             laneFilteredCount={data.lane_counts.cache}
           />
           <LaneStatusRow
             name="Live"
-            description="Alerts that actually fired"
+            description="alerts table · what actually fired"
             count={data.live.count}
             lastTs={data.live.last_alert_ts}
             available={data.live.count > 0}
             model={data.live_model || 'ws_agg_locked'}
+            modelLabel="live_model"
             laneFilteredCount={data.lane_counts.live}
           />
         </div>
@@ -799,12 +859,24 @@ function DivergenceTabContent({ strategyId }: { strategyId: number }) {
                 <th className="py-2 pr-2">Δ B↔A</th>
                 <th className="py-2 pr-2">Δ A↔L</th>
                 <th className="py-2 pr-2">Δ B↔L</th>
+                <th className="py-2 pr-2">Live model</th>
                 <th className="py-2 pr-2">Exit reason</th>
               </tr>
             </thead>
             <tbody>
               {visible.map((r) => {
                 const lane = LANE_LABELS[r.lane_composition] || LANE_LABELS.empty;
+                const liveModel = r.live?.live_model;
+                const liveModelDisplay = liveModel
+                  ? liveModel
+                  : r.live
+                  ? 'unknown'
+                  : '—';
+                const liveModelColor = liveModel
+                  ? 'var(--text-secondary)'
+                  : r.live
+                  ? 'var(--orange)'  // live row but no model = legacy unstamped alert
+                  : 'var(--text-muted)';
                 return (
                   <tr key={r.row_id} style={{ borderTop: '1px solid var(--border)' }}>
                     <td className="py-1 pr-2" style={{ color: 'var(--text-muted)' }}>{r.row_id}</td>
@@ -825,6 +897,9 @@ function DivergenceTabContent({ strategyId }: { strategyId: number }) {
                     <td className="py-1 pr-2" style={{ color: driftColor(r.drift_rest_live_entry_s) }}>
                       {fmtDriftSec(r.drift_rest_live_entry_s)}
                     </td>
+                    <td className="py-1 pr-2" style={{ color: liveModelColor }}>
+                      {liveModelDisplay}
+                    </td>
                     <td className="py-1 pr-2" style={{ color: 'var(--text-muted)' }}>
                       {r.cache?.exit_reason || r.live?.exit_reason || r.rest?.exit_reason || '—'}
                     </td>
@@ -833,7 +908,7 @@ function DivergenceTabContent({ strategyId }: { strategyId: number }) {
               })}
               {visible.length === 0 && (
                 <tr>
-                  <td colSpan={11} className="py-4 text-center" style={{ color: 'var(--text-muted)' }}>
+                  <td colSpan={12} className="py-4 text-center" style={{ color: 'var(--text-muted)' }}>
                     No rows for the current filter.
                   </td>
                 </tr>
@@ -867,7 +942,7 @@ function DivergenceTabContent({ strategyId }: { strategyId: number }) {
 }
 
 function LaneStatusRow({
-  name, description, count, lastTs, available, model, laneFilteredCount,
+  name, description, count, lastTs, available, model, modelLabel, laneFilteredCount,
 }: {
   name: string;
   description: string;
@@ -875,10 +950,11 @@ function LaneStatusRow({
   lastTs: string | null;
   available: boolean;
   model: string | null;
+  modelLabel?: string;
   laneFilteredCount: number;
 }) {
   return (
-    <div className="flex items-center gap-3 text-xs">
+    <div className="flex items-center gap-3 text-xs flex-wrap">
       <span style={{ width: 80, fontWeight: 600 }}>{name}</span>
       <span style={{ width: 60, textAlign: 'right' }}>{count}</span>
       {laneFilteredCount !== count && (
@@ -888,8 +964,20 @@ function LaneStatusRow({
       )}
       <span style={{ color: 'var(--text-muted)' }}>{fmtAgeShort(lastTs)}</span>
       {model && (
-        <span style={{ background: 'var(--bg-input)', padding: '1px 6px', borderRadius: 3, color: 'var(--text-secondary)' }}>
-          {model}
+        <span
+          title={modelLabel ? `${modelLabel}: ${model}` : model}
+          style={{
+            background: 'var(--bg-input)',
+            padding: '1px 6px',
+            borderRadius: 3,
+            color: 'var(--text-secondary)',
+            fontFamily: 'monospace',
+          }}
+        >
+          {modelLabel ? `${modelLabel}: ` : ''}
+          <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>
+            {model}
+          </span>
         </span>
       )}
       <span className="ml-auto" style={{ color: available ? 'var(--text-muted)' : 'var(--orange)' }}>
