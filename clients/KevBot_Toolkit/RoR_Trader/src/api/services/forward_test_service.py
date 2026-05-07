@@ -675,8 +675,37 @@ def append_new_trades_for_strategy(
     # Drops cycle time from ~25-30 min full-coverage to <1 min when most
     # strategies have no recent exits (typical case outside of high-vol
     # RTH windows).
+    # Floor is the EARLIER of:
+    #   - last_recompute_until_ts (when the cron last ran), and
+    #   - max(trades.exit_fill_ts) + 1 second (the actual data baseline)
+    # The latter catches the case where a previous run stamped
+    # last_recompute but failed to insert trades it should have (engine
+    # crash, warmup misconfigured, etc.). Without this, the alerts-gate
+    # would falsely think "no new trades since stamp" and skip forever
+    # — even though there are exit alerts past the actual data baseline
+    # waiting to be picked up. Documented bug found 2026-05-07 on sid 154.
     since_check_iso = last_until or (
         datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    try:
+        # Latest exit timestamp in the trades table for this strategy
+        from trades_store import load_trades_for_strategy as _load_trades_floor
+        _existing_for_floor = _load_trades_floor(
+            strategy_id, user_id) or []
+        if _existing_for_floor:
+            max_exit_iso = max(
+                str(t.get('exit_fill_ts'))
+                for t in _existing_for_floor
+                if t.get('exit_fill_ts')
+            )
+            # Use the EARLIER of last_until and max_exit. If max_exit is
+            # earlier, that's the actual baseline we trust.
+            if max_exit_iso < since_check_iso:
+                since_check_iso = max_exit_iso
+    except Exception as e:
+        logger.warning(
+            "[ALGO-APPEND] strategy=%s data-baseline lookup failed: %s",
+            strategy_id, e)
+
     try:
         # alerts.side='exit' identifies exit alerts; event_type is always
         # 'fill' regardless of side. Verified 2026-05-06 against schema.

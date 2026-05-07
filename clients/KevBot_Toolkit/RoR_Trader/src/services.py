@@ -445,19 +445,26 @@ def get_strategy_trades_for_window(
         return trades_df_from_stored(strat.get('stored_trades', []))
 
     timeframe = strat.get('timeframe', '1Min')
-    bpd = BARS_PER_DAY.get(timeframe, 390)
-    # Translate warmup-bars to calendar days. Use 365/252 multiplier to
-    # account for non-trading days inside the warmup window.
-    warmup_days = max(1, math.ceil(warmup_bars / max(bpd, 1) * 365 / 252))
+
+    # Compute warmup_days from the LONGEST TF the strategy uses
+    # (primary OR any secondary). A 10Sec strategy with a 15Min
+    # secondary needs warmup proportional to 15Min — 100 × 15min = 25
+    # hours = ~4 calendar days. Sizing warmup off the primary alone
+    # leaves secondary indicators in undefined (NaN) state, silently
+    # killing all confluence-gated triggers in the window. The min bpd
+    # (longest TF) is the binding constraint.
+    req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+    sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
+    all_tfs = [timeframe] + list(sec_tfs)
+    bpds = [BARS_PER_DAY.get(tf, 390) for tf in all_tfs]
+    binding_bpd = min(bpd for bpd in bpds if bpd > 0) if bpds else 390
+    warmup_days = max(1, math.ceil(warmup_bars / max(binding_bpd, 0.001) * 365 / 252))
 
     # Strip tz for comparison if since_dt carries one — prepare_data_with_indicators
     # accepts naive or aware; staying naive matches the Streamlit pattern.
     since_naive = since_dt.replace(tzinfo=None) if since_dt.tzinfo else since_dt
     start_date = since_naive - timedelta(days=warmup_days)
     end_date = until_dt.replace(tzinfo=None) if until_dt.tzinfo else until_dt
-
-    req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
-    sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
 
     df = prepare_data_with_indicators(
         strat['symbol'],
