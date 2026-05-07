@@ -120,3 +120,66 @@ export function useCancelJob() {
     },
   });
 }
+
+// ============================================================
+// Algo-history cron stats (M8.7 — 2026-05-07)
+// ============================================================
+
+export interface CronCyclePerStrategy {
+  sid: number;
+  name: string;
+  status: string | null;
+  inserted: number;
+  elapsed_s: number;
+  engine_path: string | null;
+  bars_processed: number | null;
+  window_days: number | null;
+  reason: string | null;
+  error?: string | null;
+}
+
+export interface CronCycleRow {
+  id: number;
+  user_id: string;
+  started_at: string;
+  ended_at: string;
+  processed: number;
+  inserted_total: number;
+  skipped: number;
+  errors: number;
+  elapsed_s: number;
+  budget_exhausted: boolean;
+  per_strategy: CronCyclePerStrategy[];
+  created_at: string;
+}
+
+export interface CronQueueRow {
+  sid: number;
+  name: string;
+  last_recompute_until_ts: string | null;
+  data_refreshed_at: string | null;
+  backtest_model: string | null;
+}
+
+export interface CronStatsResponse {
+  cron_enabled: boolean;
+  cron_interval_seconds: number;
+  cron_lag_minutes: number;
+  cycles: CronCycleRow[];
+  queue: CronQueueRow[];
+  queue_size: number;
+}
+
+export function useAlgoHistoryCronStats(limit = 20) {
+  return useQuery({
+    queryKey: ['cron-stats', 'algo-history', limit],
+    queryFn: () =>
+      apiFetch<CronStatsResponse>(
+        `/api/jobs/cron-stats/algo-history?limit=${limit}`,
+      ),
+    // Poll every 30s — cron runs at 5-min intervals so this is plenty.
+    // Cheaper than the 2s job-list poll.
+    refetchInterval: 30_000,
+    placeholderData: (prev) => prev,
+  });
+}

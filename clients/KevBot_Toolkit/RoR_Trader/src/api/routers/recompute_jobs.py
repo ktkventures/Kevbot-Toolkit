@@ -147,3 +147,68 @@ def list_jobs_endpoint(
         'jobs': list_jobs(user_id, status=status, limit=limit),
         'total': None,  # not paginated; client knows from len(jobs)
     }
+
+
+@router.get("/cron-stats/algo-history")
+def get_algo_history_cron_stats(
+    limit: int = Query(20, ge=1, le=100),
+    user=Depends(get_current_user),
+):
+    """Return recent algo-history cron cycle outcomes + queue health.
+
+    Combines:
+      - Last N cycle records (insertions, budget-exhausted, per-strategy
+        elapsed) — sourced from `algo_history_cron_cycles`.
+      - Current queue snapshot: oldest `last_recompute_until_ts` across
+        the user's strategies (the staleness indicator).
+      - Cron interval + lag from env (so the UI can compute "expected
+        cycle frequency").
+    """
+    import os
+    from db import (
+        load_algo_history_cron_cycles,
+        load_strategies_admin,
+    )
+
+    user_id = _resolve_user_id(user)
+
+    cycles = load_algo_history_cron_cycles(user_id, limit=limit)
+
+    # Queue snapshot: which strategies are stalest?
+    try:
+        strategies = load_strategies_admin(user_id) or []
+    except Exception:
+        strategies = []
+
+    queue_rows = []
+    for s in strategies:
+        cfg = s.get('config') or {}
+        if 'entry_trigger_confluence_id' not in cfg:
+            continue  # cron eligibility filter
+        queue_rows.append({
+            'sid': s.get('id'),
+            'name': s.get('name', '')[:40],
+            'last_recompute_until_ts': cfg.get('last_recompute_until_ts'),
+            'data_refreshed_at': cfg.get('data_refreshed_at'),
+            'backtest_model': cfg.get('backtest_model'),
+        })
+    # Sort oldest-first (None last)
+    queue_rows.sort(
+        key=lambda r: r.get('last_recompute_until_ts') or 'zzzz')
+
+    cron_interval = int(
+        os.environ.get('ALGO_HISTORY_CRON_INTERVAL_SECONDS', '300'))
+    cron_lag_minutes = int(
+        os.environ.get('ALGO_HISTORY_LAG_MINUTES', '15'))
+    cron_enabled = os.environ.get(
+        'ALGO_HISTORY_CRON_ENABLED', '').strip().lower() not in (
+        '0', 'false', 'no', 'off')
+
+    return {
+        'cron_enabled': cron_enabled,
+        'cron_interval_seconds': cron_interval,
+        'cron_lag_minutes': cron_lag_minutes,
+        'cycles': cycles,
+        'queue': queue_rows,
+        'queue_size': len(queue_rows),
+    }

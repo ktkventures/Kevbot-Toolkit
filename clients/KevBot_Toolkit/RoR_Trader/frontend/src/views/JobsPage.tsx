@@ -13,8 +13,11 @@ import {
   useJobsList,
   useJobStatus,
   useCancelJob,
+  useAlgoHistoryCronStats,
   type RecomputeJob,
   type JobStatus,
+  type CronCycleRow,
+  type CronQueueRow,
 } from '@/hooks/queries/useJobs';
 
 const btnSecondary: React.CSSProperties = {
@@ -49,6 +52,359 @@ function fmtAge(iso: string | null): string {
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
   if (ms < 86_400_000) return `${Math.round(ms / 3_600_000)}h ago`;
   return `${Math.round(ms / 86_400_000)}d ago`;
+}
+
+function ageMinutes(iso: string | null): number | null {
+  if (!iso) return null;
+  return (Date.now() - new Date(iso).getTime()) / 60_000;
+}
+
+function CronStatsPanel() {
+  const [expanded, setExpanded] = useState(false);
+  const { data, isLoading, error } = useAlgoHistoryCronStats(20);
+
+  if (isLoading || !data) {
+    return (
+      <Card>
+        <div style={{ padding: '12px', color: 'var(--text-muted)' }}>
+          Loading cron stats…
+        </div>
+      </Card>
+    );
+  }
+  if (error) {
+    return (
+      <Card>
+        <div style={{ padding: '12px', color: 'var(--red)' }}>
+          Cron stats unavailable: {(error as any)?.message || String(error)}
+        </div>
+      </Card>
+    );
+  }
+
+  const lastCycle: CronCycleRow | undefined = data.cycles[0];
+  const queue = data.queue || [];
+  const stalest = queue[0];
+  const stalestAgeMin = ageMinutes(stalest?.last_recompute_until_ts ?? null);
+  const cycleIntervalMin = data.cron_interval_seconds / 60;
+  // Heuristic: if oldest stamp is >3x the cycle interval, something is starving.
+  const starvationDetected =
+    stalestAgeMin !== null && stalestAgeMin > cycleIntervalMin * 3;
+
+  // Count strategies in three buckets: fresh (<1 cycle), normal (1–3 cycles), stale (>3 cycles).
+  const buckets = { fresh: 0, normal: 0, stale: 0, never: 0 };
+  for (const r of queue) {
+    const age = ageMinutes(r.last_recompute_until_ts);
+    if (age === null) buckets.never++;
+    else if (age < cycleIntervalMin) buckets.fresh++;
+    else if (age < cycleIntervalMin * 3) buckets.normal++;
+    else buckets.stale++;
+  }
+
+  // Aggregate the last 5 cycles so the panel reflects recent throughput,
+  // not just the most-recent cycle (which may have processed 0 strategies).
+  const recent5 = data.cycles.slice(0, 5);
+  const recent5Inserted = recent5.reduce((s, c) => s + (c.inserted_total || 0), 0);
+  const recent5BudgetExhausted = recent5.filter((c) => c.budget_exhausted).length;
+
+  return (
+    <Card>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '16px',
+          flexWrap: 'wrap',
+        }}
+      >
+        <div>
+          <div style={{ fontSize: '14px', fontWeight: 600, marginBottom: '4px' }}>
+            Algo History Cron
+            {!data.cron_enabled && (
+              <span
+                style={{
+                  marginLeft: '8px',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  background: 'var(--red-muted)',
+                  color: 'var(--red)',
+                  padding: '2px 8px',
+                  borderRadius: '4px',
+                  textTransform: 'uppercase',
+                }}
+              >
+                Disabled
+              </span>
+            )}
+            {starvationDetected && (
+              <span
+                style={{
+                  marginLeft: '8px',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  background: 'var(--orange-muted)',
+                  color: 'var(--orange)',
+                  padding: '2px 8px',
+                  borderRadius: '4px',
+                  textTransform: 'uppercase',
+                }}
+              >
+                Starvation
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
+            Cycle every {cycleIntervalMin}min, lag {data.cron_lag_minutes}min
+            · Queue {data.queue_size} strategies
+            {lastCycle && (
+              <>
+                {' '}
+                · Last cycle {fmtAge(lastCycle.started_at)}
+              </>
+            )}
+          </div>
+        </div>
+        <button style={btnSecondary} onClick={() => setExpanded((e) => !e)}>
+          {expanded ? 'Hide details' : 'Show details'}
+        </button>
+      </div>
+
+      {/* Quick metrics row */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+          gap: '8px',
+          marginTop: '12px',
+        }}
+      >
+        <Metric
+          label="Fresh"
+          value={String(buckets.fresh)}
+          hint={`<${cycleIntervalMin}min`}
+          color="var(--green)"
+        />
+        <Metric
+          label="Normal"
+          value={String(buckets.normal)}
+          hint={`${cycleIntervalMin}–${cycleIntervalMin * 3}min`}
+          color="var(--text-secondary)"
+        />
+        <Metric
+          label="Stale"
+          value={String(buckets.stale)}
+          hint={`>${cycleIntervalMin * 3}min`}
+          color={buckets.stale > 0 ? 'var(--orange)' : 'var(--text-muted)'}
+        />
+        {buckets.never > 0 && (
+          <Metric
+            label="Never"
+            value={String(buckets.never)}
+            hint="no stamp yet"
+            color="var(--text-muted)"
+          />
+        )}
+        <Metric
+          label="Last 5 cycles"
+          value={`+${recent5Inserted}`}
+          hint={
+            recent5BudgetExhausted > 0
+              ? `${recent5BudgetExhausted} budget-exhausted`
+              : 'all within budget'
+          }
+          color={recent5BudgetExhausted > 0 ? 'var(--orange)' : 'var(--green)'}
+        />
+        {stalest && stalestAgeMin !== null && (
+          <Metric
+            label="Oldest stamp"
+            value={`${Math.round(stalestAgeMin)}m`}
+            hint={`sid ${stalest.sid}`}
+            color={starvationDetected ? 'var(--orange)' : 'var(--text-secondary)'}
+          />
+        )}
+      </div>
+
+      {expanded && (
+        <div style={{ marginTop: '14px' }}>
+          <CronCycleHistory cycles={data.cycles} />
+          <CronQueueList queue={queue} cycleIntervalMin={cycleIntervalMin} />
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function Metric({
+  label,
+  value,
+  hint,
+  color,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  color?: string;
+}) {
+  return (
+    <div
+      style={{
+        background: 'var(--bg-input)',
+        padding: '8px 12px',
+        borderRadius: '6px',
+      }}
+    >
+      <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+        {label}
+      </div>
+      <div style={{ fontSize: '18px', fontWeight: 700, color: color || 'inherit' }}>
+        {value}
+      </div>
+      {hint && (
+        <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+          {hint}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CronCycleHistory({ cycles }: { cycles: CronCycleRow[] }) {
+  if (cycles.length === 0) {
+    return (
+      <div style={{ fontSize: '12px', color: 'var(--text-muted)', padding: '8px' }}>
+        No cycle history yet — table is empty.
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div
+        style={{
+          fontSize: '12px',
+          fontWeight: 600,
+          marginBottom: '6px',
+          color: 'var(--text-secondary)',
+        }}
+      >
+        Recent cycles ({cycles.length})
+      </div>
+      <div
+        style={{
+          background: 'var(--bg-input)',
+          borderRadius: '6px',
+          padding: '8px',
+          fontSize: '11px',
+          fontFamily: 'monospace',
+          maxHeight: '240px',
+          overflowY: 'auto',
+        }}
+      >
+        {cycles.map((c) => (
+          <div
+            key={c.id}
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '110px 60px 60px 60px 80px 1fr',
+              gap: '8px',
+              padding: '3px 0',
+              borderBottom: '1px solid var(--border)',
+            }}
+          >
+            <span style={{ color: 'var(--text-muted)' }}>
+              {fmtAge(c.started_at)}
+            </span>
+            <span>processed {c.processed}</span>
+            <span style={{ color: c.inserted_total > 0 ? 'var(--green)' : 'var(--text-muted)' }}>
+              +{c.inserted_total}
+            </span>
+            <span style={{ color: c.errors > 0 ? 'var(--red)' : 'var(--text-muted)' }}>
+              err {c.errors}
+            </span>
+            <span>{c.elapsed_s.toFixed(1)}s</span>
+            <span
+              style={{
+                color: c.budget_exhausted ? 'var(--orange)' : 'var(--text-muted)',
+                fontWeight: c.budget_exhausted ? 600 : 400,
+              }}
+            >
+              {c.budget_exhausted ? 'BUDGET EXHAUSTED' : 'ok'}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CronQueueList({
+  queue,
+  cycleIntervalMin,
+}: {
+  queue: CronQueueRow[];
+  cycleIntervalMin: number;
+}) {
+  if (queue.length === 0) return null;
+  return (
+    <div style={{ marginTop: '14px' }}>
+      <div
+        style={{
+          fontSize: '12px',
+          fontWeight: 600,
+          marginBottom: '6px',
+          color: 'var(--text-secondary)',
+        }}
+      >
+        Queue (oldest stamp first — these get cron priority next cycle)
+      </div>
+      <div
+        style={{
+          background: 'var(--bg-input)',
+          borderRadius: '6px',
+          padding: '8px',
+          fontSize: '11px',
+          fontFamily: 'monospace',
+          maxHeight: '320px',
+          overflowY: 'auto',
+        }}
+      >
+        {queue.map((r) => {
+          const age = ageMinutes(r.last_recompute_until_ts);
+          const ageColor =
+            age === null
+              ? 'var(--text-muted)'
+              : age < cycleIntervalMin
+              ? 'var(--green)'
+              : age < cycleIntervalMin * 3
+              ? 'var(--text-secondary)'
+              : 'var(--orange)';
+          return (
+            <div
+              key={r.sid}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '50px 1fr 100px 110px',
+                gap: '8px',
+                padding: '3px 0',
+                borderBottom: '1px solid var(--border)',
+              }}
+            >
+              <span style={{ color: 'var(--text-muted)' }}>sid {r.sid}</span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {r.name}
+              </span>
+              <span style={{ color: 'var(--text-muted)' }}>
+                {r.backtest_model || '—'}
+              </span>
+              <span style={{ color: ageColor, textAlign: 'right' }}>
+                {age === null ? 'never' : `${Math.round(age)}m ago`}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 function fmtJobType(jt: string): string {
@@ -353,6 +709,10 @@ export default function JobsPage() {
             is in-memory; jobs are lost on a worker restart.
           </p>
         </div>
+      </div>
+
+      <div style={{ marginBottom: '16px' }}>
+        <CronStatsPanel />
       </div>
 
       <div

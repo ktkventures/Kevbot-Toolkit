@@ -1192,6 +1192,7 @@ class WorkerManager:
         per_user_budget = budget / max(1, len(active_uids))
 
         for uid in active_uids:
+            cycle_started = datetime.now(timezone.utc).isoformat()
             try:
                 summary = append_recent_trades_for_user(
                     uid, max_seconds=per_user_budget)
@@ -1207,6 +1208,25 @@ class WorkerManager:
                     ' (BUDGET EXHAUSTED)'
                     if summary.get('budget_exhausted') else '',
                 )
+                # Persist cycle stats so Jobs page can surface throughput
+                # + budget-exhausted + per-strategy starvation patterns
+                # without requiring Railway log access.
+                try:
+                    from db import (
+                        insert_algo_history_cron_cycle,
+                        prune_old_algo_history_cron_cycles,
+                    )
+                    cycle_ended = datetime.now(timezone.utc).isoformat()
+                    insert_algo_history_cron_cycle(
+                        uid, cycle_started, cycle_ended, summary)
+                    # Bound table growth — prune older cycles every 10th
+                    # write (cheap; avoids hitting DB on every cycle).
+                    if int(time.time()) % 10 == 0:
+                        prune_old_algo_history_cron_cycles(uid, keep_n=200)
+                except Exception as persist_err:
+                    logger.warning(
+                        "[%s] Algo-history persist failed: %s",
+                        uid[:8], persist_err)
             except Exception as e:
                 logger.error(
                     "[%s] Algo-history user-cycle crashed: %s",

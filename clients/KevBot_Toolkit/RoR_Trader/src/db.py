@@ -1796,3 +1796,79 @@ def list_pack_parity_statuses(user_id: str) -> list:
             "list_pack_parity_statuses(%s) failed: %s",
             user_id[:8] if user_id else '?', e)
         return []
+
+
+# ============================================================
+# Algo-history cron cycle stats (M8.7 — 2026-05-07)
+# ============================================================
+
+def insert_algo_history_cron_cycle(
+    user_id: str,
+    started_at: str,
+    ended_at: str,
+    summary: dict,
+) -> None:
+    """Persist one cron cycle's outcome. Best-effort — failures swallowed."""
+    try:
+        client = get_admin_client()
+        row = {
+            'user_id': user_id,
+            'started_at': started_at,
+            'ended_at': ended_at,
+            'processed': int(summary.get('processed') or 0),
+            'inserted_total': int(summary.get('inserted_total') or 0),
+            'skipped': int(summary.get('skipped') or 0),
+            'errors': int(summary.get('errors') or 0),
+            'elapsed_s': float(summary.get('elapsed_s') or 0.0),
+            'budget_exhausted': bool(summary.get('budget_exhausted') or False),
+            'per_strategy': summary.get('detail') or [],
+        }
+        client.table('algo_history_cron_cycles').insert(row).execute()
+    except Exception as e:
+        logger.warning(
+            "insert_algo_history_cron_cycle(%s) failed: %s",
+            user_id[:8] if user_id else '?', e)
+
+
+def load_algo_history_cron_cycles(user_id: str, limit: int = 50) -> list:
+    """Return the user's most recent N cron cycles, newest first."""
+    try:
+        client = get_admin_client()
+        r = (client.table('algo_history_cron_cycles')
+             .select('*')
+             .eq('user_id', user_id)
+             .order('started_at', desc=True)
+             .limit(limit)
+             .execute())
+        return r.data or []
+    except Exception as e:
+        logger.warning(
+            "load_algo_history_cron_cycles(%s) failed: %s",
+            user_id[:8] if user_id else '?', e)
+        return []
+
+
+def prune_old_algo_history_cron_cycles(user_id: str, keep_n: int = 200) -> int:
+    """Bound the table by deleting rows older than the keep_n-th newest."""
+    try:
+        client = get_admin_client()
+        r = (client.table('algo_history_cron_cycles')
+             .select('started_at')
+             .eq('user_id', user_id)
+             .order('started_at', desc=True)
+             .range(keep_n, keep_n)
+             .execute())
+        if not r.data:
+            return 0
+        cutoff = r.data[0]['started_at']
+        d = (client.table('algo_history_cron_cycles')
+             .delete()
+             .eq('user_id', user_id)
+             .lt('started_at', cutoff)
+             .execute())
+        return len(d.data or [])
+    except Exception as e:
+        logger.warning(
+            "prune_old_algo_history_cron_cycles(%s) failed: %s",
+            user_id[:8] if user_id else '?', e)
+        return 0
