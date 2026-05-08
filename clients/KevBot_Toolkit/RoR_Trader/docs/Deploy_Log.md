@@ -19,6 +19,13 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-05-08
+
+- **16:30 UTC (10:30 MT)** — `d867e63` + `5fddf86` M8.7 lane×mode matrix complete + button uniformity
+  - Service(s) redeployed: api (2 new helpers + JWT-safe /update endpoint), recompute_jobs worker (bulk fans to both lanes), frontend (Strategy Detail header buttons unified)
+  - Observed cache gap: TBD
+  - Notes: All 4 lane×mode combinations now wired in /update endpoint. Adds `append_new_backtest_trades_for_strategy` (forward append → stored_trades JSONB under backtest_model) and `recompute_and_persist_algo_trades` (full recompute → trades table under algo_model). JWT expiration on long backtest runs fixed via `set_admin_user_context` wrapper. Bulk page job-worker also fans out to both lanes per Option A. Strategy Detail header now has Update New Data + Update All Data instead of Refresh. Live model labeling on alerts verified working — 20/20 alerts since 2026-05-07 22:00 UTC carry `live_model='ws_agg_locked'`. Backup: `dev-backup-pre-lane-mode-matrix-2026-05-08`.
+
 ## 2026-05-07
 
 - **23:10 UTC (17:10 MT)** — `3bf6911` + `a6d0bb8` M8.7 algo_model split + live_model labeling + Divergence buttons
