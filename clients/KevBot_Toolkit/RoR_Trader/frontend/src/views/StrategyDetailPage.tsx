@@ -1039,7 +1039,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const { data: triggerAnalysis } = useTriggerAnalysis(strategyId);
   const deleteMut = useDeleteStrategy();
   const dupMut = useDuplicateStrategy();
-  const refreshMut = useRefreshStrategy();
+  // refreshMut removed 2026-05-08 — header buttons now use updateLanes
+  const updateLanes = useUpdateStrategyLanes();
   const chartPrefs = useChartPrefs();
 
   // Price chart data — fast OHLCV from bars endpoint, slow indicators from chart-data
@@ -2493,11 +2494,20 @@ export default function StrategyDetailPage({ strategyId }: Props) {
               {fwdLoading ? 'Loading FWD...' : 'Update Forward Tests'}
             </button>
             <button
-              style={{ ...btnSecondary, opacity: refreshMut.isPending ? 0.6 : 1 }}
-              disabled={refreshMut.isPending}
-              onClick={() => refreshMut.mutate(strategyId)}
+              style={{ ...btnSecondary, opacity: updateLanes.isPending ? 0.6 : 1 }}
+              disabled={updateLanes.isPending}
+              onClick={() => updateLanes.mutate({ id: strategyId, mode: 'new' })}
+              title="Forward append on both lanes (fast — picks up since last update)"
             >
-              {refreshMut.isPending ? 'Refreshing...' : 'Update All Data'}
+              {updateLanes.isPending ? 'Updating…' : 'Update New Data'}
+            </button>
+            <button
+              style={{ ...btnSecondary, opacity: updateLanes.isPending ? 0.6 : 1 }}
+              disabled={updateLanes.isPending}
+              onClick={() => updateLanes.mutate({ id: strategyId, mode: 'all' })}
+              title="Full recompute on both lanes (slow — make a coffee)"
+            >
+              {updateLanes.isPending ? 'Updating…' : 'Update All Data'}
             </button>
             <button style={btnSecondary} onClick={() => dupMut.mutate(strategyId)}>Clone</button>
             <button
@@ -2604,27 +2614,49 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       />
 
       {/* Loading indicators */}
-      {(fwdLoading || refreshMut.isPending) && (
+      {(fwdLoading || updateLanes.isPending) && (
         <div className="mb-3 px-4 py-2.5 rounded-lg flex items-center gap-3" style={{ background: 'var(--accent-muted)', border: '1px solid var(--accent)30' }}>
           <div className="w-4 h-4 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--accent)', borderTopColor: 'transparent' }} />
           <span className="text-sm" style={{ color: 'var(--accent)' }}>
-            {refreshMut.isPending ? 'Updating strategy data — loading bars from Polygon and running backtest...' : 'Computing forward test trades — this may take 10-30 seconds for 1-minute timeframes...'}
+            {updateLanes.isPending ? 'Updating both lanes — backtest + algo...' : 'Computing forward test trades — this may take 10-30 seconds for 1-minute timeframes...'}
           </span>
         </div>
       )}
-      {refreshMut.isSuccess && (
-        <div className="mb-3 px-4 py-2.5 rounded-lg flex items-center gap-2" style={{ background: 'var(--green)10', border: '1px solid var(--green)30' }}>
-          <span style={{ color: 'var(--green)' }}>&#10003;</span>
-          <span className="text-sm" style={{ color: 'var(--green)' }}>
-            Data updated — {refreshMut.data?.trades ?? 0} trades refreshed
-          </span>
-        </div>
-      )}
-      {refreshMut.isError && (
+      {updateLanes.isSuccess && (() => {
+        const r: any = updateLanes.data;
+        const bt = r?.backtest;
+        const algo = r?.algo;
+        const parts: string[] = [];
+        if (bt) {
+          if (bt.status === 'error') parts.push(`backtest error`);
+          else parts.push(`backtest ${bt.status}${bt.inserted ? ` (+${bt.inserted})` : ''}`);
+        }
+        if (algo) {
+          if (algo.status === 'error') parts.push(`algo error`);
+          else parts.push(`algo ${algo.status}${algo.inserted ? ` (+${algo.inserted})` : ''}`);
+        }
+        const anyError = bt?.status === 'error' || algo?.status === 'error';
+        return (
+          <div className="mb-3 px-4 py-2.5 rounded-lg flex items-center gap-2" style={{
+            background: anyError ? 'var(--orange)10' : 'var(--green)10',
+            border: anyError ? '1px solid var(--orange)30' : '1px solid var(--green)30',
+          }}>
+            <span style={{ color: anyError ? 'var(--orange)' : 'var(--green)' }}>
+              {anyError ? '!' : '✓'}
+            </span>
+            <span className="text-sm" style={{ color: anyError ? 'var(--orange)' : 'var(--green)' }}>
+              {parts.join(' · ')}
+              {bt?.status === 'error' && bt.reason ? ` (${bt.reason})` : ''}
+              {algo?.status === 'error' && algo.reason ? ` (${algo.reason})` : ''}
+            </span>
+          </div>
+        );
+      })()}
+      {updateLanes.isError && (
         <div className="mb-3 px-4 py-2.5 rounded-lg flex items-center gap-2" style={{ background: 'var(--red)10', border: '1px solid var(--red)30' }}>
           <span style={{ color: 'var(--red)' }}>&#10007;</span>
           <span className="text-sm" style={{ color: 'var(--red)' }}>
-            Refresh failed — check Polygon API connection
+            Update failed — {(updateLanes.error as any)?.message || 'unknown error'}
           </span>
         </div>
       )}

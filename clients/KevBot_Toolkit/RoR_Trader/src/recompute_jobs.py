@@ -251,6 +251,8 @@ def _run_job_worker(job_id: str) -> None:
         from api.services.forward_test_service import (
             append_new_trades_for_strategy,
             recompute_and_persist_stored_trades,
+            append_new_backtest_trades_for_strategy,
+            recompute_and_persist_algo_trades,
         )
         from db import get_strategy_by_id_admin
     except Exception as e:
@@ -289,46 +291,94 @@ def _run_job_worker(job_id: str) -> None:
                         progress_label=f'running engine ({job_type})')
 
             t0 = time.time()
-            r: Dict[str, Any]
+            bt_r: Dict[str, Any] = {}
+            algo_r: Dict[str, Any] = {}
             try:
                 # Per-strategy lock prevents cron + manual jobs from
                 # racing on the same strategy. If both try the same sid
                 # at once, one waits for the other to release.
                 with _get_strategy_lock(sid):
+                    # Algo-model split (2026-05-08): each job_type fans
+                    # out to BOTH lanes (Option A — 2 buttons each fire
+                    # both backtest + algo lanes). Mirrors the new
+                    # /update?mode= endpoint dispatch table.
                     if job_type == 'append_recent':
-                        r = append_new_trades_for_strategy(
-                            sid, user_id, force=force)
-                    else:  # full_recompute
-                        r = recompute_and_persist_stored_trades(
-                            sid, user_id, compute_parity=False)
+                        # mode='new' equivalent
+                        try:
+                            bt_r = append_new_backtest_trades_for_strategy(
+                                sid, user_id, force=force)
+                        except Exception as e:
+                            bt_r = {'status': 'error', 'reason': str(e)}
+                        try:
+                            algo_r = append_new_trades_for_strategy(
+                                sid, user_id, force=force)
+                        except Exception as e:
+                            algo_r = {'status': 'error', 'reason': str(e)}
+                    else:  # full_recompute → mode='all' equivalent
+                        try:
+                            bt_r = recompute_and_persist_stored_trades(
+                                sid, user_id, compute_parity=False)
+                        except Exception as e:
+                            bt_r = {'status': 'error', 'reason': str(e)}
+                        try:
+                            algo_r = recompute_and_persist_algo_trades(
+                                sid, user_id)
+                        except Exception as e:
+                            algo_r = {'status': 'error', 'reason': str(e)}
             except Exception as e:
                 logger.exception(
                     "[RECOMPUTE-JOB] %s strategy=%s crashed: %s",
                     job_id[:8], sid, e)
-                r = {'status': 'error', 'error': str(e), 'inserted': 0}
+                bt_r = {'status': 'error', 'error': str(e)}
+                algo_r = {'status': 'error', 'error': str(e)}
 
             elapsed = round(time.time() - t0, 2)
+            # Combined per-strategy entry — pick the more-informative
+            # status for the row label, sum inserted counts across lanes.
+            bt_inserted = bt_r.get('inserted', bt_r.get('trades', 0)) or 0
+            algo_inserted = algo_r.get('inserted') or 0
+            combined_inserted = int(bt_inserted) + int(algo_inserted)
+
+            # Status priority: error > skipped > non-zero-insert > zero-insert
+            def _status_rank(s):
+                return {'error': 4, 'skipped': 3, 'appended': 2,
+                        'refreshed': 2, 'no_new_trades': 1,
+                        'no_trades': 1}.get(s or '', 0)
+            primary_status = bt_r.get('status') if _status_rank(bt_r.get('status')) >= _status_rank(algo_r.get('status')) else algo_r.get('status')
+
             per_entry = {
                 'strategy_id': sid,
                 'strategy_name': strat_name,
-                'status': r.get('status'),
-                'inserted': r.get('inserted', r.get('trades', 0)) or 0,
-                'engine_path': r.get('engine_path'),
-                'bars_processed': r.get('bars_processed'),
-                'window_days': r.get('window_days'),
-                'reason': r.get('reason'),  # surface skip reason
+                'status': primary_status,
+                'inserted': combined_inserted,
+                'engine_path': bt_r.get('engine_path') or algo_r.get('engine_path'),
+                'bars_processed': bt_r.get('bars_processed') or algo_r.get('bars_processed'),
+                'window_days': bt_r.get('window_days') or algo_r.get('window_days'),
+                'reason': bt_r.get('reason') or algo_r.get('reason'),
                 'elapsed_s': elapsed,
-                'error': r.get('error'),
+                'error': bt_r.get('error') or bt_r.get('reason') if bt_r.get('status') == 'error'
+                         else (algo_r.get('error') or algo_r.get('reason') if algo_r.get('status') == 'error' else None),
+                # Lane breakdown for detail UI
+                'backtest_lane': {
+                    'status': bt_r.get('status'),
+                    'inserted': bt_inserted,
+                    'reason': bt_r.get('reason'),
+                },
+                'algo_lane': {
+                    'status': algo_r.get('status'),
+                    'inserted': algo_inserted,
+                    'reason': algo_r.get('reason'),
+                },
             }
             per_results.append(per_entry)
 
             # Update summary counters
-            summary['total_inserted'] += int(per_entry['inserted'] or 0)
-            if per_entry['status'] == 'skipped':
+            summary['total_inserted'] += combined_inserted
+            if primary_status == 'skipped':
                 summary['total_skipped'] += 1
-            elif per_entry['status'] in ('error', 'failed'):
+            elif primary_status in ('error', 'failed'):
                 summary['total_failed'] += 1
-            elif per_entry['status'] in ('appended', 'refreshed'):
+            elif primary_status in ('appended', 'refreshed'):
                 summary['total_appended'] += 1
 
             _update_job(job_id,
