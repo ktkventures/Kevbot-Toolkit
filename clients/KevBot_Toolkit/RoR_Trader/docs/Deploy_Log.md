@@ -21,6 +21,11 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-05-08
 
+- **18:45 UTC (12:45 MT)** — `e7bf21a` + `0073dbb` + `0c208de` M8.7 Builder UIs + admin rename + REST-vs-CACHE design doc
+  - Service(s) redeployed: api (mass_builder.py threads model kwargs through build_strategy_config), frontend (Strategy Builder + Mass Builder gain 3-dropdown picker; admin page + sidebar relabeled)
+  - Observed cache gap: SUPABASE OUTAGE in progress (US-East-C network) — Railway/Vercel redeploys may queue; verification deferred
+  - Notes: Pure frontend + safe backend additions during the Supabase outage. Strategy Builder + Mass Builder now expose `backtest_model` / `algo_model` / `live_model` selectors at creation time. Builder UIs are isolated — won't affect live engine. mass_builder.py:build_strategy_config now accepts model kwargs (None → GET-enrichment default). Admin "Backtest Models" page relabeled "Backtest / Algo Models" reflecting the shared registry. Design doc for v2 dual-storage divergence committed at `docs/Design_REST_vs_CACHE_Divergence_v2.md` — recommendation locks in Option B (JSONB map keyed by model). Backup: `dev-backup-pre-builder-uis-2026-05-08`.
+
 - **16:30 UTC (10:30 MT)** — `d867e63` + `5fddf86` M8.7 lane×mode matrix complete + button uniformity
   - Service(s) redeployed: api (2 new helpers + JWT-safe /update endpoint), recompute_jobs worker (bulk fans to both lanes), frontend (Strategy Detail header buttons unified)
   - Observed cache gap: TBD
