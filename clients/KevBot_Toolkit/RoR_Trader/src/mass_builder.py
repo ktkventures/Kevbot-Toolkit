@@ -174,14 +174,23 @@ def build_strategy_config(
     backtest_start_date: Optional[str] = None,
     backtest_end_date: Optional[str] = None,
     time_exit_config: Optional[dict] = None,
+    backtest_model: Optional[str] = None,
+    algo_model: Optional[str] = None,
+    live_model: Optional[str] = None,
 ) -> dict:
-    """Build a strategy config dict compatible with _unified_trades() and save flow."""
+    """Build a strategy config dict compatible with _unified_trades() and save flow.
+
+    Model fields (algo_model split — 2026-05-08): if any are None, the
+    GET-side enrichment in `api/routers/strategies.py` fills the
+    registry default. Mass Builder propagates explicit user choices
+    here so spawned strategies don't silently inherit defaults.
+    """
     lookback_mode = date_range.get('mode', 'days')
     data_days = date_range.get('days', 90)
     start_date = date_range.get('start')
     end_date = date_range.get('end')
 
-    return {
+    cfg = {
         'symbol': symbol,
         'asset_type': asset_type,
         'direction': direction,
@@ -210,6 +219,13 @@ def build_strategy_config(
         'time_exit_config': time_exit_config,
         'strategy_origin': 'standard',
     }
+    if backtest_model:
+        cfg['backtest_model'] = backtest_model
+    if algo_model:
+        cfg['algo_model'] = algo_model
+    if live_model:
+        cfg['live_model'] = live_model
+    return cfg
 
 
 def _serialize_trades(trades_df) -> list:
@@ -735,6 +751,12 @@ def run_mass_search(
                                 backtest_start_date=_bt_start_iso,
                                 backtest_end_date=_bt_end_iso,
                                 time_exit_config=pack_tec,
+                                # Model fields (algo_model split — 2026-05-08).
+                                # Spawned strategies inherit explicit user
+                                # choices from the Mass Builder spec form.
+                                backtest_model=search_config.get('backtest_model'),
+                                algo_model=search_config.get('algo_model'),
+                                live_model=search_config.get('live_model'),
                             )
 
                             # ── Level 2: Run full backtest ──

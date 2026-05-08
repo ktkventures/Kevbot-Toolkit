@@ -11,6 +11,7 @@ import { useRunMassSearch, useMassProgress, useMassResult } from '@/hooks/querie
 import { useCreateStrategy } from '@/hooks/mutations/useStrategyMutations';
 import { useConfluenceGroups, useConfluenceTemplates, useConfluenceTriggers, useStopLossPacks, useTakeProfitPacks, useGeneralPacks, useGeneralTemplates, useTimeExitPacks } from '@/hooks/queries/usePacks';
 import { useSettings } from '@/hooks/queries/useSettings';
+import { useStrategyModels } from '@/hooks/queries/useStrategies';
 
 /* ========================================================================
    Types
@@ -227,6 +228,50 @@ function ToggleChip({ label, active, onClick }: { label: string; active: boolean
   );
 }
 
+// algo_model split (2026-05-08): per-model dropdown for Mass Builder spec.
+function MassBuilderModelDropdown({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: Record<string, { label: string; available: boolean; description: string }>;
+  onChange: (v: string) => void;
+}) {
+  const entries = Object.entries(options);
+  const currentDesc = options[value]?.description;
+  return (
+    <div>
+      <label className="text-[10px] font-medium block mb-1" style={{ color: 'var(--text-muted)' }}>
+        {label}
+      </label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full px-3 py-1.5 rounded-lg text-sm"
+        style={{
+          background: 'var(--bg-input)',
+          border: '1px solid var(--border)',
+          color: 'var(--text-primary)',
+        }}
+      >
+        {entries.map(([key, opt]) => (
+          <option key={key} value={key} disabled={!opt.available && key !== value}>
+            {opt.label}{opt.available ? '' : ' (coming soon)'}
+          </option>
+        ))}
+      </select>
+      {currentDesc && (
+        <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)', lineHeight: 1.4 }}>
+          {currentDesc.length > 120 ? currentDesc.slice(0, 117) + '…' : currentDesc}
+        </p>
+      )}
+    </div>
+  );
+}
+
 /* ========================================================================
    Main Component
    ======================================================================== */
@@ -427,6 +472,13 @@ export default function MassBuilderPage() {
   const [minDailyR, setMinDailyR] = useState(0);
   const [maxResults, setMaxResults] = useState(500);
   const [activeSearchId, setActiveSearchId] = useState<string | number | null>(null);
+
+  // Model selection (algo_model split — 2026-05-08). Spawned strategies
+  // inherit these values via mass_builder.py:build_strategy_config.
+  const { data: modelsResp } = useStrategyModels();
+  const [backtestModel, setBacktestModel] = useState<string>('rest_hifi');
+  const [algoModel, setAlgoModel] = useState<string>('cache_locked');
+  const [liveModel, setLiveModel] = useState<string>('ws_agg_locked');
 
   // Layout & display state
   const [resultColumns, setResultColumns] = useState(2);
@@ -750,6 +802,11 @@ export default function MassBuilderPage() {
         min_daily_r: minDailyR > 0 ? minDailyR : undefined,
       },
       max_results: maxResults,
+      // Model fields (algo_model split — 2026-05-08). Spawned strategies
+      // inherit these via mass_builder.py:build_strategy_config.
+      backtest_model: backtestModel,
+      algo_model: algoModel,
+      live_model: liveModel,
     };
 
     runMassSearch.mutate(config, {
@@ -1154,6 +1211,36 @@ export default function MassBuilderPage() {
                     style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
                   />
                   <span className="text-xs" style={{ color: 'var(--text-muted)' }}>days</span>
+                </div>
+              </div>
+
+              {/* Models — algo_model split (2026-05-08) */}
+              <div className="mt-4">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Models</p>
+                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                    Backtest = KPI baseline · Algo = live accountability · Live = engine reality
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <MassBuilderModelDropdown
+                    label="Backtest Model"
+                    value={backtestModel}
+                    options={modelsResp?.backtest_models || {}}
+                    onChange={setBacktestModel}
+                  />
+                  <MassBuilderModelDropdown
+                    label="Algo Model"
+                    value={algoModel}
+                    options={(modelsResp as any)?.algo_models || modelsResp?.backtest_models || {}}
+                    onChange={setAlgoModel}
+                  />
+                  <MassBuilderModelDropdown
+                    label="Live Model"
+                    value={liveModel}
+                    options={modelsResp?.live_models || {}}
+                    onChange={setLiveModel}
+                  />
                 </div>
               </div>
             </div>

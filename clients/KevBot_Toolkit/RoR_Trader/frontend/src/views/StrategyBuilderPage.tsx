@@ -24,6 +24,7 @@ const SyncedChartPane = dynamic(() => import('@/charts/SyncedChartPane'), { ssr:
 import type { CandleData, TradeMarker } from '@/charts/TradingChart';
 import { buildStrategyChartPanes } from '@/charts/buildStrategyChartPanes';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
+import { useStrategyModels } from '@/hooks/queries/useStrategies';
 import TabBar from '@/components/TabBar';
 import Modal from '@/components/Modal';
 import { useRunBacktest, useAnalyzeTriggers, useBacktestTradeZoom, useBacktestTradeReplay, type AnalyzeResult, type BacktestRequest } from '@/hooks/queries/useBacktest';
@@ -326,6 +327,64 @@ function SelectInput({
         </option>
       ))}
     </select>
+  );
+}
+
+// algo_model split (2026-05-08): selector for any of the 3 model fields.
+// Renders the registry's `label` text, disables `available=false` entries
+// (with " (coming soon)" suffix), and shows the selected option's
+// description below the dropdown.
+function ModelDropdown({
+  label,
+  tooltip,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  tooltip?: string;
+  value: string;
+  options: Record<string, { label: string; available: boolean; description: string }>;
+  onChange: (v: string) => void;
+}) {
+  const entries = Object.entries(options);
+  const currentDesc = options[value]?.description;
+  return (
+    <div>
+      <div className="flex items-center gap-1 mb-1">
+        <SectionLabel>{label}</SectionLabel>
+        {tooltip && (
+          <span
+            title={tooltip}
+            className="text-[10px] px-1 py-0.5 rounded cursor-help"
+            style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}
+          >
+            ?
+          </span>
+        )}
+      </div>
+      <select
+        className="w-full px-3 py-2 rounded-lg text-sm"
+        style={{
+          background: 'var(--bg-input)',
+          border: '1px solid var(--border)',
+          color: 'var(--text-primary)',
+        }}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {entries.map(([key, opt]) => (
+          <option key={key} value={key} disabled={!opt.available && key !== value}>
+            {opt.label}{opt.available ? '' : ' (coming soon)'}
+          </option>
+        ))}
+      </select>
+      {currentDesc && (
+        <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)', lineHeight: 1.4 }}>
+          {currentDesc}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -1706,6 +1765,26 @@ export default function StrategyBuilderPage() {
   // ---- Fidelity ----
   const [hifiMode, setHifiMode] = useState(false);
 
+  // ---- Model selection (algo_model split — 2026-05-08) ----
+  const { data: modelsResp } = useStrategyModels();
+  const [backtestModel, setBacktestModel] = useState<string>('rest_hifi');
+  const [algoModel, setAlgoModel] = useState<string>('cache_locked');
+  const [liveModel, setLiveModel] = useState<string>('ws_agg_locked');
+  // Once models endpoint loads, sync defaults from server (in case they
+  // change in the future without a frontend redeploy).
+  useEffect(() => {
+    if (!modelsResp) return;
+    if (modelsResp.defaults?.backtest_model) {
+      setBacktestModel(prev => prev === 'rest_hifi' ? modelsResp.defaults.backtest_model : prev);
+    }
+    if (modelsResp.defaults?.algo_model) {
+      setAlgoModel(prev => prev === 'cache_locked' ? modelsResp.defaults.algo_model : prev);
+    }
+    if (modelsResp.defaults?.live_model) {
+      setLiveModel(prev => prev === 'ws_agg_locked' ? modelsResp.defaults.live_model : prev);
+    }
+  }, [modelsResp]);
+
   // ---- Trade Drill-Down ----
   const [zoomTrade, setZoomTrade] = useState<{ idx: number; side: 'entry' | 'exit'; trade: TradeRow } | null>(null);
   const tradeZoomMut = useBacktestTradeZoom();
@@ -2054,6 +2133,43 @@ export default function StrategyBuilderPage() {
               Large dataset
             </span>
           )}
+        </div>
+      </Card>
+
+      {/* ================================================================= */}
+      {/* MODELS: backtest / algo / live (algo_model split — 2026-05-08)    */}
+      {/* ================================================================= */}
+      <Card className="mb-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+            Models
+          </span>
+          <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            Backtest = KPI baseline · Algo = live accountability · Live = engine reality
+          </span>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <ModelDropdown
+            label="Backtest Model"
+            tooltip="Data source for the strategy's KPI baseline. Default rest_hifi — broadest historical coverage with sub-second L-type alignment."
+            value={backtestModel}
+            options={modelsResp?.backtest_models || {}}
+            onChange={setBacktestModel}
+          />
+          <ModelDropdown
+            label="Algo Model"
+            tooltip="Data source for the cron's incremental algo-history append (live-accountability lane). Default cache_locked — same bars the live engine sees."
+            value={algoModel}
+            options={(modelsResp as any)?.algo_models || modelsResp?.backtest_models || {}}
+            onChange={setAlgoModel}
+          />
+          <ModelDropdown
+            label="Live Model"
+            tooltip="How the live engine sources bars and handles rebroadcasts. Default ws_agg_locked. Changes affect alert firing — change with care."
+            value={liveModel}
+            options={modelsResp?.live_models || {}}
+            onChange={setLiveModel}
+          />
         </div>
       </Card>
 
@@ -2927,6 +3043,10 @@ export default function StrategyBuilderPage() {
                     time_exit_pack_id: selectedTimeExitPack || undefined,
                     stop_exec_type: stopExecType,
                     target_exec_type: targetExecType,
+                    // Model fields (algo_model split — 2026-05-08)
+                    backtest_model: backtestModel,
+                    algo_model: algoModel,
+                    live_model: liveModel,
                     kpis: backtestMut.data?.kpis ?? {},
                     stored_trades: backtestResult?.rawTrades ?? [],
                     equity_curve_data: {
