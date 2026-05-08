@@ -105,7 +105,7 @@ const navItems: NavItem[] = [
       { href: '/admin/curation', label: 'Curation' },
       { href: '/admin/data-health', label: 'Data Health' },
       { href: '/admin/live-models', label: 'Live Models' },
-      { href: '/admin/backtest-models', label: 'Backtest Models' },
+      { href: '/admin/backtest-models', label: 'Backtest / Algo Models' },
     ],
   },
   {

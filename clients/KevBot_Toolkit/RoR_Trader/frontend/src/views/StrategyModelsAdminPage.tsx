@@ -39,7 +39,7 @@ interface PageProps {
 
 const KIND_LABEL: Record<ModelKind, string> = {
   live: 'Live Models',
-  backtest: 'Backtest Models',
+  backtest: 'Backtest / Algo Models',
 };
 
 const KIND_DESCRIPTION: Record<ModelKind, string> = {
@@ -50,10 +50,13 @@ const KIND_DESCRIPTION: Record<ModelKind, string> = {
     + 'invalidates older work.'
   ),
   backtest: (
-    'Backtest models govern how stored_trades is repopulated and how '
-    + 'Chart & Trades loads historical bars. Per-strategy selection. '
-    + 'Independent of the live model — same strategy can use different '
-    + 'sources for live vs backtest.'
+    'Backtest / Algo models share a single registry — same model entries '
+    + 'serve two consumers. The strategy\'s `backtest_model` field controls '
+    + 'how stored_trades is repopulated (KPI baseline). The strategy\'s '
+    + '`algo_model` field controls how the cron\'s incremental algo-history '
+    + 'append runs (live-accountability lane). Both are per-strategy and '
+    + 'independent of live_model. Default: backtest_model=rest_hifi, '
+    + 'algo_model=cache_locked.'
   ),
 };
 
