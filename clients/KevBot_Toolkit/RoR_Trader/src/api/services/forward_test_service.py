@@ -1143,3 +1143,407 @@ def append_recent_trades_for_user(
 
     summary['elapsed_s'] = round(_time.time() - t0, 2)
     return summary
+
+
+# ============================================================
+# Lane×mode matrix completers (algo_model split — 2026-05-08)
+# ============================================================
+
+def append_new_backtest_trades_for_strategy(
+    strategy_id: int,
+    user_id: str,
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Forward-append on the BACKTEST lane.
+
+    Mirrors `append_new_trades_for_strategy` (which writes to the trades
+    table under `algo_model`) but writes to `stored_trades` JSONB under
+    `backtest_model`. Extends the existing snapshot without a full
+    recompute.
+
+    Pattern:
+      1. Load strategy + existing stored_trades
+      2. Find latest entry_fill_ts in stored_trades
+      3. Run engine on `[latest, now - lag]` window with
+         `model_override=backtest_model`
+      4. Filter closed trades past lag boundary, dedup vs existing
+         stored_trades by (entry_fill_ts, exit_fill_ts)
+      5. Concat new trades to stored_trades, write back
+      6. Recompute KPIs from merged set
+      7. Hi-Fi pass eligible if backtest_model in HIFI set
+      8. Stamp `last_recompute_until_ts`
+
+    `force=True` bypasses the recently-processed gate.
+
+    Returns:
+        {'status': 'appended'|'no_new_trades'|'error',
+         'inserted': int, 'elapsed_s': float, ...}
+    """
+    import time as _time
+    import services as svc
+    from db import (
+        get_strategy_by_id_admin,
+        update_strategy_admin,
+        set_admin_user_context,
+        get_current_user_id,
+        clear_current_user,
+    )
+
+    t0 = _time.time()
+    strat = get_strategy_by_id_admin(strategy_id, user_id)
+    if strat is None:
+        return {'status': 'error',
+                'reason': f'strategy {strategy_id} not found',
+                'inserted': 0}
+
+    cfg = (strat.get('config') or {})
+    bt_model = cfg.get('backtest_model') or strat.get('backtest_model')
+    now_dt = datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+    cutoff = now_dt - timedelta(minutes=_ALGO_HISTORY_LAG_MINUTES)
+    cutoff_iso = cutoff.isoformat()
+
+    stored = list(strat.get('stored_trades') or [])
+    if not stored:
+        # No existing baseline — fall through to a full recompute
+        # because forward append needs an anchor timestamp.
+        return {
+            'status': 'skipped',
+            'reason': 'no_baseline_run_full_recompute_first',
+            'inserted': 0,
+            'elapsed_s': round(_time.time() - t0, 2),
+        }
+
+    # Find latest entry_fill_ts in stored_trades
+    latest_ts_iso = None
+    for t in stored:
+        ek = t.get('entry_fill_ts') or t.get('entryFillTime')
+        if not ek:
+            continue
+        ek_str = str(ek)
+        if latest_ts_iso is None or ek_str > latest_ts_iso:
+            latest_ts_iso = ek_str
+
+    if latest_ts_iso is None:
+        return {
+            'status': 'skipped',
+            'reason': 'stored_trades_missing_entry_fill_ts',
+            'inserted': 0,
+            'elapsed_s': round(_time.time() - t0, 2),
+        }
+
+    try:
+        since_dt = datetime.fromisoformat(latest_ts_iso)
+        if since_dt.tzinfo is None:
+            since_dt = since_dt.replace(tzinfo=timezone.utc)
+    except Exception as e:
+        return {'status': 'error',
+                'reason': f'parse latest entry_fill_ts: {e}',
+                'inserted': 0}
+
+    # Set admin context if not already set (worker / cron callers)
+    _prev_user = get_current_user_id()
+    _need_ctx_swap = _prev_user != user_id
+    if _need_ctx_swap:
+        set_admin_user_context(user_id)
+
+    try:
+        try:
+            all_trades_df = svc.get_strategy_trades_for_window(
+                strat, since_dt=since_dt, until_dt=now_dt,
+                model_override=bt_model)
+        except Exception as e:
+            logger.warning(
+                "[BT-APPEND] strategy=%s engine run failed: %s",
+                strategy_id, e)
+            return {'status': 'error', 'reason': f'engine: {e}',
+                    'inserted': 0}
+
+        if all_trades_df is None or len(all_trades_df) == 0:
+            cfg['last_recompute_until_ts'] = now_iso
+            _stamp_config(strategy_id, user_id, cfg)
+            return {'status': 'no_new_trades', 'inserted': 0,
+                    'cutoff': cutoff_iso,
+                    'elapsed_s': round(_time.time() - t0, 2)}
+
+        if 'exit_fill_ts' not in all_trades_df.columns:
+            return {'status': 'error',
+                    'reason': 'engine output missing exit_fill_ts column',
+                    'inserted': 0}
+
+        closed_mask = all_trades_df['exit_fill_ts'].notna()
+        closed = all_trades_df[closed_mask].copy()
+        if len(closed) == 0:
+            cfg['last_recompute_until_ts'] = now_iso
+            _stamp_config(strategy_id, user_id, cfg)
+            return {'status': 'no_new_trades', 'inserted': 0,
+                    'cutoff': cutoff_iso, 'open_only': True,
+                    'elapsed_s': round(_time.time() - t0, 2)}
+
+        # Filter to past lag boundary
+        exit_ts_col = pd.to_datetime(closed['exit_fill_ts'], utc=True,
+                                     errors='coerce')
+        closed = closed[exit_ts_col <= pd.Timestamp(cutoff)]
+        if len(closed) == 0:
+            cfg['last_recompute_until_ts'] = now_iso
+            _stamp_config(strategy_id, user_id, cfg)
+            return {'status': 'no_new_trades', 'inserted': 0,
+                    'cutoff': cutoff_iso, 'reason': 'all_in_lag_window',
+                    'elapsed_s': round(_time.time() - t0, 2)}
+
+        # Dedup vs existing stored_trades on (entry_fill_ts, exit_fill_ts)
+        existing_keys: set = set()
+        for t in stored:
+            ek = t.get('entry_fill_ts') or t.get('entryFillTime')
+            xk = t.get('exit_fill_ts') or t.get('exitFillTime')
+            if ek and xk:
+                existing_keys.add((str(ek), str(xk)))
+
+        new_records = []
+        for _, row in closed.iterrows():
+            ek_raw = row.get('entry_fill_ts')
+            xk_raw = row.get('exit_fill_ts')
+            if pd.isna(ek_raw) or pd.isna(xk_raw):
+                continue
+            ek = ek_raw.isoformat() if hasattr(ek_raw, 'isoformat') else str(ek_raw)
+            xk = xk_raw.isoformat() if hasattr(xk_raw, 'isoformat') else str(xk_raw)
+            if (ek, xk) in existing_keys:
+                continue
+            new_records.append(row)
+
+        if not new_records:
+            cfg['last_recompute_until_ts'] = now_iso
+            _stamp_config(strategy_id, user_id, cfg)
+            return {'status': 'no_new_trades', 'inserted': 0,
+                    'cutoff': cutoff_iso, 'reason': 'all_already_stored',
+                    'elapsed_s': round(_time.time() - t0, 2)}
+
+        new_df = pd.DataFrame(new_records)
+        new_serialized = _serialize_trades(new_df)
+        merged_stored = stored + new_serialized
+
+        refreshed_at = now_iso
+
+        # Recompute KPIs from merged set. Sort merged set chronologically
+        # before kpi calc to keep equity-curve math consistent.
+        merged_sorted = sorted(
+            merged_stored,
+            key=lambda t: str(t.get('entry_fill_ts') or t.get('entryFillTime') or ''))
+        merged_df = svc.trades_df_from_stored(merged_sorted)
+
+        trading_days = svc.count_trading_days(merged_df) \
+            if hasattr(merged_df, 'index') and len(merged_df) > 0 else 1
+        kpis = svc.calculate_kpis(merged_df, total_trading_days=trading_days)
+
+        from api.services.backtest_service import _build_equity_curve
+        eq_data = _build_equity_curve(merged_df)
+        boundary_index = None
+        if strat.get('forward_test_start'):
+            fwd_start = datetime.fromisoformat(strat['forward_test_start'])
+            bt_portion, _ = svc.split_trades_at_boundary(merged_df, fwd_start)
+            boundary_index = len(bt_portion) if len(bt_portion) > 0 else None
+        equity_curve_data = {
+            'exit_times': [p.get('timestamp', '') for p in eq_data],
+            'cumulative_r': [p.get('cumulative_r', 0) for p in eq_data],
+            'boundary_index': boundary_index,
+        }
+
+        update_strategy_admin(strategy_id, user_id, {
+            'stored_trades': merged_sorted,
+            'kpis': kpis,
+            'equity_curve_data': equity_curve_data,
+            'data_refreshed_at': refreshed_at,
+            'kpis_computed_at': refreshed_at,
+            'kpis_stale_since': None,
+        })
+
+        cfg['last_recompute_until_ts'] = now_iso
+        _stamp_config(strategy_id, user_id, cfg)
+
+        # Hi-Fi pass on appended set (idempotent — skips already-resolved)
+        HIFI_BACKTEST_MODELS = {'rest_hifi', 'cache_locked', 'cache_corrected'}
+        hifi_summary = None
+        if bt_model in HIFI_BACKTEST_MODELS:
+            try:
+                from api.routers.strategies import run_hifi_pass2
+                hifi_summary = run_hifi_pass2(
+                    strategy_id, user={'id': user_id})
+                logger.info(
+                    "[BT-APPEND] strategy=%s bt=%s Hi-Fi pass: refined "
+                    "entries=%s exits=%s persisted=%s",
+                    strategy_id, bt_model,
+                    hifi_summary.get('entries_refined', 0),
+                    hifi_summary.get('exits_refined', 0),
+                    hifi_summary.get('persisted', 0))
+            except Exception as e:
+                logger.warning(
+                    "[BT-APPEND] strategy=%s Hi-Fi pass failed: %s",
+                    strategy_id, e)
+
+        result = {
+            'status': 'appended',
+            'inserted': len(new_serialized),
+            'cutoff': cutoff_iso,
+            'elapsed_s': round(_time.time() - t0, 2),
+        }
+        if hifi_summary is not None:
+            result['hifi'] = {
+                'entries_refined': hifi_summary.get('entries_refined', 0),
+                'exits_refined': hifi_summary.get('exits_refined', 0),
+                'persisted': hifi_summary.get('persisted', 0),
+            }
+        return result
+    finally:
+        if _need_ctx_swap:
+            clear_current_user()
+
+
+def recompute_and_persist_algo_trades(
+    strategy_id: int,
+    user_id: str,
+) -> Dict[str, Any]:
+    """Full recompute on the ALGO lane.
+
+    Mirrors `recompute_and_persist_stored_trades` (which writes to
+    `stored_trades` JSONB under `backtest_model`) but writes to the
+    trades table under `algo_model`. Wipes existing trades-table rows
+    for the strategy and re-inserts the full set.
+
+    Pattern:
+      1. Load strategy
+      2. Run engine on full strategy window with
+         `model_override=algo_model`
+      3. DELETE existing trades-table rows for strategy
+      4. INSERT all generated trades (alert linkages reform via
+         existing match-on-insert logic)
+      5. Hi-Fi pass eligible if algo_model in HIFI set
+      6. Stamp `last_recompute_until_ts`
+
+    Returns:
+        {'status': 'refreshed'|'no_trades'|'error',
+         'inserted': int, 'elapsed_s': float, ...}
+    """
+    import time as _time
+    import services as svc
+    from db import (
+        get_strategy_by_id_admin,
+        get_admin_client,
+        set_admin_user_context,
+        get_current_user_id,
+        clear_current_user,
+    )
+
+    t0 = _time.time()
+    strat = get_strategy_by_id_admin(strategy_id, user_id)
+    if strat is None:
+        return {'status': 'error',
+                'reason': f'strategy {strategy_id} not found',
+                'inserted': 0}
+
+    cfg = (strat.get('config') or {})
+    algo_model = cfg.get('algo_model') or cfg.get('backtest_model') \
+        or strat.get('algo_model') or strat.get('backtest_model')
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    _prev_user = get_current_user_id()
+    _need_ctx_swap = _prev_user != user_id
+    if _need_ctx_swap:
+        set_admin_user_context(user_id)
+
+    try:
+        try:
+            all_trades_df = svc.get_strategy_trades(
+                strat, model_override=algo_model)
+        except Exception as e:
+            logger.warning(
+                "[ALGO-RECOMPUTE] strategy=%s engine run failed: %s",
+                strategy_id, e)
+            return {'status': 'error', 'reason': f'engine: {e}',
+                    'inserted': 0}
+
+        if all_trades_df is None or len(all_trades_df) == 0:
+            cfg['last_recompute_until_ts'] = now_iso
+            _stamp_config(strategy_id, user_id, cfg)
+            return {'status': 'no_trades', 'inserted': 0,
+                    'elapsed_s': round(_time.time() - t0, 2)}
+
+        # Filter to closed trades only — open positions can't be persisted
+        # to the trades table (need exit_fill_ts).
+        if 'exit_fill_ts' in all_trades_df.columns:
+            closed_mask = all_trades_df['exit_fill_ts'].notna()
+            closed_df = all_trades_df[closed_mask].copy()
+        else:
+            closed_df = all_trades_df
+
+        if len(closed_df) == 0:
+            cfg['last_recompute_until_ts'] = now_iso
+            _stamp_config(strategy_id, user_id, cfg)
+            return {'status': 'no_trades', 'inserted': 0,
+                    'reason': 'all_open',
+                    'elapsed_s': round(_time.time() - t0, 2)}
+
+        # DELETE existing trades-table rows for this strategy. Alert
+        # linkages reform on re-INSERT via the trades_store match logic.
+        try:
+            client = get_admin_client()
+            client.table('trades').delete().eq('strategy_id', strategy_id) \
+                .eq('user_id', user_id).execute()
+        except Exception as e:
+            logger.warning(
+                "[ALGO-RECOMPUTE] strategy=%s DELETE existing failed: %s",
+                strategy_id, e)
+            return {'status': 'error',
+                    'reason': f'delete_existing: {e}',
+                    'inserted': 0}
+
+        # INSERT new trades via existing trades_store helper
+        from trades_store import insert_trade
+        new_serialized = _serialize_trades(closed_df)
+        inserted = 0
+        for rec in new_serialized:
+            try:
+                if insert_trade(strategy_id, user_id, rec):
+                    inserted += 1
+            except Exception as e:
+                logger.warning(
+                    "[ALGO-RECOMPUTE] strategy=%s insert_trade failed: %s",
+                    strategy_id, e)
+
+        cfg['last_recompute_until_ts'] = now_iso
+        _stamp_config(strategy_id, user_id, cfg)
+
+        # Hi-Fi pass on the trades table (idempotent)
+        HIFI_BACKTEST_MODELS = {'rest_hifi', 'cache_locked', 'cache_corrected'}
+        hifi_summary = None
+        if inserted > 0 and algo_model in HIFI_BACKTEST_MODELS:
+            try:
+                from api.routers.strategies import run_hifi_pass2
+                hifi_summary = run_hifi_pass2(
+                    strategy_id, user={'id': user_id})
+                logger.info(
+                    "[ALGO-RECOMPUTE] strategy=%s algo=%s Hi-Fi pass: "
+                    "refined entries=%s exits=%s persisted=%s",
+                    strategy_id, algo_model,
+                    hifi_summary.get('entries_refined', 0),
+                    hifi_summary.get('exits_refined', 0),
+                    hifi_summary.get('persisted', 0))
+            except Exception as e:
+                logger.warning(
+                    "[ALGO-RECOMPUTE] strategy=%s Hi-Fi pass failed: %s",
+                    strategy_id, e)
+
+        result = {
+            'status': 'refreshed',
+            'inserted': inserted,
+            'elapsed_s': round(_time.time() - t0, 2),
+        }
+        if hifi_summary is not None:
+            result['hifi'] = {
+                'entries_refined': hifi_summary.get('entries_refined', 0),
+                'exits_refined': hifi_summary.get('exits_refined', 0),
+                'persisted': hifi_summary.get('persisted', 0),
+            }
+        return result
+    finally:
+        if _need_ctx_swap:
+            clear_current_user()

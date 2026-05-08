@@ -2326,27 +2326,24 @@ def update_strategy_lanes(
     user=Depends(get_current_user),
 ):
     """Update strategy data on backtest + algo lanes (Option A — both lanes
-    fan-out from one button click).
+    fan-out from one button click). All 4 lane×mode combos wired 2026-05-08.
 
     `mode='all'`:
       - Backtest lane: full recompute via `recompute_and_persist_stored_trades`
         (uses backtest_model, writes stored_trades JSONB)
-      - Algo lane: forward append via `append_new_trades_for_strategy` with
-        force=True (uses algo_model, writes trades table)
-      - **Limitation:** "full algo recompute" (deletes + re-runs trades-table
-        rows under algo_model) is not yet implemented — deferred. Today's
-        cache_locked algo lane only has ~1-2 days of data anyway, so the
-        forward append covers approximately the same window.
+      - Algo lane:     full recompute via `recompute_and_persist_algo_trades`
+        (uses algo_model, wipes + repopulates trades table for strategy)
 
     `mode='new'`:
-      - Backtest lane: NO-OP for now (forward append on stored_trades is
-        deferred — full recompute remains the only backtest update path
-        until we implement extension semantics)
-      - Algo lane: forward append (uses algo_model, writes trades table)
+      - Backtest lane: forward append via `append_new_backtest_trades_for_strategy`
+        (uses backtest_model, extends stored_trades JSONB since latest stamp)
+      - Algo lane:     forward append via `append_new_trades_for_strategy`
+        (uses algo_model, extends trades table since latest stamp)
 
-    Per Kevin 2026-05-07 design discussion: both buttons should fan to
-    both lanes (Option A). Two of the four lane×mode combinations are
-    deferred as documented above.
+    JWT-safety (2026-05-08): each lane call wrapped in
+    `set_admin_user_context` so downstream Supabase calls use service-role
+    key. Without this, the user JWT can age out during the ~3-5 min
+    backtest run, causing PGRST303 on the algo lane that runs after.
     """
     _get_or_404(strategy_id, user)
     user_id = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
@@ -2354,7 +2351,10 @@ def update_strategy_lanes(
     from api.services.forward_test_service import (
         recompute_and_persist_stored_trades,
         append_new_trades_for_strategy,
+        append_new_backtest_trades_for_strategy,
+        recompute_and_persist_algo_trades,
     )
+    from db import set_admin_user_context, clear_current_user
 
     backtest_result = None
     algo_result = None
@@ -2362,24 +2362,33 @@ def update_strategy_lanes(
     try:
         if mode == 'all':
             try:
+                # JWT-safety (2026-05-08): backtest run can take 3-5 min,
+                # exceeding the user JWT's TTL. Force admin context so
+                # downstream Supabase calls use the service-role key.
+                set_admin_user_context(user_id)
                 backtest_result = recompute_and_persist_stored_trades(strategy_id, user_id)
             except Exception as e:
                 logger.exception("backtest lane failed for sid=%s", strategy_id)
                 backtest_result = {'status': 'error', 'reason': str(e)}
 
             try:
-                algo_result = append_new_trades_for_strategy(
-                    strategy_id, user_id, force=True)
+                set_admin_user_context(user_id)  # re-affirm after long backtest run
+                algo_result = recompute_and_persist_algo_trades(strategy_id, user_id)
             except Exception as e:
                 logger.exception("algo lane failed for sid=%s", strategy_id)
                 algo_result = {'status': 'error', 'reason': str(e)}
 
         else:  # mode == 'new'
-            backtest_result = {
-                'status': 'skipped',
-                'reason': 'forward_append_on_backtest_lane_not_yet_implemented',
-            }
             try:
+                set_admin_user_context(user_id)
+                backtest_result = append_new_backtest_trades_for_strategy(
+                    strategy_id, user_id, force=True)
+            except Exception as e:
+                logger.exception("backtest lane failed for sid=%s", strategy_id)
+                backtest_result = {'status': 'error', 'reason': str(e)}
+
+            try:
+                set_admin_user_context(user_id)
                 algo_result = append_new_trades_for_strategy(
                     strategy_id, user_id, force=True)
             except Exception as e:
@@ -2394,6 +2403,8 @@ def update_strategy_lanes(
     except Exception as e:
         logger.exception("update_strategy_lanes failed for sid=%s", strategy_id)
         raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
+    finally:
+        clear_current_user()
 
 
 @router.post("/{strategy_id}/refresh")
