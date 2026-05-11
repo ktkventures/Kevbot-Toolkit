@@ -19,6 +19,14 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-05-11
+
+- **~18:30 UTC (12:30 MT)** — `8b74ddd` + `5fbfe0d` Phase 41 — backtest trades → trades table migration
+  - Service(s) redeployed: api (writer + reader changes), worker (trades_store filter wiring)
+  - Required manual steps: **Run `src/migrations/phase41_backtest_trades_relax_unique.sql` in Supabase SQL Editor BEFORE the backfill script**. Then run `python -m _backfill_stored_trades_to_table --apply` from `src/` to migrate existing stored_trades JSONB content into trades table with `data_source='backtest_<model>'`.
+  - Observed cache gap: TBD
+  - Notes: Completes the storage unification started in Phase 40 (2026-04-24). Backtest data now lives in the trades table alongside algo data, distinguished by `data_source` LIKE pattern (`backtest_%` vs `cache_%`). This unlocks REAL REST↔CACHE divergence in the Divergence tab — previously both lanes silently read from the same trades-table rows, producing fake "perfect alignment." Unique constraint relaxed to include `data_source` so REST + CACHE rows at identical timestamps coexist. Existing NULL data_source rows tagged as 'cache_locked' (preserves cron-written history). Backup: `dev-backup-pre-backtest-trades-migration-2026-05-11`.
+
 ## 2026-05-08
 
 - **18:45 UTC (12:45 MT)** — `e7bf21a` + `0073dbb` + `0c208de` M8.7 Builder UIs + admin rename + REST-vs-CACHE design doc
