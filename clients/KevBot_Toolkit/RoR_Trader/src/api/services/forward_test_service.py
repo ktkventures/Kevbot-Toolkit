@@ -889,9 +889,14 @@ def append_new_trades_for_strategy(
                     'cutoff': cutoff_iso, 'reason': 'all_in_lag_window',
                     'elapsed_s': round(_time.time() - t0, 2)}
 
-        # Set-diff against existing DB trades
+        # Set-diff against existing DB trades — scope to cache_% so we
+        # don't see backtest_<model> rows and accidentally consider them
+        # already-inserted (which would suppress legitimate algo writes).
+        # Phase 41 fix (2026-05-11 evening).
         from trades_store import load_trades_for_strategy, insert_trade
-        existing = load_trades_for_strategy(strategy_id, user_id) or []
+        existing = load_trades_for_strategy(
+            strategy_id, user_id,
+            data_source_filter='cache_%') or []
         existing_keys: set = set()
         for t in existing:
             ek = t.get('entry_fill_ts')
@@ -913,6 +918,9 @@ def append_new_trades_for_strategy(
 
         # Convert new records to JSON-safe dicts (re-uses existing
         # _serialize_trades for shape consistency with manual Refresh).
+        # Tag with cache_<algo_model> so the divergence reader can find
+        # them and so future recomputes scope their DELETE correctly.
+        ds_tag = f'cache_{algo_model}'
         if new_records:
             new_df = pd.DataFrame(new_records)
             new_serialized = _serialize_trades(new_df)
@@ -922,6 +930,7 @@ def append_new_trades_for_strategy(
         inserted = 0
         for rec in new_serialized:
             try:
+                rec['data_source'] = ds_tag
                 if insert_trade(strategy_id, user_id, rec):
                     inserted += 1
             except Exception as e:
@@ -1553,32 +1562,38 @@ def recompute_and_persist_algo_trades(
                     'reason': 'all_open',
                     'elapsed_s': round(_time.time() - t0, 2)}
 
-        # DELETE existing trades-table rows for this strategy. Alert
-        # linkages reform on re-INSERT via the trades_store match logic.
+        # Phase 41 fix (2026-05-11 evening): scope DELETE to cache_% rows
+        # only. The previous unfiltered DELETE wiped the backtest_<model>
+        # rows the backtest lane wrote moments earlier (Update All Data
+        # runs backtest THEN algo back-to-back). That left every strategy
+        # with all-NULL data_source after a bulk update, breaking the
+        # Divergence tab. Sid 152 + sid 154 hit this state earlier today.
+        ds_tag = f'cache_{algo_model}'
         try:
-            client = get_admin_client()
-            client.table('trades').delete().eq('strategy_id', strategy_id) \
-                .eq('user_id', user_id).execute()
+            from db import replace_trades_admin
+            tagged_closed = []
+            for rec in _serialize_trades(closed_df):
+                rec_copy = dict(rec)
+                rec_copy['data_source'] = ds_tag
+                tagged_closed.append(rec_copy)
+            # replace_trades_admin handles the DELETE+chunked INSERT with
+            # retry-on-transient-error, scoped to cache_% so backtest rows
+            # written earlier in the same bulk job survive.
+            inserted = replace_trades_admin(
+                strategy_id, user_id, tagged_closed,
+                data_source_filter='cache_%')
+            try:
+                from trades_store import _cache_invalidate
+                _cache_invalidate(strategy_id, user_id)
+            except Exception:
+                pass
         except Exception as e:
-            logger.warning(
-                "[ALGO-RECOMPUTE] strategy=%s DELETE existing failed: %s",
+            logger.exception(
+                "[ALGO-RECOMPUTE] strategy=%s trades-table write failed: %s",
                 strategy_id, e)
             return {'status': 'error',
-                    'reason': f'delete_existing: {e}',
+                    'reason': f'write: {e}',
                     'inserted': 0}
-
-        # INSERT new trades via existing trades_store helper
-        from trades_store import insert_trade
-        new_serialized = _serialize_trades(closed_df)
-        inserted = 0
-        for rec in new_serialized:
-            try:
-                if insert_trade(strategy_id, user_id, rec):
-                    inserted += 1
-            except Exception as e:
-                logger.warning(
-                    "[ALGO-RECOMPUTE] strategy=%s insert_trade failed: %s",
-                    strategy_id, e)
 
         cfg['last_recompute_until_ts'] = now_iso
         _stamp_config(strategy_id, user_id, cfg)
