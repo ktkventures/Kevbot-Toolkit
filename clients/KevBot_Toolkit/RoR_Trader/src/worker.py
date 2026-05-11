@@ -1145,15 +1145,27 @@ class WorkerManager:
     def _start_algo_history_cron(self):
         """Launch the algo-history append cron in a background thread.
 
-        Runs every ALGO_HISTORY_CRON_INTERVAL seconds. Behind env flag
-        ALGO_HISTORY_CRON_ENABLED (default ON; set to 'false' to
-        disable). Lag enforced via ALGO_HISTORY_LAG_MINUTES (default 15).
+        Runs every ALGO_HISTORY_CRON_INTERVAL seconds.
+
+        **Default flipped 2026-05-11 ON → OFF** after a week of Supabase
+        intermittent outages where cron writes appeared correlated to
+        crashes (likely circumstantial but couldn't fully rule out).
+        Enable explicitly by setting `ALGO_HISTORY_CRON_ENABLED=true`
+        on the Railway worker env vars.
+
+        Manual update path (bulk page or Strategy Detail Update buttons)
+        remains the canonical way to refresh algo data while cron is
+        paused. Lag enforced via ALGO_HISTORY_LAG_MINUTES (default 15)
+        when enabled.
 
         Thread is daemon so process can exit cleanly without joining.
         """
         val = os.environ.get('ALGO_HISTORY_CRON_ENABLED', '').strip().lower()
-        if val in ('0', 'false', 'no', 'off'):
-            logger.info("Algo-history cron disabled via env var")
+        # 2026-05-11: default flipped to OFF. Must EXPLICITLY enable.
+        if val not in ('1', 'true', 'yes', 'on'):
+            logger.info(
+                "Algo-history cron disabled — set ALGO_HISTORY_CRON_ENABLED=true"
+                " on Railway worker to re-enable")
             return
 
         def loop():
