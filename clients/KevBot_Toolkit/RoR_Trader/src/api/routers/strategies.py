@@ -1339,15 +1339,35 @@ def get_strategy_divergence_data(
 
     fwd_start = strat.get('forward_test_start') if forward_test_only else None
 
-    backtest_trades = list(strat.get('stored_trades') or [])
+    # Phase 41 (2026-05-11): both lanes now read from the trades table
+    # with data_source filters. Backtest = 'backtest_%', Algo = anything
+    # else with a non-null data_source (legacy NULLs were UPDATEd to
+    # 'cache_locked' in the Phase 41 schema migration so they're algo
+    # by convention).
+    try:
+        backtest_trades = load_trades_admin(
+            strategy_id, user_id,
+            data_source_filter='backtest_%') or []
+    except Exception as e:
+        logger.warning("[DIVERGENCE] backtest lane load failed for sid=%s: %s",
+                       strategy_id, e)
+        backtest_trades = []
+
     backtest_last_ts = None
     for t in backtest_trades:
         ts = t.get('entry_fill_ts') or t.get('entryFillTime')
-        if ts and (backtest_last_ts is None or ts > backtest_last_ts):
+        if ts and (backtest_last_ts is None or str(ts) > str(backtest_last_ts)):
             backtest_last_ts = ts
 
     try:
-        algo_trades = load_trades_admin(strategy_id, user_id) or []
+        # Algo lane = anything NOT backtest_. We use cache_% as the
+        # primary filter since that's where the cron writes; falls
+        # through to NULL data_source as well via the COALESCE in the
+        # schema migration. If users start using other algo_models we
+        # may need to broaden this.
+        algo_trades = load_trades_admin(
+            strategy_id, user_id,
+            data_source_filter='cache_%') or []
     except Exception as e:
         logger.warning("[DIVERGENCE] algo trades load failed for sid=%s: %s",
                        strategy_id, e)

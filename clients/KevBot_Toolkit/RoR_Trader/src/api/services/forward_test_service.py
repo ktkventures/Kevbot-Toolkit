@@ -188,18 +188,56 @@ def _do_recompute(
     }
 
     if USE_DB:
-        # Flag-aware: update_strategy_admin redirects stored_trades to
-        # the trades table automatically when USE_TRADES_TABLE is ON.
-        # kpis + equity_curve_data stay as strategies-row columns either
-        # way.
+        # Phase 41 (2026-05-11): backtest trades go to the trades table
+        # with `data_source='backtest_<model>'` instead of the stored_trades
+        # JSONB column. This unifies storage with algo trades (Phase 40)
+        # and enables real REST↔CACHE divergence in the Divergence tab.
+        #
+        # The previous "stored_trades" JSONB write is now skipped entirely.
+        # Readers (KPI compute, divergence endpoint, chart render) must
+        # query the trades table with `data_source LIKE 'backtest_%'` filter.
+        bt_model = (strat.get('config') or {}).get('backtest_model') \
+            if isinstance(strat.get('config'), dict) else None
+        if not bt_model:
+            bt_model = strat.get('backtest_model') or 'rest_hifi'
+        ds_tag = f'backtest_{bt_model}'
+        # Stamp data_source on every trade record before persistence.
+        tagged_stored = []
+        for t in stored:
+            t_copy = dict(t)
+            t_copy['data_source'] = ds_tag
+            tagged_stored.append(t_copy)
+
+        # Write to trades table with backtest data_source filter so we
+        # only DELETE existing backtest rows (NOT the algo rows).
+        try:
+            from trades_store import replace_trades_for_strategy
+            ok = replace_trades_for_strategy(
+                strategy_id, user_id, tagged_stored,
+                data_source_filter='backtest_%')
+            if not ok:
+                # USE_TRADES_TABLE flag is OFF — fall back to JSONB write
+                # (legacy path; only triggered if env var not set).
+                logger.warning(
+                    "[FT-RECOMPUTE] trades_store.replace_trades returned False "
+                    "for sid=%s (flag OFF?); falling back to JSONB", strategy_id)
+                update_strategy_admin(strategy_id, user_id, {
+                    'stored_trades': stored,
+                })
+        except Exception as e:
+            logger.exception(
+                "[FT-RECOMPUTE] sid=%s trades-table write failed: %s — "
+                "falling back to JSONB", strategy_id, e)
+            update_strategy_admin(strategy_id, user_id, {
+                'stored_trades': stored,
+            })
+
+        # KPIs + equity curve stay as strategies-row columns (derived
+        # data, fast access for page renders).
         update_strategy_admin(strategy_id, user_id, {
-            'stored_trades': stored,
             'kpis': kpis,
             'equity_curve_data': equity_curve_data,
             'data_refreshed_at': refreshed_at,
-            # Strategy Health Badge: forward-test recompute is treated as a
-            # KPI refresh — clear stale flag, stamp new computed timestamp.
-            # data_source preserved (recompute uses whatever path saved it).
             'kpis_computed_at': refreshed_at,
             'kpis_stale_since': None,
         })
@@ -1348,8 +1386,36 @@ def append_new_backtest_trades_for_strategy(
             'boundary_index': boundary_index,
         }
 
+        # Phase 41 (2026-05-11): backtest trades go to trades table with
+        # `data_source='backtest_<model>'`. Same pattern as full recompute.
+        ds_tag = f'backtest_{bt_model}'
+        tagged_stored = []
+        for t in merged_sorted:
+            t_copy = dict(t)
+            t_copy['data_source'] = ds_tag
+            tagged_stored.append(t_copy)
+        try:
+            from trades_store import replace_trades_for_strategy
+            ok = replace_trades_for_strategy(
+                strategy_id, user_id, tagged_stored,
+                data_source_filter='backtest_%')
+            if not ok:
+                logger.warning(
+                    "[BT-APPEND] trades_store.replace_trades returned False "
+                    "for sid=%s; falling back to JSONB", strategy_id)
+                update_strategy_admin(strategy_id, user_id, {
+                    'stored_trades': merged_sorted,
+                })
+        except Exception as e:
+            logger.exception(
+                "[BT-APPEND] sid=%s trades-table write failed: %s — "
+                "falling back to JSONB", strategy_id, e)
+            update_strategy_admin(strategy_id, user_id, {
+                'stored_trades': merged_sorted,
+            })
+
+        # KPIs + equity curve stay as strategies-row columns.
         update_strategy_admin(strategy_id, user_id, {
-            'stored_trades': merged_sorted,
             'kpis': kpis,
             'equity_curve_data': equity_curve_data,
             'data_refreshed_at': refreshed_at,
