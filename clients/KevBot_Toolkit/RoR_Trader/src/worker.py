@@ -751,7 +751,29 @@ class DBRalphEngine:
         re_mod.load_engine_state = db_load_engine_state
 
         # 2. Status writes: write to DB
+        # Throttle writes to honor HEARTBEAT_INTERVAL (30s). The engine's
+        # _periodic_tasks_loop calls _write_status every PICKLE_WRITE_INTERVAL
+        # (~2s), which previously meant ~1800 monitor_status writes/hour
+        # per user — a major contributor to Supabase load.
+        #
+        # Now we write on (a) state changes (running/connected flip), or
+        # (b) HEARTBEAT_INTERVAL elapsed since last write. State-change
+        # writes always go through so UI sees prompt connect/disconnect.
+        _status_state = {
+            'last_ts': 0.0,
+            'last_running': None,
+            'last_connected': None,
+        }
+
         def db_write_status(running: bool, connected: bool = False):
+            now = time.monotonic()
+            state_changed = (
+                _status_state['last_running'] != running
+                or _status_state['last_connected'] != connected
+            )
+            elapsed = now - _status_state['last_ts']
+            if not state_changed and elapsed < HEARTBEAT_INTERVAL:
+                return  # throttled — no change and too soon
             tick_count = sum(h.tick_count for h in engine.hubs.values())
             status = {
                 'running': running,
@@ -764,6 +786,9 @@ class DBRalphEngine:
             }
             try:
                 save_monitor_status_admin(self.user_id, status)
+                _status_state['last_ts'] = now
+                _status_state['last_running'] = running
+                _status_state['last_connected'] = connected
             except Exception as e:
                 logger.warning("Status write failed: %s", e)
 
