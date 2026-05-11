@@ -210,27 +210,33 @@ def _do_recompute(
 
         # Write to trades table with backtest data_source filter so we
         # only DELETE existing backtest rows (NOT the algo rows).
+        # 2026-05-11 (Phase 41 followup): call db.replace_trades_admin
+        # directly instead of going through trades_store.replace_trades_for_strategy.
+        # The trades_store wrapper checks USE_TRADES_TABLE env var and
+        # falls back to a JSONB write when OFF — but the JSONB path is
+        # exactly what Phase 41 obsoleted (large blob writes silently
+        # fail under load). Phase 41 commits to the trades table being
+        # canonical; the flag is vestigial. Direct call avoids the
+        # broken fallback path in environments where the API service
+        # doesn't have USE_TRADES_TABLE set.
         try:
-            from trades_store import replace_trades_for_strategy
-            ok = replace_trades_for_strategy(
+            from db import replace_trades_admin
+            replace_trades_admin(
                 strategy_id, user_id, tagged_stored,
                 data_source_filter='backtest_%')
-            if not ok:
-                # USE_TRADES_TABLE flag is OFF — fall back to JSONB write
-                # (legacy path; only triggered if env var not set).
-                logger.warning(
-                    "[FT-RECOMPUTE] trades_store.replace_trades returned False "
-                    "for sid=%s (flag OFF?); falling back to JSONB", strategy_id)
-                update_strategy_admin(strategy_id, user_id, {
-                    'stored_trades': stored,
-                })
+            # Invalidate trades_store cache so future reads see fresh data
+            try:
+                from trades_store import _cache_invalidate
+                _cache_invalidate(strategy_id, user_id)
+            except Exception:
+                pass
         except Exception as e:
             logger.exception(
-                "[FT-RECOMPUTE] sid=%s trades-table write failed: %s — "
-                "falling back to JSONB", strategy_id, e)
-            update_strategy_admin(strategy_id, user_id, {
-                'stored_trades': stored,
-            })
+                "[FT-RECOMPUTE] sid=%s trades-table write failed: %s",
+                strategy_id, e)
+            # No fallback to JSONB — Phase 41 made trades table canonical.
+            # If the write fails, propagate so the caller can retry.
+            raise
 
         # KPIs + equity curve stay as strategies-row columns (derived
         # data, fast access for page renders).
@@ -1394,25 +1400,24 @@ def append_new_backtest_trades_for_strategy(
             t_copy = dict(t)
             t_copy['data_source'] = ds_tag
             tagged_stored.append(t_copy)
+        # 2026-05-11 (Phase 41 followup): see recompute_and_persist_stored_trades
+        # for rationale. Bypass trades_store wrapper to avoid flag-dependent
+        # fallback to broken JSONB path.
         try:
-            from trades_store import replace_trades_for_strategy
-            ok = replace_trades_for_strategy(
+            from db import replace_trades_admin
+            replace_trades_admin(
                 strategy_id, user_id, tagged_stored,
                 data_source_filter='backtest_%')
-            if not ok:
-                logger.warning(
-                    "[BT-APPEND] trades_store.replace_trades returned False "
-                    "for sid=%s; falling back to JSONB", strategy_id)
-                update_strategy_admin(strategy_id, user_id, {
-                    'stored_trades': merged_sorted,
-                })
+            try:
+                from trades_store import _cache_invalidate
+                _cache_invalidate(strategy_id, user_id)
+            except Exception:
+                pass
         except Exception as e:
             logger.exception(
-                "[BT-APPEND] sid=%s trades-table write failed: %s — "
-                "falling back to JSONB", strategy_id, e)
-            update_strategy_admin(strategy_id, user_id, {
-                'stored_trades': merged_sorted,
-            })
+                "[BT-APPEND] sid=%s trades-table write failed: %s",
+                strategy_id, e)
+            raise
 
         # KPIs + equity curve stay as strategies-row columns.
         update_strategy_admin(strategy_id, user_id, {
