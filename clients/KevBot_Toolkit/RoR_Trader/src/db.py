@@ -10,12 +10,82 @@ Phase 22B: CRUD rewiring (strategies, portfolios, alerts, configs)
 """
 import os
 import json
+import time
 import threading
 import logging
 import contextvars
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# Transient-error retry helper (added 2026-05-11)
+# ============================================================
+# Supabase has been intermittently unavailable through 2026-05-11
+# (Cloudflare 522/521/504 returning HTML the supabase-py client wraps
+# as "JSON could not be generated"). The previous replace_trades_admin
+# (DELETE then INSERT) was vulnerable to partial-write data loss when
+# the second call hit a 522. Wrapping the whole operation in retry
+# means a transient blip retries the entire DELETE+INSERT idempotently
+# (the second DELETE is a no-op, then INSERT runs on the second try).
+#
+# Only RETRYABLE transient errors are retried. Permanent errors
+# (unique violation, FK violation, syntax) bubble immediately.
+
+_TRANSIENT_SIGNALS = (
+    '522', '521', '503', '504', '524',  # Cloudflare gateway errors
+    'json could not be generated',        # supabase-py's 5xx HTML wrap
+    'connection',                          # generic connection refused / reset
+    'timed out', 'timeout',
+    'eof occurred', 'broken pipe',
+)
+_PERMANENT_SIGNALS = (
+    'duplicate', 'unique constraint', 'unique_violation',
+    'foreign key', 'fk_violation',
+    'syntax error', 'invalid',
+)
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    if any(sig in msg for sig in _PERMANENT_SIGNALS):
+        return False
+    return any(sig in msg for sig in _TRANSIENT_SIGNALS)
+
+
+def _execute_with_retry(fn, op_name: str = 'supabase op',
+                        max_attempts: int = 4, base_delay: float = 2.0):
+    """Run `fn` with exponential backoff on transient errors.
+
+    Backoff schedule with defaults (max_attempts=4, base_delay=2.0):
+      attempt 1 → run; on fail wait 2s
+      attempt 2 → run; on fail wait 4s
+      attempt 3 → run; on fail wait 8s
+      attempt 4 → run; final attempt, raise on fail
+
+    Permanent errors (unique violation, FK, syntax) skip retry and raise
+    immediately so the caller can handle them.
+    """
+    last_exc: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            last_exc = exc
+            if not _is_transient_error(exc) or attempt == max_attempts:
+                if attempt > 1:
+                    logger.error(
+                        '%s: gave up after %d attempts: %s',
+                        op_name, attempt, exc)
+                raise
+            delay = base_delay * (2 ** (attempt - 1))
+            logger.warning(
+                '%s: transient error attempt %d/%d (%s). Retrying in %.1fs.',
+                op_name, attempt, max_attempts, exc, delay)
+            time.sleep(delay)
+    if last_exc is not None:
+        raise last_exc
 
 # ============================================================
 # Configuration
@@ -1051,6 +1121,9 @@ def load_trades_admin(
 def insert_trade_admin(strategy_id: int, user_id: str, trade: dict) -> dict | None:
     """Insert a single trade row (admin client). Returns the saved row
     reconstructed into legacy flat shape, or None on conflict / failure.
+
+    Wrapped in _execute_with_retry for transient Supabase errors. Unique
+    violations short-circuit (not retried) and return None.
     """
     row = _trade_to_row(trade)
     row['strategy_id'] = strategy_id
@@ -1058,15 +1131,20 @@ def insert_trade_admin(strategy_id: int, user_id: str, trade: dict) -> dict | No
     row.pop('id', None)
     row.pop('created_at', None)
     client = get_admin_client()
-    try:
-        result = client.table('trades').insert(row).execute()
-    except Exception as e:
-        # Unique-index collision on (strategy_id, entry_fill_ts, exit_fill_ts)
-        # is not fatal — it's the idempotency guardrail. Other errors bubble.
-        msg = str(e).lower()
-        if 'duplicate' in msg or 'unique' in msg or 'conflict' in msg:
-            return None
-        raise
+
+    def _do_insert():
+        try:
+            return client.table('trades').insert(row).execute()
+        except Exception as e:
+            msg = str(e).lower()
+            if 'duplicate' in msg or 'unique' in msg or 'conflict' in msg:
+                return None
+            raise
+
+    result = _execute_with_retry(
+        _do_insert, op_name=f'insert_trade_admin sid={strategy_id}')
+    if result is None:
+        return None
     return _row_to_trade(result.data[0]) if result.data else None
 
 
@@ -1105,11 +1183,24 @@ def replace_trades_admin(
     user_id: str,
     trades: list[dict],
     data_source_filter: str | None = None,
+    chunk_size: int = 250,
 ) -> int:
-    """Atomically replace trades for a strategy (admin client).
+    """Replace trades for a strategy (admin client).
 
-    DELETE followed by bulk INSERT. Used by the forward-test recompute
-    and Mass Builder backtest-save paths. Returns inserted row count.
+    DELETE followed by chunked bulk INSERT. Used by the forward-test
+    recompute and Mass Builder backtest-save paths. Returns inserted
+    row count.
+
+    **Retry behavior (added 2026-05-11):** The entire DELETE+INSERT
+    operation is idempotent on retry — DELETE is a no-op when nothing
+    matches, INSERT is wrapped per-chunk with its own retry. Supabase
+    has been intermittently dropping requests with 522 errors; this
+    wrapper keeps a transient blip from leaving the trades table in a
+    partial-write state.
+
+    Chunked INSERT (default 250 rows/chunk) reduces single-call payload
+    size, which both speeds up each individual call and keeps Supabase
+    happier under load.
 
     `data_source_filter` (2026-05-11 Phase 41): SQL LIKE pattern to
     scope the DELETE. Examples:
@@ -1118,13 +1209,23 @@ def replace_trades_admin(
       - None → deletes ALL rows for strategy (Phase 40 legacy)
     """
     client = get_admin_client()
-    delete_q = client.table('trades').delete().eq('strategy_id', strategy_id)
-    if data_source_filter:
-        delete_q = delete_q.like('data_source', data_source_filter)
-    delete_q.execute()
+
+    def _do_delete():
+        delete_q = client.table('trades').delete().eq('strategy_id', strategy_id)
+        if data_source_filter:
+            delete_q = delete_q.like('data_source', data_source_filter)
+        return delete_q.execute()
+
+    _execute_with_retry(
+        _do_delete,
+        op_name=f'replace_trades_admin DELETE sid={strategy_id} '
+                f'filter={data_source_filter!r}',
+    )
+
     if not trades:
         return 0
-    rows = []
+
+    rows: list[dict] = []
     for trade in trades:
         row = _trade_to_row(trade)
         row['strategy_id'] = strategy_id
@@ -1132,8 +1233,27 @@ def replace_trades_admin(
         row.pop('id', None)
         row.pop('created_at', None)
         rows.append(row)
-    result = client.table('trades').insert(rows).execute()
-    return len(result.data) if result.data else 0
+
+    total_inserted = 0
+    total_chunks = (len(rows) + chunk_size - 1) // chunk_size
+    for idx in range(0, len(rows), chunk_size):
+        chunk = rows[idx:idx + chunk_size]
+        chunk_num = (idx // chunk_size) + 1
+
+        def _do_insert_chunk(_chunk=chunk):
+            return client.table('trades').insert(_chunk).execute()
+
+        result = _execute_with_retry(
+            _do_insert_chunk,
+            op_name=(
+                f'replace_trades_admin INSERT sid={strategy_id} '
+                f'chunk {chunk_num}/{total_chunks} '
+                f'({len(chunk)} rows)'
+            ),
+        )
+        total_inserted += len(result.data) if result.data else len(chunk)
+
+    return total_inserted
 
 
 # ============================================================
