@@ -100,6 +100,7 @@ def _flag_on() -> bool:
 def load_trades_for_strategy(
     strategy_id: int,
     user_id: Optional[str] = None,
+    data_source_filter: Optional[str] = None,
 ) -> list[dict]:
     """Return the trades list for a strategy.
 
@@ -108,6 +109,14 @@ def load_trades_for_strategy(
     element shape (flat dict with every field at the top level, using the
     canonical *_fill_ts field names).
 
+    `data_source_filter` (2026-05-11 Phase 41): SQL LIKE pattern to scope
+    the load. Examples:
+      - 'backtest_%' → only backtest trades
+      - 'cache_%' → only cache-based algo trades
+      - None → all rows (default, matches Phase 40 behavior)
+    Cache is keyed by (sid, uid, filter) so different filters don't
+    collide.
+
     When the flag is OFF, callers should not reach this function — they
     should continue to read ``strategy['stored_trades']`` directly. Kept
     as a safe passthrough (returns []) for any caller that wires through
@@ -115,28 +124,37 @@ def load_trades_for_strategy(
     """
     if not _flag_on():
         return []
-    key = _cache_key(strategy_id, user_id)
+    key = (strategy_id, user_id, data_source_filter)
     cached = _cache_get(key)
     if cached is not None:
         return cached
     try:
         from db import load_trades_admin
-        trades = load_trades_admin(strategy_id, user_id)
+        trades = load_trades_admin(strategy_id, user_id,
+                                   data_source_filter=data_source_filter)
         _cache_set(key, trades)
         return trades
     except Exception as e:
         logger.warning(
-            "trades_store.load_trades_for_strategy failed for strategy %s: %s",
-            strategy_id, e,
+            "trades_store.load_trades_for_strategy failed for strategy %s "
+            "(filter=%s): %s",
+            strategy_id, data_source_filter, e,
         )
         return []
 
 
-def get_stored_trades(strategy: dict) -> list[dict]:
+def get_stored_trades(
+    strategy: dict,
+    data_source_filter: Optional[str] = 'backtest_%',
+) -> list[dict]:
     """Return the effective stored_trades for a strategy dict.
 
     Flag OFF: returns ``strategy['stored_trades']`` as today.
     Flag ON:  fetches from the trades table.
+
+    `data_source_filter` (2026-05-11 Phase 41): default 'backtest_%'.
+    Matches the historical semantic — `stored_trades` is the strategy's
+    backtest output. Pass `None` to disable filtering.
 
     Use this helper in services/code paths that need the trades list but
     don't want to care which backend is authoritative.
@@ -146,11 +164,14 @@ def get_stored_trades(strategy: dict) -> list[dict]:
         uid = strategy.get("user_id")
         if sid is None:
             return strategy.get("stored_trades", []) or []
-        return load_trades_for_strategy(sid, uid)
+        return load_trades_for_strategy(sid, uid, data_source_filter=data_source_filter)
     return strategy.get("stored_trades", []) or []
 
 
-def hydrate_strategy_trades(strategy: dict) -> dict:
+def hydrate_strategy_trades(
+    strategy: dict,
+    data_source_filter: Optional[str] = 'backtest_%',
+) -> dict:
     """Populate ``strategy['stored_trades']`` from the trades table (flag ON).
 
     No-op when the flag is OFF. Mutates in place and returns the dict for
@@ -160,6 +181,13 @@ def hydrate_strategy_trades(strategy: dict) -> dict:
     strategy object (detail, hydrate, refresh, trades endpoint, portfolio
     combined view). Keeps the frontend DTO shape identical regardless of
     storage backend.
+
+    `data_source_filter` (2026-05-11 Phase 41): default 'backtest_%'.
+    Preserves the historical semantic that `stored_trades` means "the
+    strategy's backtest output". Algo-specific endpoints (Divergence
+    tab, Algo History) should NOT use hydrate and should query the
+    trades table directly with their own filter. Pass `None` to disable
+    filtering (legacy behavior — returns all rows).
     """
     if not _flag_on() or not isinstance(strategy, dict):
         return strategy
@@ -168,7 +196,8 @@ def hydrate_strategy_trades(strategy: dict) -> dict:
     if sid is None:
         return strategy
     try:
-        strategy["stored_trades"] = load_trades_for_strategy(sid, uid)
+        strategy["stored_trades"] = load_trades_for_strategy(
+            sid, uid, data_source_filter=data_source_filter)
     except Exception as e:
         logger.warning(
             "trades_store.hydrate failed for strategy %s: %s — leaving "
@@ -211,27 +240,38 @@ def replace_trades_for_strategy(
     strategy_id: int,
     user_id: str,
     trade_records: Iterable[dict],
+    data_source_filter: Optional[str] = None,
 ) -> bool:
     """Atomically replace a strategy's trades (flag ON only).
 
-    DELETEs all current rows for ``strategy_id`` and bulk-INSERTs the new
+    DELETEs current rows for ``strategy_id`` and bulk-INSERTs the new
     list. Used by ``forward_test_service.recompute_and_persist_stored_trades``
-    and the Mass Builder backtest-save paths, which need to rewrite the
-    full trade history.
+    and the Mass Builder backtest-save paths.
 
-    Returns True on success, False on error or when flag OFF. When flag OFF,
-    callers should keep writing to ``strategies.stored_trades`` as today.
+    `data_source_filter` (2026-05-11 Phase 41): SQL LIKE pattern to scope
+    the DELETE. Examples:
+      - 'backtest_%' → only deletes backtest rows, preserves algo rows
+      - 'cache_%' → only deletes cache rows, preserves backtest rows
+      - None → deletes ALL rows for the strategy (Phase 40 legacy behavior)
+    Callers writing backtest data should pass 'backtest_%' so they don't
+    wipe algo lane data.
+
+    Each trade in trade_records should carry its own `data_source` field
+    so inserts are properly tagged.
+
+    Returns True on success, False on error or when flag OFF.
     """
     if not _flag_on():
         return False
     try:
         from db import replace_trades_admin
-        replace_trades_admin(strategy_id, user_id, list(trade_records))
+        replace_trades_admin(strategy_id, user_id, list(trade_records),
+                             data_source_filter=data_source_filter)
         _cache_invalidate(strategy_id, user_id)
         return True
     except Exception as e:
         logger.error(
-            "trades_store.replace_trades failed for strategy %s: %s",
-            strategy_id, e,
+            "trades_store.replace_trades failed for strategy %s (filter=%s): %s",
+            strategy_id, data_source_filter, e,
         )
         return False

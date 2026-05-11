@@ -1001,12 +1001,22 @@ def _row_to_trade(row: dict) -> dict:
     return trade
 
 
-def load_trades_admin(strategy_id: int, user_id: str | None = None) -> list:
+def load_trades_admin(
+    strategy_id: int,
+    user_id: str | None = None,
+    data_source_filter: str | None = None,
+) -> list:
     """Load all trades for a strategy (admin client). Ordered by entry_fill_ts.
 
     user_id filter is optional — with the FK + CASCADE we know every
     trade's user_id matches the strategy's user_id, but we accept the
     parameter so callers can still supply it for defence-in-depth.
+
+    `data_source_filter` (2026-05-11 Phase 41): SQL LIKE pattern.
+    Examples:
+      - 'backtest_%' → only backtest trades
+      - 'cache_%' → only cache-based algo trades
+      - None → all rows (Phase 40 legacy behavior)
 
     PostgREST/Supabase caps every response at 1000 rows regardless of
     `limit` / `Range` headers (confirmed 2026-04-24). Strategies in this
@@ -1027,6 +1037,8 @@ def load_trades_admin(strategy_id: int, user_id: str | None = None) -> list:
             .range(offset, offset + PAGE_SIZE - 1)
         if user_id:
             q = q.eq('user_id', user_id)
+        if data_source_filter:
+            q = q.like('data_source', data_source_filter)
         result = q.execute()
         page = result.data or []
         all_rows.extend(page)
@@ -1092,14 +1104,24 @@ def replace_trades_admin(
     strategy_id: int,
     user_id: str,
     trades: list[dict],
+    data_source_filter: str | None = None,
 ) -> int:
-    """Atomically replace all trades for a strategy (admin client).
+    """Atomically replace trades for a strategy (admin client).
 
     DELETE followed by bulk INSERT. Used by the forward-test recompute
     and Mass Builder backtest-save paths. Returns inserted row count.
+
+    `data_source_filter` (2026-05-11 Phase 41): SQL LIKE pattern to
+    scope the DELETE. Examples:
+      - 'backtest_%' → only deletes backtest rows; preserves algo
+      - 'cache_%' → only deletes cache/algo rows; preserves backtest
+      - None → deletes ALL rows for strategy (Phase 40 legacy)
     """
     client = get_admin_client()
-    client.table('trades').delete().eq('strategy_id', strategy_id).execute()
+    delete_q = client.table('trades').delete().eq('strategy_id', strategy_id)
+    if data_source_filter:
+        delete_q = delete_q.like('data_source', data_source_filter)
+    delete_q.execute()
     if not trades:
         return 0
     rows = []
