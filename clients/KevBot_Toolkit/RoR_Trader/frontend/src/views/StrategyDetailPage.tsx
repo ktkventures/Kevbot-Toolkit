@@ -1924,7 +1924,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     }
 
     return { alertMatches: alertResults, algoMatches: algoResults };
-  }, [recentAlerts, fwdTrades, btTrades, chartPrefs.alertSlippage, tfMs]);
+    // 2026-05-12 fix: deps must reflect what the body actually uses.
+    // Phase A (976a041) repointed `algoAll = algoTrades` inside the body
+    // but missed updating the deps array — leaving the closure stale.
+    // Symptom: Price Divergence panel showed "no matched pairs" and Algo
+    // History Δ columns rendered '--' even when matches existed, because
+    // React never recomputed the useMemo when algoTrades loaded.
+  }, [recentAlerts, algoTrades, chartPrefs.alertSlippage, tfMs]);
 
   // Unified Trade Reconciliation (Trade_Timestamps_Spec Part 10, Tier 1).
   // Greedy join algo trades to alerts on fill_ts within the user's slippage
