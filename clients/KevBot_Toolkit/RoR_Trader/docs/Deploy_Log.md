@@ -21,6 +21,22 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-05-12
 
+- **~22:41 UTC (16:41 MT)** — `c2f7713` Fix algoMatches stale closure: deps missed algoTrades
+  - Service(s) redeployed: frontend
+  - Notes: Phase A had repointed `algoAll = algoTrades` inside the useMemo body but missed updating the deps array (still listed `[recentAlerts, fwdTrades, btTrades, ...]`). React never recomputed → algoMatches stayed empty → Chart & Trades Δ columns rendered `--` and Lab tab Price Divergence panel showed "No matched pairs." One-line dep array fix. Single useMemo at line 1927.
+
+- **~21:44 UTC (15:44 MT)** — `27802ba` Divergence quick fixes: 24h default + clearer lane-update messages
+  - Service(s) redeployed: frontend
+  - Notes: Default Divergence tab window 48h → 24h per Kevin's request. Update New Data status messages now format per-lane outcomes (✓ appended +N / 0 new trades / skipped / error) so it's obvious whether a lane ran or didn't.
+
+- **~20:46 UTC (14:46 MT)** — `66e1cf8` Divergence tab: date-window filter + admin page legend
+  - Service(s) redeployed: api + frontend
+  - Notes: Added `start`/`end` query params to `/divergence-data` (default 48h at the time). Date pickers + Last 24h/48h/7d/30d quick buttons on the tab. Admin page got an explicit legend explaining eRC/xCL drift columns.
+
+- **~20:21 UTC (14:21 MT)** — `4b57710` Divergence reliability fixes: memory bounds, sort desc, theme styling
+  - Service(s) redeployed: api + frontend
+  - Notes: API OOM mitigation — `/divergence-data` + `/admin/divergence-summary` cap rows per lane (default 2000 / 1000), explicit `gc.collect()` between strategies in admin loop. Divergence rows sort desc (most recent first). Admin page styling fixed to use proper theme tokens.
+
 - **~22:30 UTC (16:30 MT)** — `67675fb` Phase B: BT-APPEND true-append optimization
   - Service(s) redeployed: api
   - Notes: `append_new_backtest_trades_for_strategy` was doing a full DELETE+INSERT-all on every refresh. Now uses MAX(entry_fill_ts) query for anchor, per-row insert_trade for new rows, lazy KPI recompute. Expected 6-10× speedup on Update New Data: ~40min/batch → ~5min. New `db.get_max_entry_ts_admin` helper.
