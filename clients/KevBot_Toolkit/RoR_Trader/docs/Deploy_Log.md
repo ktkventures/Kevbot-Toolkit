@@ -19,6 +19,16 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-05-12
+
+- **~22:30 UTC (16:30 MT)** — `67675fb` Phase B: BT-APPEND true-append optimization
+  - Service(s) redeployed: api
+  - Notes: `append_new_backtest_trades_for_strategy` was doing a full DELETE+INSERT-all on every refresh. Now uses MAX(entry_fill_ts) query for anchor, per-row insert_trade for new rows, lazy KPI recompute. Expected 6-10× speedup on Update New Data: ~40min/batch → ~5min. New `db.get_max_entry_ts_admin` helper.
+
+- **~22:00 UTC (16:00 MT)** — `976a041` Phase A: Chart & Trades wiring + admin divergence + Hi-Fi data-preservation fix
+  - Service(s) redeployed: api + frontend
+  - Notes: Critical Hi-Fi data-wipe fix (was overwriting trade `data` JSONB with `{hifi_resolved: true}` only on every refresh, destroying `bars_held`/`hold_time_seconds`/`pnl`/`win`/`behavior` etc.). New `/api/strategies/{id}/algo-trades` endpoint reads `cache_%` from trades table; Chart & Trades "Algo History" and "Price Divergence" modules now point at real algo lane data instead of mislabeled backtest. New admin page `/admin/divergence` for cross-strategy 3-way divergence summaries.
+
 ## 2026-05-11
 
 - **~23:30 UTC (17:30 MT)** — `6b4fc53` Phase 41 fix: algo lane must scope DELETE + tag inserts with cache_<model>
