@@ -282,8 +282,21 @@ def _row_to_strategy(row: dict, hydrate_trades: bool = True) -> dict:
         try:
             import trades_store as _trades_store
             if _trades_store._flag_on() and strat.get('id'):
+                # 2026-05-12 fix: scope hydration to backtest_%. Without
+                # this filter, stored_trades was getting populated with
+                # ALL lanes (backtest + cache + legacy NULL), and any
+                # caller that subsequently tagged the list with a single
+                # data_source (e.g., append_new_backtest_trades_for_strategy
+                # at forward_test_service.py:1407 stamping
+                # data_source='backtest_<model>') would create intra-batch
+                # duplicates at (sid, entry_ts, exit_ts, 'backtest_<model>')
+                # — violating the trades_dedupe_idx unique constraint.
+                # Historical semantic: stored_trades = backtest output.
+                # Algo-specific callers query trades-table directly with
+                # their own filter (cache_%).
                 strat['stored_trades'] = _trades_store.load_trades_for_strategy(
-                    strat['id'], strat.get('user_id'))
+                    strat['id'], strat.get('user_id'),
+                    data_source_filter='backtest_%')
         except Exception:
             # Never let hydration failures break strategy loads — callers
             # that need trades can call hydrate_strategy_trades explicitly.
