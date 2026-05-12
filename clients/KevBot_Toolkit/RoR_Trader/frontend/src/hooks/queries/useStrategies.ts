@@ -376,9 +376,10 @@ export interface DivergenceData {
   backtest_model: string | null;
   algo_model: string | null;
   live_model: string | null;
-  backtest: { count: number; last_trade_ts: string | null; available: boolean };
-  algo: { count: number; last_trade_ts: string | null; available: boolean };
+  backtest: { count: number; shown?: number; last_trade_ts: string | null; available: boolean };
+  algo: { count: number; shown?: number; last_trade_ts: string | null; available: boolean };
   live: { count: number; last_alert_ts: string | null };
+  max_per_lane?: number;
   rows: DivergenceRow[];
   kpis: {
     matched_3way: number;

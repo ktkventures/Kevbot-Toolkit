@@ -39,7 +39,7 @@ function driftColor(val: number | null | undefined): string {
   if (val == null) return 'var(--text-muted)';
   const abs = Math.abs(val);
   if (abs <= 2) return 'var(--green)';
-  if (abs <= 30) return 'var(--warning, #f0a020)';
+  if (abs <= 30) return 'var(--orange)';
   return 'var(--red)';
 }
 
@@ -133,12 +133,12 @@ export default function AdminDivergencePage() {
   );
 
   return (
-    <div style={{ padding: 16, maxWidth: 1600, margin: '0 auto' }}>
-      <div style={{ marginBottom: 16 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 4 }}>
+    <div className="p-4 space-y-4">
+      <div>
+        <h1 className="text-2xl font-semibold mb-1">
           Divergence Summary (Admin)
         </h1>
-        <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+        <p className="text-xs" style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>
           3-way joiner (backtest / algo / live) across every strategy in the
           selected window. Drift values shown in seconds — entry REST↔CACHE
           (eRC) measures backtest-vs-algo divergence; exit CACHE↔LIVE (xCL)
@@ -148,37 +148,33 @@ export default function AdminDivergencePage() {
       </div>
 
       <Card>
-        <div style={{
-          display: 'flex',
-          gap: 12,
-          alignItems: 'flex-end',
-          flexWrap: 'wrap',
-          marginBottom: 12,
-        }}>
+        <div className="flex flex-wrap items-end gap-3 mb-3">
           <div>
-            <label style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginBottom: 2 }}>
+            <label className="block text-[11px] mb-1" style={{ color: 'var(--text-muted)' }}>
               Start (UTC)
             </label>
             <input
               type="datetime-local"
               value={start.slice(0, 16)}
               onChange={e => setStart(e.target.value ? new Date(e.target.value + 'Z').toISOString() : start)}
-              style={{ padding: '4px 6px', fontSize: 13 }}
+              className="text-xs px-2 py-1 rounded"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
             />
           </div>
           <div>
-            <label style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginBottom: 2 }}>
+            <label className="block text-[11px] mb-1" style={{ color: 'var(--text-muted)' }}>
               End (UTC)
             </label>
             <input
               type="datetime-local"
               value={end.slice(0, 16)}
               onChange={e => setEnd(e.target.value ? new Date(e.target.value + 'Z').toISOString() : end)}
-              style={{ padding: '4px 6px', fontSize: 13 }}
+              className="text-xs px-2 py-1 rounded"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
             />
           </div>
           <div>
-            <label style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginBottom: 2 }}>
+            <label className="block text-[11px] mb-1" style={{ color: 'var(--text-muted)' }}>
               Filter
             </label>
             <input
@@ -186,27 +182,31 @@ export default function AdminDivergencePage() {
               placeholder="sid / sym / name"
               value={query}
               onChange={e => setQuery(e.target.value)}
-              style={{ padding: '4px 6px', fontSize: 13, width: 160 }}
+              className="text-xs px-2 py-1 rounded w-40"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
             />
           </div>
           <button
             onClick={() => refetch()}
             disabled={isLoading || isFetching}
+            className="text-xs px-3 py-1.5 rounded font-medium"
             style={{
-              padding: '6px 14px',
-              fontSize: 13,
+              background: 'var(--accent, #2563eb)',
+              color: '#fff',
               cursor: (isLoading || isFetching) ? 'wait' : 'pointer',
+              opacity: (isLoading || isFetching) ? 0.6 : 1,
             }}
           >
             {isFetching ? 'Loading…' : 'Refresh'}
           </button>
-          <div style={{ display: 'flex', gap: 6 }}>
+          <div className="flex gap-1.5">
             <button
               onClick={() => {
                 setStart(todayStartUtcIso());
                 setEnd(nowUtcIso());
               }}
-              style={{ padding: '4px 10px', fontSize: 12 }}
+              className="text-[11px] px-2 py-1 rounded"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
             >
               Today
             </button>
@@ -221,7 +221,8 @@ export default function AdminDivergencePage() {
                 e.setUTCHours(23, 59, 59, 999);
                 setEnd(e.toISOString());
               }}
-              style={{ padding: '4px 10px', fontSize: 12 }}
+              className="text-[11px] px-2 py-1 rounded"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
             >
               Yesterday
             </button>
@@ -232,7 +233,8 @@ export default function AdminDivergencePage() {
                 setStart(d.toISOString());
                 setEnd(nowUtcIso());
               }}
-              style={{ padding: '4px 10px', fontSize: 12 }}
+              className="text-[11px] px-2 py-1 rounded"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
             >
               Last 7 days
             </button>
@@ -240,32 +242,36 @@ export default function AdminDivergencePage() {
         </div>
 
         {error && (
-          <div style={{
-            padding: 12,
-            background: 'var(--red-bg, #fff0f0)',
+          <div className="p-3 mb-3 rounded text-xs" style={{
+            background: 'rgba(244,67,54,0.12)',
             color: 'var(--red)',
-            fontSize: 13,
-            marginBottom: 12,
-            borderRadius: 4,
+            border: '1px solid rgba(244,67,54,0.3)',
           }}>
             Error loading divergence summary: {String((error as Error).message || error)}
           </div>
         )}
 
+        {(isLoading || isFetching) && !data && (
+          <div className="p-3 mb-3 rounded text-xs" style={{
+            background: 'var(--bg-input)',
+            color: 'var(--text-muted)',
+          }}>
+            Loading divergence summary… this can take 1-3 minutes for a full
+            user fleet (each strategy needs three paginated queries to the
+            trades + alerts tables).
+          </div>
+        )}
+
         {data && (
-          <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
-            {sortedRows.length} of {data.strategy_count} strategies · window {data.start} → {data.end}
+          <div className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+            {sortedRows.length} of {data.strategy_count} strategies · window {data.start.slice(0, 19)} → {data.end.slice(0, 19)}
           </div>
         )}
 
         <div style={{ overflowX: 'auto' }}>
-          <table style={{
-            width: '100%',
-            borderCollapse: 'collapse',
-            fontSize: 12,
-          }}>
+          <table className="text-xs w-full" style={{ borderCollapse: 'collapse' }}>
             <thead>
-              <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-subtle, #f8f8f8)' }}>
+              <tr style={{ borderBottom: '1px solid var(--border)', background: 'var(--bg-input)' }}>
                 <Th k="sid" label="sid" />
                 <th style={{ padding: '6px 8px', textAlign: 'left', fontSize: 12 }}>name</th>
                 <Th k="sym" label="sym" />
@@ -292,7 +298,7 @@ export default function AdminDivergencePage() {
                 </td></tr>
               ) : sortedRows.map(r => (
                 <tr key={r.strategy_id} style={{
-                  borderBottom: '1px solid var(--border-subtle, #eee)',
+                  borderBottom: '1px solid var(--border)',
                   opacity: r.no_activity || r.error ? 0.6 : 1,
                 }}>
                   <td style={{ padding: '6px 8px', fontFamily: 'monospace' }}>{r.strategy_id}</td>

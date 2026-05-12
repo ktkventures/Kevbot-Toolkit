@@ -1353,6 +1353,8 @@ def get_strategy_divergence_data(
     direction: Optional[str] = Query(None, description="LONG / SHORT filter"),
     tolerance_seconds: float = Query(300.0, ge=10.0, le=3600.0,
         description="Max distance to consider two events 'matched'. Beyond this, lanes split into separate rows."),
+    max_per_lane: int = Query(2000, ge=10, le=20000,
+        description="Cap rows per lane to keep response size + API memory bounded. Most-recent N kept."),
     user=Depends(get_current_user),
 ):
     """Three-lane comparison data for the Divergence tab.
@@ -1398,11 +1400,24 @@ def get_strategy_divergence_data(
                        strategy_id, e)
         backtest_trades = []
 
+    backtest_total = len(backtest_trades)
     backtest_last_ts = None
     for t in backtest_trades:
         ts = t.get('entry_fill_ts') or t.get('entryFillTime')
         if ts and (backtest_last_ts is None or str(ts) > str(backtest_last_ts)):
             backtest_last_ts = ts
+
+    # Cap to most-recent N to bound response size + API memory. For
+    # 5000+ trade strategies the joiner output is enormous and pushed
+    # the API container to OOM (2026-05-12 incident). The frontend
+    # already paginates client-side; serving more than ~2000 rows
+    # mostly creates pages no one looks at.
+    if len(backtest_trades) > max_per_lane:
+        backtest_trades = sorted(
+            backtest_trades,
+            key=lambda t: str(t.get('entry_fill_ts') or ''),
+            reverse=True,
+        )[:max_per_lane]
 
     try:
         # Algo lane = anything NOT backtest_. We use cache_% as the
@@ -1418,18 +1433,28 @@ def get_strategy_divergence_data(
                        strategy_id, e)
         algo_trades = []
 
+    algo_total = len(algo_trades)
     algo_last_ts = None
     for t in algo_trades:
         ts = t.get('entry_fill_ts')
         if ts and (algo_last_ts is None or str(ts) > str(algo_last_ts)):
             algo_last_ts = ts
 
+    if len(algo_trades) > max_per_lane:
+        algo_trades = sorted(
+            algo_trades,
+            key=lambda t: str(t.get('entry_fill_ts') or ''),
+            reverse=True,
+        )[:max_per_lane]
+
     try:
-        alerts = get_alerts_for_strategy_db(strategy_id, limit=2000) or []
+        alerts = get_alerts_for_strategy_db(
+            strategy_id, limit=max_per_lane) or []
     except Exception as e:
         logger.warning("[DIVERGENCE] alert load failed for sid=%s: %s",
                        strategy_id, e)
         alerts = []
+    alerts_total = len(alerts)
 
     last_alert_ts = alerts[0].get('timestamp') if alerts else None
 
@@ -1459,17 +1484,19 @@ def get_strategy_divergence_data(
         'live_model': (strat.get('config') or {}).get('live_model')
                       or strat.get('live_model'),
         'backtest': {
-            'count': len(backtest_trades),
+            'count': backtest_total,  # total in DB
+            'shown': len(backtest_trades),  # after max_per_lane cap
             'last_trade_ts': backtest_last_ts,
-            'available': len(backtest_trades) > 0,
+            'available': backtest_total > 0,
         },
         'algo': {
-            'count': len(algo_trades),
+            'count': algo_total,
+            'shown': len(algo_trades),
             'last_trade_ts': str(algo_last_ts) if algo_last_ts else None,
-            'available': len(algo_trades) > 0,
+            'available': algo_total > 0,
         },
         'live': {
-            'count': len(alerts),
+            'count': alerts_total,
             'last_alert_ts': last_alert_ts,
         },
         'rows': diverge['rows'],
@@ -1477,6 +1504,7 @@ def get_strategy_divergence_data(
         'lane_counts': diverge['lane_counts'],
         'forward_test_only': forward_test_only,
         'direction_filter': direction,
+        'max_per_lane': max_per_lane,
     }
 
 
@@ -1484,6 +1512,8 @@ def get_strategy_divergence_data(
 def get_admin_divergence_summary(
     start: str = Query(..., description="ISO timestamp (UTC); filter trades with entry_fill_ts >= start"),
     end: Optional[str] = Query(None, description="ISO timestamp (UTC); filter trades with entry_fill_ts < end. Defaults to now."),
+    max_per_lane: int = Query(1000, ge=10, le=5000,
+        description="Cap rows per lane per strategy. Keeps API memory bounded — 20 strategies × multi-thousand rows can OOM the API container."),
     user=Depends(get_current_user),
 ):
     """Admin: per-strategy divergence summary over a time window.
@@ -1497,6 +1527,7 @@ def get_admin_divergence_summary(
     aggregated across the whole fleet and date-window filtered, so we can
     spot-check fidelity across strategies after any code change.
     """
+    import gc
     from db import load_strategies_admin, get_alerts_for_strategy_db, load_trades_admin
     from api.services.divergence_service import compute_three_way_divergence
     from datetime import datetime, timezone
@@ -1519,6 +1550,14 @@ def get_admin_divergence_summary(
         s = str(ts)
         return s >= start and (end_iso is None or s < end_iso)
 
+    def _cap_to_recent(trades, key='entry_fill_ts', cap=max_per_lane):
+        """Keep only the most-recent N trades to bound memory."""
+        if len(trades) <= cap:
+            return trades
+        return sorted(
+            trades, key=lambda t: str(t.get(key) or ''), reverse=True
+        )[:cap]
+
     rows = []
     for s in strategies:
         sid = s.get('id')
@@ -1536,7 +1575,7 @@ def get_admin_divergence_summary(
         try:
             bt = load_trades_admin(sid, str(user_id), data_source_filter='backtest_%') or []
             algo = load_trades_admin(sid, str(user_id), data_source_filter='cache_%') or []
-            alerts = get_alerts_for_strategy_db(sid, limit=5000) or []
+            alerts = get_alerts_for_strategy_db(sid, limit=max_per_lane) or []
         except Exception as e:
             logger.warning("[ADMIN-DIV] load failed for sid=%s: %s", sid, e)
             rows.append({
@@ -1550,6 +1589,12 @@ def get_admin_divergence_summary(
         bt_w = [t for t in bt if _in_window(t.get('entry_fill_ts'))]
         algo_w = [t for t in algo if _in_window(t.get('entry_fill_ts'))]
         alerts_w = [a for a in alerts if _in_window(a.get('fill_ts'))]
+        # Free the full-strategy lists ASAP — we only need windowed slices
+        del bt, algo, alerts
+        # Bound the windowed slices too, in case the window is wide
+        bt_w = _cap_to_recent(bt_w)
+        algo_w = _cap_to_recent(algo_w)
+        alerts_w = _cap_to_recent(alerts_w, key='fill_ts')
 
         if not bt_w and not algo_w and not alerts_w:
             rows.append({
@@ -1604,11 +1649,18 @@ def get_admin_divergence_summary(
                 'error': str(e)[:120],
             })
 
+        # Free per-strategy intermediates between iterations so memory
+        # doesn't pile up. 2026-05-12 incident: this endpoint OOM'd the
+        # API container at 20 strategies × ~5k trades each.
+        bt_w = algo_w = alerts_w = None
+        gc.collect()
+
     return {
         'start': start,
         'end': end_iso,
         'strategy_count': len(strategies),
         'rows': rows,
+        'max_per_lane': max_per_lane,
     }
 
 

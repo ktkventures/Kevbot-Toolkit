@@ -440,7 +440,11 @@ def compute_three_way_divergence(
         rows.append(_build_row(rest=None, cache=None, live=l))
         used_live[i] = True
 
-    # Sort rows by anchor timestamp ascending for table display.
+    # Sort rows by anchor timestamp DESCENDING (most-recent first) for
+    # table display. 2026-05-12: flipped from ascending — Kevin's
+    # iteration loop is "look at the most recent trade and verify it,"
+    # so paginating from the OLDEST end means clicking through hundreds
+    # of pages of historical rest_only rows to reach today's data.
     def _row_sort_key(row):
         for lane_key in ('rest', 'cache', 'live'):
             t = row.get(lane_key)
@@ -450,7 +454,7 @@ def compute_three_way_divergence(
                     return ts
         return datetime.min.replace(tzinfo=timezone.utc)
 
-    rows.sort(key=_row_sort_key)
+    rows.sort(key=_row_sort_key, reverse=True)
 
     # Assign sequential row_ids for the table.
     for i, row in enumerate(rows):
