@@ -1233,6 +1233,7 @@ def append_new_backtest_trades_for_strategy(
          'inserted': int, 'elapsed_s': float, ...}
     """
     import time as _time
+    import pandas as pd
     import services as svc
     from db import (
         get_strategy_by_id_admin,
