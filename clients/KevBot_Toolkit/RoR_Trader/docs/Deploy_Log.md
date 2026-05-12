@@ -21,6 +21,21 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-05-11
 
+- **~23:30 UTC (17:30 MT)** — `6b4fc53` Phase 41 fix: algo lane must scope DELETE + tag inserts with cache_<model>
+  - Service(s) redeployed: api (algo-lane writers in forward_test_service)
+  - Observed: evening Update All Data batch completed successfully across remaining ~16 strategies. Final trades-table distribution: 34,849 `backtest_rest_hifi`, 11,286 `cache_cache_locked`, 478 legacy `cache_locked`, 1,695 NULL orphans.
+  - Notes: `recompute_and_persist_algo_trades` was wiping backtest rows the backtest lane had just written in the same bulk job (unfiltered DELETE) and inserting untagged rows. Same fix applied to `append_new_trades_for_strategy` (cron + forward-test path). Tag is `cache_<algo_model>` which produces the cosmetic-ugly `cache_cache_locked` since `algo_model='cache_locked'`; functionally fine via `cache_%` LIKE filter, cleanup queued.
+
+- **~22:30 UTC (16:30 MT)** — `78d5597` Worker: throttle monitor_status writes to honor HEARTBEAT_INTERVAL
+  - Service(s) redeployed: worker
+  - Observed: monitor_status writes dropped from ~1800/hr to ~120/hr per active user. One contributor to Supabase load identified during today's investigation.
+  - Notes: `db_write_status` was being called from `_periodic_tasks_loop` every PICKLE_WRITE_INTERVAL (~2s); the `HEARTBEAT_INTERVAL=30s` constant was never enforced. Now writes pass through immediately on state changes (running/connected flip) and otherwise honor the 30s throttle.
+
+- **~22:00 UTC (16:00 MT)** — `d058653` Atomic-ish writer: retry transient errors + chunked INSERT
+  - Service(s) redeployed: api + worker
+  - Observed: sid 154 had failed earlier with Supabase 522 between DELETE and INSERT (data loss). This fix wraps `db.replace_trades_admin` + `db.insert_trade_admin` in `_execute_with_retry` (Cloudflare 5xx, "JSON could not be generated", connection/timeout — retried with 2s/4s/8s backoff; unique/FK violations skip retry). Bulk INSERT chunked at 250 rows. DELETE+INSERT idempotent on full retry.
+  - Notes: addresses the recurring Supabase 522 outages from earlier in the day. Subsequent Update All Data run on sid 154 succeeded in 1,215s (slow due to Supabase still recovering, but completed cleanly via the retry path).
+
 - **~18:30 UTC (12:30 MT)** — `8b74ddd` + `5fbfe0d` Phase 41 — backtest trades → trades table migration
   - Service(s) redeployed: api (writer + reader changes), worker (trades_store filter wiring)
   - Required manual steps: **Run `src/migrations/phase41_backtest_trades_relax_unique.sql` in Supabase SQL Editor BEFORE the backfill script**. Then run `python -m _backfill_stored_trades_to_table --apply` from `src/` to migrate existing stored_trades JSONB content into trades table with `data_source='backtest_<model>'`.
