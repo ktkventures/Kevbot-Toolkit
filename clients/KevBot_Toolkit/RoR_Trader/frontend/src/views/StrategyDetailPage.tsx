@@ -616,12 +616,12 @@ function DivergenceTabContent({ strategyId }: { strategyId: number }) {
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const PAGE_SIZE = 30;
 
-  // 2026-05-12: date-window state. Default to last 48 hours so the
+  // 2026-05-12: date-window state. Default to last 24 hours so the
   // first page load is fast even on strategies with 5000+ trades. User
   // can widen via the date pickers below. ISO strings (UTC).
   const [windowStart, setWindowStart] = useState<string>(() => {
     const d = new Date();
-    d.setUTCHours(d.getUTCHours() - 48);
+    d.setUTCHours(d.getUTCHours() - 24);
     return d.toISOString();
   });
   const [windowEnd, setWindowEnd] = useState<string>(() => new Date().toISOString());
@@ -634,18 +634,34 @@ function DivergenceTabContent({ strategyId }: { strategyId: number }) {
   });
   const updateLanes = useUpdateStrategyLanes();
 
+  // 2026-05-12: per-lane status formatter. Makes it obvious whether a
+  // lane added rows ('appended +N'), found nothing ('no new trades'),
+  // skipped due to logic ('skipped — reason'), or errored. Was too
+  // terse before — looked like the lane silently failed when it had
+  // genuinely run but produced 0 output.
+  const fmtLaneResult = (label: string, r: any): string => {
+    if (!r) return `${label}: —`;
+    const s = r.status;
+    const reason = r.reason ? ` (${r.reason})` : '';
+    const inserted = r.inserted ?? 0;
+    if (s === 'error') return `${label} ❌ error${reason}`;
+    if (s === 'skipped') return `${label} ⏭️ skipped${reason}`;
+    if (s === 'no_new_trades') return `${label}: 0 new trades${reason}`;
+    if (s === 'no_trades') return `${label}: no trades${reason}`;
+    if (s === 'appended' || s === 'refreshed') {
+      return `${label} ✓ ${s} +${inserted}`;
+    }
+    return `${label} ${s}${inserted ? ` +${inserted}` : ''}`;
+  };
+
   const handleUpdate = async (mode: 'all' | 'new') => {
     setUpdateMsg(`${mode === 'all' ? 'Updating all data' : 'Updating new data'}…`);
     try {
       const res: any = await updateLanes.mutateAsync({ id: strategyId, mode });
-      const bt = res?.backtest;
-      const algo = res?.algo;
-      const parts: string[] = [];
-      if (bt?.status === 'skipped') parts.push('backtest skipped');
-      else if (bt?.status === 'error') parts.push(`backtest error: ${bt.reason}`);
-      else if (bt) parts.push(`backtest ${bt.status}`);
-      if (algo?.status === 'error') parts.push(`algo error: ${algo.reason}`);
-      else if (algo) parts.push(`algo ${algo.status} (+${algo.inserted ?? 0})`);
+      const parts: string[] = [
+        fmtLaneResult('backtest', res?.backtest),
+        fmtLaneResult('algo', res?.algo),
+      ];
       setUpdateMsg(parts.join(' · ') || 'done');
     } catch (e: any) {
       setUpdateMsg(`Failed: ${e?.message || String(e)}`);
