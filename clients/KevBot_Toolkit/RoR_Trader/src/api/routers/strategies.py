@@ -1353,6 +1353,10 @@ def get_strategy_divergence_data(
     direction: Optional[str] = Query(None, description="LONG / SHORT filter"),
     tolerance_seconds: float = Query(300.0, ge=10.0, le=3600.0,
         description="Max distance to consider two events 'matched'. Beyond this, lanes split into separate rows."),
+    start: Optional[str] = Query(None,
+        description="ISO timestamp (UTC); only include trades/alerts with entry_fill_ts >= start. Defaults to 48 hours ago."),
+    end: Optional[str] = Query(None,
+        description="ISO timestamp (UTC); only include trades/alerts with entry_fill_ts <= end. Defaults to now."),
     max_per_lane: int = Query(2000, ge=10, le=20000,
         description="Cap rows per lane to keep response size + API memory bounded. Most-recent N kept."),
     user=Depends(get_current_user),
@@ -1383,8 +1387,22 @@ def get_strategy_divergence_data(
 
     from db import get_alerts_for_strategy_db, load_trades_admin
     from api.services.divergence_service import compute_three_way_divergence
+    from datetime import datetime, timezone, timedelta
 
     fwd_start = strat.get('forward_test_start') if forward_test_only else None
+
+    # 2026-05-12: date-window filter. Default to last 48 hours so the
+    # default page load is fast even on strategies with 5000+ trades.
+    # Users can explicitly widen via start/end query params from the UI.
+    now = datetime.now(timezone.utc)
+    end_iso = end or now.isoformat()
+    start_iso = start or (now - timedelta(hours=48)).isoformat()
+
+    def _in_window(ts_str):
+        if not ts_str:
+            return False
+        s = str(ts_str)
+        return s >= start_iso and s <= end_iso
 
     # Phase 41 (2026-05-11): both lanes now read from the trades table
     # with data_source filters. Backtest = 'backtest_%', Algo = anything
@@ -1407,11 +1425,11 @@ def get_strategy_divergence_data(
         if ts and (backtest_last_ts is None or str(ts) > str(backtest_last_ts)):
             backtest_last_ts = ts
 
-    # Cap to most-recent N to bound response size + API memory. For
-    # 5000+ trade strategies the joiner output is enormous and pushed
-    # the API container to OOM (2026-05-12 incident). The frontend
-    # already paginates client-side; serving more than ~2000 rows
-    # mostly creates pages no one looks at.
+    # Apply date window filter (default 48h), then cap to max_per_lane.
+    # Window filter is the primary speedup — for active strategies the
+    # 48h slice is typically <100 trades. The cap is a safety net for
+    # wide windows.
+    backtest_trades = [t for t in backtest_trades if _in_window(t.get('entry_fill_ts'))]
     if len(backtest_trades) > max_per_lane:
         backtest_trades = sorted(
             backtest_trades,
@@ -1440,6 +1458,7 @@ def get_strategy_divergence_data(
         if ts and (algo_last_ts is None or str(ts) > str(algo_last_ts)):
             algo_last_ts = ts
 
+    algo_trades = [t for t in algo_trades if _in_window(t.get('entry_fill_ts'))]
     if len(algo_trades) > max_per_lane:
         algo_trades = sorted(
             algo_trades,
@@ -1455,6 +1474,7 @@ def get_strategy_divergence_data(
                        strategy_id, e)
         alerts = []
     alerts_total = len(alerts)
+    alerts = [a for a in alerts if _in_window(a.get('fill_ts'))]
 
     last_alert_ts = alerts[0].get('timestamp') if alerts else None
 
@@ -1505,6 +1525,8 @@ def get_strategy_divergence_data(
         'forward_test_only': forward_test_only,
         'direction_filter': direction,
         'max_per_lane': max_per_lane,
+        'window_start': start_iso,
+        'window_end': end_iso,
     }
 
 

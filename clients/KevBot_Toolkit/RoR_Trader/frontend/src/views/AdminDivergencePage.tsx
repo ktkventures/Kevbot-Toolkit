@@ -139,11 +139,21 @@ export default function AdminDivergencePage() {
           Divergence Summary (Admin)
         </h1>
         <p className="text-xs" style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>
-          3-way joiner (backtest / algo / live) across every strategy in the
-          selected window. Drift values shown in seconds — entry REST↔CACHE
-          (eRC) measures backtest-vs-algo divergence; exit CACHE↔LIVE (xCL)
-          measures algo-vs-live execution divergence. Green ≤2s, yellow ≤30s,
-          red &gt;30s.
+          3-way joiner across every strategy in the selected window. Three lanes
+          are joined by trade timestamp:
+        </p>
+        <ul className="text-xs ml-4 list-disc" style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          <li><b>Backtest</b> (REST) — what the engine produces on REST-API bars (KPI baseline)</li>
+          <li><b>Algo</b> (CACHE) — what the engine produces on cached WS bars (the lane the live engine intends to match)</li>
+          <li><b>Live</b> — what alerts actually fired in real-time</li>
+        </ul>
+        <p className="text-xs mt-1" style={{ color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          Drift columns are seconds between matched trade events:
+          <b> eRC</b> = entry drift REST↔CACHE (backtest vs algo);
+          <b> xCL</b> = exit drift CACHE↔LIVE (algo vs live execution).
+          Green ≤2s, yellow ≤30s, red &gt;30s.
+          Large eRC values typically mean the backtest lane is stale — run
+          Update New Data on that strategy to catch up.
         </p>
       </div>
 

@@ -419,6 +419,8 @@ export function useStrategyDivergence(
     forward_test_only?: boolean;
     direction?: 'LONG' | 'SHORT' | null;
     tolerance_seconds?: number;
+    start?: string | null;
+    end?: string | null;
     enabled?: boolean;
   } = {},
 ) {
@@ -428,10 +430,12 @@ export function useStrategyDivergence(
   if (opts.direction) params.set('direction', opts.direction);
   if (opts.tolerance_seconds !== undefined)
     params.set('tolerance_seconds', String(opts.tolerance_seconds));
+  if (opts.start) params.set('start', opts.start);
+  if (opts.end) params.set('end', opts.end);
   const qs = params.toString();
 
   return useQuery({
-    queryKey: ['strategy-divergence', id, opts.forward_test_only, opts.direction, opts.tolerance_seconds],
+    queryKey: ['strategy-divergence', id, opts.forward_test_only, opts.direction, opts.tolerance_seconds, opts.start, opts.end],
     queryFn: () =>
       apiFetch<DivergenceData>(
         `/api/strategies/${id}/divergence-data${qs ? '?' + qs : ''}`,

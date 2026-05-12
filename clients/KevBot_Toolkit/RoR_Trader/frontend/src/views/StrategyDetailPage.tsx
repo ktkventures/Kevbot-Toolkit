@@ -616,9 +616,21 @@ function DivergenceTabContent({ strategyId }: { strategyId: number }) {
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const PAGE_SIZE = 30;
 
+  // 2026-05-12: date-window state. Default to last 48 hours so the
+  // first page load is fast even on strategies with 5000+ trades. User
+  // can widen via the date pickers below. ISO strings (UTC).
+  const [windowStart, setWindowStart] = useState<string>(() => {
+    const d = new Date();
+    d.setUTCHours(d.getUTCHours() - 48);
+    return d.toISOString();
+  });
+  const [windowEnd, setWindowEnd] = useState<string>(() => new Date().toISOString());
+
   const { data, isLoading, error } = useStrategyDivergence(strategyId, {
     forward_test_only: forwardOnly,
     tolerance_seconds: tolerance,
+    start: windowStart,
+    end: windowEnd,
   });
   const updateLanes = useUpdateStrategyLanes();
 
@@ -839,6 +851,60 @@ function DivergenceTabContent({ strategyId }: { strategyId: number }) {
 
           <span style={{ color: 'var(--text-muted)' }}>
             Showing {Math.min(filteredRows.length, page * PAGE_SIZE + 1)}–{Math.min(filteredRows.length, (page + 1) * PAGE_SIZE)} of {filteredRows.length}
+          </span>
+        </div>
+
+        {/* Date window controls — default 48h to keep load fast. Quick
+            buttons + manual start/end pickers. */}
+        <div className="flex flex-wrap items-end gap-2 mt-3 pt-3 text-xs"
+             style={{ borderTop: '1px solid var(--border)' }}>
+          <div>
+            <label className="block text-[11px] mb-1" style={{ color: 'var(--text-muted)' }}>
+              Window start (UTC)
+            </label>
+            <input
+              type="datetime-local"
+              value={windowStart.slice(0, 16)}
+              onChange={(e) => { setWindowStart(e.target.value ? new Date(e.target.value + 'Z').toISOString() : windowStart); setPage(0); }}
+              className="text-xs px-2 py-1 rounded"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+            />
+          </div>
+          <div>
+            <label className="block text-[11px] mb-1" style={{ color: 'var(--text-muted)' }}>
+              End (UTC)
+            </label>
+            <input
+              type="datetime-local"
+              value={windowEnd.slice(0, 16)}
+              onChange={(e) => { setWindowEnd(e.target.value ? new Date(e.target.value + 'Z').toISOString() : windowEnd); setPage(0); }}
+              className="text-xs px-2 py-1 rounded"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-primary)', border: '1px solid var(--border)' }}
+            />
+          </div>
+          {([
+            { label: '24h', hours: 24 },
+            { label: '48h', hours: 48 },
+            { label: '7d', hours: 168 },
+            { label: '30d', hours: 720 },
+          ] as const).map(({ label, hours }) => (
+            <button
+              key={label}
+              onClick={() => {
+                const e2 = new Date();
+                const s2 = new Date(e2.getTime() - hours * 3600 * 1000);
+                setWindowStart(s2.toISOString());
+                setWindowEnd(e2.toISOString());
+                setPage(0);
+              }}
+              className="text-[11px] px-2 py-1 rounded"
+              style={{ background: 'var(--bg-input)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+            >
+              Last {label}
+            </button>
+          ))}
+          <span style={{ color: 'var(--text-muted)' }}>
+            Drift KPIs above reflect this window. Widen to see historical drift.
           </span>
         </div>
       </Card>
