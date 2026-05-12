@@ -38,6 +38,13 @@ export interface StrategyDTO {
 export interface TradeDTO {
   entry_time?: string;
   exit_time?: string;
+  // Canonical post-Phase 40 timestamp columns; entry_time/exit_time are
+  // legacy aliases _row_to_trade emits for backwards compat. Many code
+  // paths read both — keep them all.
+  entry_fill_ts?: string;
+  exit_fill_ts?: string;
+  entry_trigger_ts?: string;
+  exit_trigger_ts?: string;
   direction?: string;
   entry_price?: number;
   exit_price?: number;
@@ -48,7 +55,13 @@ export interface TradeDTO {
   exit_reason?: string;
   exec_type?: string;
   bars_held?: number;
+  hold_time_seconds?: number;
+  pnl?: number;
+  data_source?: string;
+  hifi_resolved?: boolean;
+  behavior?: string;
   entry_trigger?: string;
+  exit_trigger?: string;
 }
 
 export interface ForwardTestDTO {
@@ -84,6 +97,29 @@ export function useStrategyTrades(id: number | null, useStored = true) {
     queryKey: ['strategy-trades', id, useStored],
     queryFn: () =>
       apiFetch<TradeDTO[]>(`/api/strategies/${id}/trades?use_stored=${useStored}`),
+    enabled: id !== null,
+    retry: 1,
+    retryDelay: 2000,
+    refetchInterval: 60_000,
+  });
+}
+
+// Algo-lane trades (data_source LIKE 'cache_%') for a strategy.
+// Distinct from useStrategyTrades which returns the backtest lane
+// (stored_trades JSONB, filtered to backtest_% post-Phase 41 hydration).
+// Used by Chart & Trades "Algo History" + "Price Divergence (Algo vs
+// Alert)" modules so they show real algo-lane data instead of backtest.
+//
+// Optional `since` ISO timestamp filter for date-windowed views.
+export function useStrategyAlgoTrades(
+  id: number | null,
+  since?: string | null,
+) {
+  const params = since ? `?since=${encodeURIComponent(since)}` : '';
+  return useQuery({
+    queryKey: ['strategy-algo-trades', id, since ?? null],
+    queryFn: () =>
+      apiFetch<TradeDTO[]>(`/api/strategies/${id}/algo-trades${params}`),
     enabled: id !== null,
     retry: 1,
     retryDelay: 2000,
@@ -400,6 +436,64 @@ export function useStrategyDivergence(
         `/api/strategies/${id}/divergence-data${qs ? '?' + qs : ''}`,
       ),
     enabled: (opts.enabled ?? true) && id !== null,
+    staleTime: 30_000,
+    placeholderData: (prev) => prev,
+  });
+}
+
+// ============================================================
+// Admin: cross-strategy divergence summary
+// ============================================================
+
+export interface AdminDivergenceRow {
+  strategy_id: number;
+  name: string;
+  symbol: string;
+  timeframe: string;
+  backtest_model?: string | null;
+  algo_model?: string | null;
+  live_model?: string | null;
+  backtest_count?: number;
+  algo_count?: number;
+  live_count?: number;
+  matched_3way?: number;
+  matched_rest_cache?: number;
+  matched_cache_live?: number;
+  entry_rc_median_s?: number | null;
+  entry_rc_p95_s?: number | null;
+  entry_rc_max_s?: number | null;
+  entry_cl_median_s?: number | null;
+  entry_cl_p95_s?: number | null;
+  exit_cl_median_s?: number | null;
+  exit_cl_p95_s?: number | null;
+  exit_cl_max_s?: number | null;
+  no_activity?: boolean;
+  error?: string;
+}
+
+export interface AdminDivergenceSummary {
+  start: string;
+  end: string;
+  strategy_count: number;
+  rows: AdminDivergenceRow[];
+}
+
+export function useAdminDivergenceSummary(
+  start: string | null,
+  end: string | null,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ['admin-divergence-summary', start, end],
+    queryFn: () => {
+      const params = new URLSearchParams();
+      if (start) params.set('start', start);
+      if (end) params.set('end', end);
+      return apiFetch<AdminDivergenceSummary>(
+        `/api/strategies/admin/divergence-summary?${params.toString()}`,
+      );
+    },
+    enabled: enabled && start !== null,
     staleTime: 30_000,
     placeholderData: (prev) => prev,
   });

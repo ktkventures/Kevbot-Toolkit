@@ -11,7 +11,7 @@ import ChartPlaceholder from '@/components/ChartPlaceholder';
 import type { TradeMarker } from '@/charts/TradingChart';
 
 // Static imports for hooks — these are safe because the page uses ssr:false
-import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useStrategyCacheBars, useStrategyChartDataCache, useStrategyModels, useConfluenceChart, useTradeZoom, useStrategyDivergence, type DivergenceRow } from '@/hooks/queries/useStrategies';
+import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useStrategyCacheBars, useStrategyChartDataCache, useStrategyModels, useConfluenceChart, useTradeZoom, useStrategyDivergence, useStrategyAlgoTrades, type DivergenceRow } from '@/hooks/queries/useStrategies';
 import { StrategyHealthBadge, StrategyHealthDrawer, StrategyFidelityBadges, type StrategyHealth } from './StrategiesPage';
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
@@ -1026,6 +1026,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // Always load full data — date range filtering happens client-side for instant response
   const { data: apiStrategy, isLoading, error } = useStrategy(strategyId);
   const { data: trades, isLoading: tradesLoading } = useStrategyTrades(strategyId);
+  // 2026-05-12: real algo-lane trades (cache_% from trades table) for the
+  // Chart & Trades "Algo History" + "Price Divergence" modules. Distinct
+  // from btTrades/fwdTrades which come from stored_trades (backtest lane
+  // post-Phase 41 hydration).
+  const { data: algoTradesRaw } = useStrategyAlgoTrades(strategyId);
   // M8.5 B+: always fetch the forward/backtest split. The endpoint is cheap
   // (just splits stored_trades at forward_test_start — no Polygon round-trip).
   // The `fwdRequested` gate that used to exist referred to a different
@@ -1702,6 +1707,35 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     };
   }), [fwdData, allTrades]);
 
+  // 2026-05-12: algo-lane trades from /api/strategies/{id}/algo-trades
+  // (data_source LIKE 'cache_%' in trades table). Same shape as btTrades
+  // so existing display helpers (formatHoldTime, exitExecTypeOf, etc.)
+  // work unchanged. Distinct from btTrades — these are what the live algo
+  // engine actually produced, not the backtest output.
+  const algoTrades = useMemo(() => (algoTradesRaw || []).map((t: any, i: number) => {
+    const rawExec = t.exec_type || t.execType?.replace(/[\[\]]/g, '') || 'C';
+    const exitReason = t.exit_reason || t.exitReason || '--';
+    const exitExec = exitExecTypeOf(exitReason);
+    const entryFillTs = t.entry_fill_ts || t.entryFillTs;
+    const exitFillTs = t.exit_fill_ts || t.exitFillTs;
+    return {
+      id: t.id ?? i + 1,
+      entryTime: entryFillTs || '--',
+      exitTime: exitFillTs || '--',
+      entryTimeDisplay: entryFillTs || '--',
+      exitTimeDisplay: exitFillTs || '--',
+      entryPrice: t.entry_price ?? t.entryPrice ?? 0,
+      exitPrice: t.exit_price ?? t.exitPrice ?? 0,
+      pnlR: t.r_multiple ?? t.pnlR ?? 0,
+      execType: rawExec,
+      exitExecType: exitExec,
+      exitReason,
+      holdTime: formatHoldTime(t.hold_time_seconds ?? t.holdTimeSeconds, t.bars_held ?? t.barsHeld),
+      isFwd: false,  // algo lane is its own category — not BT/FWD
+      isAlgo: true,
+    };
+  }), [algoTradesRaw]);
+
   // Trade-to-Alert mapping — MUST be after btTrades declaration
   const tradeAlertMapping = useMemo(() => {
     if (recentAlerts.length === 0) return [];
@@ -1729,11 +1763,14 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     });
   }, [recentAlerts, btTrades]);
 
-  // Match sets: which algo trades have matching alerts, and vice versa
-  // Uses shifted (display) timestamps for C-type trades so deltas reflect real slippage
-  // Match threshold = user's alertSlippage setting (not a fixed 10 minutes)
+  // Match sets: which algo trades have matching alerts, and vice versa.
+  // Uses shifted (display) timestamps for C-type trades so deltas reflect real slippage.
+  // Match threshold = user's alertSlippage setting (not a fixed 10 minutes).
+  // 2026-05-12: switched from `[...fwdTrades, ...btTrades]` (backtest data
+  // mislabeled as algo) to real algo-lane trades (`cache_%` from trades
+  // table). This is the data Kevin actually wants compared against alerts.
   const { alertMatches, algoMatches } = useMemo(() => {
-    const algoAll = [...fwdTrades, ...btTrades];
+    const algoAll = algoTrades;
     const slipMs = (chartPrefs.alertSlippage || 5) * 1000;
     // Search window: max of slippage tolerance or 2× timeframe (to find the closest match)
     const searchWindow = Math.max(slipMs, tfMs * 2);
@@ -1977,7 +2014,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       return acc;
     }, {});
     return { rows, counts, tolSec, totalAlgo: algoByAge.length };
-  }, [fwdTrades, btTrades, recentAlerts, chartPrefs.alertSlippage, tfMs, unifiedDateFilter]);
+  }, [algoTrades, recentAlerts, chartPrefs.alertSlippage, tfMs, unifiedDateFilter]);
 
   // Timezone-aware timestamp formatter
   const formatTime = useMemo(() => {
@@ -3494,8 +3531,12 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     if (d == null) return 'var(--text-muted)';
                     return Math.abs(d) <= slipTol ? 'var(--green)' : 'var(--red)';
                   };
-                  // Sort algo trades by entry time descending (most recent first)
-                  const sortedAlgoFull = [...fwdTrades, ...btTrades]
+                  // 2026-05-12: real algo-lane trades (cache_% from trades
+                  // table) instead of the legacy btTrades+fwdTrades merge
+                  // (which was backtest data mislabeled as "algo"). Now the
+                  // "Algo History" label is honest — these are the trades
+                  // the live algo engine actually produced.
+                  const sortedAlgoFull = algoTrades
                     .map((t, origIdx) => ({ ...t, _origIdx: origIdx }))
                     .sort((a, b) => {
                       const aMs = a.entryTime && a.entryTime !== '--' ? safeDateMs(a.entryTime) : 0;
@@ -3511,7 +3552,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   const sortedAlgo = sortedAlgoFull.slice(0, ALGO_DISPLAY_CAP);
                   return (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-                  {/* Algo History (+ on chart — BT + FWD programmatic trades) — LEFT */}
+                  {/* Algo History — real algo-lane trades from trades table */}
                   <Card>
                     <div className="flex items-center justify-between mb-3">
                       <h4 className="text-sm font-medium">
@@ -3816,9 +3857,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   </h4>
                   {(() => {
                     // Build divergence rows from matched (algo, alert) pairs.
-                    // algoMatches[i] is the alert match for the i'th algo trade
-                    // in [...fwdTrades, ...btTrades]. Both arrays in scope above.
-                    const algoAll = [...fwdTrades, ...btTrades];
+                    // algoMatches[i] is the alert match for the i'th algo
+                    // trade. 2026-05-12: matched against the real algo lane
+                    // (cache_% from trades table) instead of backtest data
+                    // — indices must align with what `algoMatches` was
+                    // computed over (see the useMemo above, deps include
+                    // algoTrades).
+                    const algoAll = algoTrades;
                     type DivRow = {
                       key: string;
                       tradeNum: number;

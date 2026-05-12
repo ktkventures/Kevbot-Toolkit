@@ -801,16 +801,21 @@ def run_hifi_pass2(strategy_id: int, user=Depends(get_current_user)):
             row_behavior = (row.get('behavior') if 'behavior' in row.index
                             else None)
             if row_hifi is True or row_behavior == 'HIFI':
-                # Merge into existing data JSONB (preserve other fields)
-                orig_data = orig.get('data') or {}
-                if isinstance(orig_data, str):
-                    try:
-                        import json as _json
-                        orig_data = _json.loads(orig_data)
-                    except Exception:
-                        orig_data = {}
-                if not isinstance(orig_data, dict):
-                    orig_data = {}
+                # 2026-05-12 fix: `orig` came from `_row_to_trade` which
+                # SPREADS the data JSONB into top-level keys. So
+                # `orig.get('data')` was returning None, the merged dict
+                # was starting empty, and the UPDATE was wiping bars_held,
+                # hold_time_seconds, pnl, win, behavior, etc. on every row
+                # Hi-Fi touched. Reconstruct the JSONB by collecting every
+                # non-column field on the orig dict — those are exactly the
+                # fields that were originally in the `data` JSONB before
+                # _row_to_trade unpacked them.
+                from db import TRADE_COLUMN_FIELDS as _COL_FIELDS
+                _LEGACY_ALIASES = {'entry_time', 'exit_time', 'data'}
+                orig_data = {
+                    k: v for k, v in orig.items()
+                    if k not in _COL_FIELDS and k not in _LEGACY_ALIASES
+                }
                 merged = dict(orig_data)
                 if row_hifi is True:
                     merged['hifi_resolved'] = True
@@ -1301,6 +1306,46 @@ def get_strategy_trades(
         raise HTTPException(status_code=504, detail=f"Trade computation timed out or failed: {str(e)[:200]}")
 
 
+@router.get("/{strategy_id}/algo-trades")
+def get_strategy_algo_trades(
+    strategy_id: int,
+    since: Optional[str] = Query(
+        None,
+        description="ISO timestamp; only return trades with entry_fill_ts >= this"),
+    user=Depends(get_current_user),
+):
+    """Get algo-lane trades (data_source LIKE 'cache_%') for a strategy.
+
+    Distinct from `/trades` which returns the backtest lane (stored_trades
+    JSONB after Phase 41 hydration is filtered to `backtest_%`). This
+    endpoint reads the canonical cache-based algo trades from the trades
+    table, used by the Chart & Trades "Algo History" + "Price Divergence"
+    modules so they show what live algo actually produced rather than
+    backtest output.
+
+    Trade records are reconstructed via `_row_to_trade` which merges the
+    `data` JSONB into top-level keys, so consumers see `entry_price`,
+    `exit_price`, `r_multiple`, `bars_held`, `hold_time_seconds`, etc.
+    """
+    strat = _get_or_404(strategy_id, user)
+    user_id = strat.get('user_id') or (
+        user.get('id') or user.get('sub')
+        if isinstance(user, dict) else None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user context")
+
+    from db import load_trades_admin
+    trades = load_trades_admin(
+        strategy_id, str(user_id),
+        data_source_filter='cache_%') or []
+
+    if since:
+        trades = [t for t in trades
+                  if str(t.get('entry_fill_ts', '')) >= since]
+
+    return _sanitize_json(trades)
+
+
 @router.get("/{strategy_id}/divergence-data")
 def get_strategy_divergence_data(
     strategy_id: int,
@@ -1432,6 +1477,138 @@ def get_strategy_divergence_data(
         'lane_counts': diverge['lane_counts'],
         'forward_test_only': forward_test_only,
         'direction_filter': direction,
+    }
+
+
+@router.get("/admin/divergence-summary")
+def get_admin_divergence_summary(
+    start: str = Query(..., description="ISO timestamp (UTC); filter trades with entry_fill_ts >= start"),
+    end: Optional[str] = Query(None, description="ISO timestamp (UTC); filter trades with entry_fill_ts < end. Defaults to now."),
+    user=Depends(get_current_user),
+):
+    """Admin: per-strategy divergence summary over a time window.
+
+    Loops over the user's strategies, loads backtest + algo + alert data
+    within `[start, end)`, and runs the 3-way joiner. Returns a flat array
+    suitable for a sortable summary table — one row per strategy with
+    counts, match counts, and drift KPIs (median / p95 / max in seconds).
+
+    Mirrors what the per-strategy `/divergence-data` endpoint produces but
+    aggregated across the whole fleet and date-window filtered, so we can
+    spot-check fidelity across strategies after any code change.
+    """
+    from db import load_strategies_admin, get_alerts_for_strategy_db, load_trades_admin
+    from api.services.divergence_service import compute_three_way_divergence
+    from datetime import datetime, timezone
+
+    user_id = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user context")
+
+    end_iso = end or datetime.now(timezone.utc).isoformat()
+
+    try:
+        strategies = load_strategies_admin(str(user_id)) or []
+    except Exception as e:
+        logger.exception("[ADMIN-DIV] load_strategies failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to load strategies: {e}")
+
+    def _in_window(ts):
+        if not ts:
+            return False
+        s = str(ts)
+        return s >= start and (end_iso is None or s < end_iso)
+
+    rows = []
+    for s in strategies:
+        sid = s.get('id')
+        if not sid:
+            continue
+        cfg = s.get('config') or {}
+        if isinstance(cfg, str):
+            try:
+                import json as _json
+                cfg = _json.loads(cfg)
+            except Exception:
+                cfg = {}
+        direction = (s.get('direction') or cfg.get('direction') or 'LONG').upper()
+
+        try:
+            bt = load_trades_admin(sid, str(user_id), data_source_filter='backtest_%') or []
+            algo = load_trades_admin(sid, str(user_id), data_source_filter='cache_%') or []
+            alerts = get_alerts_for_strategy_db(sid, limit=5000) or []
+        except Exception as e:
+            logger.warning("[ADMIN-DIV] load failed for sid=%s: %s", sid, e)
+            rows.append({
+                'strategy_id': sid, 'name': s.get('name', ''),
+                'symbol': s.get('symbol', ''), 'timeframe': s.get('timeframe', ''),
+                'error': str(e)[:120],
+            })
+            continue
+
+        # Window filter by entry_fill_ts (trades) / fill_ts (alerts)
+        bt_w = [t for t in bt if _in_window(t.get('entry_fill_ts'))]
+        algo_w = [t for t in algo if _in_window(t.get('entry_fill_ts'))]
+        alerts_w = [a for a in alerts if _in_window(a.get('fill_ts'))]
+
+        if not bt_w and not algo_w and not alerts_w:
+            rows.append({
+                'strategy_id': sid, 'name': s.get('name', ''),
+                'symbol': s.get('symbol', ''), 'timeframe': s.get('timeframe', ''),
+                'backtest_count': 0, 'algo_count': 0, 'live_count': 0,
+                'no_activity': True,
+            })
+            continue
+
+        try:
+            div = compute_three_way_divergence(
+                rest_trades=bt_w,
+                cache_trades=algo_w,
+                alerts=alerts_w,
+                default_direction=direction,
+                max_match_seconds=300.0,
+            )
+            kpis = div.get('kpis') or {}
+            e_rc = kpis.get('drift_rest_cache_entry') or {}
+            e_cl = kpis.get('drift_cache_live_entry') or {}
+            x_cl = kpis.get('drift_cache_live_exit') or {}
+            rows.append({
+                'strategy_id': sid,
+                'name': s.get('name', ''),
+                'symbol': s.get('symbol', ''),
+                'timeframe': s.get('timeframe', ''),
+                'backtest_model': cfg.get('backtest_model'),
+                'algo_model': cfg.get('algo_model'),
+                'live_model': cfg.get('live_model'),
+                'backtest_count': len(bt_w),
+                'algo_count': len(algo_w),
+                'live_count': len(alerts_w),
+                'matched_3way': kpis.get('matched_3way', 0),
+                'matched_rest_cache': kpis.get('matched_rest_cache', 0),
+                'matched_cache_live': kpis.get('matched_cache_live', 0),
+                'entry_rc_median_s': e_rc.get('median_s'),
+                'entry_rc_p95_s': e_rc.get('p95_s'),
+                'entry_rc_max_s': e_rc.get('max_s'),
+                'entry_cl_median_s': e_cl.get('median_s'),
+                'entry_cl_p95_s': e_cl.get('p95_s'),
+                'exit_cl_median_s': x_cl.get('median_s'),
+                'exit_cl_p95_s': x_cl.get('p95_s'),
+                'exit_cl_max_s': x_cl.get('max_s'),
+            })
+        except Exception as e:
+            logger.exception("[ADMIN-DIV] joiner failed for sid=%s: %s", sid, e)
+            rows.append({
+                'strategy_id': sid, 'name': s.get('name', ''),
+                'symbol': s.get('symbol', ''), 'timeframe': s.get('timeframe', ''),
+                'backtest_count': len(bt_w), 'algo_count': len(algo_w), 'live_count': len(alerts_w),
+                'error': str(e)[:120],
+            })
+
+    return {
+        'start': start,
+        'end': end_iso,
+        'strategy_count': len(strategies),
+        'rows': rows,
     }
 
 
