@@ -1257,31 +1257,22 @@ def append_new_backtest_trades_for_strategy(
     cutoff = now_dt - timedelta(minutes=_ALGO_HISTORY_LAG_MINUTES)
     cutoff_iso = cutoff.isoformat()
 
-    stored = list(strat.get('stored_trades') or [])
-    if not stored:
-        # No existing baseline — fall through to a full recompute
-        # because forward append needs an anchor timestamp.
+    # W2 BT-APPEND optimization (2026-05-12): query the trades table
+    # directly for the latest entry timestamp instead of paginating
+    # through stored_trades. Avoids the 60s+ DELETE+INSERT-merged cycle
+    # that the legacy path triggered every refresh; for a 6,000-trade
+    # strategy with 5 new trades, this turns ~60s into ~5s of DB work.
+    from db import get_max_entry_ts_admin, insert_trade_admin
+    ds_tag = f'backtest_{bt_model}'
+    latest_ts_iso = get_max_entry_ts_admin(
+        strategy_id, user_id, data_source_filter='backtest_%')
+
+    if latest_ts_iso is None:
+        # No existing baseline in trades table — fall through to a full
+        # recompute because forward append needs an anchor timestamp.
         return {
             'status': 'skipped',
             'reason': 'no_baseline_run_full_recompute_first',
-            'inserted': 0,
-            'elapsed_s': round(_time.time() - t0, 2),
-        }
-
-    # Find latest entry_fill_ts in stored_trades
-    latest_ts_iso = None
-    for t in stored:
-        ek = t.get('entry_fill_ts') or t.get('entryFillTime')
-        if not ek:
-            continue
-        ek_str = str(ek)
-        if latest_ts_iso is None or ek_str > latest_ts_iso:
-            latest_ts_iso = ek_str
-
-    if latest_ts_iso is None:
-        return {
-            'status': 'skipped',
-            'reason': 'stored_trades_missing_entry_fill_ts',
             'inserted': 0,
             'elapsed_s': round(_time.time() - t0, 2),
         }
@@ -1345,14 +1336,12 @@ def append_new_backtest_trades_for_strategy(
                     'cutoff': cutoff_iso, 'reason': 'all_in_lag_window',
                     'elapsed_s': round(_time.time() - t0, 2)}
 
-        # Dedup vs existing stored_trades on (entry_fill_ts, exit_fill_ts)
-        existing_keys: set = set()
-        for t in stored:
-            ek = t.get('entry_fill_ts') or t.get('entryFillTime')
-            xk = t.get('exit_fill_ts') or t.get('exitFillTime')
-            if ek and xk:
-                existing_keys.add((str(ek), str(xk)))
-
+        # True-append: emit only trades strictly newer than the anchor
+        # entry_ts. The engine windowed query started at since_dt =
+        # latest_ts so trades AT that timestamp may collide — the unique
+        # index will reject re-inserts naturally (insert_trade_admin
+        # returns None on unique violation) but we filter explicitly to
+        # avoid the wasted attempts.
         new_records = []
         for _, row in closed.iterrows():
             ek_raw = row.get('entry_fill_ts')
@@ -1360,9 +1349,8 @@ def append_new_backtest_trades_for_strategy(
             if pd.isna(ek_raw) or pd.isna(xk_raw):
                 continue
             ek = ek_raw.isoformat() if hasattr(ek_raw, 'isoformat') else str(ek_raw)
-            xk = xk_raw.isoformat() if hasattr(xk_raw, 'isoformat') else str(xk_raw)
-            if (ek, xk) in existing_keys:
-                continue
+            if ek <= latest_ts_iso:
+                continue  # already in DB (boundary or older)
             new_records.append(row)
 
         if not new_records:
@@ -1372,18 +1360,48 @@ def append_new_backtest_trades_for_strategy(
                     'cutoff': cutoff_iso, 'reason': 'all_already_stored',
                     'elapsed_s': round(_time.time() - t0, 2)}
 
+        # INSERT only the new rows. Per-row insert_trade_admin handles
+        # unique violations gracefully (returns None on collision) and
+        # has retry baked in for transient Supabase errors. For typical
+        # cron-cadence appends, new_records is 1-10 rows — single-row
+        # inserts are appropriate. Bulk strategies might emit 50+ rows
+        # but even then we're far below the legacy 6,000-row rewrite.
         new_df = pd.DataFrame(new_records)
         new_serialized = _serialize_trades(new_df)
-        merged_stored = stored + new_serialized
+        inserted_count = 0
+        for rec in new_serialized:
+            rec_copy = dict(rec)
+            rec_copy['data_source'] = ds_tag
+            try:
+                row_saved = insert_trade_admin(
+                    strategy_id, user_id, rec_copy)
+                if row_saved is not None:
+                    inserted_count += 1
+            except Exception as e:
+                logger.warning(
+                    "[BT-APPEND] sid=%s insert_trade failed: %s",
+                    strategy_id, e)
+
+        try:
+            from trades_store import _cache_invalidate
+            _cache_invalidate(strategy_id, user_id)
+        except Exception:
+            pass
 
         refreshed_at = now_iso
 
-        # Recompute KPIs from merged set. Sort merged set chronologically
-        # before kpi calc to keep equity-curve math consistent.
-        merged_sorted = sorted(
-            merged_stored,
-            key=lambda t: str(t.get('entry_fill_ts') or t.get('entryFillTime') or ''))
-        merged_df = svc.trades_df_from_stored(merged_sorted)
+        # Lazy KPI recompute: re-read all backtest_% rows for this
+        # strategy and compute KPIs over the full set. Read is paginated
+        # but cheap relative to the legacy DELETE+INSERT cycle. UPDATE
+        # writes only KPIs + equity_curve_data on the strategy row.
+        from db import load_trades_admin
+        all_backtest = load_trades_admin(
+            strategy_id, user_id, data_source_filter='backtest_%') or []
+        # Sort chronologically for the KPI + equity curve math
+        all_backtest_sorted = sorted(
+            all_backtest,
+            key=lambda t: str(t.get('entry_fill_ts') or ''))
+        merged_df = svc.trades_df_from_stored(all_backtest_sorted)
 
         trading_days = svc.count_trading_days(merged_df) \
             if hasattr(merged_df, 'index') and len(merged_df) > 0 else 1
@@ -1401,33 +1419,6 @@ def append_new_backtest_trades_for_strategy(
             'cumulative_r': [p.get('cumulative_r', 0) for p in eq_data],
             'boundary_index': boundary_index,
         }
-
-        # Phase 41 (2026-05-11): backtest trades go to trades table with
-        # `data_source='backtest_<model>'`. Same pattern as full recompute.
-        ds_tag = f'backtest_{bt_model}'
-        tagged_stored = []
-        for t in merged_sorted:
-            t_copy = dict(t)
-            t_copy['data_source'] = ds_tag
-            tagged_stored.append(t_copy)
-        # 2026-05-11 (Phase 41 followup): see recompute_and_persist_stored_trades
-        # for rationale. Bypass trades_store wrapper to avoid flag-dependent
-        # fallback to broken JSONB path.
-        try:
-            from db import replace_trades_admin
-            replace_trades_admin(
-                strategy_id, user_id, tagged_stored,
-                data_source_filter='backtest_%')
-            try:
-                from trades_store import _cache_invalidate
-                _cache_invalidate(strategy_id, user_id)
-            except Exception:
-                pass
-        except Exception as e:
-            logger.exception(
-                "[BT-APPEND] sid=%s trades-table write failed: %s",
-                strategy_id, e)
-            raise
 
         # KPIs + equity curve stay as strategies-row columns.
         update_strategy_admin(strategy_id, user_id, {
@@ -1463,7 +1454,7 @@ def append_new_backtest_trades_for_strategy(
 
         result = {
             'status': 'appended',
-            'inserted': len(new_serialized),
+            'inserted': inserted_count,
             'cutoff': cutoff_iso,
             'elapsed_s': round(_time.time() - t0, 2),
         }

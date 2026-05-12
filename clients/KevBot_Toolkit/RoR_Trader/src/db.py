@@ -1131,6 +1131,41 @@ def load_trades_admin(
     return [_row_to_trade(r) for r in all_rows]
 
 
+def get_max_entry_ts_admin(
+    strategy_id: int,
+    user_id: str | None = None,
+    data_source_filter: str | None = None,
+) -> str | None:
+    """Return the latest entry_fill_ts for a strategy's trades.
+
+    Used by the BT-APPEND optimization (2026-05-12) — find the append
+    anchor without paginating through the entire backtest history.
+    Replaces "load all stored_trades, scan in Python" with a single
+    ORDER BY DESC LIMIT 1 query.
+
+    `data_source_filter`: SQL LIKE pattern. Same semantics as
+    load_trades_admin.
+
+    Returns the ISO timestamp string, or None if no rows match.
+    """
+    client = get_admin_client()
+    q = (client.table('trades')
+         .select('entry_fill_ts')
+         .eq('strategy_id', strategy_id)
+         .order('entry_fill_ts', desc=True)
+         .limit(1))
+    if user_id:
+        q = q.eq('user_id', user_id)
+    if data_source_filter:
+        q = q.like('data_source', data_source_filter)
+    result = q.execute()
+    rows = result.data or []
+    if not rows:
+        return None
+    ts = rows[0].get('entry_fill_ts')
+    return str(ts) if ts else None
+
+
 def insert_trade_admin(strategy_id: int, user_id: str, trade: dict) -> dict | None:
     """Insert a single trade row (admin client). Returns the saved row
     reconstructed into legacy flat shape, or None on conflict / failure.
