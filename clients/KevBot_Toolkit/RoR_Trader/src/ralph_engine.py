@@ -3394,6 +3394,17 @@ class RalphEngine:
 
         # Add new strategies
         added = new_ids - current_ids
+        # Track hubs that gained NEW secondary TF builders so we can
+        # finalize shadow engines + warm them up after monitors are in.
+        # Without this, cross-TF confluence on hot-reloaded strategies
+        # silently breaks: the secondary builder accumulates bars but no
+        # shadow indicator engine exists, so the MTF confluence buffer
+        # never updates and `live_bars` writes for the secondary TF
+        # don't happen (the fan-out at on_polygon_bar:1912 iterates
+        # `_shadow_engines.keys()`). Bug found 2026-05-13 — sid 169 was
+        # firing 0 alerts because its 15Min SWING_123 confluence shadow
+        # never got built when the strategy was created via the UI.
+        hubs_with_new_secondary_tfs: Dict[str, Set[int]] = {}
         for strat in strategies:
             if strat['id'] not in added:
                 continue
@@ -3406,12 +3417,23 @@ class RalphEngine:
                 self.hubs[sym] = SymbolHub(sym)
 
             hub = self.hubs[sym]
+            # Snapshot builder TFs BEFORE add_monitor — anything new
+            # afterward is a fresh secondary TF that needs warmup +
+            # shadow-engine setup.
+            tfs_before = set(hub.builders.keys())
+
             monitor = StrategyMonitor(
                 strat, general_packs=self._general_packs)
             hub.add_monitor(monitor)
             self.monitors[sid] = monitor
 
-            # Warmup the new monitor
+            tfs_after = set(hub.builders.keys())
+            new_secondary_tfs = tfs_after - tfs_before - {monitor.tf_seconds}
+            if new_secondary_tfs:
+                hubs_with_new_secondary_tfs.setdefault(sym, set()).update(
+                    new_secondary_tfs)
+
+            # Warmup the new monitor (primary TF)
             tf_seconds = monitor.tf_seconds
             builder = hub.builders.get(tf_seconds)
             if builder and len(builder.history) > 0:
@@ -3431,8 +3453,72 @@ class RalphEngine:
                     logger.error("Warmup failed for new strategy %d: %s",
                                 sid, e)
 
+            # Seed history for any NEW secondary TF builders this monitor
+            # introduced. They were created empty by add_monitor; without
+            # historical bars the shadow engine can't initialize.
+            for sec_tf in new_secondary_tfs:
+                sec_builder = hub.builders.get(sec_tf)
+                if sec_builder is None or len(sec_builder.history) > 0:
+                    continue  # already seeded by another monitor this pass
+                try:
+                    from data_loader import load_market_data
+                    sec_tf_str = SECONDS_TO_TIMEFRAME.get(sec_tf, '1Min')
+                    sec_df = load_market_data(
+                        sym, days=7, timeframe=sec_tf_str,
+                        feed='sip', session=monitor.session)
+                    if sec_df is not None and len(sec_df) > 0:
+                        hub.seed_history(sec_tf, sec_df)
+                        logger.info(
+                            "Hot-reload: seeded secondary TF %s/%ss "
+                            "(%d bars) for new strat %d",
+                            sym, sec_tf, len(sec_df), sid)
+                except Exception as e:
+                    logger.error(
+                        "Hot-reload: secondary TF seed failed for "
+                        "strat %d %s/%ss: %s",
+                        sid, sym, sec_tf, e)
+
             logger.info("Hot-reload: added strategy %d (%s / %s)",
                        sid, strat.get('name'), sym)
+
+        # Finalize shadow engines on any hub whose monitor set changed
+        # (added OR removed — removal can drop a strategy whose required
+        # secondary TF is no longer needed, but finalize is idempotent
+        # and safe). Then warm up any newly-created shadow engines from
+        # the seeded secondary-TF history.
+        if added or removed:
+            for sym, hub in self.hubs.items():
+                # Only do this work on hubs that touched new strategies.
+                # Removed-only hubs don't need new shadow engines.
+                if sym not in hubs_with_new_secondary_tfs and not added:
+                    continue
+                pre_shadow_tfs = set(hub._shadow_engines.keys())
+                hub.finalize_shadow_engines()
+                post_shadow_tfs = set(hub._shadow_engines.keys())
+                new_shadow_tfs = post_shadow_tfs - pre_shadow_tfs
+                for sec_tf in new_shadow_tfs:
+                    sec_builder = hub.builders.get(sec_tf)
+                    shadow = hub._shadow_engines.get(sec_tf)
+                    if sec_builder is None or shadow is None:
+                        continue
+                    if len(sec_builder.history) == 0:
+                        logger.warning(
+                            "Hot-reload: shadow %s/%ss created but builder "
+                            "has no history — indicators stay cold until "
+                            "live bars accumulate",
+                            sym, sec_tf)
+                        continue
+                    try:
+                        shadow.warmup(sec_builder.history)
+                        logger.info(
+                            "Hot-reload: shadow %s/%ss warmed up "
+                            "(%d bars) initialized=%s",
+                            sym, sec_tf, len(sec_builder.history),
+                            shadow.indicators._initialized)
+                    except Exception as e:
+                        logger.error(
+                            "Hot-reload: shadow warmup failed %s/%ss: %s",
+                            sym, sec_tf, e)
 
         if added or removed:
             self._config = config
