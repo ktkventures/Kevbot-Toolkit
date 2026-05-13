@@ -1306,6 +1306,108 @@ def get_strategy_trades(
         raise HTTPException(status_code=504, detail=f"Trade computation timed out or failed: {str(e)[:200]}")
 
 
+@router.get("/{strategy_id}/cache-coverage")
+def get_strategy_cache_coverage(
+    strategy_id: int,
+    user=Depends(get_current_user),
+):
+    """Per-TF freshness snapshot of the worker's live_bars cache.
+
+    For the strategy's primary timeframe + every secondary timeframe
+    referenced in its confluence records, returns the most recent
+    bar_start in the live_bars table along with seconds_since-now and a
+    coarse status (green/yellow/red).
+
+    This is the read side of the diagnostic. If a secondary TF shows
+    red, the worker's shadow-engine fan-out for that (symbol, tf) is
+    likely broken. Used by Strategy Detail to self-diagnose cross-TF
+    cache gaps in 5s instead of running an ad-hoc Python audit.
+    """
+    from ralph_engine import (
+        TIMEFRAME_SECONDS, SECONDS_TO_TIMEFRAME, _LABEL_TO_TF_SECONDS,
+    )
+    from db import get_admin_client
+
+    strat = _get_or_404(strategy_id, user)
+    symbol = strat.get('symbol')
+    primary_label = strat.get('timeframe')
+    primary_seconds = TIMEFRAME_SECONDS.get(primary_label)
+    if not symbol or not primary_seconds:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Strategy {strategy_id} missing symbol or timeframe")
+
+    cfg = strat.get('config') or {}
+    confluence_records = (cfg.get('confluence') or []) if isinstance(cfg, dict) else []
+
+    tfs: dict[int, str] = {primary_seconds: primary_label}
+    for rec in confluence_records:
+        if not isinstance(rec, str):
+            continue
+        parts = rec.split('-', 2)
+        if len(parts) < 3:
+            continue
+        sec_seconds = _LABEL_TO_TF_SECONDS.get(parts[0])
+        if sec_seconds and sec_seconds not in tfs:
+            tfs[sec_seconds] = SECONDS_TO_TIMEFRAME.get(sec_seconds, parts[0])
+
+    sb = get_admin_client()
+    now = datetime.now(timezone.utc)
+    coverage = []
+    for tf_seconds in sorted(tfs.keys()):
+        rows = (sb.table('live_bars')
+                .select('bar_start,written_at,source')
+                .eq('symbol', symbol)
+                .eq('timeframe_seconds', tf_seconds)
+                .order('bar_start', desc=True)
+                .limit(1)
+                .execute()
+                .data)
+        if rows:
+            bar_start_raw = rows[0]['bar_start']
+            try:
+                bar_start_dt = datetime.fromisoformat(
+                    bar_start_raw.replace('Z', '+00:00'))
+            except Exception:
+                bar_start_dt = None
+            seconds_since = (
+                (now - bar_start_dt).total_seconds()
+                if bar_start_dt else None)
+            written_at = rows[0].get('written_at')
+            source = rows[0].get('source')
+        else:
+            bar_start_raw = None
+            seconds_since = None
+            written_at = None
+            source = None
+
+        if seconds_since is None:
+            status = 'red'
+        elif seconds_since < 2 * tf_seconds:
+            status = 'green'
+        elif seconds_since < 6 * tf_seconds:
+            status = 'yellow'
+        else:
+            status = 'red'
+
+        coverage.append({
+            'tf_label': tfs[tf_seconds],
+            'tf_seconds': tf_seconds,
+            'is_primary': tf_seconds == primary_seconds,
+            'latest_bar_start': bar_start_raw,
+            'seconds_since': seconds_since,
+            'last_written_at': written_at,
+            'source': source,
+            'status': status,
+        })
+
+    return {
+        'symbol': symbol,
+        'as_of': now.isoformat(),
+        'coverage': coverage,
+    }
+
+
 @router.get("/{strategy_id}/algo-trades")
 def get_strategy_algo_trades(
     strategy_id: int,

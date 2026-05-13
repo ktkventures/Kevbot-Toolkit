@@ -127,6 +127,37 @@ export function useStrategyAlgoTrades(
   });
 }
 
+// Per-TF freshness snapshot of the worker's live_bars cache. Used by
+// Strategy Detail to self-diagnose cross-TF cache gaps — secondary TFs
+// going red signals the worker's shadow-engine fan-out isn't writing
+// bars for that (symbol, tf).
+export interface CacheCoverageEntry {
+  tf_label: string;
+  tf_seconds: number;
+  is_primary: boolean;
+  latest_bar_start: string | null;
+  seconds_since: number | null;
+  last_written_at: string | null;
+  source: string | null;
+  status: 'green' | 'yellow' | 'red';
+}
+export interface CacheCoverageDTO {
+  symbol: string;
+  as_of: string;
+  coverage: CacheCoverageEntry[];
+}
+export function useStrategyCacheCoverage(id: number | null) {
+  return useQuery({
+    queryKey: ['strategy-cache-coverage', id],
+    queryFn: () =>
+      apiFetch<CacheCoverageDTO>(`/api/strategies/${id}/cache-coverage`),
+    enabled: id !== null,
+    retry: 1,
+    retryDelay: 2000,
+    refetchInterval: 30_000,
+  });
+}
+
 export function useStrategyForwardTest(id: number | null) {
   return useQuery({
     queryKey: ['strategy-forward-test', id],

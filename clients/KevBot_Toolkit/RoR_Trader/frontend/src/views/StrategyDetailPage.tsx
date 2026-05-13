@@ -11,7 +11,7 @@ import ChartPlaceholder from '@/components/ChartPlaceholder';
 import type { TradeMarker } from '@/charts/TradingChart';
 
 // Static imports for hooks — these are safe because the page uses ssr:false
-import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useStrategyCacheBars, useStrategyChartDataCache, useStrategyModels, useConfluenceChart, useTradeZoom, useStrategyDivergence, useStrategyAlgoTrades, type DivergenceRow } from '@/hooks/queries/useStrategies';
+import { useStrategy, useStrategyTrades, useStrategyForwardTest, useStrategyKPIs, useTriggerAnalysis, useStrategyChartData, useStrategyCacheBars, useStrategyChartDataCache, useStrategyModels, useConfluenceChart, useTradeZoom, useStrategyDivergence, useStrategyAlgoTrades, useStrategyCacheCoverage, type DivergenceRow } from '@/hooks/queries/useStrategies';
 import { StrategyHealthBadge, StrategyHealthDrawer, StrategyFidelityBadges, type StrategyHealth } from './StrategiesPage';
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
@@ -1113,6 +1113,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // from btTrades/fwdTrades which come from stored_trades (backtest lane
   // post-Phase 41 hydration).
   const { data: algoTradesRaw } = useStrategyAlgoTrades(strategyId);
+  const { data: cacheCoverage } = useStrategyCacheCoverage(strategyId);
   // M8.5 B+: always fetch the forward/backtest split. The endpoint is cheap
   // (just splits stored_trades at forward_test_start — no Polygon round-trip).
   // The `fwdRequested` gate that used to exist referred to a different
@@ -2680,6 +2681,66 @@ export default function StrategyDetailPage({ strategyId }: Props) {
             Live: {(apiStrategy as any).live_model}
           </span>
         )}
+        {cacheCoverage?.coverage?.length ? (
+          <div
+            className="flex items-center gap-1 px-2 py-0.5 rounded"
+            style={{
+              background: 'var(--bg-input)',
+              border: '1px solid var(--border)',
+            }}
+            title={
+              `Worker cache freshness per timeframe.\n` +
+              `Green: bar < 2x tf interval old.\n` +
+              `Yellow: < 6x.\n` +
+              `Red: stale — worker likely not writing this TF.\n\n` +
+              cacheCoverage.coverage.map(c =>
+                `${c.tf_label}${c.is_primary ? ' (primary)' : ''}: ` +
+                (c.seconds_since == null
+                  ? 'no bars'
+                  : `${Math.round(c.seconds_since)}s ago`) +
+                (c.latest_bar_start ? ` — last ${c.latest_bar_start}` : '')
+              ).join('\n')
+            }
+          >
+            <span
+              className="text-[10px] font-medium"
+              style={{ color: 'var(--text-muted)' }}
+            >
+              Cache:
+            </span>
+            {cacheCoverage.coverage.map(c => {
+              const colorMap = {
+                green: { bg: 'var(--green-muted)', fg: 'var(--green)' },
+                yellow: { bg: 'var(--yellow-muted)', fg: 'var(--yellow)' },
+                red: { bg: 'var(--red-muted)', fg: 'var(--red)' },
+              } as const;
+              const colors = colorMap[c.status];
+              const ageStr =
+                c.seconds_since == null
+                  ? '—'
+                  : c.seconds_since < 60
+                    ? `${Math.round(c.seconds_since)}s`
+                    : c.seconds_since < 3600
+                      ? `${Math.round(c.seconds_since / 60)}m`
+                      : c.seconds_since < 86400
+                        ? `${Math.round(c.seconds_since / 3600)}h`
+                        : `${Math.round(c.seconds_since / 86400)}d`;
+              return (
+                <span
+                  key={c.tf_seconds}
+                  className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                  style={{
+                    background: colors.bg,
+                    color: colors.fg,
+                    fontWeight: c.is_primary ? 700 : 500,
+                  }}
+                >
+                  {c.tf_label} {ageStr}
+                </span>
+              );
+            })}
+          </div>
+        ) : null}
         <button
           className="text-xs px-3 py-1 rounded font-medium"
           style={{
