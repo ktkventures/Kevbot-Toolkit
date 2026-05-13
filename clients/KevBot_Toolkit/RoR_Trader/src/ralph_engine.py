@@ -309,10 +309,18 @@ class BarBuilder:
                 # The CALLER (on_polygon_bar fan-out / on_second_bar
                 # primary) is feeding the post-correction full-period
                 # aggregation; we trust those values.
-                self.history.iloc[-1] = pd.Series({
-                    'open': sec_open, 'high': sec_high, 'low': sec_low,
-                    'close': sec_close, 'volume': sec_volume,
-                })
+                #
+                # 2026-05-13 fix: assign per-column instead of via
+                # `iloc[-1] = pd.Series(5-keys)` because seeded history
+                # from REST often carries extra columns (vwap,
+                # trade_count, etc.). The 5-key Series broke with
+                # "Must have equal len keys and value when setting with
+                # an iterable" once secondary builders started getting
+                # seeded by the hot-reload path.
+                self.history.loc[
+                    self.history.index[-1],
+                    ['open', 'high', 'low', 'close', 'volume']
+                ] = [sec_open, sec_high, sec_low, sec_close, sec_volume]
                 self.last_was_duplicate = True
                 # Return the corrected bar dict so caller knows this was a
                 # close-on-boundary (treats it like a completed-bar return).
@@ -411,13 +419,18 @@ class BarBuilder:
                 last_ts = last_ts.tz_localize('UTC')
             if last_ts == pd.Timestamp(bar_start):
                 # Replace the row's OHLCV with the corrected values.
-                self.history.iloc[-1] = pd.Series({
-                    'open': float(bar_dict['open']),
-                    'high': float(bar_dict['high']),
-                    'low': float(bar_dict['low']),
-                    'close': float(bar_dict['close']),
-                    'volume': float(bar_dict.get('volume', 0)),
-                })
+                # 2026-05-13: column-targeted assignment (see
+                # accept_second_bar above for the same fix).
+                self.history.loc[
+                    self.history.index[-1],
+                    ['open', 'high', 'low', 'close', 'volume']
+                ] = [
+                    float(bar_dict['open']),
+                    float(bar_dict['high']),
+                    float(bar_dict['low']),
+                    float(bar_dict['close']),
+                    float(bar_dict.get('volume', 0)),
+                ]
                 self.last_was_duplicate = True
                 return bar_dict
 
@@ -3466,6 +3479,31 @@ class RalphEngine:
                     sec_df = load_market_data(
                         sym, days=7, timeframe=sec_tf_str,
                         feed='sip', session=monitor.session)
+                    if sec_df is not None and len(sec_df) > 0:
+                        # Drop the in-progress (currently-forming) bar
+                        # if present. load_market_data sometimes returns
+                        # a row at the current period's start before that
+                        # period has closed. If we seed it, every
+                        # subsequent 1Min Polygon bar that aligns to the
+                        # same period_start would match history.index[-1]
+                        # and false-trigger the rebroadcast branch in
+                        # accept_second_bar — blocking the partial-bar
+                        # accumulator and spamming pandas errors.
+                        now_utc = pd.Timestamp.now(tz='UTC')
+                        period_size_ns = int(sec_tf) * 1_000_000_000
+                        current_period_start = pd.Timestamp(
+                            (now_utc.value // period_size_ns) * period_size_ns,
+                            tz='UTC',
+                        )
+                        last_idx = sec_df.index[-1]
+                        if last_idx.tzinfo is None:
+                            last_idx = last_idx.tz_localize('UTC')
+                        if last_idx >= current_period_start:
+                            sec_df = sec_df.iloc[:-1]
+                            logger.info(
+                                "Hot-reload: dropped forming bar from "
+                                "seed %s/%ss (last=%s, current_period=%s)",
+                                sym, sec_tf, last_idx, current_period_start)
                     if sec_df is not None and len(sec_df) > 0:
                         hub.seed_history(sec_tf, sec_df)
                         logger.info(
