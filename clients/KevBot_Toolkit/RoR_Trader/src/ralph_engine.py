@@ -2054,7 +2054,41 @@ class SymbolHub:
                 logger.warning(
                     "secondary-TF aggregation failed (%ss): %s",
                     sec_tf, e)
+                if _diag_target:
+                    # Heartbeat-2: record the EXCEPTION case to DB so
+                    # we know if accept_second_bar is throwing silently.
+                    try:
+                        from db import get_admin_client
+                        get_admin_client().table('live_bars').upsert({
+                            'symbol': f'_DIAG_HB2_{self.symbol}',
+                            'timeframe_seconds': sec_tf,
+                            'bar_start': '1970-01-01T00:00:00+00:00',
+                            'open': 0.0, 'high': 0.0, 'low': 0.0,
+                            'close': 0.0, 'volume': 0.0,
+                            'source': f'EXCEPTION-{type(e).__name__}-{str(e)[:60]}',
+                        }, on_conflict='symbol,timeframe_seconds,bar_start').execute()
+                    except Exception:
+                        pass
                 continue
+            # Heartbeat-2: record every accept_second_bar return value
+            # to DB (overwrites same row). Source encodes completed status.
+            if _diag_target:
+                try:
+                    from db import get_admin_client
+                    _hb2_src = (
+                        f'completed=None-' if completed is None
+                        else f'completed=ts={completed.get("timestamp", "?")[:25]}-'
+                    ) + f'dup={sec_builder.last_was_duplicate}'
+                    get_admin_client().table('live_bars').upsert({
+                        'symbol': f'_DIAG_HB2_{self.symbol}',
+                        'timeframe_seconds': sec_tf,
+                        'bar_start': '1970-01-01T00:00:00+00:00',
+                        'open': 0.0, 'high': 0.0, 'low': 0.0,
+                        'close': 0.0, 'volume': 0.0,
+                        'source': _hb2_src[:120],
+                    }, on_conflict='symbol,timeframe_seconds,bar_start').execute()
+                except Exception:
+                    pass
             if _diag_target:
                 logger.info(
                     "[DIAG-FANOUT-POST] sym=%s sec_tf=%s completed=%s "
