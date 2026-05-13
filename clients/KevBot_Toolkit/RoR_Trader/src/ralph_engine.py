@@ -1492,16 +1492,6 @@ class SymbolHub:
                 self._shadow_engines[sec_tf] = shadow
                 logger.info("Created shadow engine for %s/%ss: ind=%s interp=%s",
                             self.symbol, sec_tf, req_ind, req_interp)
-            else:
-                logger.warning(
-                    "[DIAG] finalize: %s/%ss req_interp EMPTY — shadow NOT "
-                    "created (requesting_monitors=%s)",
-                    self.symbol, sec_tf,
-                    [m.strat_id for m in requesting_monitors])
-        # 2026-05-13 DIAG: end-of-finalize summary
-        logger.info(
-            "[DIAG-FINALIZE] %s shadow_engines after finalize: %s",
-            self.symbol, sorted(self._shadow_engines.keys()))
 
     def seed_history(self, tf_seconds: int, df: pd.DataFrame):
         builder = self.builders.get(tf_seconds)
@@ -1989,64 +1979,12 @@ class SymbolHub:
         # and the MTF buffer goes stale. Aggregate the just-closed 1Min AM
         # bar into every secondary-TF builder; on each secondary close,
         # update its shadow's MTF confluence record.
-        #
-        # 2026-05-13 DIAGNOSTIC LOGGING: gated to SPY/900s + SPY/3600s
-        # to capture exactly why those secondary builders never close.
-        _DIAG_SECONDARY = (self.symbol == 'SPY')
-        if _DIAG_SECONDARY:
-            logger.info(
-                "[DIAG-FANOUT] sym=%s tf_seconds=%s shadow_keys=%s "
-                "builder_keys=%s bar_ts=%s",
-                self.symbol, tf_seconds,
-                sorted(self._shadow_engines.keys()),
-                sorted(self.builders.keys()),
-                bar_dict.get('timestamp'))
         for sec_tf in list(self._shadow_engines.keys()):
             if sec_tf == tf_seconds:
                 continue  # primary already handled above
             sec_builder = self.builders.get(sec_tf)
             if sec_builder is None:
-                if _DIAG_SECONDARY and sec_tf in (900, 3600):
-                    logger.warning(
-                        "[DIAG-FANOUT] sym=%s sec_tf=%s NO BUILDER",
-                        self.symbol, sec_tf)
                 continue
-            _diag_target = _DIAG_SECONDARY and sec_tf in (900, 3600)
-            if _diag_target:
-                last_idx = (str(sec_builder.history.index[-1])
-                            if len(sec_builder.history) > 0 else 'EMPTY')
-                partial = sec_builder._partial
-                partial_str = (
-                    f"start={partial.bar_start}" if partial is not None
-                    else "None")
-                logger.info(
-                    "[DIAG-FANOUT-PRE] sym=%s sec_tf=%s "
-                    "history_len=%d last_idx=%s partial=%s",
-                    self.symbol, sec_tf,
-                    len(sec_builder.history), last_idx, partial_str)
-                # 2026-05-13 UNCONDITIONAL sentinel: write a heartbeat
-                # row on every iteration to verify the code is reached
-                # at all. If we see _DIAG_HB_SPY rows in DB, the fan-out
-                # is alive. If not, this code path isn't being executed.
-                try:
-                    from db import get_admin_client
-                    _hb_client = get_admin_client()
-                    _hb_client.table('live_bars').upsert({
-                        'symbol': f'_DIAG_HB_{self.symbol}',
-                        'timeframe_seconds': sec_tf,
-                        'bar_start': '1970-01-01T00:00:00+00:00',
-                        'open': float(len(sec_builder.history)),
-                        'high': 0.0, 'low': 0.0, 'close': 0.0,
-                        'volume': 0.0,
-                        'source': (
-                            f'HB-{bar_dict.get("timestamp", "?")[:25]}-'
-                            f'partial={partial_str[:30]}'
-                        ),
-                    }, on_conflict='symbol,timeframe_seconds,bar_start').execute()
-                except Exception as e:
-                    logger.error(
-                        "[DIAG-HB-FAIL] sym=%s sec_tf=%s err=%s",
-                        self.symbol, sec_tf, repr(e), exc_info=True)
             try:
                 completed = sec_builder.accept_second_bar(
                     bar_dict, close_on_boundary=True)
@@ -2054,118 +1992,16 @@ class SymbolHub:
                 logger.warning(
                     "secondary-TF aggregation failed (%ss): %s",
                     sec_tf, e)
-                if _diag_target:
-                    # Heartbeat-2: record the EXCEPTION case to DB so
-                    # we know if accept_second_bar is throwing silently.
-                    try:
-                        from db import get_admin_client
-                        get_admin_client().table('live_bars').upsert({
-                            'symbol': f'_DIAG_HB2_{self.symbol}',
-                            'timeframe_seconds': sec_tf,
-                            'bar_start': '1970-01-01T00:00:00+00:00',
-                            'open': 0.0, 'high': 0.0, 'low': 0.0,
-                            'close': 0.0, 'volume': 0.0,
-                            'source': f'EXCEPTION-{type(e).__name__}-{str(e)[:60]}',
-                        }, on_conflict='symbol,timeframe_seconds,bar_start').execute()
-                    except Exception:
-                        pass
                 continue
-            # Heartbeat-2: record every accept_second_bar return value
-            # to DB (overwrites same row). Source encodes completed status.
-            if _diag_target:
-                try:
-                    from db import get_admin_client
-                    _hb2_src = (
-                        f'completed=None-' if completed is None
-                        else f'completed=ts={completed.get("timestamp", "?")[:25]}-'
-                    ) + f'dup={sec_builder.last_was_duplicate}'
-                    get_admin_client().table('live_bars').upsert({
-                        'symbol': f'_DIAG_HB2_{self.symbol}',
-                        'timeframe_seconds': sec_tf,
-                        'bar_start': '1970-01-01T00:00:00+00:00',
-                        'open': 0.0, 'high': 0.0, 'low': 0.0,
-                        'close': 0.0, 'volume': 0.0,
-                        'source': _hb2_src[:120],
-                    }, on_conflict='symbol,timeframe_seconds,bar_start').execute()
-                except Exception:
-                    pass
-            if _diag_target:
-                logger.info(
-                    "[DIAG-FANOUT-POST] sym=%s sec_tf=%s completed=%s "
-                    "last_was_duplicate=%s",
-                    self.symbol, sec_tf,
-                    'None' if completed is None else (
-                        f"ts={completed.get('timestamp')} "
-                        f"close={completed.get('close')}"),
-                    sec_builder.last_was_duplicate)
             if completed is None:
                 continue
             sec_was_duplicate = sec_builder.last_was_duplicate
             # M8.7: record the aggregated secondary-TF bar to live_bars.
-            # 2026-05-13 DIAG: do a SYNCHRONOUS direct write inline for the
-            # target SPY 15M/1H so any Postgres error surfaces immediately
-            # instead of being swallowed by the async pool.
-            if _diag_target:
-                # Persistent DIAG-WRITE markers: write a sentinel row to
-                # live_bars so we can query the DB to confirm whether we
-                # ever reached this code path. Each iteration UPSERTs a
-                # row at bar_start='1970-01-01T00:00:00+00:00' with the
-                # current actual completed bar's data encoded in source.
-                # If sentinel exists → fan-out reached the write block.
-                logger.info(
-                    "[DIAG-WRITE-ATTEMPT] sym=%s sec_tf=%s ts=%s "
-                    "close=%s open=%s high=%s low=%s volume=%s",
-                    self.symbol, sec_tf,
-                    completed.get('timestamp'),
-                    completed.get('close'), completed.get('open'),
-                    completed.get('high'), completed.get('low'),
-                    completed.get('volume'))
-                try:
-                    from db import get_admin_client
-                    _diag_client = get_admin_client()
-                    # Use the completed bar's actual timestamp as bar_start
-                    # so each close creates a DISCOVERABLE, UNIQUE row.
-                    # Earlier on_conflict-style overwrites lost history of
-                    # past closes; this preserves them.
-                    _completed_ts = str(completed.get('timestamp', ''))
-                    _src_marker = f"DIAG-CLOSE-{sec_tf}"
-                    _diag_client.table('live_bars').upsert({
-                        'symbol': f'_DIAG_{self.symbol}',
-                        'timeframe_seconds': sec_tf,
-                        'bar_start': _completed_ts,
-                        'open': float(completed.get('open', 0) or 0),
-                        'high': float(completed.get('high', 0) or 0),
-                        'low': float(completed.get('low', 0) or 0),
-                        'close': float(completed.get('close', 0) or 0),
-                        'volume': float(completed.get('volume', 0) or 0),
-                        'source': _src_marker,
-                    }, on_conflict='symbol,timeframe_seconds,bar_start').execute()
-                    logger.info(
-                        "[DIAG-MARKER-OK] sym=%s sec_tf=%s ts=%s",
-                        self.symbol, sec_tf, _completed_ts)
-                except Exception as e:
-                    logger.error(
-                        "[DIAG-MARKER-FAIL] sym=%s sec_tf=%s err=%s",
-                        self.symbol, sec_tf, repr(e), exc_info=True)
-                # Now attempt the REAL write
-                try:
-                    from live_bars_writer import _write_bar_sync as _sync_write
-                    _sync_write(self.symbol, sec_tf, completed, 'ws')
-                    logger.info(
-                        "[DIAG-WRITE-SUCCESS] sym=%s sec_tf=%s ts=%s "
-                        "(synchronous)",
-                        self.symbol, sec_tf, completed.get('timestamp'))
-                except Exception as e:
-                    logger.error(
-                        "[DIAG-WRITE-FAILED] sym=%s sec_tf=%s ts=%s err=%s",
-                        self.symbol, sec_tf, completed.get('timestamp'),
-                        repr(e), exc_info=True)
-            else:
-                try:
-                    from live_bars_writer import write_bar as _live_bars_write
-                    _live_bars_write(self.symbol, sec_tf, completed, source='ws')
-                except Exception:
-                    pass
+            try:
+                from live_bars_writer import write_bar as _live_bars_write
+                _live_bars_write(self.symbol, sec_tf, completed, source='ws')
+            except Exception:
+                pass
             shadow = self._shadow_engines.get(sec_tf)
             if shadow is None:
                 continue
