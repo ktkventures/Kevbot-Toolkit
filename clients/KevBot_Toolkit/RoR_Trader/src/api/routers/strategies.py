@@ -1337,8 +1337,13 @@ def get_strategy_cache_coverage(
             status_code=400,
             detail=f"Strategy {strategy_id} missing symbol or timeframe")
 
-    cfg = strat.get('config') or {}
-    confluence_records = (cfg.get('confluence') or []) if isinstance(cfg, dict) else []
+    # `_get_or_404` returns a FLATTENED strat dict (config JSONB keys
+    # spread to top level). `strat.get('config')` is therefore None —
+    # read 'confluence' from the top level instead. Same gotcha is
+    # called out in forward_test_service.py around line 677.
+    confluence_records = strat.get('confluence') or []
+    if not isinstance(confluence_records, list):
+        confluence_records = []
 
     tfs: dict[int, str] = {primary_seconds: primary_label}
     for rec in confluence_records:
