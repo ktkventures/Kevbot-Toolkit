@@ -2049,6 +2049,12 @@ class SymbolHub:
             # target SPY 15M/1H so any Postgres error surfaces immediately
             # instead of being swallowed by the async pool.
             if _diag_target:
+                # Persistent DIAG-WRITE markers: write a sentinel row to
+                # live_bars so we can query the DB to confirm whether we
+                # ever reached this code path. Each iteration UPSERTs a
+                # row at bar_start='1970-01-01T00:00:00+00:00' with the
+                # current actual completed bar's data encoded in source.
+                # If sentinel exists → fan-out reached the write block.
                 logger.info(
                     "[DIAG-WRITE-ATTEMPT] sym=%s sec_tf=%s ts=%s "
                     "close=%s open=%s high=%s low=%s volume=%s",
@@ -2057,6 +2063,30 @@ class SymbolHub:
                     completed.get('close'), completed.get('open'),
                     completed.get('high'), completed.get('low'),
                     completed.get('volume'))
+                try:
+                    from db import get_admin_client
+                    _diag_client = get_admin_client()
+                    _ts_safe = (
+                        str(completed.get('timestamp'))
+                        .replace(':', '-').replace('+', 'p')
+                    )[:30]
+                    _src_marker = f"DIAG-CLOSE-{sec_tf}-{_ts_safe}"
+                    _diag_client.table('live_bars').upsert({
+                        'symbol': f'_DIAG_{self.symbol}',
+                        'timeframe_seconds': sec_tf,
+                        'bar_start': '1970-01-01T00:00:00+00:00',
+                        'open': 0.0, 'high': 0.0, 'low': 0.0,
+                        'close': 0.0, 'volume': 0.0,
+                        'source': _src_marker,
+                    }, on_conflict='symbol,timeframe_seconds,bar_start').execute()
+                    logger.info(
+                        "[DIAG-MARKER-OK] sym=%s sec_tf=%s marker=%s",
+                        self.symbol, sec_tf, _src_marker)
+                except Exception as e:
+                    logger.error(
+                        "[DIAG-MARKER-FAIL] sym=%s sec_tf=%s err=%s",
+                        self.symbol, sec_tf, repr(e), exc_info=True)
+                # Now attempt the REAL write
                 try:
                     from live_bars_writer import _write_bar_sync as _sync_write
                     _sync_write(self.symbol, sec_tf, completed, 'ws')
