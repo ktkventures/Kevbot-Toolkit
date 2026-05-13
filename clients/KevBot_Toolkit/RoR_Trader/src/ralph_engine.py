@@ -210,9 +210,66 @@ class BarBuilder:
         self.last_was_duplicate: bool = False
 
     def seed_history(self, df: pd.DataFrame):
-        if df is not None and len(df) > 0:
+        """Seed builder history from a DataFrame.
+
+        2026-05-13 fix: if the trailing row's index matches the currently
+        forming period, split it into `self._partial` instead of leaving
+        it as `history.iloc[-1]`. Otherwise every incoming bar that aligns
+        to the same period_start triggers the rebroadcast branch in
+        `accept_second_bar`, which returns early without ever creating a
+        partial — meaning the next boundary cross produces no completed
+        bar (no live_bars write, no shadow.on_bar_close).
+
+        Symptom captured 2026-05-13 via DIAG-FANOUT logs:
+          history_len=147 last_idx=17:30:00 partial=None
+          completed=ts=17:30:00 close=742.51 last_was_duplicate=True
+        After this fix, last_idx becomes the previous closed bar (17:15)
+        and partial gets the forming bar's OHLCV — incoming 1Min bars
+        update partial, and 17:45 boundary closes the partial cleanly.
+        """
+        if df is None or len(df) == 0:
+            return
+
+        now_utc = pd.Timestamp.now(tz='UTC')
+        period_size_ns = int(self.tf_seconds) * 1_000_000_000
+        current_period_start = pd.Timestamp(
+            (now_utc.value // period_size_ns) * period_size_ns, tz='UTC')
+
+        last_idx = df.index[-1]
+        if last_idx.tzinfo is None:
+            last_idx = last_idx.tz_localize('UTC')
+
+        if last_idx >= current_period_start:
+            last_row = df.iloc[-1]
+            try:
+                self._partial = PartialBar(
+                    float(last_row['open']),
+                    last_idx.to_pydatetime(),
+                    self.tf_seconds)
+                self._partial.high = float(last_row['high'])
+                self._partial.low = float(last_row['low'])
+                self._partial.close = float(last_row['close'])
+                vol = last_row.get('volume', 0)
+                self._partial.volume = float(vol) if vol is not None else 0.0
+                self._partial.tick_count = 1
+                self.history = df.iloc[:-1].tail(MAX_HISTORY).copy()
+                logger.info(
+                    "BarBuilder.seed_history: split forming bar at %s "
+                    "into _partial for tf=%ss; history=%d closed bars",
+                    last_idx, self.tf_seconds, len(self.history))
+            except Exception as e:
+                # Defensive: if the row is malformed, fall back to seeding
+                # the full df. Worse case = the rebroadcast cascade bug
+                # we just diagnosed; better than crashing the boot path.
+                logger.warning(
+                    "BarBuilder.seed_history: forming-bar split failed "
+                    "for tf=%ss: %s — falling back to full seed",
+                    self.tf_seconds, e)
+                self.history = df.tail(MAX_HISTORY).copy()
+        else:
             self.history = df.tail(MAX_HISTORY).copy()
-            self._bar_count = len(self.history)
+
+        self._bar_count = len(self.history)
 
     def process_tick(self, price: float, volume: int,
                      timestamp: datetime) -> Optional[dict]:
@@ -2570,15 +2627,23 @@ class RalphEngine:
                         df = pd.DataFrame()
                     seen_tf[cache_key] = df
 
-                # Seed bar builder
+                # Seed bar builder. seed_history now splits any forming
+                # bar into builder._partial, leaving builder.history with
+                # only CLOSED bars. Use builder.history (not the raw df)
+                # for monitor.warmup and shadow.warmup so indicators don't
+                # get warmed up with partial-period data — otherwise
+                # shadow.on_bar_close at the next boundary would
+                # double-count the forming bar's contribution.
                 hub.seed_history(tf_seconds, df)
+                warmup_df = builder.history
 
                 # Warmup each monitor's indicators
                 for monitor in hub.monitors.values():
-                    if monitor.tf_seconds == tf_seconds and len(df) > 0:
-                        monitor.warmup(df)
+                    if monitor.tf_seconds == tf_seconds and len(warmup_df) > 0:
+                        monitor.warmup(warmup_df)
                         logger.info("Warmup %s: strat=%s tf=%ss bars=%d initialized=%s",
-                                    sym, monitor.strat_id, tf_seconds, len(df),
+                                    sym, monitor.strat_id, tf_seconds,
+                                    len(warmup_df),
                                     monitor.indicators._initialized)
                     elif monitor.tf_seconds == tf_seconds:
                         logger.warning("Warmup SKIPPED %s: strat=%s tf=%ss — no historical data",
@@ -2586,10 +2651,10 @@ class RalphEngine:
 
                 # Warmup shadow engine for this TF (if exists)
                 shadow = hub._shadow_engines.get(tf_seconds)
-                if shadow and len(df) > 0:
-                    shadow.warmup(df)
+                if shadow and len(warmup_df) > 0:
+                    shadow.warmup(warmup_df)
                     logger.info("Shadow warmup %s: tf=%ss bars=%d initialized=%s",
-                                sym, tf_seconds, len(df),
+                                sym, tf_seconds, len(warmup_df),
                                 shadow.indicators._initialized)
 
         logger.info("Warmup complete for %d symbols", len(self.hubs))
@@ -3508,8 +3573,12 @@ class RalphEngine:
                         sym, days=7, timeframe=tf_str,
                         feed='sip', session=monitor.session)
                     if df is not None and len(df) > 0:
+                        # seed_history splits any forming bar into
+                        # _partial; warm up monitor from the resulting
+                        # closed-only history (not raw df).
                         hub.seed_history(tf_seconds, df)
-                        monitor.warmup(df)
+                        if builder and len(builder.history) > 0:
+                            monitor.warmup(builder.history)
                 except Exception as e:
                     logger.error("Warmup failed for new strategy %d: %s",
                                 sid, e)
