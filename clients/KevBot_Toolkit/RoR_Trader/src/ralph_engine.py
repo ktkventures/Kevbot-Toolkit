@@ -99,6 +99,40 @@ for _tf_name, _tf_sec in TIMEFRAME_SECONDS.items():
     _LABEL_TO_TF_SECONDS[_short.lower()] = _tf_sec
 
 
+def _drop_forming_bar(df, tf_seconds: int):
+    """Drop the trailing row from `df` if its index is at or past the
+    currently-forming bar's period_start.
+
+    `load_market_data` sometimes returns a row at the active period's
+    start before that period has closed. Seeding that row into a
+    BarBuilder.history causes accept_second_bar / accept_bar's
+    rebroadcast detection to false-fire on every incoming Polygon bar
+    that aligns to the same period_start — blocking the partial-bar
+    accumulator and (until 2026-05-13's `loc` fix) crashing with
+    "Must have equal len keys and value when setting with an iterable".
+
+    Used by both the worker boot path (`_warmup_all`) and the hot-reload
+    path so the first secondary-TF bar after either is fully accurate.
+    """
+    if df is None or len(df) == 0:
+        return df
+    try:
+        now_utc = pd.Timestamp.now(tz='UTC')
+        period_size_ns = int(tf_seconds) * 1_000_000_000
+        current_period_start = pd.Timestamp(
+            (now_utc.value // period_size_ns) * period_size_ns, tz='UTC')
+        last_idx = df.index[-1]
+        if last_idx.tzinfo is None:
+            last_idx = last_idx.tz_localize('UTC')
+        if last_idx >= current_period_start:
+            return df.iloc[:-1]
+    except Exception as e:
+        logger.warning(
+            "_drop_forming_bar: failed for tf=%ss, keeping df as-is: %s",
+            tf_seconds, e)
+    return df
+
+
 def _normalize_confluence_label(record: str) -> str:
     """Normalize TF prefix to uppercase (e.g., '15m-...' → '15M-...').
 
@@ -2520,6 +2554,17 @@ class RalphEngine:
                         logger.error("Warmup failed for %s/%s: %s",
                                      sym, tf_str, e)
                         df = pd.DataFrame()
+                    # Drop the currently-forming bar before seeding so the
+                    # rebroadcast branch in accept_second_bar / accept_bar
+                    # doesn't false-fire on every incoming bar in the open
+                    # period. See _drop_forming_bar docstring.
+                    df_before = len(df) if df is not None else 0
+                    df = _drop_forming_bar(df, tf_seconds)
+                    if df is not None and len(df) < df_before:
+                        logger.info(
+                            "Warmup: dropped forming bar from %s/%ss "
+                            "(was %d → %d bars)",
+                            sym, tf_seconds, df_before, len(df))
                     seen_tf[cache_key] = df
 
                 # Seed bar builder
@@ -3480,30 +3525,15 @@ class RalphEngine:
                         sym, days=7, timeframe=sec_tf_str,
                         feed='sip', session=monitor.session)
                     if sec_df is not None and len(sec_df) > 0:
-                        # Drop the in-progress (currently-forming) bar
-                        # if present. load_market_data sometimes returns
-                        # a row at the current period's start before that
-                        # period has closed. If we seed it, every
-                        # subsequent 1Min Polygon bar that aligns to the
-                        # same period_start would match history.index[-1]
-                        # and false-trigger the rebroadcast branch in
-                        # accept_second_bar — blocking the partial-bar
-                        # accumulator and spamming pandas errors.
-                        now_utc = pd.Timestamp.now(tz='UTC')
-                        period_size_ns = int(sec_tf) * 1_000_000_000
-                        current_period_start = pd.Timestamp(
-                            (now_utc.value // period_size_ns) * period_size_ns,
-                            tz='UTC',
-                        )
-                        last_idx = sec_df.index[-1]
-                        if last_idx.tzinfo is None:
-                            last_idx = last_idx.tz_localize('UTC')
-                        if last_idx >= current_period_start:
-                            sec_df = sec_df.iloc[:-1]
+                        # Drop the currently-forming bar before seeding —
+                        # see _drop_forming_bar at module top.
+                        before = len(sec_df)
+                        sec_df = _drop_forming_bar(sec_df, sec_tf)
+                        if len(sec_df) < before:
                             logger.info(
                                 "Hot-reload: dropped forming bar from "
-                                "seed %s/%ss (last=%s, current_period=%s)",
-                                sym, sec_tf, last_idx, current_period_start)
+                                "seed %s/%ss (was %d → %d bars)",
+                                sym, sec_tf, before, len(sec_df))
                     if sec_df is not None and len(sec_df) > 0:
                         hub.seed_history(sec_tf, sec_df)
                         logger.info(
