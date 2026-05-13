@@ -2045,11 +2045,36 @@ class SymbolHub:
                 continue
             sec_was_duplicate = sec_builder.last_was_duplicate
             # M8.7: record the aggregated secondary-TF bar to live_bars.
-            try:
-                from live_bars_writer import write_bar as _live_bars_write
-                _live_bars_write(self.symbol, sec_tf, completed, source='ws')
-            except Exception:
-                pass
+            # 2026-05-13 DIAG: do a SYNCHRONOUS direct write inline for the
+            # target SPY 15M/1H so any Postgres error surfaces immediately
+            # instead of being swallowed by the async pool.
+            if _diag_target:
+                logger.info(
+                    "[DIAG-WRITE-ATTEMPT] sym=%s sec_tf=%s ts=%s "
+                    "close=%s open=%s high=%s low=%s volume=%s",
+                    self.symbol, sec_tf,
+                    completed.get('timestamp'),
+                    completed.get('close'), completed.get('open'),
+                    completed.get('high'), completed.get('low'),
+                    completed.get('volume'))
+                try:
+                    from live_bars_writer import _write_bar_sync as _sync_write
+                    _sync_write(self.symbol, sec_tf, completed, 'ws')
+                    logger.info(
+                        "[DIAG-WRITE-SUCCESS] sym=%s sec_tf=%s ts=%s "
+                        "(synchronous)",
+                        self.symbol, sec_tf, completed.get('timestamp'))
+                except Exception as e:
+                    logger.error(
+                        "[DIAG-WRITE-FAILED] sym=%s sec_tf=%s ts=%s err=%s",
+                        self.symbol, sec_tf, completed.get('timestamp'),
+                        repr(e), exc_info=True)
+            else:
+                try:
+                    from live_bars_writer import write_bar as _live_bars_write
+                    _live_bars_write(self.symbol, sec_tf, completed, source='ws')
+                except Exception:
+                    pass
             shadow = self._shadow_engines.get(sec_tf)
             if shadow is None:
                 continue
