@@ -2123,22 +2123,26 @@ class SymbolHub:
                 try:
                     from db import get_admin_client
                     _diag_client = get_admin_client()
-                    _ts_safe = (
-                        str(completed.get('timestamp'))
-                        .replace(':', '-').replace('+', 'p')
-                    )[:30]
-                    _src_marker = f"DIAG-CLOSE-{sec_tf}-{_ts_safe}"
+                    # Use the completed bar's actual timestamp as bar_start
+                    # so each close creates a DISCOVERABLE, UNIQUE row.
+                    # Earlier on_conflict-style overwrites lost history of
+                    # past closes; this preserves them.
+                    _completed_ts = str(completed.get('timestamp', ''))
+                    _src_marker = f"DIAG-CLOSE-{sec_tf}"
                     _diag_client.table('live_bars').upsert({
                         'symbol': f'_DIAG_{self.symbol}',
                         'timeframe_seconds': sec_tf,
-                        'bar_start': '1970-01-01T00:00:00+00:00',
-                        'open': 0.0, 'high': 0.0, 'low': 0.0,
-                        'close': 0.0, 'volume': 0.0,
+                        'bar_start': _completed_ts,
+                        'open': float(completed.get('open', 0) or 0),
+                        'high': float(completed.get('high', 0) or 0),
+                        'low': float(completed.get('low', 0) or 0),
+                        'close': float(completed.get('close', 0) or 0),
+                        'volume': float(completed.get('volume', 0) or 0),
                         'source': _src_marker,
                     }, on_conflict='symbol,timeframe_seconds,bar_start').execute()
                     logger.info(
-                        "[DIAG-MARKER-OK] sym=%s sec_tf=%s marker=%s",
-                        self.symbol, sec_tf, _src_marker)
+                        "[DIAG-MARKER-OK] sym=%s sec_tf=%s ts=%s",
+                        self.symbol, sec_tf, _completed_ts)
                 except Exception as e:
                     logger.error(
                         "[DIAG-MARKER-FAIL] sym=%s sec_tf=%s err=%s",
