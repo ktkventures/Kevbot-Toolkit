@@ -2734,57 +2734,41 @@ def update_strategy_lanes(
     )
     from db import set_admin_user_context, clear_current_user
 
-    # Parallelize the two lanes (2026-05-13). Backtest and algo lanes
-    # are independent — they read separate data sources (stored_trades
-    # JSONB / backtest_% rows vs cache_% rows) and the only field both
-    # write to the strategies row is `kpis` / `equity_curve_data`, where
-    # last-writer-wins was already today's behavior under the sequential
-    # path. ContextVar-based admin context is per-thread, so each lane
-    # sets its own context inside its worker thread. ThreadPoolExecutor
-    # with copy_context() is the defensive form — ensures each task gets
-    # a fresh context snapshot it can mutate without bleeding into the
-    # other task or the parent.
-    import concurrent.futures
-    import contextvars
-
-    if mode == 'all':
-        def _run_backtest():
-            set_admin_user_context(user_id)
-            return recompute_and_persist_stored_trades(strategy_id, user_id)
-
-        def _run_algo():
-            set_admin_user_context(user_id)
-            return recompute_and_persist_algo_trades(strategy_id, user_id)
-    else:  # mode == 'new'
-        def _run_backtest():
-            set_admin_user_context(user_id)
-            return append_new_backtest_trades_for_strategy(
-                strategy_id, user_id, force=True)
-
-        def _run_algo():
-            set_admin_user_context(user_id)
-            return append_new_trades_for_strategy(
-                strategy_id, user_id, force=True)
-
-    def _run_in_context(fn):
-        ctx = contextvars.copy_context()
-        return ctx.run(fn)
-
     backtest_result = None
     algo_result = None
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-            bt_future = ex.submit(_run_in_context, _run_backtest)
-            algo_future = ex.submit(_run_in_context, _run_algo)
 
+    try:
+        if mode == 'all':
             try:
-                backtest_result = bt_future.result()
+                # JWT-safety (2026-05-08): backtest run can take 3-5 min,
+                # exceeding the user JWT's TTL. Force admin context so
+                # downstream Supabase calls use the service-role key.
+                set_admin_user_context(user_id)
+                backtest_result = recompute_and_persist_stored_trades(strategy_id, user_id)
             except Exception as e:
                 logger.exception("backtest lane failed for sid=%s", strategy_id)
                 backtest_result = {'status': 'error', 'reason': str(e)}
 
             try:
-                algo_result = algo_future.result()
+                set_admin_user_context(user_id)  # re-affirm after long backtest run
+                algo_result = recompute_and_persist_algo_trades(strategy_id, user_id)
+            except Exception as e:
+                logger.exception("algo lane failed for sid=%s", strategy_id)
+                algo_result = {'status': 'error', 'reason': str(e)}
+
+        else:  # mode == 'new'
+            try:
+                set_admin_user_context(user_id)
+                backtest_result = append_new_backtest_trades_for_strategy(
+                    strategy_id, user_id, force=True)
+            except Exception as e:
+                logger.exception("backtest lane failed for sid=%s", strategy_id)
+                backtest_result = {'status': 'error', 'reason': str(e)}
+
+            try:
+                set_admin_user_context(user_id)
+                algo_result = append_new_trades_for_strategy(
+                    strategy_id, user_id, force=True)
             except Exception as e:
                 logger.exception("algo lane failed for sid=%s", strategy_id)
                 algo_result = {'status': 'error', 'reason': str(e)}
