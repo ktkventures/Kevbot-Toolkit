@@ -1435,6 +1435,16 @@ class SymbolHub:
                 self._shadow_engines[sec_tf] = shadow
                 logger.info("Created shadow engine for %s/%ss: ind=%s interp=%s",
                             self.symbol, sec_tf, req_ind, req_interp)
+            else:
+                logger.warning(
+                    "[DIAG] finalize: %s/%ss req_interp EMPTY — shadow NOT "
+                    "created (requesting_monitors=%s)",
+                    self.symbol, sec_tf,
+                    [m.strat_id for m in requesting_monitors])
+        # 2026-05-13 DIAG: end-of-finalize summary
+        logger.info(
+            "[DIAG-FINALIZE] %s shadow_engines after finalize: %s",
+            self.symbol, sorted(self._shadow_engines.keys()))
 
     def seed_history(self, tf_seconds: int, df: pd.DataFrame):
         builder = self.builders.get(tf_seconds)
@@ -1922,12 +1932,41 @@ class SymbolHub:
         # and the MTF buffer goes stale. Aggregate the just-closed 1Min AM
         # bar into every secondary-TF builder; on each secondary close,
         # update its shadow's MTF confluence record.
+        #
+        # 2026-05-13 DIAGNOSTIC LOGGING: gated to SPY/900s + SPY/3600s
+        # to capture exactly why those secondary builders never close.
+        _DIAG_SECONDARY = (self.symbol == 'SPY')
+        if _DIAG_SECONDARY:
+            logger.info(
+                "[DIAG-FANOUT] sym=%s tf_seconds=%s shadow_keys=%s "
+                "builder_keys=%s bar_ts=%s",
+                self.symbol, tf_seconds,
+                sorted(self._shadow_engines.keys()),
+                sorted(self.builders.keys()),
+                bar_dict.get('timestamp'))
         for sec_tf in list(self._shadow_engines.keys()):
             if sec_tf == tf_seconds:
                 continue  # primary already handled above
             sec_builder = self.builders.get(sec_tf)
             if sec_builder is None:
+                if _DIAG_SECONDARY and sec_tf in (900, 3600):
+                    logger.warning(
+                        "[DIAG-FANOUT] sym=%s sec_tf=%s NO BUILDER",
+                        self.symbol, sec_tf)
                 continue
+            _diag_target = _DIAG_SECONDARY and sec_tf in (900, 3600)
+            if _diag_target:
+                last_idx = (str(sec_builder.history.index[-1])
+                            if len(sec_builder.history) > 0 else 'EMPTY')
+                partial = sec_builder._partial
+                partial_str = (
+                    f"start={partial.bar_start}" if partial is not None
+                    else "None")
+                logger.info(
+                    "[DIAG-FANOUT-PRE] sym=%s sec_tf=%s "
+                    "history_len=%d last_idx=%s partial=%s",
+                    self.symbol, sec_tf,
+                    len(sec_builder.history), last_idx, partial_str)
             try:
                 completed = sec_builder.accept_second_bar(
                     bar_dict, close_on_boundary=True)
@@ -1936,6 +1975,15 @@ class SymbolHub:
                     "secondary-TF aggregation failed (%ss): %s",
                     sec_tf, e)
                 continue
+            if _diag_target:
+                logger.info(
+                    "[DIAG-FANOUT-POST] sym=%s sec_tf=%s completed=%s "
+                    "last_was_duplicate=%s",
+                    self.symbol, sec_tf,
+                    'None' if completed is None else (
+                        f"ts={completed.get('timestamp')} "
+                        f"close={completed.get('close')}"),
+                    sec_builder.last_was_duplicate)
             if completed is None:
                 continue
             sec_was_duplicate = sec_builder.last_was_duplicate
