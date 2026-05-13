@@ -725,55 +725,62 @@ def append_new_trades_for_strategy(
     # Drops cycle time from ~25-30 min full-coverage to <1 min when most
     # strategies have no recent exits (typical case outside of high-vol
     # RTH windows).
-    # Floor is the EARLIER of:
-    #   - last_recompute_until_ts (when the cron last ran), and
-    #   - max(trades.exit_fill_ts) + 1 second (the actual data baseline)
-    # The latter catches the case where a previous run stamped
-    # last_recompute but failed to insert trades it should have (engine
-    # crash, warmup misconfigured, etc.). Without this, the alerts-gate
-    # would falsely think "no new trades since stamp" and skip forever
-    # — even though there are exit alerts past the actual data baseline
-    # waiting to be picked up. Documented bug found 2026-05-07 on sid 154.
-    since_check_iso = last_until or (
-        datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-    try:
-        # Latest exit timestamp in the trades table for this strategy
-        from trades_store import load_trades_for_strategy as _load_trades_floor
-        _existing_for_floor = _load_trades_floor(
-            strategy_id, user_id) or []
-        if _existing_for_floor:
-            max_exit_iso = max(
-                str(t.get('exit_fill_ts'))
-                for t in _existing_for_floor
-                if t.get('exit_fill_ts')
-            )
-            # Use the EARLIER of last_until and max_exit. If max_exit is
-            # earlier, that's the actual baseline we trust.
-            if max_exit_iso < since_check_iso:
-                since_check_iso = max_exit_iso
-    except Exception as e:
-        logger.warning(
-            "[ALGO-APPEND] strategy=%s data-baseline lookup failed: %s",
-            strategy_id, e)
+    # `force=True` (manual user click) bypasses the alerts-gate entirely.
+    # Skip the whole floor + alerts query when force=True so the user
+    # path doesn't pay for cron's optimization work it doesn't need.
+    # W2C optimization (2026-05-13): skipping this block alone removes
+    # one full `load_trades_for_strategy` call per strategy on bulk
+    # Update New Data runs.
+    if force:
+        recent_exits_count = -1  # treat as "alerts-gate disabled"
+    else:
+        # Floor is the EARLIER of:
+        #   - last_recompute_until_ts (when the cron last ran), and
+        #   - max(trades.exit_fill_ts) + 1 second (the actual data baseline)
+        # The latter catches the case where a previous run stamped
+        # last_recompute but failed to insert trades it should have
+        # (engine crash, warmup misconfigured, etc.). Without this, the
+        # alerts-gate would falsely think "no new trades since stamp"
+        # and skip forever — even though there are exit alerts past the
+        # actual data baseline waiting to be picked up. Documented bug
+        # found 2026-05-07 on sid 154.
+        since_check_iso = last_until or (
+            datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        try:
+            # Latest exit timestamp in the trades table for this strategy
+            from trades_store import load_trades_for_strategy as _load_trades_floor
+            _existing_for_floor = _load_trades_floor(
+                strategy_id, user_id) or []
+            if _existing_for_floor:
+                max_exit_iso = max(
+                    str(t.get('exit_fill_ts'))
+                    for t in _existing_for_floor
+                    if t.get('exit_fill_ts')
+                )
+                # Use the EARLIER of last_until and max_exit. If max_exit is
+                # earlier, that's the actual baseline we trust.
+                if max_exit_iso < since_check_iso:
+                    since_check_iso = max_exit_iso
+        except Exception as e:
+            logger.warning(
+                "[ALGO-APPEND] strategy=%s data-baseline lookup failed: %s",
+                strategy_id, e)
 
-    try:
-        # alerts.side='exit' identifies exit alerts; event_type is always
-        # 'fill' regardless of side. Verified 2026-05-06 against schema.
-        _alerts_check = _raw_client.table('alerts').select('id') \
-            .eq('strategy_id', strategy_id) \
-            .eq('side', 'exit') \
-            .gte('fill_ts', since_check_iso).limit(1).execute()
-        recent_exits_count = len(_alerts_check.data or [])
-    except Exception as e:
-        logger.warning(
-            "[ALGO-APPEND] strategy=%s alerts-gate query failed: %s — "
-            "falling through to full engine run",
-            strategy_id, e)
-        recent_exits_count = -1  # gate disabled on error
+        try:
+            # alerts.side='exit' identifies exit alerts; event_type is always
+            # 'fill' regardless of side. Verified 2026-05-06 against schema.
+            _alerts_check = _raw_client.table('alerts').select('id') \
+                .eq('strategy_id', strategy_id) \
+                .eq('side', 'exit') \
+                .gte('fill_ts', since_check_iso).limit(1).execute()
+            recent_exits_count = len(_alerts_check.data or [])
+        except Exception as e:
+            logger.warning(
+                "[ALGO-APPEND] strategy=%s alerts-gate query failed: %s — "
+                "falling through to full engine run",
+                strategy_id, e)
+            recent_exits_count = -1  # gate disabled on error
 
-    # `force=True` (manual user click) bypasses the alerts-gate so the
-    # engine always runs — useful for catching missed trades (algo-only,
-    # no live alert) or just confirming the system is current.
     if recent_exits_count == 0 and not force:
         # No new closed trades possible — stamp + skip.
         # Also bump data_refreshed_at on the strategies row so the
@@ -813,25 +820,28 @@ def append_new_trades_for_strategy(
         #
         # Long-cycle secondary TFs (1Hour+) need more warmup than the
         # 100-bar default — fall back to full path for those.
-        from trades_store import load_trades_for_strategy as _load_trades
-        existing_trades_for_window = _load_trades(strategy_id, user_id) or []
+        #
+        # W2C optimization (2026-05-13): use get_max_entry_ts_admin
+        # instead of `load_trades_for_strategy` — one indexed
+        # `ORDER BY entry_fill_ts DESC LIMIT 1` query instead of
+        # downloading every cache_% row. Replaces a load that scales
+        # O(N) on the strategy's algo history (could be 6000+ rows) with
+        # an O(1) lookup. Mirrors the BT-APPEND optimization shipped
+        # 2026-05-12.
+        from db import get_max_entry_ts_admin
+        latest_entry_iso = get_max_entry_ts_admin(
+            strategy_id, user_id, data_source_filter='cache_%')
         use_windowed = (
-            len(existing_trades_for_window) > 0
+            latest_entry_iso is not None
             and not svc._has_long_cycle_secondary_tf(strat)
         )
         engine_path = 'windowed' if use_windowed else 'full'
 
         try:
             if use_windowed:
-                # Derive since_dt from the latest existing trade's
-                # entry_fill_ts (mirrors Streamlit's pattern at
-                # app.py:3173).
-                latest_entry_iso = max(
-                    str(t.get('entry_fill_ts'))
-                    for t in existing_trades_for_window
-                    if t.get('entry_fill_ts')
-                )
                 since_dt = datetime.fromisoformat(latest_entry_iso)
+                if since_dt.tzinfo is None:
+                    since_dt = since_dt.replace(tzinfo=timezone.utc)
                 # Algo-model split (2026-05-07): cron dispatches under
                 # algo_model so the algo-history lane reflects what the
                 # live engine SHOULD have produced on the same data
@@ -889,21 +899,23 @@ def append_new_trades_for_strategy(
                     'cutoff': cutoff_iso, 'reason': 'all_in_lag_window',
                     'elapsed_s': round(_time.time() - t0, 2)}
 
-        # Set-diff against existing DB trades — scope to cache_% so we
-        # don't see backtest_<model> rows and accidentally consider them
-        # already-inserted (which would suppress legitimate algo writes).
-        # Phase 41 fix (2026-05-11 evening).
-        from trades_store import load_trades_for_strategy, insert_trade
-        existing = load_trades_for_strategy(
-            strategy_id, user_id,
-            data_source_filter='cache_%') or []
-        existing_keys: set = set()
-        for t in existing:
-            ek = t.get('entry_fill_ts')
-            xk = t.get('exit_fill_ts')
-            if ek and xk:
-                existing_keys.add((str(ek), str(xk)))
-
+        # True-append filter: only commit trades strictly newer than the
+        # anchor entry_ts. The engine windowed query started at since_dt
+        # = latest_entry_iso, so trades AT that timestamp would collide
+        # on the (strategy_id, entry_fill_ts, exit_fill_ts) unique index
+        # — insert_trade returns None on collision but we filter to
+        # avoid wasted round-trips.
+        #
+        # On cold start (latest_entry_iso=None), all trades are new.
+        #
+        # W2C optimization (2026-05-13): replaces the O(N) "load every
+        # cache_% row, build a (entry_ts, exit_ts) set, filter against
+        # it" pattern with an O(1) timestamp comparison. The
+        # `get_max_entry_ts_admin` call above already supplies the
+        # anchor — no second full load needed. Mirrors BT-APPEND.
+        # `load_trades_for_strategy` is still needed for KPI recompute
+        # below (full row set required to compute new KPIs accurately).
+        from trades_store import insert_trade, load_trades_for_strategy
         new_records = []
         for _, row in closed.iterrows():
             ek_raw = row.get('entry_fill_ts')
@@ -911,9 +923,8 @@ def append_new_trades_for_strategy(
             if pd.isna(ek_raw) or pd.isna(xk_raw):
                 continue
             ek = ek_raw.isoformat() if hasattr(ek_raw, 'isoformat') else str(ek_raw)
-            xk = xk_raw.isoformat() if hasattr(xk_raw, 'isoformat') else str(xk_raw)
-            if (ek, xk) in existing_keys:
-                continue
+            if latest_entry_iso and ek <= latest_entry_iso:
+                continue  # boundary or older — already in DB
             new_records.append(row)
 
         # Convert new records to JSON-safe dicts (re-uses existing
