@@ -2024,6 +2024,29 @@ class SymbolHub:
                     "history_len=%d last_idx=%s partial=%s",
                     self.symbol, sec_tf,
                     len(sec_builder.history), last_idx, partial_str)
+                # 2026-05-13 UNCONDITIONAL sentinel: write a heartbeat
+                # row on every iteration to verify the code is reached
+                # at all. If we see _DIAG_HB_SPY rows in DB, the fan-out
+                # is alive. If not, this code path isn't being executed.
+                try:
+                    from db import get_admin_client
+                    _hb_client = get_admin_client()
+                    _hb_client.table('live_bars').upsert({
+                        'symbol': f'_DIAG_HB_{self.symbol}',
+                        'timeframe_seconds': sec_tf,
+                        'bar_start': '1970-01-01T00:00:00+00:00',
+                        'open': float(len(sec_builder.history)),
+                        'high': 0.0, 'low': 0.0, 'close': 0.0,
+                        'volume': 0.0,
+                        'source': (
+                            f'HB-{bar_dict.get("timestamp", "?")[:25]}-'
+                            f'partial={partial_str[:30]}'
+                        ),
+                    }, on_conflict='symbol,timeframe_seconds,bar_start').execute()
+                except Exception as e:
+                    logger.error(
+                        "[DIAG-HB-FAIL] sym=%s sec_tf=%s err=%s",
+                        self.symbol, sec_tf, repr(e), exc_info=True)
             try:
                 completed = sec_builder.accept_second_bar(
                     bar_dict, close_on_boundary=True)
