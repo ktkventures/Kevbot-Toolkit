@@ -177,6 +177,49 @@ export function useAdminParitySnapshot(
 }
 
 // ============================================================
+// Phase E — Observable bars (flat-file rebuilt) hook
+// ============================================================
+
+export interface ObservableBar {
+  timestamp: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  trade_count: number;
+}
+
+export interface ObservableBarsResponse {
+  symbol: string;
+  window: { start: string; end: string };
+  tf_seconds: number;
+  bar_count: number;
+  raw_second_count: number;
+  bars: ObservableBar[];
+}
+
+export function useObservableBars(
+  symbol: string | null,
+  start: string | null,
+  end: string | null,
+  tfSeconds: number = 60,
+) {
+  return useQuery<ObservableBarsResponse>({
+    queryKey: ['admin-parity-observable', symbol, start, end, tfSeconds],
+    queryFn: () => apiFetch<ObservableBarsResponse>(
+      `/api/admin/parity/observable?symbol=${encodeURIComponent(symbol || '')}` +
+      `&start=${encodeURIComponent(start || '')}` +
+      `&end=${encodeURIComponent(end || '')}` +
+      `&tf_seconds=${tfSeconds}`
+    ),
+    enabled: !!symbol && !!start && !!end,
+    staleTime: 60_000,
+    retry: 0,
+  });
+}
+
+// ============================================================
 // Phase B — Bars Comparison hook
 // ============================================================
 

@@ -22,11 +22,13 @@ import TabBar from '@/components/TabBar';
 import ParityBarComparison from '@/charts/ParityBarComparison';
 import ParityEntryOverlay from '@/charts/ParityEntryOverlay';
 import ParityDivergenceHeatmap from '@/charts/ParityDivergenceHeatmap';
+import ParityObservableComparison from '@/charts/ParityObservableComparison';
 import { useStrategies, type StrategyDTO } from '@/hooks/queries/useStrategies';
 import { useBars } from '@/hooks/queries/useMarketData';
 import {
   useAdminParityBars,
   useAdminParitySnapshot,
+  useObservableBars,
 } from '@/hooks/queries/useAdminParity';
 
 function ComingSoonStub({ phase, blurb }: { phase: string; blurb: string }) {
@@ -88,6 +90,14 @@ export default function AdminParityPage() {
 
   // Phase C: 1Min bars for the entry-overlay chart
   const overlayBars = useBars(selected?.symbol ?? null, '1Min', 2);
+
+  // Phase E: observable bars for the Ticks tab (aggregated server-side to 1Min)
+  const observableQ = useObservableBars(
+    selected?.symbol ?? null,
+    windowStart,
+    windowEnd,
+    60,
+  );
 
   const windowBarsForOverlay = useMemo(() => {
     const all = overlayBars.data || [];
@@ -272,11 +282,20 @@ export default function AdminParityPage() {
                 );
               }
 
-              // Ticks
+              // Ticks (Phase E)
+              if (overlayBars.isLoading || parityBars.isLoading || observableQ.isLoading) {
+                return <div className="text-sm py-6 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>;
+              }
               return (
-                <ComingSoonStub
-                  phase="Phase E"
-                  blurb="Observable-vs-settled comparison rebuilt from Polygon flat-file tick data. Recreates Kevin's external Claude-app analysis inside the app. Requires daily S3 ingestion; gated behind Phase D outcomes."
+                <ParityObservableComparison
+                  symbol={selected?.symbol ?? ''}
+                  cacheBars={parityBars.cacheBars}
+                  observableBars={observableQ.data?.bars ?? []}
+                  restBars={overlayBars.data ?? []}
+                  windowStart={windowStart}
+                  windowEnd={windowEnd}
+                  observableEmpty={!observableQ.isLoading && (observableQ.data?.bars.length ?? 0) === 0}
+                  observableLoading={observableQ.isLoading}
                 />
               );
             }}
