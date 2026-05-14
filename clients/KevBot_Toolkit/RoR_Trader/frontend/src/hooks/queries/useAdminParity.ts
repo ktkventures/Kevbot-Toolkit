@@ -1,12 +1,16 @@
 /**
- * useAdminParity — orchestrates existing data hooks for the Admin > Parity
- * page. No new endpoint needed for Phase B (Bars Comparison) — just combines
- * useStrategyCacheBars + useBars and exposes a unified loading state.
+ * useAdminParity — orchestrates data hooks for the Admin > Parity page.
  *
- * Phase C will add a per-snapshot endpoint for entry-overlay data
- * (live alerts + algo trades + bt trades aligned to bars).
+ * Phase B: Bars Comparison hook (`useAdminParityBars`) — combines
+ * useStrategyCacheBars + useBars locally.
+ *
+ * Phase C: Snapshot hook (`useAdminParitySnapshot`) — calls the new
+ * /api/admin/parity/snapshot endpoint for trade-overlay data (live
+ * entries + algo trades + bt trades).
  */
 import { useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { apiFetch } from '@/lib/api/client';
 import { useBars, type BarData } from './useMarketData';
 import { useStrategyCacheBars, type CacheBar } from './useStrategies';
 
@@ -112,6 +116,69 @@ function buildRows(
     };
   });
 }
+
+// ============================================================
+// Phase C — Snapshot hook (trade-overlay data)
+// ============================================================
+
+export interface ParitySnapshotAlert {
+  id?: number;
+  fill_ts: string | null;
+  trigger_ts: string | null;
+  bar_time: string | null;
+  side: string | null;
+  price: number | null;
+  actual_price: number | null;
+  event_type: string | null;
+  exec_type: string | null;
+  behavior: string | null;
+  trigger_id: string | null;
+}
+export interface ParitySnapshotTrade {
+  id?: number;
+  entry_fill_ts: string | null;
+  exit_fill_ts: string | null;
+  entry_trigger_ts: string | null;
+  exit_trigger_ts: string | null;
+  entry_price: number | null;
+  exit_price: number | null;
+  stop_price: number | null;
+  target_price: number | null;
+  direction: string | null;
+  r_multiple: number | null;
+  exit_reason: string | null;
+  exec_type: string | null;
+  data_source: string | null;
+  hifi_resolved: boolean | null;
+}
+export interface ParitySnapshotResponse {
+  strategy: { id: number; name: string; symbol: string; timeframe: string; direction: string };
+  window: { start: string; end: string };
+  live_entries: ParitySnapshotAlert[];
+  live_exits: ParitySnapshotAlert[];
+  algo_trades: ParitySnapshotTrade[];
+  bt_trades: ParitySnapshotTrade[];
+  counts: { live_entries: number; live_exits: number; algo_trades: number; bt_trades: number };
+}
+
+export function useAdminParitySnapshot(
+  strategyId: number | null,
+  start: string | null,
+  end: string | null,
+) {
+  return useQuery<ParitySnapshotResponse>({
+    queryKey: ['admin-parity-snapshot', strategyId, start, end],
+    queryFn: () => apiFetch<ParitySnapshotResponse>(
+      `/api/admin/parity/snapshot?strategy_id=${strategyId}&start=${encodeURIComponent(start || '')}&end=${encodeURIComponent(end || '')}`
+    ),
+    enabled: strategyId !== null && !!start && !!end,
+    staleTime: 30_000,
+  });
+}
+
+// ============================================================
+// Phase B — Bars Comparison hook
+// ============================================================
 
 export function useAdminParityBars(
   args: UseAdminParityBarsArgs,
