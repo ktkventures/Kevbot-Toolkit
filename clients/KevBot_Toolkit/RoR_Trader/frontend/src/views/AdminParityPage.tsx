@@ -233,6 +233,8 @@ export default function AdminParityPage() {
                     rows={parityBars.rows}
                     cacheValueType={parityBars.cacheValueType}
                     cacheNotes={parityBars.cacheNotes}
+                    windowStart={windowStart}
+                    windowEnd={windowEnd}
                   />
                 );
               }

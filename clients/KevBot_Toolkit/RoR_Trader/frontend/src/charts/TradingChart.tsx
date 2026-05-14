@@ -25,8 +25,8 @@ export interface OverlaySeries {
 
 export interface TradeMarker {
   time: string;
-  position: 'aboveBar' | 'belowBar';
-  shape: 'arrowUp' | 'arrowDown' | 'circle';
+  position: 'aboveBar' | 'belowBar' | 'inBar';
+  shape: 'arrowUp' | 'arrowDown' | 'circle' | 'square';
   color: string;
   text: string;
 }
