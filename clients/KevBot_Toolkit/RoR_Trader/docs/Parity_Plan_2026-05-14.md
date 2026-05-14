@@ -1,5 +1,30 @@
 # Parity Plan — RoR Trader Model Alignment (2026-05-14)
 
+## Status (as of EOD 2026-05-14)
+
+| Phase | Status | Notes |
+|---|---|---|
+| Step 0 | ✅ DONE | Plan persisted to repo |
+| Phase A — Round-robin live-bar throttle | ✅ DONE | Live badges working again post-deploy |
+| Phase B — Bars Comparison tab | ✅ DONE | Live; user reports browser-crash from too many rows → addressed in Phase F |
+| Phase C — Entry Overlay + Divergence Heatmap | ✅ DONE | Live; user reports marker convention should match existing chart-and-trades tab → addressed in Phase F |
+| Phase D — Hi-Fi cross-pollination ruled out | ✅ DONE | Investigation report shipped; defensive `data_source_filter` added; **architectural decision deferred to Phase E findings** |
+| **Phase F — UI Polish (NEW, next)** | ⏳ STARTING | Pagination, synced charts, marker convention, indicator overlays. Promoted ahead of Phase E because user reports B's table is unusable as-is. |
+| **Phase E — Flat-file observable bars (REVISED, was gated)** | ⏳ NEXT | DE-GATED. Diagnostic-first approach: reconstruct what was observable from Polygon flat-file ticks, compare to live_bars cache. Tells us WHERE divergence comes from. |
+| **Phase G — Live engine fix (PLACEHOLDER)** | 🔒 GATED | Only runs if Phase E reveals our live engine has gaps vs flat-file observable. Specifics TBD by what Phase E surfaces. |
+
+## Roles framing (corrected 2026-05-14 EOD)
+
+Kevin clarified the role of each model — this changes the parity target:
+
+- **Backtest model** (default `rest_hifi`): "what to backtest against" → REST settled data is fine. Not expected to match live's data perfectly; it's the post-correction view.
+- **Algo model** (default `cache_locked`): "keep live accountable" → MUST mirror what live saw faithfully, including any cache gaps. If algo and live diverge, that isolates an execution issue.
+- **Live model** (default `ws_agg_locked`): the actual production execution path.
+
+**Real parity target: live ↔ algo.** algo ↔ bt divergence is expected (different data sources by design). Don't optimize for it.
+
+This means option γ (changing algo default to `rest_hifi`) is REJECTED — it would defeat algo's accountability role.
+
 ## Context
 
 We have three execution models in RoR Trader:
@@ -128,25 +153,70 @@ so Kevin can reference it from inside the project and so we stay aligned across 
 
 **Verification**: re-pull canary divergence query post-fix. Target match% improvement: 80% → 90%+ (lower bound), 95%+ (target), 99%+ (stretch).
 
-## Phase E — Flat-file tick replay tab (GATED)
+## Phase F — UI Polish (added 2026-05-14 EOD, next up)
 
-**Status**: Pause and confirm with Kevin before starting. Skip entirely if Phase D lands ≥95% match.
+**Goal**: make Phases B/C visually usable before any architectural work. User feedback after first use surfaced specific issues.
 
-**Goal**: recreate Kevin's Claude-app tick analysis within RoR Trader so the "Polygon ceiling = 99.1%" claim is demonstrable in the app, not in an external chat.
+**Files (edited)**:
+- `frontend/src/charts/ParityBarComparison.tsx` — pagination, replace dual TradingChart with SyncedChartPane (shared x-axis), add disagreement-state histogram pane, indicator overlays
+- `frontend/src/charts/ParityEntryOverlay.tsx` — replace lightweight-charts built-in markers with price-aware glyphs at actual entry price
+- `frontend/src/views/AdminParityPage.tsx` — minor wiring for indicator-toggle controls
+
+**Changes**:
+1. **Bars Comparison pagination** — table renders 50 rows per page, sortable descending by default. Don't fetch differently; just slice. Browser-crash regression eliminated.
+2. **Shared chart x-axis** — `SyncedChartPane` pattern instead of two independent `TradingChart` panes. Synced time-axis state, equal zoom/scroll behavior.
+3. **Disagreement histogram** — strip below the price charts showing per-minute match state (green = cache≈REST within $0.01 + ±5% vol, red = diverge). Same visual primitive as the existing confluence heatmap.
+4. **Indicator overlays** — toggle to render the strategy's indicators (EMA stack, MACD, VWAP, etc.) on the cache + REST charts using the same code path as the Lab tab. Confirms or refutes "the indicators look right on each."
+5. **Entry Overlay marker convention** — replace `arrowUp` / `circle` aboveBar/belowBar markers with price-aware glyphs:
+   - **Live** = X cross (matches existing chart-and-trades convention)
+   - **Algo** = + cross (matches existing chart-and-trades convention)
+   - **Backtest** = hollow circle (new convention agreed with Kevin)
+   - All three overlap at the same point when 3-way matched → visually obvious "perfect entry"
+   - Color encodes lane (green / orange / blue); shape encodes source. Together they're more readable than the current dual-encoding-on-shape attempt.
+
+**Verification**: navigate to `/admin/parity` on sid 171 today's window. Browser doesn't crash. Two charts scroll together. Disagreement strip shows specific minutes as red. Entry Overlay renders 3-symbol stacks at matched entries.
+
+## Phase E — Flat-file observable bars (DE-GATED, REVISED 2026-05-14 EOD)
+
+**Status**: NOT gated anymore. Diagnostic-first principle: until we know whether our live engine matches flat-file observable, all architectural decisions are guessing.
+
+**Goal**: build the dataset that proves or disproves whether our `live_bars` cache faithfully reflects what was emitted to subscribers in real time. Tells us if live-engine divergence is upstream (data) or downstream (engine).
+
+**Methodology choice**: build **observable bars** — 1-second OHLCV reconstructed from the trades flat file with `sip_timestamp` as the bucket key (the bar gets a trade if SIP emitted it during that second). This is the Claude-app methodology. NOT tick-replay (which is HFT-style ticker animation).
+
+**Scoping decisions (recorded 2026-05-14 EOD with Kevin)**:
+- **Symbols (initial)**: SPY + TSLA only. Expand later if useful.
+- **Window**: 7-day rolling. Ingest daily; drop entries older than 7 days. Bounds storage.
+- **Storage approach**: do NOT persist raw ticks. Process trades file in-stream, filter to target symbols, build 1-second observable bars, store only those.
+- **Cron timing**: weekdays at ~12:30 PM ET (after Polygon publishes day-N flat file at ~11 AM ET on day N+1).
+- **Cost estimate**: storage ≤ $0.50/month above Supabase Pro's included 8GB. Egress/processing absorbed by existing Railway worker. Total marginal cost ≈ $1/month.
+- **Expansion path**: if Phase E delivers value, scope decision is "watch symbols" (~5-10) vs "all tickers" (~180GB/year = ~$20/month). That decision deferred.
 
 **Files (new)**:
-- `src/services/flat_file_ingestion.py` — boto3 client for Polygon S3 (us_stocks_sip bucket), daily Railway cron
-- Supabase migration: new `polygon_ticks` table partitioned by `trade_date`, indexed on `(ticker, sip_timestamp)`
-- Railway cron entry: ~12:30 PM ET daily, ingests previous-session trades for symbols in active strategies
-- `src/api/routers/admin_parity.py` — extend with `/api/admin/parity/ticks/{symbol}?date=&tf=` endpoint that rebuilds observable + settled bars from ticks
-- `frontend/src/charts/ParityTickReplay.tsx` — four-pane comparison (observable / settled / cache / REST)
+- `src/services/flat_file_ingestion.py` — boto3 client for Polygon S3 (us_stocks_sip/trades_v1 bucket). Streams + filters per-symbol → builds 1-second observable bars → writes to Supabase. Watchlist driven by env or config.
+- Supabase migration: new `polygon_observable_bars` table — `(ticker, sip_second_ts, open, high, low, close, volume, trade_count)` indexed on `(ticker, sip_second_ts)`. 7-day TTL via daily purge.
+- `src/cron/flat_file_daily.py` — wraps the ingestion in a Railway cron entry point.
+- `railway.json` or equivalent — add daily cron schedule (weekdays, 12:30 PM ET).
+- `src/api/routers/admin_parity.py` — extend with `/api/admin/parity/observable?symbol=&start=&end=&tf=` endpoint that returns observable bars (aggregated to requested TF on read).
+- `frontend/src/charts/ParityObservableComparison.tsx` — three-pane: cache (live_bars) | observable (flat-file rebuilt) | settled (REST). Same SyncedChartPane primitive as Phase F.
+- `frontend/src/views/AdminParityPage.tsx` — wire the Ticks tab to the new comparison.
 
-**Pre-requisites**:
-- Polygon S3 credentials confirmed (Stocks Advanced tier includes Flat Files at no extra cost per the Claude-app analysis)
-- Storage estimate: ~750GB compressed/year all-tickers; smaller if filtered to active universe
-- Decide: ingest all tickers (simple, large) or filter to active strategy symbols (small, requires watchlist sync)
+**Verification**:
+- Ingest SPY for 2026-05-07 (the day Claude-app covered) → observable bars for that day land in Supabase
+- Compare to settled REST bars for same day → max 6¢ divergence on highs (matches Claude-app finding)
+- Navigate to `/admin/parity` > Ticks tab on sid 171 → three-pane comparison renders. If `live_bars` cache deviates from observable, the chart shows it; if they match, divergence is downstream of the WS layer.
 
-**Verification**: select sample day 2026-05-07 (the day Kevin's Claude-app analysis covered), symbol SPY, TF 10Sec. See observable vs settled bars with max 6¢ divergence on the highs, matching the Claude-app numbers exactly. Validates our ingestion + bar-construction logic.
+## Phase G — Live engine fix (placeholder, GATED on Phase E)
+
+**Status**: only runs if Phase E reveals our `live_bars` cache differs meaningfully from flat-file observable. If they agree, Phase G is unnecessary and parity work is done.
+
+**Possible scopes** (will refine after Phase E):
+- WebSocket subscription health checks (are we silently dropping messages?)
+- Reconnect timing tuning
+- Per-second bar aggregation correctness (are we bucketing correctly?)
+- Storage-write ordering / rebroadcast handling
+
+Specifics depend entirely on what Phase E surfaces. Don't pre-design.
 
 ## Critical Files to Read Before Each Phase
 
