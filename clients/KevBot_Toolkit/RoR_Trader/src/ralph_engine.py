@@ -1011,6 +1011,29 @@ def _ws_agg_secondary_fanout_enabled() -> bool:
     return val in ('1', 'true', 'yes', 'on')
 
 
+def _ws_agg_primary_fanout_enabled() -> bool:
+    """Task #12 (2026-05-14): default ON. When True, ws_agg 1Min minute
+    closes also feed >60s PRIMARY builders (5Min, 1Hour, 1Day). Without
+    this, ≥5Min primaries have NO close path when Polygon's AM channel
+    is silent — monitors never fire on_bar_close, alerts never dispatch,
+    and own_records cascading to dependent strategies (e.g. sid 126
+    needing sid 137's 5m secondary) is blocked.
+
+    Caveat: this path coexists with the per-second forming-bar update in
+    on_second_bar's primary loop (close_on_boundary=False). For the
+    forming partial of a >60s primary, BOTH paths contribute volume.
+    Closed history bars therefore reflect ~2x volume for the forming
+    period. Affects volume-based interpreters (VWAP_V2, RVOL_V2) only;
+    price-based interpreters (EMA, MACD, SWING_123, UT_BOT_V4) unaffected.
+
+    Operator can flip OFF by setting WS_AGG_PRIMARY_FANOUT_ENABLED=false
+    on the Railway worker without redeploy.
+    """
+    val = os.environ.get(
+        'WS_AGG_PRIMARY_FANOUT_ENABLED', 'true').strip().lower()
+    return val in ('1', 'true', 'yes', 'on')
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SHADOW INDICATOR ENGINE — secondary TF interpreter state for MTF confluence
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1982,6 +2005,110 @@ class SymbolHub:
                 logger.warning(
                     "shadow on_bar_close failed (%ss): %s", sec_tf, e)
 
+    def _fanout_to_primary_builders_gt_60(
+        self,
+        completed_min: dict,
+        alert_callback: Callable = None,
+        config: dict = None,
+        auditor: 'FidelityAuditor' = None,
+    ) -> None:
+        """Fan out a 1Min ws_agg bar to >60s PRIMARY builders.
+
+        Task #12 (2026-05-14): When AM channel is silent, ≥5Min primary
+        builders (5Min, 1H, 1D) have NO close path — monitors never fire
+        on_bar_close, alerts never dispatch, and the strategy's own
+        `_mtf_confluence[tf]` (own_records buffer) stays stale, cascade-
+        blocking dependent strategies (sid 126 needs sid 137's 5m).
+
+        Eligibility: only fires for monitors whose live_model is
+        'ws_agg_locked' or 'ws_agg_with_rest_backfill'. The pipeline's
+        internal source-label gate (in _run_monitor_pipeline_for_completed_bar)
+        also re-checks, but filtering at the call site avoids unnecessary
+        accept_second_bar calls when nobody's listening.
+
+        Rebroadcast handling: if AM later delivers the same period, the
+        builder's accept_bar duplicate-detection branch will correct
+        history.iloc[-1] and recompute indicators (existing on_polygon_bar
+        path). This helper's `last_was_duplicate` check handles the
+        SYMMETRIC case (AM first, then ws_agg) by recomputing silently.
+
+        ⚠️ Volume caveat: the per-second loop in on_second_bar continues
+        to update the >60s primary's _partial with close_on_boundary=False
+        for chart-visual forming-bar publish. So during the forming period,
+        BOTH the per-second loop AND this fan-out (via the per-minute
+        accept_second_bar(close_on_boundary=True)) contribute to volume.
+        Closed history bars therefore reflect ~2x volume for the forming
+        period when ws_agg drives the close. Affects volume-based
+        interpreters (VWAP_V2, RVOL_V2) only. Price-based interpreters
+        (EMA, MACD, SWING_123, UT_BOT_V4) are unaffected. Future cleanup
+        would add a `skip_volume` param to BarBuilder.accept_second_bar.
+        """
+        primary_tfs = {m.tf_seconds for m in self.monitors.values()}
+        for tf in primary_tfs:
+            if tf <= 60:
+                continue  # 1Min has its own Phase C path; sub-minute is per-second
+            eligible_at_tf = any(
+                m.tf_seconds == tf
+                and m.live_model in ('ws_agg_locked', 'ws_agg_with_rest_backfill')
+                for m in self.monitors.values()
+            )
+            if not eligible_at_tf:
+                continue
+            builder = self.builders.get(tf)
+            if builder is None:
+                continue
+            try:
+                completed = builder.accept_second_bar(
+                    completed_min, close_on_boundary=True)
+            except Exception as e:
+                logger.warning(
+                    "primary >60s aggregation failed (%ss, src=ws_agg): %s",
+                    tf, e)
+                continue
+            if completed is None:
+                continue
+            primary_was_duplicate = builder.last_was_duplicate
+            try:
+                from live_bars_writer import write_bar as _live_bars_write
+                _live_bars_write(
+                    self.symbol, tf, completed, source='ws_agg')
+            except Exception:
+                pass
+
+            if primary_was_duplicate:
+                # AM beat us to this period and ws_agg is the rebroadcast.
+                # Recompute monitor indicators silently; do NOT re-fire alerts.
+                for monitor in self.monitors.values():
+                    if monitor.tf_seconds != tf:
+                        continue
+                    try:
+                        monitor.indicators.recompute_from_history(builder.history)
+                    except Exception as e:
+                        logger.warning(
+                            "Rebroadcast recompute failed for strat %s "
+                            "(tf=%ss, src=ws_agg): %s",
+                            monitor.strat_id, tf, e)
+                logger.info(
+                    "Rebroadcast applied: %s tf=%ss bar=%s — "
+                    "indicators recomputed (>60s primary, src=ws_agg), no alerts",
+                    self.symbol, tf, completed.get('timestamp'))
+                continue
+
+            try:
+                self._run_monitor_pipeline_for_completed_bar(
+                    tf_seconds=tf,
+                    bar_dict=completed,
+                    bar_count=builder._bar_count,
+                    alert_callback=alert_callback,
+                    config=config,
+                    auditor=auditor,
+                    source_label='ws_agg',
+                )
+            except Exception as e:
+                logger.warning(
+                    "ws_agg primary pipeline dispatch failed "
+                    "(%ss, %s): %s", tf, self.symbol, e)
+
     def on_polygon_bar(self, bar_dict: dict, tf_seconds: int,
                         alert_callback: Callable = None,
                         config: dict = None,
@@ -2152,6 +2279,26 @@ class SymbolHub:
                         except Exception as _e:
                             logger.warning(
                                 "ws_agg secondary fan-out failed "
+                                "for %s: %s", self.symbol, _e)
+                    # Task #12 (2026-05-14): fan-out the just-completed
+                    # 1Min ws_agg bar to >60s PRIMARY builders (5Min, 1H,
+                    # 1D). Without this, ≥5Min primaries depend solely on
+                    # Polygon's AM channel to close — intermittent for
+                    # SPY/TSLA. Sid 137 (TSLA 5Min) silent for hours;
+                    # cascade-blocks sid 126 (TSLA 10Sec needs 5m secondary).
+                    # Independent feature flag from task #11; disable via
+                    # WS_AGG_PRIMARY_FANOUT_ENABLED=false on Railway.
+                    if _ws_agg_primary_fanout_enabled():
+                        try:
+                            self._fanout_to_primary_builders_gt_60(
+                                completed_min,
+                                alert_callback=alert_callback,
+                                config=config,
+                                auditor=auditor,
+                            )
+                        except Exception as _e:
+                            logger.warning(
+                                "ws_agg primary fan-out failed "
                                 "for %s: %s", self.symbol, _e)
                     # Phase C dispatch: only invoke monitor pipeline when
                     # at least one 1Min monitor on this symbol opted in.
