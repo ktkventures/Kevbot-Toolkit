@@ -997,6 +997,20 @@ def _ws_agg_shadow_enabled() -> bool:
     return val in ('1', 'true', 'yes', 'on')
 
 
+def _ws_agg_secondary_fanout_enabled() -> bool:
+    """Task #11 (2026-05-14): default ON. When True, ws_agg 1Min minute
+    closes also feed ≥60s secondary builders via the same fan-out helper
+    used by the AM channel. This keeps `_mtf_confluence[sec_tf]` fresh
+    even when Polygon's AM channel is intermittent.
+
+    Operator can flip OFF by setting WS_AGG_SECONDARY_FANOUT_ENABLED=false
+    on the Railway worker without redeploy.
+    """
+    val = os.environ.get(
+        'WS_AGG_SECONDARY_FANOUT_ENABLED', 'true').strip().lower()
+    return val in ('1', 'true', 'yes', 'on')
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SHADOW INDICATOR ENGINE — secondary TF interpreter state for MTF confluence
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1887,6 +1901,87 @@ class SymbolHub:
         self._publish_completed_bar(
             tf_seconds, bar_dict, is_forming=False, extras=extras)
 
+    def _fanout_to_secondary_builders(
+        self,
+        bar_dict: dict,
+        source_label: str = 'ws',
+    ) -> None:
+        """Fan out a 1Min bar to all ≥60s secondary builders.
+
+        Task #11 (2026-05-14): called from BOTH the AM channel
+        (on_polygon_bar) AND the ws_agg minute close path (on_second_bar).
+        Each call MAY advance a secondary builder's partial and close it
+        on boundary. live_bars writes use the supplied `source_label`
+        ('ws' for AM, 'ws_agg' for ws_agg path) so DB rows disambiguate
+        which path the close came from.
+
+        Sub-minute shadows (<60s) are NOT handled here — they're fed
+        from the dedicated sub-minute fan-out in on_second_bar at the
+        per-second cadence.
+
+        ⚠️ Volume / tick_count caveat: when BOTH paths deliver the same
+        1Min bar (typical case during active markets), the secondary
+        builder's `_partial.volume` and `_partial.tick_count` accumulate
+        twice. Once AM arrives and the bar transitions from forming to
+        history, AM's rebroadcast branch (BarBuilder.accept_second_bar
+        lines ~303-323) replaces history.iloc[-1] with AM's canonical
+        values — healing the double-count for closed bars. Periods
+        where AM never arrives keep ws_agg's accurate per-second volume.
+        Affects: VWAP_V2, RVOL_V2 (volume-based interpreters).
+        Not affected: SWING_123, EMA_*, MACD_*, UT_BOT_V4 (price-based).
+        """
+        for sec_tf in list(self._shadow_engines.keys()):
+            if sec_tf < 60:
+                continue  # sub-minute handled in on_second_bar
+            sec_builder = self.builders.get(sec_tf)
+            if sec_builder is None:
+                continue
+            try:
+                completed = sec_builder.accept_second_bar(
+                    bar_dict, close_on_boundary=True)
+            except Exception as e:
+                logger.warning(
+                    "secondary-TF aggregation failed (%ss, src=%s): %s",
+                    sec_tf, source_label, e)
+                continue
+            if completed is None:
+                continue
+            sec_was_duplicate = sec_builder.last_was_duplicate
+            try:
+                from live_bars_writer import write_bar as _live_bars_write
+                _live_bars_write(
+                    self.symbol, sec_tf, completed, source=source_label)
+            except Exception:
+                pass
+            shadow = self._shadow_engines.get(sec_tf)
+            if shadow is None:
+                continue
+
+            if sec_was_duplicate:
+                # M8.7 (2026-05-02): rebroadcast cascade. Recompute shadow
+                # indicators from corrected history; don't re-emit
+                # confluence records.
+                try:
+                    shadow.indicators.recompute_from_history(sec_builder.history)
+                    logger.info(
+                        "Rebroadcast cascade: shadow %s/%ss recomputed (src=%s)",
+                        self.symbol, sec_tf, source_label)
+                except Exception as e:
+                    logger.warning(
+                        "shadow recompute_from_history failed (%ss): %s",
+                        sec_tf, e)
+                continue
+
+            try:
+                self._mtf_confluence[sec_tf] = shadow.on_bar_close(completed)
+                logger.info(
+                    "shadow_close %s/%ss close=%.2f records=%s (src=%s)",
+                    self.symbol, sec_tf, float(completed['close']),
+                    self._mtf_confluence[sec_tf], source_label)
+            except Exception as e:
+                logger.warning(
+                    "shadow on_bar_close failed (%ss): %s", sec_tf, e)
+
     def on_polygon_bar(self, bar_dict: dict, tf_seconds: int,
                         alert_callback: Callable = None,
                         config: dict = None,
@@ -1973,74 +2068,12 @@ class SymbolHub:
                 source_label='polygon',
             )
 
-        # Phase 31 polygon path stops here for the primary TF only. Cross-TF
-        # confluence shadows (e.g. 15Min secondary on a 10Sec primary) need
-        # bars too — without this, shadow engines never advance past warmup
-        # and the MTF buffer goes stale. Aggregate the just-closed 1Min AM
-        # bar into every secondary-TF builder; on each secondary close,
-        # update its shadow's MTF confluence record.
-        for sec_tf in list(self._shadow_engines.keys()):
-            if sec_tf == tf_seconds:
-                continue  # primary already handled above
-            sec_builder = self.builders.get(sec_tf)
-            if sec_builder is None:
-                continue
-            try:
-                completed = sec_builder.accept_second_bar(
-                    bar_dict, close_on_boundary=True)
-            except Exception as e:
-                logger.warning(
-                    "secondary-TF aggregation failed (%ss): %s",
-                    sec_tf, e)
-                continue
-            if completed is None:
-                continue
-            sec_was_duplicate = sec_builder.last_was_duplicate
-            # M8.7: record the aggregated secondary-TF bar to live_bars.
-            try:
-                from live_bars_writer import write_bar as _live_bars_write
-                _live_bars_write(self.symbol, sec_tf, completed, source='ws')
-            except Exception:
-                pass
-            shadow = self._shadow_engines.get(sec_tf)
-            if shadow is None:
-                continue
-
-            if sec_was_duplicate:
-                # M8.7 (2026-05-02): Polygon rebroadcast cascaded into the
-                # secondary TF aggregation. Recompute shadow indicators
-                # from corrected history; don't re-emit confluence records
-                # to the MTF buffer (the original confluence was used for
-                # primary-TF gating at original alert time; future bars
-                # will see the corrected state via the next on_bar_close).
-                try:
-                    shadow.indicators.recompute_from_history(sec_builder.history)
-                    logger.info(
-                        "Rebroadcast cascade: shadow %s/%ss recomputed",
-                        self.symbol, sec_tf)
-                except Exception as e:
-                    logger.warning(
-                        "shadow recompute_from_history failed (%ss): %s",
-                        sec_tf, e)
-                continue
-
-            # Note: do NOT gate on shadow.indicators._initialized here.
-            # shadow.on_bar_close → update_bar handles cold-start via the
-            # incremental class's `_first` flag, and skipping when not
-            # initialized would prevent the shadow from ever initializing
-            # via live data alone (chicken-and-egg). worker.py.warmup()
-            # is an optimization, not a hard requirement. Found while
-            # investigating Q4 data fidelity (2026-04-27).
-            try:
-                self._mtf_confluence[sec_tf] = shadow.on_bar_close(
-                    completed)
-                logger.info(
-                    "shadow_close %s/%ss close=%.2f records=%s",
-                    self.symbol, sec_tf, float(completed['close']),
-                    self._mtf_confluence[sec_tf])
-            except Exception as e:
-                logger.warning(
-                    "shadow on_bar_close failed (%ss): %s", sec_tf, e)
+        # Phase 31 polygon path stops here for the primary TF only.
+        # Fan out the just-closed 1Min AM bar to all ≥60s secondary
+        # builders so cross-TF confluence shadows stay current.
+        # Extracted to helper 2026-05-14 (task #11) for reuse by the
+        # ws_agg minute-close path in on_second_bar.
+        self._fanout_to_secondary_builders(bar_dict, source_label='ws')
 
     def on_second_bar(self, bar_dict: dict,
                        alert_callback: Callable = None,
@@ -2105,6 +2138,21 @@ class SymbolHub:
                     from live_bars_writer import write_bar as _live_bars_write
                     _live_bars_write(self.symbol, 60, completed_min,
                                      source='ws_agg')
+                    # Task #11 (2026-05-14): fan-out the just-completed
+                    # 1Min ws_agg bar to ≥60s secondary builders. Keeps
+                    # `_mtf_confluence[sec_tf]` fresh even when Polygon's
+                    # AM channel is intermittent — the longstanding
+                    # cause of stale gate state on cross-TF strategies.
+                    # Independent feature flag so this can be disabled
+                    # without affecting ws_agg cache writes.
+                    if _ws_agg_secondary_fanout_enabled():
+                        try:
+                            self._fanout_to_secondary_builders(
+                                completed_min, source_label='ws_agg')
+                        except Exception as _e:
+                            logger.warning(
+                                "ws_agg secondary fan-out failed "
+                                "for %s: %s", self.symbol, _e)
                     # Phase C dispatch: only invoke monitor pipeline when
                     # at least one 1Min monitor on this symbol opted in.
                     # Avoids the cost of running the pipeline (with a
