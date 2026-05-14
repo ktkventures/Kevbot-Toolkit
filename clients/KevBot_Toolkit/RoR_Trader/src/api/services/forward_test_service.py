@@ -286,8 +286,13 @@ def _do_recompute(
     if bt_model in HIFI_BACKTEST_MODELS and len(stored) > 0:
         try:
             from api.routers.strategies import run_hifi_pass2
+            # Phase D (2026-05-14): FT-recompute writes backtest rows,
+            # so scope Hi-Fi to the backtest lane.
             hifi_summary = run_hifi_pass2(
-                strategy_id, user={'id': user_id})
+                strategy_id,
+                data_source_filter='backtest_%',
+                user={'id': user_id},
+            )
             logger.info(
                 "[FT-RECOMPUTE] strategy=%s bt=%s Hi-Fi pass: refined "
                 "entries=%s exits=%s persisted=%s",
@@ -972,8 +977,13 @@ def append_new_trades_for_strategy(
         if inserted > 0 and algo_model_for_hifi in HIFI_BACKTEST_MODELS:
             try:
                 from api.routers.strategies import run_hifi_pass2
+                # Phase D (2026-05-14): ALGO-APPEND writes cache rows,
+                # so scope Hi-Fi to the algo lane.
                 hifi_summary = run_hifi_pass2(
-                    strategy_id, user={'id': user_id})
+                    strategy_id,
+                    data_source_filter='cache_%',
+                    user={'id': user_id},
+                )
                 logger.info(
                     "[ALGO-APPEND] strategy=%s algo=%s Hi-Fi pass: refined "
                     "entries=%s exits=%s persisted=%s",
@@ -1443,14 +1453,19 @@ def append_new_backtest_trades_for_strategy(
         cfg['last_recompute_until_ts'] = now_iso
         _stamp_config(strategy_id, user_id, cfg)
 
-        # Hi-Fi pass on appended set (idempotent — skips already-resolved)
+        # Hi-Fi pass on appended set (idempotent — skips already-resolved).
+        # Phase D (2026-05-14): scope to backtest_% so the BT recompute path
+        # only refines BT rows, not algo rows that happen to coexist.
         HIFI_BACKTEST_MODELS = {'rest_hifi', 'cache_locked', 'cache_corrected'}
         hifi_summary = None
         if bt_model in HIFI_BACKTEST_MODELS:
             try:
                 from api.routers.strategies import run_hifi_pass2
                 hifi_summary = run_hifi_pass2(
-                    strategy_id, user={'id': user_id})
+                    strategy_id,
+                    data_source_filter='backtest_%',
+                    user={'id': user_id},
+                )
                 logger.info(
                     "[BT-APPEND] strategy=%s bt=%s Hi-Fi pass: refined "
                     "entries=%s exits=%s persisted=%s",
@@ -1601,14 +1616,19 @@ def recompute_and_persist_algo_trades(
         cfg['last_recompute_until_ts'] = now_iso
         _stamp_config(strategy_id, user_id, cfg)
 
-        # Hi-Fi pass on the trades table (idempotent)
+        # Hi-Fi pass on the trades table (idempotent).
+        # Phase D (2026-05-14): scope to cache_% so the algo recompute path
+        # only refines algo rows, not backtest rows that happen to coexist.
         HIFI_BACKTEST_MODELS = {'rest_hifi', 'cache_locked', 'cache_corrected'}
         hifi_summary = None
         if inserted > 0 and algo_model in HIFI_BACKTEST_MODELS:
             try:
                 from api.routers.strategies import run_hifi_pass2
                 hifi_summary = run_hifi_pass2(
-                    strategy_id, user={'id': user_id})
+                    strategy_id,
+                    data_source_filter='cache_%',
+                    user={'id': user_id},
+                )
                 logger.info(
                     "[ALGO-RECOMPUTE] strategy=%s algo=%s Hi-Fi pass: "
                     "refined entries=%s exits=%s persisted=%s",

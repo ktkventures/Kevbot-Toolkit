@@ -613,7 +613,18 @@ def delete_strategy(strategy_id: int, user=Depends(get_current_user)):
 
 
 @router.post("/{strategy_id}/run-hifi-pass2")
-def run_hifi_pass2(strategy_id: int, user=Depends(get_current_user)):
+def run_hifi_pass2(
+    strategy_id: int,
+    data_source_filter: Optional[str] = Query(
+        None,
+        description="Optional SQL LIKE pattern (e.g. 'backtest_%', 'cache_%') "
+                    "to scope Hi-Fi refinement to a single lane. None = all "
+                    "trades (legacy behavior). Added 2026-05-14 Phase D as "
+                    "defensive scoping — see docs/Parity_Investigation_2026-"
+                    "05-14_Phase_D.md.",
+    ),
+    user=Depends(get_current_user),
+):
     """Run Hi-Fi Pass 2 on a strategy's existing trades — refines entry +
     exit timestamps + prices using 1-second data, without re-running the
     full backtest. ~10x faster than a full hifi_mode backtest because it
@@ -631,6 +642,12 @@ def run_hifi_pass2(strategy_id: int, user=Depends(get_current_user)):
     strategy's `data_source` to 'hifi'.
 
     Response: counts of entry refinements + exit changes + total trades.
+
+    Phase D (2026-05-14): added optional `data_source_filter` so callers
+    can scope Hi-Fi to a specific lane (e.g., 'cache_%' or 'backtest_%').
+    Defensive — Phase D investigation confirmed cross-pollination is
+    NOT a current bug, but this prevents a future bug from silently
+    affecting both lanes via one call site.
     """
     from db import USE_DB
     if not USE_DB:
@@ -650,8 +667,12 @@ def run_hifi_pass2(strategy_id: int, user=Depends(get_current_user)):
         raise HTTPException(status_code=401, detail="No user context")
 
     # Load existing trades from the trades table (the canonical store post-Phase 40).
+    # Optional data_source_filter scopes the refinement to one lane.
     from db import load_trades_admin
-    trades_list = load_trades_admin(strategy_id, str(user_id)) or []
+    trades_list = load_trades_admin(
+        strategy_id, str(user_id),
+        data_source_filter=data_source_filter,
+    ) or []
     if not trades_list:
         return {
             "status": "ok",
