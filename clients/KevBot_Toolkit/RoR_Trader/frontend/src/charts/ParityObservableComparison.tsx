@@ -89,7 +89,7 @@ export default function ParityObservableComparison({
             <span style={{ color: 'var(--text-muted)' }}>{cacheCandles.length} bars</span>
           </div>
           {cacheCandles.length > 0 ? (
-            <TradingChart ohlcv={cacheCandles} height={300} secondsVisible={false} />
+            <TradingChart ohlcv={cacheCandles} height={300} secondsVisible={false} visibleRange={{ from: windowStart, to: windowEnd }} />
           ) : (
             <div className="text-sm p-4" style={{ color: 'var(--text-muted)' }}>No cache data in window</div>
           )}
@@ -109,7 +109,7 @@ export default function ParityObservableComparison({
               </div>
             </div>
           ) : observableCandles.length > 0 ? (
-            <TradingChart ohlcv={observableCandles} height={300} secondsVisible={false} />
+            <TradingChart ohlcv={observableCandles} height={300} secondsVisible={false} visibleRange={{ from: windowStart, to: windowEnd }} />
           ) : (
             <div className="text-sm p-4" style={{ color: 'var(--text-muted)' }}>No observable bars in window</div>
           )}
@@ -120,7 +120,7 @@ export default function ParityObservableComparison({
             <span style={{ color: 'var(--text-muted)' }}>{restCandles.length} bars</span>
           </div>
           {restCandles.length > 0 ? (
-            <TradingChart ohlcv={restCandles} height={300} secondsVisible={false} />
+            <TradingChart ohlcv={restCandles} height={300} secondsVisible={false} visibleRange={{ from: windowStart, to: windowEnd }} />
           ) : (
             <div className="text-sm p-4" style={{ color: 'var(--text-muted)' }}>No REST data in window</div>
           )}

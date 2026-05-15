@@ -262,6 +262,7 @@ export default function AdminParityPage() {
                     liveEntries={snapshot.data?.live_entries || []}
                     algoTrades={snapshot.data?.algo_trades || []}
                     btTrades={snapshot.data?.bt_trades || []}
+                    visibleRange={{ from: windowStart, to: windowEnd }}
                   />
                 );
               }

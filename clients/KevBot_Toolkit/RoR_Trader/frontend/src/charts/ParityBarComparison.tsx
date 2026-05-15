@@ -210,7 +210,12 @@ export default function ParityBarComparison({
             <span style={{ color: 'var(--text-muted)' }}>{cacheCandles.length} bars</span>
           </div>
           {cacheCandles.length > 0 ? (
-            <TradingChart ohlcv={cacheCandles} height={320} secondsVisible={false} />
+            <TradingChart
+              ohlcv={cacheCandles}
+              height={320}
+              secondsVisible={false}
+              visibleRange={windowStart && windowEnd ? { from: windowStart, to: windowEnd } : null}
+            />
           ) : (
             <div className="text-sm p-4" style={{ color: 'var(--text-muted)' }}>No cache data in window</div>
           )}
@@ -221,7 +226,12 @@ export default function ParityBarComparison({
             <span style={{ color: 'var(--text-muted)' }}>{restCandles.length} bars</span>
           </div>
           {restCandles.length > 0 ? (
-            <TradingChart ohlcv={restCandles} height={320} secondsVisible={false} />
+            <TradingChart
+              ohlcv={restCandles}
+              height={320}
+              secondsVisible={false}
+              visibleRange={windowStart && windowEnd ? { from: windowStart, to: windowEnd } : null}
+            />
           ) : (
             <div className="text-sm p-4" style={{ color: 'var(--text-muted)' }}>No REST data in window</div>
           )}

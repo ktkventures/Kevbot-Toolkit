@@ -34,6 +34,8 @@ interface Props {
   /** Match tolerance in seconds when deciding "same entry across lanes". */
   matchToleranceSec?: number;
   height?: number;
+  /** Phase F.1: shared visible time range for x-axis lock across panes. */
+  visibleRange?: { from: string; to: string } | null;
 }
 
 const COLOR_LIVE = '#22c55e';     // green
@@ -101,6 +103,7 @@ export default function ParityEntryOverlay({
   btTrades,
   matchToleranceSec = 60,
   height = 400,
+  visibleRange = null,
 }: Props) {
   const candles: CandleData[] = bars.map((b) => ({
     time: b.timestamp,
@@ -139,7 +142,7 @@ export default function ParityEntryOverlay({
         position: 'inBar',
         shape,
         color,
-        text: e.source.toUpperCase(),
+        text: '',  // Phase F.1: legend above the chart already conveys lane mapping
       });
     }
   }
@@ -181,6 +184,7 @@ export default function ParityEntryOverlay({
           markers={markers}
           height={height}
           secondsVisible={false}
+          visibleRange={visibleRange}
         />
       ) : (
         <div className="text-sm p-4" style={{ color: 'var(--text-muted)' }}>No bars for this window.</div>

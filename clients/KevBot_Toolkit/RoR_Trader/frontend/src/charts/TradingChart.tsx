@@ -48,6 +48,11 @@ interface TradingChartProps {
   // so that forming/completed bar pushes from Ralph don't trigger React
   // re-renders. Prop change → single imperative call, zero cascade.
   formingBar?: CandleData | null;
+  // Phase F.1 (2026-05-14): explicit visible time range (ISO strings).
+  // When provided, overrides the default fitContent() so multiple charts
+  // sharing the same range display the same x-axis even when their data
+  // extents differ (e.g., side-by-side parity-comparison panes).
+  visibleRange?: { from: string; to: string } | null;
 }
 
 /** Convert ISO 8601 string or any date-like value to Unix seconds for LWC. */
@@ -69,6 +74,7 @@ export default function TradingChart({
   timeVisible = true,
   secondsVisible = true,
   formingBar = null,
+  visibleRange = null,
 }: TradingChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -193,7 +199,24 @@ export default function TradingChart({
     }
     overlaySeriesRefs.current = overlayRefs;
 
-    chart.timeScale().fitContent();
+    // Phase F.1: prefer the caller-supplied visibleRange when given
+    // (parity comparison panes need to share an x-axis). Otherwise
+    // fall back to fitContent() which auto-fits to data extent.
+    if (visibleRange && visibleRange.from && visibleRange.to) {
+      try {
+        const fromSec = toUnixTime(visibleRange.from) as Time;
+        const toSec = toUnixTime(visibleRange.to) as Time;
+        if (isFinite(fromSec as number) && isFinite(toSec as number)) {
+          chart.timeScale().setVisibleRange({ from: fromSec, to: toSec });
+        } else {
+          chart.timeScale().fitContent();
+        }
+      } catch {
+        chart.timeScale().fitContent();
+      }
+    } else {
+      chart.timeScale().fitContent();
+    }
 
     const handleResize = () => {
       if (containerRef.current) {
@@ -209,7 +232,7 @@ export default function TradingChart({
       candleSeriesRef.current = null;
       overlaySeriesRefs.current = [];
     };
-  }, [ohlcv, overlays, markers, height, getThemeColors, upColor, downColor, upBorderColor, gridLines, rightOffset, timeVisible, secondsVisible]);
+  }, [ohlcv, overlays, markers, height, getThemeColors, upColor, downColor, upBorderColor, gridLines, rightOffset, timeVisible, secondsVisible, visibleRange?.from, visibleRange?.to]);
 
   // M8.5: imperative live-bar update. Runs on every formingBar change; calls
   // candleSeries.update() directly — NO setData, NO re-render of this
