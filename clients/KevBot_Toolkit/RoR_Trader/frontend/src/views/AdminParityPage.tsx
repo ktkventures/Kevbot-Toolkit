@@ -268,6 +268,7 @@ export default function AdminParityPage() {
                     observableLoading={observableQ.isLoading}
                     windowStart={windowStart}
                     windowEnd={windowEnd}
+                    symbol={selected?.symbol ?? null}
                   />
                 );
               }

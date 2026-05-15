@@ -28,20 +28,28 @@ import { useMemo, useState } from 'react';
 import TradingChart, { type CandleData } from './TradingChart';
 import type { CacheBar } from '@/hooks/queries/useStrategies';
 import type { BarData } from '@/hooks/queries/useMarketData';
-import type { ObservableBar } from '@/hooks/queries/useAdminParity';
+import {
+  useRestBars,
+  type ObservableBar,
+} from '@/hooks/queries/useAdminParity';
 
 type SourceKey = 'cache' | 'observable' | 'rest';
 
 interface Props {
   cacheBars: CacheBar[];
   observableBars: ObservableBar[];
-  restBars: BarData[];
+  /** @deprecated Phase G.2: kept for backward compat but unused.
+   *  REST bars are now fetched internally via useRestBars at the
+   *  selected TF (supports sub-minute via Polygon 1-sec aggs). */
+  restBars?: BarData[];
   cacheValueType: string | null;
   cacheNotes: string[];
   observableEmpty: boolean;
   observableLoading: boolean;
   windowStart?: string | null;
   windowEnd?: string | null;
+  /** Symbol — needed by useRestBars to fetch on TF change. */
+  symbol?: string | null;
 }
 
 interface NormBar {
@@ -75,12 +83,15 @@ interface TfOption {
   restAvailable: boolean;
 }
 
+// Phase G.2 (2026-05-15): REST is now available at ALL TFs (including
+// sub-minute) via the new /api/admin/parity/rest-bars endpoint which
+// fetches Polygon 1-sec aggs for tf<60 and 1-min aggs for tf≥60.
 const TF_OPTIONS: TfOption[] = [
-  { value: 10,  label: '10Sec',  restAvailable: false },
-  { value: 30,  label: '30Sec',  restAvailable: false },
-  { value: 60,  label: '1Min',   restAvailable: true  },
-  { value: 300, label: '5Min',   restAvailable: true  },
-  { value: 900, label: '15Min',  restAvailable: true  },
+  { value: 10,  label: '10Sec',  restAvailable: true },
+  { value: 30,  label: '30Sec',  restAvailable: true },
+  { value: 60,  label: '1Min',   restAvailable: true },
+  { value: 300, label: '5Min',   restAvailable: true },
+  { value: 900, label: '15Min',  restAvailable: true },
 ];
 
 function formatBucketLabel(epochSec: number, tfSeconds: number): string {
@@ -268,13 +279,14 @@ function DivergenceHistogram({ rows }: { rows: ComparisonRow[] }) {
 export default function ParityBarComparison({
   cacheBars,
   observableBars,
-  restBars,
+  restBars: _restBarsLegacy,  // unused; kept for prop-shape compat
   cacheValueType,
   cacheNotes,
   observableEmpty,
   observableLoading,
   windowStart,
   windowEnd,
+  symbol,
 }: Props) {
   // Phase F.3: user picks which two sources to compare. Defaults are
   // Cache (left) vs Observable (right) — the most diagnostic pair
@@ -297,10 +309,25 @@ export default function ParityBarComparison({
   const effectiveRightSource: SourceKey =
     restDisabled && rightSource === 'rest' ? 'observable' : rightSource;
 
+  // Phase G.2: REST bars fetched via the parity rest-bars endpoint
+  // at the selected TF — supports sub-minute via Polygon 1-sec aggs.
+  // The query runs only when the user actually has REST on either side
+  // (avoids needless Polygon REST calls).
+  const restNeeded = effectiveLeftSource === 'rest' || effectiveRightSource === 'rest';
+  const restQuery = useRestBars(
+    restNeeded ? symbol ?? null : null,
+    restNeeded ? windowStart ?? null : null,
+    restNeeded ? windowEnd ?? null : null,
+    tfSeconds,
+  );
+  const restBarsForTf = restQuery.data?.bars ?? [];
+
   // Normalize each series to NormBar[] for shared handling.
   const cacheNorm = useMemo(() => normCache(cacheBars), [cacheBars]);
   const observableNorm = useMemo(() => normObservable(observableBars), [observableBars]);
-  const restNorm = useMemo(() => normRest(restBars), [restBars]);
+  // restBarsForTf already has the bucketed shape — use observable normalizer
+  // (it shares the OHLCV + trade_count shape).
+  const restNorm = useMemo(() => normObservable(restBarsForTf), [restBarsForTf]);
 
   const seriesByKey: Record<SourceKey, NormBar[]> = {
     cache: cacheNorm,

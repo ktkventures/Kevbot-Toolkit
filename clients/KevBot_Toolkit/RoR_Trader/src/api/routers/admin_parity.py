@@ -279,3 +279,106 @@ def _aggregate_to_tf(rows: list[dict], tf_seconds: int) -> list[dict]:
     if current is not None:
         out.append(current)
     return out
+
+
+@router.get("/rest-bars")
+def get_rest_bars(
+    symbol: str = Query(..., description="Ticker symbol (e.g., SPY)"),
+    start: str = Query(..., description="ISO UTC window start (inclusive)"),
+    end: Optional[str] = Query(None, description="ISO UTC window end (exclusive). Defaults to now."),
+    tf_seconds: int = Query(60, ge=1, le=86400,
+        description="Target timeframe in seconds. <60s → fetches 1-sec aggs from Polygon and aggregates; ≥60s → fetches 1-min aggs."),
+    user=Depends(get_current_user),
+):
+    """Phase G.2 (2026-05-15): Polygon REST aggs at arbitrary TF.
+
+    For sub-minute (`tf_seconds < 60`): fetches Polygon's 1-second
+    aggregates endpoint, aggregates to the requested TF. Closes the
+    "REST not available below 1Min" gap in Bars Comparison.
+
+    For 1Min+: fetches Polygon's 1-minute aggregates, aggregates up
+    if needed (e.g., tf_seconds=300 = 5Min from 1Min bars).
+
+    Source-of-truth check: REST 1-sec aggs are Polygon's canonical
+    per-second view of the tape — what their settled data says actually
+    happened at each second. Comparing Cache 10Sec → REST 10Sec (built
+    from 1-sec aggs) gives us the same-TF apples-to-apples test we
+    couldn't do before with REST 1-min only.
+
+    Rate-limit note: a 1-hour window at 1-sec native = 3,600 rows;
+    Polygon's pagination handles up to 50,000/request. Safe for typical
+    Bars Comparison windows (≤8h).
+    """
+    _resolve_user_id(user)
+    end_iso = end or datetime.now(timezone.utc).isoformat()
+    if start >= end_iso:
+        raise HTTPException(status_code=400, detail="start must be < end")
+
+    # Use 1-sec aggs for sub-minute; 1-min for ≥60s.
+    from data_loader import _polygon_fetch_bars, _to_polygon_ticker
+    polygon_ticker = _to_polygon_ticker(symbol)
+    if tf_seconds < 60:
+        native_timespan = 'second'
+        native_multiplier = 1
+    else:
+        native_timespan = 'minute'
+        native_multiplier = 1
+
+    start_date = start[:10]
+    # Polygon REST aggs API accepts inclusive date range; if window spans
+    # multiple dates we widen accordingly.
+    end_date = end_iso[:10]
+    try:
+        raw = _polygon_fetch_bars(
+            polygon_ticker, native_multiplier, native_timespan,
+            start_date, end_date,
+        )
+    except Exception as e:
+        logger.exception("[REST-BARS] fetch failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Polygon REST fetch failed: {e}")
+
+    # raw is list of {t, o, h, l, c, v, ...} from Polygon. Filter to window,
+    # convert to our canonical bar shape.
+    from datetime import datetime as _dt
+    start_ms = int(_dt.fromisoformat(start.replace('Z', '+00:00')).timestamp() * 1000)
+    end_ms = int(_dt.fromisoformat(end_iso.replace('Z', '+00:00')).timestamp() * 1000)
+    in_window = [r for r in raw if start_ms <= r.get('t', 0) < end_ms]
+
+    # If requested tf matches native (1s for tf<60, 1min for tf≥60), return as-is.
+    native_tf = 1 if native_timespan == 'second' else 60
+    if tf_seconds == native_tf:
+        bars = [
+            {
+                'timestamp': _dt.fromtimestamp(r['t'] / 1000, tz=timezone.utc).isoformat(),
+                'open': r.get('o'), 'high': r.get('h'),
+                'low': r.get('l'), 'close': r.get('c'),
+                'volume': int(r.get('v', 0)),
+                'trade_count': int(r.get('n', 0)),
+            }
+            for r in in_window
+        ]
+    else:
+        # Aggregate up. Adapter — reuse _aggregate_to_tf which expects
+        # rows with 'sip_second_ts' + OHLCV/trade_count. Map Polygon's
+        # field names to that shape.
+        adapted = [
+            {
+                'sip_second_ts': _dt.fromtimestamp(r['t'] / 1000, tz=timezone.utc).isoformat(),
+                'open': r.get('o'), 'high': r.get('h'),
+                'low': r.get('l'), 'close': r.get('c'),
+                'volume': int(r.get('v', 0)),
+                'trade_count': int(r.get('n', 0)),
+            }
+            for r in in_window
+        ]
+        bars = _aggregate_to_tf(adapted, tf_seconds)
+
+    return {
+        'symbol': symbol.upper(),
+        'window': {'start': start, 'end': end_iso},
+        'tf_seconds': tf_seconds,
+        'native_tf': native_tf,
+        'bar_count': len(bars),
+        'raw_count': len(in_window),
+        'bars': bars,
+    }

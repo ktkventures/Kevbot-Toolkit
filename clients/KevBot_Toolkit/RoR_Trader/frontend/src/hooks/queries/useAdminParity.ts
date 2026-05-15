@@ -219,6 +219,41 @@ export function useObservableBars(
   });
 }
 
+// Phase G.2 (2026-05-15): REST aggs at arbitrary TF (sub-minute or 1Min+).
+// Uses the new /api/admin/parity/rest-bars endpoint which fetches
+// Polygon's 1-second aggs for sub-minute, 1-minute aggs for ≥60s,
+// then aggregates to the requested TF.
+
+export interface RestBarsResponse {
+  symbol: string;
+  window: { start: string; end: string };
+  tf_seconds: number;
+  native_tf: number;
+  bar_count: number;
+  raw_count: number;
+  bars: ObservableBar[];  // same shape (timestamp, OHLCV, trade_count)
+}
+
+export function useRestBars(
+  symbol: string | null,
+  start: string | null,
+  end: string | null,
+  tfSeconds: number = 60,
+) {
+  return useQuery<RestBarsResponse>({
+    queryKey: ['admin-parity-rest-bars', symbol, start, end, tfSeconds],
+    queryFn: () => apiFetch<RestBarsResponse>(
+      `/api/admin/parity/rest-bars?symbol=${encodeURIComponent(symbol || '')}` +
+      `&start=${encodeURIComponent(start || '')}` +
+      `&end=${encodeURIComponent(end || '')}` +
+      `&tf_seconds=${tfSeconds}`
+    ),
+    enabled: !!symbol && !!start && !!end,
+    staleTime: 60_000,
+    retry: 0,
+  });
+}
+
 // ============================================================
 // Phase B — Bars Comparison hook
 // ============================================================
