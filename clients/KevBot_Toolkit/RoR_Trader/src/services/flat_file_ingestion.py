@@ -52,6 +52,19 @@ from typing import Iterable, Iterator, Optional
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
+# Standalone CLI usage: load .env from src/ so the script works
+# without manual `source .env`. No-op on Railway (env vars come from
+# the platform, not a file).
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    import os as _os
+    _env_path = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), '.env')
+    if _os.path.exists(_env_path):
+        _load_dotenv(_env_path, override=False)
+except ImportError:
+    pass
+
 
 # ---------------------------------------------------------------------------
 # Config
