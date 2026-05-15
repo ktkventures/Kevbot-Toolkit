@@ -281,8 +281,31 @@ export default function ParityBarComparison({
   const safePage = Math.min(page, totalPages - 1);
   const pageRows = sortedRows.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
 
+  // Phase F.4: split close-match and volume-match into separate KPIs
+  // — they have very different parity expectations (closes can be
+  // bit-perfect while volumes diverge by 5-20% even on correctly-built
+  // bars, because volume aggregation rules differ across data sources).
+  const comparableRows = rows.filter(
+    (r) => r.left_close != null && r.right_close != null,
+  );
+  const closeMatches = comparableRows.filter(
+    (r) => r.close_diff != null && Math.abs(r.close_diff) <= 0.01,
+  ).length;
+  const volComparable = rows.filter(
+    (r) => r.left_vol != null && r.right_vol != null && r.right_vol > 0,
+  );
+  const volMatches = volComparable.filter(
+    (r) => r.vol_ratio != null && r.vol_ratio >= 0.95 && r.vol_ratio <= 1.05,
+  ).length;
   const flaggedCount = rows.filter((r) => r.flagged).length;
-  const matchPct = rows.length > 0
+  const closeMatchPct = comparableRows.length > 0
+    ? ((closeMatches / comparableRows.length) * 100).toFixed(1)
+    : '—';
+  const volMatchPct = volComparable.length > 0
+    ? ((volMatches / volComparable.length) * 100).toFixed(1)
+    : '—';
+  // Combined: counts both checks together, plus presence on both sides.
+  const combinedMatchPct = rows.length > 0
     ? (((rows.length - flaggedCount) / rows.length) * 100).toFixed(1)
     : '—';
 
@@ -344,28 +367,52 @@ export default function ParityBarComparison({
         </div>
       </div>
 
-      {/* Summary strip */}
+      {/* Summary strip — Phase F.4 splits close/vol KPIs */}
       <div
-        className="flex items-baseline gap-6 text-sm p-3 rounded"
+        className="flex items-baseline gap-6 text-sm p-3 rounded flex-wrap"
         style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}
       >
         <div>
           <span style={{ color: 'var(--text-muted)' }}>Bars compared: </span>
           <strong>{rows.length}</strong>
         </div>
-        <div>
-          <span style={{ color: 'var(--text-muted)' }}>Match rate: </span>
+        <div title="Bars where left close is within $0.01 of right close. The diagnostic KPI — closes should match exactly (or near it) between cache and observable if our live engine is faithful.">
+          <span style={{ color: 'var(--text-muted)' }}>Close match: </span>
           <strong style={{
-            color: rows.length > 0
-              ? (flaggedCount / rows.length < 0.05 ? 'var(--green)' : flaggedCount / rows.length < 0.20 ? 'var(--orange)' : 'var(--red)')
-              : 'var(--text-muted)',
+            color: comparableRows.length === 0
+              ? 'var(--text-muted)'
+              : closeMatches / comparableRows.length >= 0.99
+                ? 'var(--green)'
+                : closeMatches / comparableRows.length >= 0.90
+                  ? 'var(--orange)'
+                  : 'var(--red)',
           }}>
-            {matchPct}%
+            {closeMatchPct}%
           </strong>
+          <span style={{ color: 'var(--text-muted)' }} className="text-xs">
+            {' '}({closeMatches}/{comparableRows.length})
+          </span>
         </div>
-        <div>
-          <span style={{ color: 'var(--text-muted)' }}>Flagged rows: </span>
-          <strong style={{ color: flaggedCount > 0 ? 'var(--orange)' : 'var(--green)' }}>{flaggedCount}</strong>
+        <div title="Bars where left/right volume ratio is in [0.95, 1.05]. Expected to be LOWER than close-match for any pair involving REST or Cache vs Observable — Polygon's volume rules differ from OHLC rules (Form T and Odd Lot count for volume but not OHLC), and the live engine may have different volume aggregation. Diagnostic value is lower than close-match.">
+          <span style={{ color: 'var(--text-muted)' }}>Vol match: </span>
+          <strong style={{
+            color: volComparable.length === 0
+              ? 'var(--text-muted)'
+              : volMatches / volComparable.length >= 0.95
+                ? 'var(--green)'
+                : volMatches / volComparable.length >= 0.70
+                  ? 'var(--orange)'
+                  : 'var(--red)',
+          }}>
+            {volMatchPct}%
+          </strong>
+          <span style={{ color: 'var(--text-muted)' }} className="text-xs">
+            {' '}({volMatches}/{volComparable.length})
+          </span>
+        </div>
+        <div title="Combined: bars where close+vol both match AND both sides have data. Same as the old single 'match rate' KPI from Phase F.">
+          <span style={{ color: 'var(--text-muted)' }}>Combined: </span>
+          <strong style={{ color: 'var(--text-muted)' }}>{combinedMatchPct}%</strong>
         </div>
         {leftSource === 'cache' || rightSource === 'cache' ? (
           <div>

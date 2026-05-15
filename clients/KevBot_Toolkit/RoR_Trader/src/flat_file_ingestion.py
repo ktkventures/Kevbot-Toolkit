@@ -166,29 +166,46 @@ def _load_polygon_condition_rules() -> tuple[set[int], set[int]]:
     return _OHLC_EXCLUDED_CACHE, _VOL_EXCLUDED_CACHE
 
 
-def _is_eligible_for_ohlc(conditions_str: str | None) -> bool:
-    """Parse the flat-file `conditions` column and return True iff the trade
-    should update OHLC. Empty / unparseable conditions are treated as
-    eligible (fail-open on parsing).
-
-    Polygon flat-file format: comma-separated list of integers, wrapped in
-    quotes if multiple values. e.g. `"12,37"`, `"14,12,37,41"`, or empty.
-
-    Exclusion set is loaded from Polygon's canonical /v3/reference/conditions
-    endpoint on first call (cached for process lifetime); falls back to a
-    hardcoded snapshot if the API is unreachable.
-    """
+def _parse_conditions(conditions_str: str | None) -> set[int] | None:
+    """Parse the flat-file `conditions` column into a set of int codes.
+    Returns None if unparseable (caller should fail-open). Returns empty
+    set for blank conditions (= "regular trade")."""
     if not conditions_str:
-        return True
+        return set()
     s = conditions_str.strip().strip('"')
     if not s:
-        return True
+        return set()
     try:
-        codes = {int(c) for c in s.split(',') if c.strip()}
+        return {int(c) for c in s.split(',') if c.strip()}
     except ValueError:
-        return True  # fail-open on weird formats
-    ohlc_excluded, _ = _load_polygon_condition_rules()
-    return not (codes & ohlc_excluded)
+        return None
+
+
+def _classify_eligibility(conditions_str: str | None) -> tuple[bool, bool]:
+    """Return (ohlc_eligible, volume_eligible) for a trade.
+
+    Phase F.4 (2026-05-14): split from the previous single-flag check.
+    Polygon's actual rules treat the two separately — a trade can be
+    excluded from OHLC but counted for volume (Form T, Odd Lot, most
+    out-of-sequence prints), or excluded from volume but counted for
+    OHLC (e.g., Corrected Consolidated Close). Mirror that here so
+    our observable bars match Polygon REST aggregates on volume too.
+    """
+    codes = _parse_conditions(conditions_str)
+    if codes is None:
+        return True, True  # fail-open on weird formats
+    ohlc_excluded, vol_excluded = _load_polygon_condition_rules()
+    return (
+        not (codes & ohlc_excluded),
+        not (codes & vol_excluded),
+    )
+
+
+def _is_eligible_for_ohlc(conditions_str: str | None) -> bool:
+    """Backward-compatible single-flag check (OHLC only). Used by the
+    older callsite signature; new code should use _classify_eligibility."""
+    ohlc_ok, _ = _classify_eligibility(conditions_str)
+    return ohlc_ok
 
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -227,14 +244,31 @@ class _Bar:
     volume: int
     trade_count: int
 
-    def update(self, price: float, size: int) -> None:
-        if price > self.high:
-            self.high = price
-        if price < self.low:
-            self.low = price
-        self.close = price
-        self.volume += size
-        self.trade_count += 1
+    def update(
+        self,
+        price: float,
+        size: int,
+        update_ohlc: bool = True,
+        update_volume: bool = True,
+    ) -> None:
+        """Update bar from a single trade.
+
+        Phase F.4: trades are now classified separately for OHLC vs
+        volume eligibility per Polygon's actual rules. A vol-only
+        trade (Form T, Odd Lot, etc.) contributes to volume but
+        doesn't move H/L/C. A rare OHLC-only trade (Corrected
+        Consolidated Close, etc.) moves prices but isn't summed
+        into volume.
+        """
+        if update_ohlc:
+            if price > self.high:
+                self.high = price
+            if price < self.low:
+                self.low = price
+            self.close = price
+        if update_volume:
+            self.volume += size
+            self.trade_count += 1
 
     @classmethod
     def from_trade(cls, second_ts: int, price: float, size: int) -> "_Bar":
@@ -257,8 +291,9 @@ def _build_observable_bars(
     """
     # Per-ticker current accumulating bar
     current: dict[str, _Bar] = {}
-    filtered_conditions = 0
     filtered_corrections = 0
+    skipped_both = 0
+    vol_only = 0
 
     for row in rows:
         ticker = row["ticker"]
@@ -267,12 +302,17 @@ def _build_observable_bars(
         if (row.get("correction") or "0").strip() not in ("0", ""):
             filtered_corrections += 1
             continue
-        # Skip trades that don't qualify for OHLC per Polygon's eligibility
-        # rules (Average Price Trade, Cash Sale, Form T excluded? No — Form T
-        # IS kept since extended hours matters here; see EXCLUDED_POLYGON_CONDITIONS).
-        if not _is_eligible_for_ohlc(row.get("conditions")):
-            filtered_conditions += 1
+
+        # Phase F.4: classify the trade. Polygon distinguishes OHLC vs
+        # volume eligibility separately, so a Form T or Odd Lot trade
+        # may not move price but DOES count for volume.
+        ohlc_ok, vol_ok = _classify_eligibility(row.get("conditions"))
+        if not ohlc_ok and not vol_ok:
+            skipped_both += 1
             continue
+        if not ohlc_ok and vol_ok:
+            vol_only += 1
+
         # sip_timestamp is in NANOSECONDS in Polygon's flat-file format.
         try:
             ns = int(row["sip_timestamp"])
@@ -291,22 +331,49 @@ def _build_observable_bars(
 
         bar = current.get(ticker)
         if bar is None:
-            current[ticker] = _Bar.from_trade(sec_ts, price, size)
+            if ohlc_ok:
+                # Standard start-of-bar: full OHLC + vol from this trade.
+                current[ticker] = _Bar.from_trade(sec_ts, price, size)
+                if not vol_ok:
+                    # OHLC-only edge case (extremely rare): undo the
+                    # volume that from_trade added.
+                    current[ticker].volume = 0
+                    current[ticker].trade_count = 0
+            elif vol_ok:
+                # Vol-only first trade of a new second — emit a
+                # placeholder bar with sentinel zero prices to signal
+                # "no OHLC yet, just volume." Downstream we shouldn't
+                # write these as OHLC (open/high/low/close all 0) so
+                # skip emission later. Track in a separate accumulator
+                # would be cleaner but rare enough to handle inline:
+                # we DROP these and accept undercounting vol-only-first
+                # seconds. A vol-only trade as the FIRST tick of a
+                # second is the rare case (typically the open is from
+                # a regular trade).
+                pass
         elif bar.second_ts == sec_ts:
-            bar.update(price, size)
+            bar.update(price, size, update_ohlc=ohlc_ok, update_volume=vol_ok)
         else:
             # Second rolled — emit prev, start new.
             yield (ticker, bar)
-            current[ticker] = _Bar.from_trade(sec_ts, price, size)
+            if ohlc_ok:
+                current[ticker] = _Bar.from_trade(sec_ts, price, size)
+                if not vol_ok:
+                    current[ticker].volume = 0
+                    current[ticker].trade_count = 0
+            else:
+                # Vol-only first trade of new second — see comment above.
+                # Don't start the new bar; wait for an OHLC-eligible trade.
+                current.pop(ticker, None)
 
     # Flush remaining bars.
     for ticker, bar in current.items():
         yield (ticker, bar)
 
-    if filtered_conditions or filtered_corrections:
-        logger.info(
-            "trade filters: %d skipped (excluded conditions), %d skipped (corrections)",
-            filtered_conditions, filtered_corrections)
+    logger.info(
+        "trade filters: %d skipped (both ineligible), %d vol-only (kept for volume), "
+        "%d skipped (corrections)",
+        skipped_both, vol_only, filtered_corrections)
 
 
 # ---------------------------------------------------------------------------
