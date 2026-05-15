@@ -77,128 +77,16 @@ _DEFAULT_SYMBOLS = "SPY,TSLA"
 _DEFAULT_RETENTION_DAYS = 7
 _UPSERT_BATCH_SIZE = 1000
 
-# Hardcoded fallback for OHLC-exclusion derived from Polygon's canonical
-# /v3/reference/conditions endpoint (snapshot 2026-05-14). Used only when
-# the live API fetch fails at startup. Includes:
-#   2  Average Price Trade
-#   5  Bunched Sold Trade (updates H/L but not O/C; conservative exclude)
-#   7  Cash Sale
-#   10 Derivatively Priced
-#   12 Form T / Extended Hours (Polygon REST excludes from OHLC consolidated)
-#   13 Extended Hours (Sold Out Of Sequence)
-#   15 Market Center Official Close
-#   16 Market Center Official Open
-#   20 Next Day
-#   21 Price Variation Trade
-#   22 Prior Reference Price
-#   29 Seller
-#   32 Sold (Out Of Sequence)
-#   33 Sold (Out of Sequence) and Stopped Stock
-#   37 Odd Lot Trade — main culprit for low-volume outlier prints
-#   52 Contingent Trade
-#   53 Qualified Contingent Trade
-_FALLBACK_OHLC_EXCLUDED: set[int] = {
-    2, 5, 7, 10, 12, 13, 15, 16, 20, 21, 22, 29, 32, 33, 37, 52, 53,
-}
-_FALLBACK_VOL_EXCLUDED: set[int] = {15, 16, 38}
-
-# Filled in by _load_polygon_condition_rules() at first call. The dynamic
-# fetch replaces the fallback so we always have the up-to-date list if
-# Polygon revises it.
-_OHLC_EXCLUDED_CACHE: set[int] | None = None
-_VOL_EXCLUDED_CACHE: set[int] | None = None
-
-
-def _load_polygon_condition_rules() -> tuple[set[int], set[int]]:
-    """Fetch Polygon's canonical conditions list and derive the
-    OHLC-exclusion + volume-exclusion sets. Caches the result for the
-    process lifetime. Falls back to the hardcoded snapshot on failure.
-    """
-    global _OHLC_EXCLUDED_CACHE, _VOL_EXCLUDED_CACHE
-    if _OHLC_EXCLUDED_CACHE is not None and _VOL_EXCLUDED_CACHE is not None:
-        return _OHLC_EXCLUDED_CACHE, _VOL_EXCLUDED_CACHE
-
-    api_key = os.environ.get("POLYGON_API_KEY", "").strip()
-    if not api_key:
-        logger.warning(
-            "POLYGON_API_KEY not set — using fallback condition exclusion list")
-        _OHLC_EXCLUDED_CACHE = set(_FALLBACK_OHLC_EXCLUDED)
-        _VOL_EXCLUDED_CACHE = set(_FALLBACK_VOL_EXCLUDED)
-        return _OHLC_EXCLUDED_CACHE, _VOL_EXCLUDED_CACHE
-
-    try:
-        import httpx
-        resp = httpx.get(
-            "https://api.polygon.io/v3/reference/conditions",
-            params={"asset_class": "stocks", "limit": 1000, "apiKey": api_key},
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        rules = resp.json().get("results", [])
-        ohlc_excl: set[int] = set()
-        vol_excl: set[int] = set()
-        for c in rules:
-            cid = c.get("id")
-            if not isinstance(cid, int):
-                continue
-            consolidated = (c.get("update_rules") or {}).get("consolidated") or {}
-            if (consolidated.get("updates_high_low") is False
-                    or consolidated.get("updates_open_close") is False):
-                ohlc_excl.add(cid)
-            if consolidated.get("updates_volume") is False:
-                vol_excl.add(cid)
-        if not ohlc_excl:
-            logger.warning("Polygon conditions API returned empty exclusion set — using fallback")
-            ohlc_excl = set(_FALLBACK_OHLC_EXCLUDED)
-            vol_excl = set(_FALLBACK_VOL_EXCLUDED)
-        else:
-            logger.info(
-                "Loaded canonical Polygon condition rules: %d OHLC-excluded, %d vol-excluded",
-                len(ohlc_excl), len(vol_excl))
-            logger.info("OHLC-excluded codes: %s", sorted(ohlc_excl))
-        _OHLC_EXCLUDED_CACHE = ohlc_excl
-        _VOL_EXCLUDED_CACHE = vol_excl
-    except Exception as e:
-        logger.warning(
-            "Polygon conditions API fetch failed (%s) — using fallback", e)
-        _OHLC_EXCLUDED_CACHE = set(_FALLBACK_OHLC_EXCLUDED)
-        _VOL_EXCLUDED_CACHE = set(_FALLBACK_VOL_EXCLUDED)
-    return _OHLC_EXCLUDED_CACHE, _VOL_EXCLUDED_CACHE
-
-
-def _parse_conditions(conditions_str: str | None) -> set[int] | None:
-    """Parse the flat-file `conditions` column into a set of int codes.
-    Returns None if unparseable (caller should fail-open). Returns empty
-    set for blank conditions (= "regular trade")."""
-    if not conditions_str:
-        return set()
-    s = conditions_str.strip().strip('"')
-    if not s:
-        return set()
-    try:
-        return {int(c) for c in s.split(',') if c.strip()}
-    except ValueError:
-        return None
-
-
-def _classify_eligibility(conditions_str: str | None) -> tuple[bool, bool]:
-    """Return (ohlc_eligible, volume_eligible) for a trade.
-
-    Phase F.4 (2026-05-14): split from the previous single-flag check.
-    Polygon's actual rules treat the two separately — a trade can be
-    excluded from OHLC but counted for volume (Form T, Odd Lot, most
-    out-of-sequence prints), or excluded from volume but counted for
-    OHLC (e.g., Corrected Consolidated Close). Mirror that here so
-    our observable bars match Polygon REST aggregates on volume too.
-    """
-    codes = _parse_conditions(conditions_str)
-    if codes is None:
-        return True, True  # fail-open on weird formats
-    ohlc_excluded, vol_excluded = _load_polygon_condition_rules()
-    return (
-        not (codes & ohlc_excluded),
-        not (codes & vol_excluded),
-    )
+# Phase G (2026-05-15): canonical filter logic extracted to a shared
+# module so ralph_engine.py uses the IDENTICAL rules. See
+# src/polygon_conditions.py for the implementation.
+from polygon_conditions import (
+    _classify_eligibility,
+    _load_polygon_condition_rules,
+    _parse_conditions,
+    FALLBACK_OHLC_EXCLUDED as _FALLBACK_OHLC_EXCLUDED,
+    FALLBACK_VOL_EXCLUDED as _FALLBACK_VOL_EXCLUDED,
+)
 
 
 def _is_eligible_for_ohlc(conditions_str: str | None) -> bool:

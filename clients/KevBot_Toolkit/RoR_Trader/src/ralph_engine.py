@@ -176,12 +176,28 @@ class PartialBar:
         self.bar_duration_seconds = bar_duration_seconds
         self.tick_count = 0
 
-    def update(self, price: float, volume: int = 1):
-        self.high = max(self.high, price)
-        self.low = min(self.low, price)
-        self.close = price
-        self.volume += volume
-        self.tick_count += 1
+    def update(
+        self,
+        price: float,
+        volume: int = 1,
+        update_ohlc: bool = True,
+        update_volume: bool = True,
+    ):
+        """Update partial bar from a tick.
+
+        Phase G (2026-05-15): trades flagged by Polygon's canonical
+        eligibility rules as OHLC-ineligible-but-vol-eligible (Form T,
+        Odd Lot, etc.) now contribute to volume only — not to H/L/C.
+        This mirrors flat_file_ingestion._Bar.update() so live cache
+        and observable bars apply identical rules.
+        """
+        if update_ohlc:
+            self.high = max(self.high, price)
+            self.low = min(self.low, price)
+            self.close = price
+        if update_volume:
+            self.volume += volume
+            self.tick_count += 1
 
     def to_dict(self) -> dict:
         return {
@@ -271,12 +287,34 @@ class BarBuilder:
 
         self._bar_count = len(self.history)
 
-    def process_tick(self, price: float, volume: int,
-                     timestamp: datetime) -> Optional[dict]:
+    def process_tick(
+        self,
+        price: float,
+        volume: int,
+        timestamp: datetime,
+        update_ohlc: bool = True,
+        update_volume: bool = True,
+    ) -> Optional[dict]:
+        """Process a single tick into the builder's partial bar.
+
+        Phase G (2026-05-15): added update_ohlc + update_volume flags
+        so vol-only trades (Polygon OHLC-ineligible but vol-eligible)
+        contribute to volume without disturbing H/L/C. Default values
+        preserve backward-compatibility — callers without the flag
+        still get full OHLC + volume update.
+        """
+        # If this tick is volume-only AND no partial exists yet,
+        # we can't seed OHLC from it. Drop. Rare; an OHLC-eligible
+        # trade is almost always the first tick of any new period.
+        if self._partial is None and not update_ohlc:
+            return None
+
         period_start = self._align_to_period(timestamp)
         if self._partial is None:
             self._partial = PartialBar(price, period_start, self.tf_seconds)
-            self._partial.update(price, volume)
+            self._partial.update(price, volume,
+                                 update_ohlc=update_ohlc,
+                                 update_volume=update_volume)
             return None
         if period_start > self._partial.bar_start:
             fill_close = self._partial.close
@@ -293,10 +331,19 @@ class BarBuilder:
                 })
                 self._bar_count += 1
                 gap_ts += timedelta(seconds=self.tf_seconds)
+            # Edge case: if first tick of new period is vol-only,
+            # we have no real OHLC to seed. Skip starting a new
+            # partial; next OHLC-eligible tick will start it.
+            if not update_ohlc:
+                return completed
             self._partial = PartialBar(price, period_start, self.tf_seconds)
-            self._partial.update(price, volume)
+            self._partial.update(price, volume,
+                                 update_ohlc=update_ohlc,
+                                 update_volume=update_volume)
             return completed
-        self._partial.update(price, volume)
+        self._partial.update(price, volume,
+                             update_ohlc=update_ohlc,
+                             update_volume=update_volume)
         return None
 
     def accept_second_bar(self, bar_dict: dict,
@@ -1011,6 +1058,32 @@ def _ws_agg_secondary_fanout_enabled() -> bool:
     return val in ('1', 'true', 'yes', 'on')
 
 
+def _polygon_canonical_filter_enabled() -> bool:
+    """Phase G (2026-05-15): default ON. When True, the trade filter
+    in `_make_on_trade` uses Polygon's canonical /v3/reference/conditions
+    rules (via polygon_conditions._classify_eligibility) split into
+    OHLC vs volume eligibility — matching exactly what
+    flat_file_ingestion uses for observable bars.
+
+    Diagnostic motivation: Phase E proved Cache ≠ Observable on 5-13;
+    suspect #1 was that the legacy CTA/UTP letter-code filter
+    (EXCLUDED_TRADE_CONDITIONS) doesn't match Polygon WS's numeric
+    codes, so the filter is effectively a no-op and cache includes
+    every trade — including Form T / Odd Lot / Cash Sale prints that
+    Polygon REST excludes from OHLC.
+
+    When OFF: legacy letter-code filter (original behavior, rollback path).
+    When ON (default): canonical numeric filter + volume-only path for
+    OHLC-ineligible-but-vol-eligible trades.
+
+    Rollback: set RALPH_USE_POLYGON_CANONICAL_FILTER=false on the
+    Worker service and the next worker restart picks it up.
+    """
+    val = os.environ.get(
+        'RALPH_USE_POLYGON_CANONICAL_FILTER', 'true').strip().lower()
+    return val in ('1', 'true', 'yes', 'on')
+
+
 def _ws_agg_primary_fanout_enabled() -> bool:
     """Task #12 (2026-05-14): default ON. When True, ws_agg 1Min minute
     closes also feed >60s PRIMARY builders (5Min, 1Hour, 1Day). Without
@@ -1537,14 +1610,25 @@ class SymbolHub:
 
     def on_tick(self, price: float, volume: int, timestamp: datetime,
                 alert_callback: Callable = None, config: dict = None,
-                auditor: 'FidelityAuditor' = None):
-        """Route tick to bar builders and strategy monitors."""
+                auditor: 'FidelityAuditor' = None,
+                update_ohlc: bool = True, update_volume: bool = True):
+        """Route tick to bar builders and strategy monitors.
+
+        Phase G (2026-05-15): update_ohlc + update_volume flags plumb
+        through to each builder. Vol-only trades (Polygon OHLC-
+        ineligible but vol-eligible) contribute to volume without
+        moving H/L/C. Default values preserve backward-compat.
+        """
         self.tick_count += 1
         self.last_tick_time = timestamp
         ts_str = timestamp.isoformat()
 
         for tf_seconds, builder in self.builders.items():
-            completed = builder.process_tick(price, volume, timestamp)
+            completed = builder.process_tick(
+                price, volume, timestamp,
+                update_ohlc=update_ohlc,
+                update_volume=update_volume,
+            )
 
             if completed is not None:
                 # Bar close — update shared confluence buffer FIRST
@@ -3284,13 +3368,29 @@ class RalphEngine:
                                 "trades for %d symbols",
                                 stream_type, len(symbol_list))
 
-                # Skip trade condition filtering for crypto
-                # (crypto trades don't have CTA/UTP condition codes)
+                # Phase G (2026-05-15): condition filtering. Crypto
+                # trades don't have CTA/UTP condition codes — skip
+                # filter for them. Stocks: branch on feature flag.
+                update_ohlc = True
+                update_volume = True
                 if not is_crypto_stream:
                     conditions = getattr(trade, 'conditions', None) or []
-                    if conditions and EXCLUDED_TRADE_CONDITIONS.intersection(
-                            conditions):
-                        return
+                    if _polygon_canonical_filter_enabled():
+                        # Canonical numeric-code filter (matches what
+                        # flat_file_ingestion uses for observable bars).
+                        from polygon_conditions import _classify_eligibility
+                        ohlc_ok, vol_ok = _classify_eligibility(conditions)
+                        if not ohlc_ok and not vol_ok:
+                            return  # rare; skip entirely
+                        # Vol-only trades (Form T, Odd Lot, etc.) contribute
+                        # to volume without moving H/L/C.
+                        update_ohlc = ohlc_ok
+                        update_volume = vol_ok
+                    else:
+                        # Legacy letter-code filter (rollback path).
+                        if conditions and EXCLUDED_TRADE_CONDITIONS.intersection(
+                                conditions):
+                            return
 
                 hub = self.hubs.get(trade.symbol)
                 if hub:
@@ -3302,6 +3402,8 @@ class RalphEngine:
                         alert_callback=self._on_alert,
                         config=self._config,
                         auditor=self.auditor,
+                        update_ohlc=update_ohlc,
+                        update_volume=update_volume,
                     )
             return on_trade
 
