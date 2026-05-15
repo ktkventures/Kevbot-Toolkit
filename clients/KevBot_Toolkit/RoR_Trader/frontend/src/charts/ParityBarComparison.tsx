@@ -54,7 +54,10 @@ interface NormBar {
 }
 
 interface ComparisonRow {
-  minute: string;  // 'YYYY-MM-DDTHH:MM'
+  /** Bucket-start epoch seconds (UTC). Used for sorting + keying. */
+  bucketStart: number;
+  /** Display label — Phase G.0: now includes seconds for sub-minute TFs. */
+  label: string;
   left_close: number | null;
   right_close: number | null;
   close_diff: number | null;  // left - right
@@ -62,6 +65,33 @@ interface ComparisonRow {
   right_vol: number | null;
   vol_ratio: number | null;   // left / right
   flagged: boolean;
+}
+
+/** Pick TFs the user can select. Sub-minute options auto-disable REST
+ *  (Polygon REST aggregates API minimum is 1Min). */
+interface TfOption {
+  value: number;   // seconds
+  label: string;
+  restAvailable: boolean;
+}
+
+const TF_OPTIONS: TfOption[] = [
+  { value: 10,  label: '10Sec',  restAvailable: false },
+  { value: 30,  label: '30Sec',  restAvailable: false },
+  { value: 60,  label: '1Min',   restAvailable: true  },
+  { value: 300, label: '5Min',   restAvailable: true  },
+  { value: 900, label: '15Min',  restAvailable: true  },
+];
+
+function formatBucketLabel(epochSec: number, tfSeconds: number): string {
+  const d = new Date(epochSec * 1000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  // ISO-style display in UTC, granularity follows TF
+  const base = `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+  if (tfSeconds < 60) {
+    return `${base}:${pad(d.getUTCSeconds())}`;
+  }
+  return base;
 }
 
 const PAGE_SIZE = 50;
@@ -122,16 +152,21 @@ function normRest(bars: BarData[]): NormBar[] {
   }));
 }
 
-/** Aggregate any series to per-minute OHLCV. Open = first bar's open,
- *  close = last bar's close, high/low = max/min, volume = sum. */
-function bucketByMinute(bars: NormBar[]): Map<string, NormBar> {
-  const out = new Map<string, NormBar>();
+/** Aggregate any series to a target TF (seconds). Open = first bar's
+ *  open, close = last bar's close, high/low = max/min, volume = sum.
+ *  Phase G.0: generalized from bucketByMinute to support any TF. Keys
+ *  are bucket-start epoch seconds (UTC-aligned via floor(epoch / tf)).
+ */
+function bucketByTf(bars: NormBar[], tfSeconds: number): Map<number, NormBar> {
+  const out = new Map<number, NormBar>();
   for (const b of bars) {
-    const min = b.timestamp.slice(0, 16); // YYYY-MM-DDTHH:MM
-    const cur = out.get(min);
+    const epoch = Math.floor(new Date(b.timestamp).getTime() / 1000);
+    if (!isFinite(epoch)) continue;
+    const bucketStart = Math.floor(epoch / tfSeconds) * tfSeconds;
+    const cur = out.get(bucketStart);
     if (!cur) {
-      out.set(min, {
-        timestamp: min + ':00Z',
+      out.set(bucketStart, {
+        timestamp: new Date(bucketStart * 1000).toISOString(),
         open: b.open,
         high: b.high,
         low: b.low,
@@ -148,17 +183,17 @@ function bucketByMinute(bars: NormBar[]): Map<string, NormBar> {
   return out;
 }
 
-function buildRows(left: NormBar[], right: NormBar[]): ComparisonRow[] {
-  const leftMap = bucketByMinute(left);
-  const rightMap = bucketByMinute(right);
-  const allMinutes = new Set<string>();
-  leftMap.forEach((_v, k) => allMinutes.add(k));
-  rightMap.forEach((_v, k) => allMinutes.add(k));
-  const sorted = Array.from(allMinutes).sort();
+function buildRows(left: NormBar[], right: NormBar[], tfSeconds: number): ComparisonRow[] {
+  const leftMap = bucketByTf(left, tfSeconds);
+  const rightMap = bucketByTf(right, tfSeconds);
+  const allBuckets = new Set<number>();
+  leftMap.forEach((_v, k) => allBuckets.add(k));
+  rightMap.forEach((_v, k) => allBuckets.add(k));
+  const sorted = Array.from(allBuckets).sort((a, b) => a - b);
 
-  return sorted.map<ComparisonRow>((min) => {
-    const l = leftMap.get(min) || null;
-    const r = rightMap.get(min) || null;
+  return sorted.map<ComparisonRow>((bucketStart) => {
+    const l = leftMap.get(bucketStart) || null;
+    const r = rightMap.get(bucketStart) || null;
     const lc = l?.close ?? null;
     const rc = r?.close ?? null;
     const lv = l?.volume ?? null;
@@ -169,7 +204,8 @@ function buildRows(left: NormBar[], right: NormBar[]): ComparisonRow[] {
     const volFlag = vol_ratio != null && (vol_ratio < 0.95 || vol_ratio > 1.05);
     const missingSide = lc == null || rc == null;
     return {
-      minute: min,
+      bucketStart,
+      label: formatBucketLabel(bucketStart, tfSeconds),
       left_close: lc,
       right_close: rc,
       close_diff,
@@ -220,7 +256,7 @@ function DivergenceHistogram({ rows }: { rows: ComparisonRow[] }) {
           if (missingSide) color = 'rgba(239, 68, 68, 0.75)';
           return (
             <div key={i}
-              title={`${r.minute} | close Δ ${fmtDiff(r.close_diff)} | vol ratio ${fmtRatio(r.vol_ratio)}`}
+              title={`${r.label} | close Δ ${fmtDiff(r.close_diff)} | vol ratio ${fmtRatio(r.vol_ratio)}`}
               style={{ flex: 1, background: color, minWidth: 1 }} />
           );
         })}
@@ -245,8 +281,21 @@ export default function ParityBarComparison({
   // (answers "did our live engine match what was emitted?").
   const [leftSource, setLeftSource] = useState<SourceKey>('cache');
   const [rightSource, setRightSource] = useState<SourceKey>('observable');
+  const [tfSeconds, setTfSeconds] = useState<number>(60);
   const [sortDesc, setSortDesc] = useState(true);
   const [page, setPage] = useState(0);
+
+  // Phase G.0: TF dropdown auto-disables REST when user picks sub-minute
+  // (Polygon REST aggregates API minimum is 1Min). If user has REST
+  // selected and switches TF below 1Min, force REST off either side.
+  const tfOption = TF_OPTIONS.find((t) => t.value === tfSeconds) ?? TF_OPTIONS[2];
+  const restDisabled = !tfOption.restAvailable;
+  // Effective sources: if REST is disabled and selected, fall back to
+  // observable (most diagnostic alternative).
+  const effectiveLeftSource: SourceKey =
+    restDisabled && leftSource === 'rest' ? 'observable' : leftSource;
+  const effectiveRightSource: SourceKey =
+    restDisabled && rightSource === 'rest' ? 'observable' : rightSource;
 
   // Normalize each series to NormBar[] for shared handling.
   const cacheNorm = useMemo(() => normCache(cacheBars), [cacheBars]);
@@ -261,17 +310,20 @@ export default function ParityBarComparison({
 
   // Clamp each side to the window for both chart and diff computation.
   const leftClamped = useMemo(() => {
-    const bars = seriesByKey[leftSource];
+    const bars = seriesByKey[effectiveLeftSource];
     if (!windowStart || !windowEnd) return bars;
     return bars.filter((b) => b.timestamp >= windowStart && b.timestamp < windowEnd);
-  }, [seriesByKey, leftSource, windowStart, windowEnd]);
+  }, [seriesByKey, effectiveLeftSource, windowStart, windowEnd]);
   const rightClamped = useMemo(() => {
-    const bars = seriesByKey[rightSource];
+    const bars = seriesByKey[effectiveRightSource];
     if (!windowStart || !windowEnd) return bars;
     return bars.filter((b) => b.timestamp >= windowStart && b.timestamp < windowEnd);
-  }, [seriesByKey, rightSource, windowStart, windowEnd]);
+  }, [seriesByKey, effectiveRightSource, windowStart, windowEnd]);
 
-  const rows = useMemo(() => buildRows(leftClamped, rightClamped), [leftClamped, rightClamped]);
+  const rows = useMemo(
+    () => buildRows(leftClamped, rightClamped, tfSeconds),
+    [leftClamped, rightClamped, tfSeconds],
+  );
 
   const leftCandles = toCandle(leftClamped);
   const rightCandles = toCandle(rightClamped);
@@ -326,7 +378,7 @@ export default function ParityBarComparison({
 
   return (
     <div className="space-y-4">
-      {/* Source selector */}
+      {/* Source + TF selector */}
       <div
         className="flex items-end gap-4 p-3 rounded flex-wrap"
         style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}
@@ -336,14 +388,16 @@ export default function ParityBarComparison({
             Left pane
           </label>
           <select
-            value={leftSource}
+            value={effectiveLeftSource}
             onChange={(e) => setLeftSource(e.target.value as SourceKey)}
             className="text-sm px-2 py-1.5 rounded"
             style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text)' }}
           >
             <option value="cache">Cache (live_bars)</option>
             <option value="observable">Observable (flat-file)</option>
-            <option value="rest">REST (Polygon aggregates)</option>
+            <option value="rest" disabled={restDisabled}>
+              REST (Polygon aggregates){restDisabled ? ' — ≥1Min only' : ''}
+            </option>
           </select>
         </div>
         <div>
@@ -351,19 +405,41 @@ export default function ParityBarComparison({
             Right pane
           </label>
           <select
-            value={rightSource}
+            value={effectiveRightSource}
             onChange={(e) => setRightSource(e.target.value as SourceKey)}
             className="text-sm px-2 py-1.5 rounded"
             style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text)' }}
           >
             <option value="cache">Cache (live_bars)</option>
             <option value="observable">Observable (flat-file)</option>
-            <option value="rest">REST (Polygon aggregates)</option>
+            <option value="rest" disabled={restDisabled}>
+              REST (Polygon aggregates){restDisabled ? ' — ≥1Min only' : ''}
+            </option>
+          </select>
+        </div>
+        <div>
+          <label className="text-xs block mb-1" style={{ color: 'var(--text-muted)' }}>
+            Timeframe
+          </label>
+          <select
+            value={tfSeconds}
+            onChange={(e) => setTfSeconds(Number(e.target.value))}
+            className="text-sm px-2 py-1.5 rounded"
+            style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text)' }}
+          >
+            {TF_OPTIONS.map((t) => (
+              <option key={t.value} value={t.value}>{t.label}</option>
+            ))}
           </select>
         </div>
         <div className="text-xs" style={{ color: 'var(--text-muted)', maxWidth: 460 }}>
-          <strong>{SOURCE_LABELS[leftSource]}</strong> = {SOURCE_DESCRIPTIONS[leftSource]}<br />
-          <strong>{SOURCE_LABELS[rightSource]}</strong> = {SOURCE_DESCRIPTIONS[rightSource]}
+          <strong>{SOURCE_LABELS[effectiveLeftSource]}</strong> = {SOURCE_DESCRIPTIONS[effectiveLeftSource]}<br />
+          <strong>{SOURCE_LABELS[effectiveRightSource]}</strong> = {SOURCE_DESCRIPTIONS[effectiveRightSource]}
+          {restDisabled && (leftSource === 'rest' || rightSource === 'rest') && (
+            <div className="mt-1" style={{ color: 'var(--orange)' }}>
+              REST not available below 1Min — falling back to Observable.
+            </div>
+          )}
         </div>
       </div>
 
@@ -414,7 +490,7 @@ export default function ParityBarComparison({
           <span style={{ color: 'var(--text-muted)' }}>Combined: </span>
           <strong style={{ color: 'var(--text-muted)' }}>{combinedMatchPct}%</strong>
         </div>
-        {leftSource === 'cache' || rightSource === 'cache' ? (
+        {effectiveLeftSource === 'cache' || effectiveRightSource === 'cache' ? (
           <div>
             <span style={{ color: 'var(--text-muted)' }}>Cache value_type: </span>
             <code>{cacheValueType ?? '—'}</code>
@@ -428,7 +504,7 @@ export default function ParityBarComparison({
       <div className="grid grid-cols-2 gap-3">
         <div>
           <div className="text-sm mb-1 flex justify-between">
-            <strong>{SOURCE_LABELS[leftSource]}</strong>
+            <strong>{SOURCE_LABELS[effectiveLeftSource]}</strong>
             <span style={{ color: 'var(--text-muted)' }}>{leftCandles.length} bars</span>
           </div>
           {leftCandles.length > 0 ? (
@@ -438,11 +514,11 @@ export default function ParityBarComparison({
               secondsVisible={false}
               visibleRange={windowStart && windowEnd ? { from: windowStart, to: windowEnd } : null}
             />
-          ) : emptyState(leftSource)}
+          ) : emptyState(effectiveLeftSource)}
         </div>
         <div>
           <div className="text-sm mb-1 flex justify-between">
-            <strong>{SOURCE_LABELS[rightSource]}</strong>
+            <strong>{SOURCE_LABELS[effectiveRightSource]}</strong>
             <span style={{ color: 'var(--text-muted)' }}>{rightCandles.length} bars</span>
           </div>
           {rightCandles.length > 0 ? (
@@ -452,12 +528,12 @@ export default function ParityBarComparison({
               secondsVisible={false}
               visibleRange={windowStart && windowEnd ? { from: windowStart, to: windowEnd } : null}
             />
-          ) : emptyState(rightSource)}
+          ) : emptyState(effectiveRightSource)}
         </div>
       </div>
 
       {/* Cache notes (only when cache is one of the panes) */}
-      {(leftSource === 'cache' || rightSource === 'cache') && cacheNotes.length > 0 && (
+      {(effectiveLeftSource === 'cache' || effectiveRightSource === 'cache') && cacheNotes.length > 0 && (
         <div className="text-xs p-2 rounded" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
           {cacheNotes.map((n, i) => <div key={i}>· {n}</div>)}
         </div>
@@ -505,19 +581,19 @@ export default function ParityBarComparison({
             <thead>
               <tr style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
                 <th className="text-left px-2 py-1.5">Minute (UTC)</th>
-                <th className="text-right px-2 py-1.5">{SOURCE_LABELS[leftSource].split(' ')[0]} close</th>
-                <th className="text-right px-2 py-1.5">{SOURCE_LABELS[rightSource].split(' ')[0]} close</th>
+                <th className="text-right px-2 py-1.5">{SOURCE_LABELS[effectiveLeftSource].split(' ')[0]} close</th>
+                <th className="text-right px-2 py-1.5">{SOURCE_LABELS[effectiveRightSource].split(' ')[0]} close</th>
                 <th className="text-right px-2 py-1.5">Δ</th>
-                <th className="text-right px-2 py-1.5">{SOURCE_LABELS[leftSource].split(' ')[0]} vol</th>
-                <th className="text-right px-2 py-1.5">{SOURCE_LABELS[rightSource].split(' ')[0]} vol</th>
+                <th className="text-right px-2 py-1.5">{SOURCE_LABELS[effectiveLeftSource].split(' ')[0]} vol</th>
+                <th className="text-right px-2 py-1.5">{SOURCE_LABELS[effectiveRightSource].split(' ')[0]} vol</th>
                 <th className="text-right px-2 py-1.5">Vol ratio</th>
               </tr>
             </thead>
             <tbody>
               {pageRows.map((row) => (
-                <tr key={row.minute}
+                <tr key={row.label}
                   style={{ background: row.flagged ? 'rgba(255, 152, 0, 0.10)' : 'transparent', borderBottom: '1px solid var(--border)' }}>
-                  <td className="px-2 py-1">{row.minute}</td>
+                  <td className="px-2 py-1">{row.label}</td>
                   <td className="px-2 py-1 text-right">{fmtPrice(row.left_close)}</td>
                   <td className="px-2 py-1 text-right">{fmtPrice(row.right_close)}</td>
                   <td className="px-2 py-1 text-right" style={{
