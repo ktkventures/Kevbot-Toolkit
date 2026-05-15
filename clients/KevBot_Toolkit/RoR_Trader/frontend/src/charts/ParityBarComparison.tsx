@@ -30,10 +30,21 @@ import type { CacheBar } from '@/hooks/queries/useStrategies';
 import type { BarData } from '@/hooks/queries/useMarketData';
 import {
   useRestBars,
+  useTradeBars,
   type ObservableBar,
+  type TradeBarSource,
 } from '@/hooks/queries/useAdminParity';
 
-type SourceKey = 'cache' | 'cache_latest' | 'observable' | 'rest' | 'rest1s';
+type SourceKey =
+  | 'cache'
+  | 'cache_latest'
+  | 'observable'
+  | 'rest'
+  | 'rest1s'
+  // Phase H.2 (2026-05-15): three trade-channel shadow variants.
+  | 't_wait0'
+  | 't_wait200'
+  | 't_wait500';
 
 interface Props {
   /** Cache decision-time view (first_* columns — what the engine saw at bar close). */
@@ -118,6 +129,9 @@ const SOURCE_LABELS: Record<SourceKey, string> = {
   observable: 'Observable (flat-file)',
   rest: 'REST 1Min aggs',
   rest1s: 'REST 1Sec aggs',
+  t_wait0: 'Trade ch. (wait 0ms)',
+  t_wait200: 'Trade ch. (wait 200ms)',
+  t_wait500: 'Trade ch. (wait 500ms)',
 };
 
 const SOURCE_DESCRIPTIONS: Record<SourceKey, string> = {
@@ -126,7 +140,14 @@ const SOURCE_DESCRIPTIONS: Record<SourceKey, string> = {
   observable: 'what was actually emitted to subscribers (rebuilt from flat-file trades using sip_timestamp)',
   rest: "Polygon's settled 1Min aggregates — yesterday's gospel-truth baseline",
   rest1s: "Polygon's 1Sec aggregates rolled up to selected TF — supports sub-minute",
+  t_wait0: 'Phase H shadow: bars built from Polygon T (trade) channel; bucket closes immediately when next-bucket trade arrives. Zero wait = strict decision-time.',
+  t_wait200: 'Phase H shadow: bars built from Polygon T (trade) channel; bucket holds open 200ms past period end to catch in-flight late prints.',
+  t_wait500: 'Phase H shadow: bars built from Polygon T (trade) channel; bucket holds open 500ms past period end. Most forgiving — closest to settled.',
 };
+
+function isTradeSource(key: SourceKey): boolean {
+  return key === 't_wait0' || key === 't_wait200' || key === 't_wait500';
+}
 
 function toCandle(bars: NormBar[]): CandleData[] {
   return bars.map((b) => ({
@@ -329,6 +350,34 @@ export default function ParityBarComparison({
   );
   const rest1sBars = rest1sQuery.data?.bars ?? [];
 
+  // Phase H.2: each trade-channel variant fetches lazily, only when
+  // the user actually selects it on one of the panes. Three parallel
+  // queries (one per wait variant) so the chosen pair renders fast.
+  const tradeNeeded = (key: SourceKey): boolean => (
+    effectiveLeftSource === key || effectiveRightSource === key
+  );
+  const tradeWait0Query = useTradeBars(
+    tradeNeeded('t_wait0') ? symbol ?? null : null,
+    tradeNeeded('t_wait0') ? windowStart ?? null : null,
+    tradeNeeded('t_wait0') ? windowEnd ?? null : null,
+    tfSeconds,
+    tradeNeeded('t_wait0') ? 't_wait0' : null,
+  );
+  const tradeWait200Query = useTradeBars(
+    tradeNeeded('t_wait200') ? symbol ?? null : null,
+    tradeNeeded('t_wait200') ? windowStart ?? null : null,
+    tradeNeeded('t_wait200') ? windowEnd ?? null : null,
+    tfSeconds,
+    tradeNeeded('t_wait200') ? 't_wait200' : null,
+  );
+  const tradeWait500Query = useTradeBars(
+    tradeNeeded('t_wait500') ? symbol ?? null : null,
+    tradeNeeded('t_wait500') ? windowStart ?? null : null,
+    tradeNeeded('t_wait500') ? windowEnd ?? null : null,
+    tfSeconds,
+    tradeNeeded('t_wait500') ? 't_wait500' : null,
+  );
+
   // Normalize each series to NormBar[] for shared handling.
   const cacheNorm = useMemo(() => normCache(cacheBars), [cacheBars]);
   const cacheLatestNorm = useMemo(() => normCache(cacheBarsLatest), [cacheBarsLatest]);
@@ -337,6 +386,19 @@ export default function ParityBarComparison({
   const restNorm = useMemo(() => normRest(restBars), [restBars]);
   // REST 1-sec aggs from new endpoint — observable-shape (already aggregated server-side).
   const rest1sNorm = useMemo(() => normObservable(rest1sBars), [rest1sBars]);
+  // Phase H.2: trade-channel shadow series, one normalized array per wait variant.
+  const tradeWait0Norm = useMemo(
+    () => normObservable(tradeWait0Query.data?.bars ?? []),
+    [tradeWait0Query.data],
+  );
+  const tradeWait200Norm = useMemo(
+    () => normObservable(tradeWait200Query.data?.bars ?? []),
+    [tradeWait200Query.data],
+  );
+  const tradeWait500Norm = useMemo(
+    () => normObservable(tradeWait500Query.data?.bars ?? []),
+    [tradeWait500Query.data],
+  );
 
   const seriesByKey: Record<SourceKey, NormBar[]> = {
     cache: cacheNorm,
@@ -344,6 +406,9 @@ export default function ParityBarComparison({
     observable: observableNorm,
     rest: restNorm,
     rest1s: rest1sNorm,
+    t_wait0: tradeWait0Norm,
+    t_wait200: tradeWait200Norm,
+    t_wait500: tradeWait500Norm,
   };
 
   // Clamp each side to the window for both chart and diff computation.
@@ -438,6 +503,9 @@ export default function ParityBarComparison({
               REST 1Min aggs{rest1MinDisabled ? ' — ≥1Min only' : ''}
             </option>
             <option value="rest1s">REST 1Sec aggs (any TF)</option>
+            <option value="t_wait0">Trade ch. (wait 0ms) — Phase H shadow</option>
+            <option value="t_wait200">Trade ch. (wait 200ms) — Phase H shadow</option>
+            <option value="t_wait500">Trade ch. (wait 500ms) — Phase H shadow</option>
           </select>
         </div>
         <div>
@@ -457,6 +525,9 @@ export default function ParityBarComparison({
               REST 1Min aggs{rest1MinDisabled ? ' — ≥1Min only' : ''}
             </option>
             <option value="rest1s">REST 1Sec aggs (any TF)</option>
+            <option value="t_wait0">Trade ch. (wait 0ms) — Phase H shadow</option>
+            <option value="t_wait200">Trade ch. (wait 200ms) — Phase H shadow</option>
+            <option value="t_wait500">Trade ch. (wait 500ms) — Phase H shadow</option>
           </select>
         </div>
         <div>
@@ -480,6 +551,11 @@ export default function ParityBarComparison({
           {rest1MinDisabled && (leftSource === 'rest' || rightSource === 'rest') && (
             <div className="mt-1" style={{ color: 'var(--orange)' }}>
               REST 1Min aggs not available below 1Min — falling back to Observable. Use "REST 1Sec aggs" for sub-minute comparison.
+            </div>
+          )}
+          {(isTradeSource(effectiveLeftSource) || isTradeSource(effectiveRightSource)) && (
+            <div className="mt-1" style={{ color: 'var(--text-muted)' }}>
+              Phase H shadow: trade-channel bars are currently captured for <strong>SPY</strong> and <strong>TSLA</strong> at <strong>10Sec</strong> + <strong>1Min</strong>. Other TFs aggregate up from those server-side. Other symbols will show empty.
             </div>
           )}
         </div>

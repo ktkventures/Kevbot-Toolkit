@@ -382,3 +382,137 @@ def get_rest_bars(
         'raw_count': len(in_window),
         'bars': bars,
     }
+
+
+@router.get("/trade-bars")
+def get_trade_bars(
+    symbol: str = Query(..., description="Ticker symbol (e.g., SPY)"),
+    start: str = Query(..., description="ISO UTC window start (inclusive)"),
+    end: Optional[str] = Query(None, description="ISO UTC window end (exclusive). Defaults to now."),
+    tf_seconds: int = Query(60, ge=1, le=86400,
+        description="Target timeframe in seconds. If no rows exist at this exact TF, server aggregates up from the smallest stored TF that divides it."),
+    source: str = Query(..., description="Wait-time variant label: t_wait0 | t_wait200 | t_wait500"),
+    user=Depends(get_current_user),
+):
+    """Phase H.2 (2026-05-15): trade-channel shadow bars from live_bars_trades.
+
+    Returns OHLCV built by the engine's TradeBarShadowManager from
+    Polygon's T (trade) WebSocket channel — one row per (symbol, tf,
+    bar_start, source). The source label encodes the wait-time variant
+    (how long the builder held the bucket open past period end before
+    closing — 0ms / 200ms / 500ms).
+
+    Aggregation: if no rows exist at the requested tf_seconds, the
+    endpoint falls back to the smallest stored TF that divides
+    tf_seconds and aggregates up. For example, when only 10s + 60s
+    bars are stored, tf_seconds=300 (5Min) aggregates from 60s rows.
+    """
+    _resolve_user_id(user)
+    end_iso = end or datetime.now(timezone.utc).isoformat()
+    if start >= end_iso:
+        raise HTTPException(status_code=400, detail="start must be < end")
+    if source not in ('t_wait0', 't_wait200', 't_wait500'):
+        raise HTTPException(
+            status_code=400,
+            detail="source must be one of: t_wait0, t_wait200, t_wait500")
+
+    from db import get_admin_client
+    sb = get_admin_client()
+
+    def _fetch_rows(at_tf: int) -> list[dict]:
+        PAGE = 1000
+        MAX_ROWS = 200_000
+        out: list[dict] = []
+        offset = 0
+        while offset < MAX_ROWS:
+            page_res = sb.table("live_bars_trades").select(
+                "symbol, timeframe_seconds, bar_start, source, "
+                "open, high, low, close, volume, trade_count"
+            ).eq("symbol", symbol.upper()) \
+             .eq("source", source) \
+             .eq("timeframe_seconds", at_tf) \
+             .gte("bar_start", start) \
+             .lt("bar_start", end_iso) \
+             .order("bar_start") \
+             .range(offset, offset + PAGE - 1) \
+             .execute()
+            page_data = page_res.data or []
+            out.extend(page_data)
+            if len(page_data) < PAGE:
+                break
+            offset += PAGE
+        return out
+
+    # First try the exact requested TF.
+    rows = _fetch_rows(tf_seconds)
+    source_tf = tf_seconds
+    used_aggregation = False
+
+    # Fall back: find the smallest stored TF for this (symbol, source)
+    # that divides tf_seconds, then aggregate up.
+    if not rows:
+        avail_res = sb.table("live_bars_trades").select(
+            "timeframe_seconds"
+        ).eq("symbol", symbol.upper()) \
+         .eq("source", source) \
+         .gte("bar_start", start) \
+         .lt("bar_start", end_iso) \
+         .execute()
+        stored_tfs = sorted({
+            int(r["timeframe_seconds"]) for r in (avail_res.data or [])
+        })
+        divisors = [t for t in stored_tfs if tf_seconds % t == 0 and t < tf_seconds]
+        if divisors:
+            source_tf = divisors[-1]  # largest divisor → fewest rows to roll up
+            rows = _fetch_rows(source_tf)
+            used_aggregation = True
+
+    if not rows:
+        return {
+            'symbol': symbol.upper(),
+            'window': {'start': start, 'end': end_iso},
+            'tf_seconds': tf_seconds,
+            'source': source,
+            'source_tf': source_tf,
+            'aggregated': used_aggregation,
+            'bar_count': 0,
+            'bars': [],
+        }
+
+    if not used_aggregation:
+        bars = [
+            {
+                'timestamp': r['bar_start'],
+                'open': r['open'],
+                'high': r['high'],
+                'low': r['low'],
+                'close': r['close'],
+                'volume': int(r['volume'] or 0),
+                'trade_count': int(r['trade_count'] or 0),
+            }
+            for r in rows
+        ]
+    else:
+        # Adapt to _aggregate_to_tf's expected shape (`sip_second_ts`).
+        adapted = [
+            {
+                'sip_second_ts': r['bar_start'],
+                'open': r['open'], 'high': r['high'],
+                'low': r['low'], 'close': r['close'],
+                'volume': int(r['volume'] or 0),
+                'trade_count': int(r['trade_count'] or 0),
+            }
+            for r in rows
+        ]
+        bars = _aggregate_to_tf(adapted, tf_seconds)
+
+    return {
+        'symbol': symbol.upper(),
+        'window': {'start': start, 'end': end_iso},
+        'tf_seconds': tf_seconds,
+        'source': source,
+        'source_tf': source_tf,
+        'aggregated': used_aggregation,
+        'bar_count': len(bars),
+        'bars': bars,
+    }

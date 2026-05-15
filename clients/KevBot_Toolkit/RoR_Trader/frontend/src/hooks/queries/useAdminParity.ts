@@ -254,6 +254,47 @@ export function useRestBars(
   });
 }
 
+// Phase H.2 (2026-05-15): trade-channel shadow bars at one wait-time
+// variant. Reads `live_bars_trades`. Lazy by design — only fetched when
+// Bars Comparison has a t_wait* source selected.
+
+export type TradeBarSource = 't_wait0' | 't_wait200' | 't_wait500';
+
+export interface TradeBarsResponse {
+  symbol: string;
+  window: { start: string; end: string };
+  tf_seconds: number;
+  source: TradeBarSource;
+  /** Stored TF the rows were read from (may differ from tf_seconds if
+   *  the endpoint had to aggregate up). */
+  source_tf: number;
+  aggregated: boolean;
+  bar_count: number;
+  bars: ObservableBar[];
+}
+
+export function useTradeBars(
+  symbol: string | null,
+  start: string | null,
+  end: string | null,
+  tfSeconds: number,
+  source: TradeBarSource | null,
+) {
+  return useQuery<TradeBarsResponse>({
+    queryKey: ['admin-parity-trade-bars', symbol, start, end, tfSeconds, source],
+    queryFn: () => apiFetch<TradeBarsResponse>(
+      `/api/admin/parity/trade-bars?symbol=${encodeURIComponent(symbol || '')}` +
+      `&start=${encodeURIComponent(start || '')}` +
+      `&end=${encodeURIComponent(end || '')}` +
+      `&tf_seconds=${tfSeconds}` +
+      `&source=${source || ''}`
+    ),
+    enabled: !!symbol && !!start && !!end && !!source,
+    staleTime: 30_000,
+    retry: 0,
+  });
+}
+
 // ============================================================
 // Phase B — Bars Comparison hook
 // ============================================================
