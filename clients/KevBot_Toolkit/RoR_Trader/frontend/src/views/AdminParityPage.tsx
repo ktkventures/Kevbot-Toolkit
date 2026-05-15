@@ -251,19 +251,21 @@ export default function AdminParityPage() {
               }
 
               if (active === 'Bars Comparison') {
-                if (parityBars.isLoading) {
+                // Phase F.3: with 3 selectable sources, don't hard-block on
+                // one being unavailable — the component shows per-pane empty
+                // states so the user can pick a different pair.
+                if (parityBars.isLoading && overlayBars.isLoading && observableQ.isLoading) {
                   return <div className="text-sm py-6 text-center" style={{ color: 'var(--text-muted)' }}>Loading…</div>;
-                }
-                if (parityBars.isError) {
-                  return <div className="text-sm py-6" style={{ color: 'var(--red)' }}>Failed to load. Strategy may not have cache bars yet (needs live engine to have run on it).</div>;
                 }
                 return (
                   <ParityBarComparison
                     cacheBars={parityBars.cacheBars}
+                    observableBars={observableQ.data?.bars ?? []}
                     restBars={parityBars.restBars}
-                    rows={parityBars.rows}
                     cacheValueType={parityBars.cacheValueType}
                     cacheNotes={parityBars.cacheNotes}
+                    observableEmpty={!observableQ.isLoading && (observableQ.data?.bars.length ?? 0) === 0}
+                    observableLoading={observableQ.isLoading}
                     windowStart={windowStart}
                     windowEnd={windowEnd}
                   />
