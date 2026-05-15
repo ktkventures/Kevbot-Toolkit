@@ -138,7 +138,18 @@ def _write_bar_sync(payload: dict) -> None:
 
 @dataclass
 class _StreamBar:
-    """One open bucket. OHLCV semantics mirror flat_file_ingestion._Bar."""
+    """One open bucket. OHLCV semantics mirror flat_file_ingestion._Bar.
+
+    Extended-hours note (Phase H.1 hotfix, 2026-05-15): during ETH ALL
+    trades on the consolidated tape carry condition 12 (Form T), which
+    the canonical filter classifies as OHLC-ineligible. To avoid
+    silently dropping every ETH bar, we also track a parallel vol-only
+    OHLC series. If `seeded` is False at emit time but `vol_seeded` is
+    True, we promote the vol-only series to the bar's OHLC so ETH
+    coverage isn't lost. trade_count stays at 0 in that case — a
+    useful built-in marker for "this bar was synthesized from vol-only
+    trades" during downstream analysis.
+    """
     bucket_start_sec: int          # epoch seconds (UTC) of bar_start
     open: float = 0.0
     high: float = 0.0
@@ -148,6 +159,12 @@ class _StreamBar:
     trade_count: int = 0           # OHLC-eligible trades that contributed
     filtered_trades: int = 0       # Trades dropped by canonical filter
     seeded: bool = False           # True once we've taken a first OHLC trade
+    # Parallel vol-only OHLC tracker (ETH fallback).
+    vol_seeded: bool = False
+    vol_open: float = 0.0
+    vol_high: float = 0.0
+    vol_low: float = 0.0
+    vol_close: float = 0.0
 
     def update(
         self,
@@ -169,6 +186,20 @@ class _StreamBar:
             self.trade_count += 1
         if update_volume:
             self.volume += size
+            if not update_ohlc:
+                # Vol-only trade: track in parallel series for ETH fallback.
+                if not self.vol_seeded:
+                    self.vol_open = price
+                    self.vol_high = price
+                    self.vol_low = price
+                    self.vol_close = price
+                    self.vol_seeded = True
+                else:
+                    if price > self.vol_high:
+                        self.vol_high = price
+                    if price < self.vol_low:
+                        self.vol_low = price
+                    self.vol_close = price
 
 
 class TradeBarBuilder:
@@ -295,11 +326,22 @@ class TradeBarBuilder:
 
     def _close_bucket(self, bucket_start: int) -> None:
         bar = self._open.pop(bucket_start, None)
-        if bar is None or not bar.seeded:
-            # Empty / vol-only bucket with no OHLC anchor — skip.
-            # We could emit a vol-only bar with open=high=low=close=0
-            # but that would corrupt heatmaps and analytic queries.
+        if bar is None:
             return
+        if not bar.seeded:
+            if bar.vol_seeded:
+                # ETH fallback: every trade in this bucket was vol-only
+                # (Form T flagged). Promote the parallel vol-only series
+                # so the bar still emits — preserves extended-hours
+                # coverage that would otherwise vanish.
+                bar.open = bar.vol_open
+                bar.high = bar.vol_high
+                bar.low = bar.vol_low
+                bar.close = bar.vol_close
+                bar.seeded = True
+            else:
+                # Truly empty bucket — no qualifying trades at all.
+                return
         ts_iso = datetime.fromtimestamp(
             bucket_start, tz=timezone.utc).isoformat()
         payload = {
