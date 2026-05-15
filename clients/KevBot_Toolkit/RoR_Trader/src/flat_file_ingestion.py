@@ -58,8 +58,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 try:
     from dotenv import load_dotenv as _load_dotenv
     import os as _os
+    # File now lives at src/flat_file_ingestion.py — .env sits next to it.
     _env_path = _os.path.join(
-        _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), '.env')
+        _os.path.dirname(_os.path.abspath(__file__)), '.env')
     if _os.path.exists(_env_path):
         _load_dotenv(_env_path, override=False)
 except ImportError:
@@ -75,6 +76,119 @@ _DEFAULT_S3_BUCKET = "flatfiles"
 _DEFAULT_SYMBOLS = "SPY,TSLA"
 _DEFAULT_RETENTION_DAYS = 7
 _UPSERT_BATCH_SIZE = 1000
+
+# Hardcoded fallback for OHLC-exclusion derived from Polygon's canonical
+# /v3/reference/conditions endpoint (snapshot 2026-05-14). Used only when
+# the live API fetch fails at startup. Includes:
+#   2  Average Price Trade
+#   5  Bunched Sold Trade (updates H/L but not O/C; conservative exclude)
+#   7  Cash Sale
+#   10 Derivatively Priced
+#   12 Form T / Extended Hours (Polygon REST excludes from OHLC consolidated)
+#   13 Extended Hours (Sold Out Of Sequence)
+#   15 Market Center Official Close
+#   16 Market Center Official Open
+#   20 Next Day
+#   21 Price Variation Trade
+#   22 Prior Reference Price
+#   29 Seller
+#   32 Sold (Out Of Sequence)
+#   33 Sold (Out of Sequence) and Stopped Stock
+#   37 Odd Lot Trade — main culprit for low-volume outlier prints
+#   52 Contingent Trade
+#   53 Qualified Contingent Trade
+_FALLBACK_OHLC_EXCLUDED: set[int] = {
+    2, 5, 7, 10, 12, 13, 15, 16, 20, 21, 22, 29, 32, 33, 37, 52, 53,
+}
+_FALLBACK_VOL_EXCLUDED: set[int] = {15, 16, 38}
+
+# Filled in by _load_polygon_condition_rules() at first call. The dynamic
+# fetch replaces the fallback so we always have the up-to-date list if
+# Polygon revises it.
+_OHLC_EXCLUDED_CACHE: set[int] | None = None
+_VOL_EXCLUDED_CACHE: set[int] | None = None
+
+
+def _load_polygon_condition_rules() -> tuple[set[int], set[int]]:
+    """Fetch Polygon's canonical conditions list and derive the
+    OHLC-exclusion + volume-exclusion sets. Caches the result for the
+    process lifetime. Falls back to the hardcoded snapshot on failure.
+    """
+    global _OHLC_EXCLUDED_CACHE, _VOL_EXCLUDED_CACHE
+    if _OHLC_EXCLUDED_CACHE is not None and _VOL_EXCLUDED_CACHE is not None:
+        return _OHLC_EXCLUDED_CACHE, _VOL_EXCLUDED_CACHE
+
+    api_key = os.environ.get("POLYGON_API_KEY", "").strip()
+    if not api_key:
+        logger.warning(
+            "POLYGON_API_KEY not set — using fallback condition exclusion list")
+        _OHLC_EXCLUDED_CACHE = set(_FALLBACK_OHLC_EXCLUDED)
+        _VOL_EXCLUDED_CACHE = set(_FALLBACK_VOL_EXCLUDED)
+        return _OHLC_EXCLUDED_CACHE, _VOL_EXCLUDED_CACHE
+
+    try:
+        import httpx
+        resp = httpx.get(
+            "https://api.polygon.io/v3/reference/conditions",
+            params={"asset_class": "stocks", "limit": 1000, "apiKey": api_key},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        rules = resp.json().get("results", [])
+        ohlc_excl: set[int] = set()
+        vol_excl: set[int] = set()
+        for c in rules:
+            cid = c.get("id")
+            if not isinstance(cid, int):
+                continue
+            consolidated = (c.get("update_rules") or {}).get("consolidated") or {}
+            if (consolidated.get("updates_high_low") is False
+                    or consolidated.get("updates_open_close") is False):
+                ohlc_excl.add(cid)
+            if consolidated.get("updates_volume") is False:
+                vol_excl.add(cid)
+        if not ohlc_excl:
+            logger.warning("Polygon conditions API returned empty exclusion set — using fallback")
+            ohlc_excl = set(_FALLBACK_OHLC_EXCLUDED)
+            vol_excl = set(_FALLBACK_VOL_EXCLUDED)
+        else:
+            logger.info(
+                "Loaded canonical Polygon condition rules: %d OHLC-excluded, %d vol-excluded",
+                len(ohlc_excl), len(vol_excl))
+            logger.info("OHLC-excluded codes: %s", sorted(ohlc_excl))
+        _OHLC_EXCLUDED_CACHE = ohlc_excl
+        _VOL_EXCLUDED_CACHE = vol_excl
+    except Exception as e:
+        logger.warning(
+            "Polygon conditions API fetch failed (%s) — using fallback", e)
+        _OHLC_EXCLUDED_CACHE = set(_FALLBACK_OHLC_EXCLUDED)
+        _VOL_EXCLUDED_CACHE = set(_FALLBACK_VOL_EXCLUDED)
+    return _OHLC_EXCLUDED_CACHE, _VOL_EXCLUDED_CACHE
+
+
+def _is_eligible_for_ohlc(conditions_str: str | None) -> bool:
+    """Parse the flat-file `conditions` column and return True iff the trade
+    should update OHLC. Empty / unparseable conditions are treated as
+    eligible (fail-open on parsing).
+
+    Polygon flat-file format: comma-separated list of integers, wrapped in
+    quotes if multiple values. e.g. `"12,37"`, `"14,12,37,41"`, or empty.
+
+    Exclusion set is loaded from Polygon's canonical /v3/reference/conditions
+    endpoint on first call (cached for process lifetime); falls back to a
+    hardcoded snapshot if the API is unreachable.
+    """
+    if not conditions_str:
+        return True
+    s = conditions_str.strip().strip('"')
+    if not s:
+        return True
+    try:
+        codes = {int(c) for c in s.split(',') if c.strip()}
+    except ValueError:
+        return True  # fail-open on weird formats
+    ohlc_excluded, _ = _load_polygon_condition_rules()
+    return not (codes & ohlc_excluded)
 
 
 def _env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -143,9 +257,22 @@ def _build_observable_bars(
     """
     # Per-ticker current accumulating bar
     current: dict[str, _Bar] = {}
+    filtered_conditions = 0
+    filtered_corrections = 0
 
     for row in rows:
         ticker = row["ticker"]
+        # Skip corrected/superseded trades — they're replaced by another row
+        # with correction=0.
+        if (row.get("correction") or "0").strip() not in ("0", ""):
+            filtered_corrections += 1
+            continue
+        # Skip trades that don't qualify for OHLC per Polygon's eligibility
+        # rules (Average Price Trade, Cash Sale, Form T excluded? No — Form T
+        # IS kept since extended hours matters here; see EXCLUDED_POLYGON_CONDITIONS).
+        if not _is_eligible_for_ohlc(row.get("conditions")):
+            filtered_conditions += 1
+            continue
         # sip_timestamp is in NANOSECONDS in Polygon's flat-file format.
         try:
             ns = int(row["sip_timestamp"])
@@ -156,6 +283,10 @@ def _build_observable_bars(
             price = float(row["price"])
             size = int(float(row["size"]))
         except (KeyError, ValueError, TypeError):
+            continue
+        # Skip fractional-share trades (size < 1) — they're settlement
+        # micro-prints that don't represent actionable market activity.
+        if size < 1:
             continue
 
         bar = current.get(ticker)
@@ -171,6 +302,11 @@ def _build_observable_bars(
     # Flush remaining bars.
     for ticker, bar in current.items():
         yield (ticker, bar)
+
+    if filtered_conditions or filtered_corrections:
+        logger.info(
+            "trade filters: %d skipped (excluded conditions), %d skipped (corrections)",
+            filtered_conditions, filtered_corrections)
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +331,14 @@ def _build_s3_client(cfg: dict):
         endpoint_url=cfg["endpoint"],
         aws_access_key_id=cfg["access_key"],
         aws_secret_access_key=cfg["secret_key"],
-        config=BotoConfig(signature_version="s3v4"),
+        config=BotoConfig(
+            signature_version="s3v4",
+            # Tuned for streaming 3-4GB files reliably:
+            retries={"max_attempts": 5, "mode": "adaptive"},
+            connect_timeout=30,
+            read_timeout=600,  # 10 min — full file is ~9 min to stream
+            tcp_keepalive=True,
+        ),
     )
 
 
@@ -288,11 +431,37 @@ def _purge_stale(sb_client, retention_days: int) -> int:
 # Public entry points
 # ---------------------------------------------------------------------------
 
-def ingest_day(date_str: Optional[str] = None) -> dict:
+def _clean_date_for_symbols(sb_client, date: datetime, symbols: set[str]) -> int:
+    """Delete all observable bars for a specific date + symbols. Used by
+    --clean re-ingest path so seconds whose only trades were filtered
+    don't linger as stale rows. Returns count of deleted rows.
+    """
+    day_start = date.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    day_end = (date.replace(hour=0, minute=0, second=0, microsecond=0)
+               + timedelta(days=1)).isoformat()
+    total_deleted = 0
+    for sym in symbols:
+        res = sb_client.table("polygon_observable_bars").delete() \
+            .eq("ticker", sym) \
+            .gte("sip_second_ts", day_start) \
+            .lt("sip_second_ts", day_end) \
+            .execute()
+        n = len(res.data) if res.data else 0
+        total_deleted += n
+        logger.info("--clean: deleted %d rows for %s on %s",
+                    n, sym, date.strftime('%Y-%m-%d'))
+    return total_deleted
+
+
+def ingest_day(date_str: Optional[str] = None, clean: bool = False) -> dict:
     """Ingest one day's flat file. Returns summary dict.
 
     Args:
       date_str: 'YYYY-MM-DD'. Defaults to yesterday (UTC).
+      clean: When True, delete all rows for `date_str` + the configured
+        symbols BEFORE ingesting. Use this when changing filter rules
+        — without it, seconds where ALL trades are now filtered would
+        retain their old (bad) values via upsert idempotency.
 
     Returns:
       {'date': ..., 'symbols': [...], 'bars_inserted': int, 'purged': int,
@@ -317,6 +486,10 @@ def ingest_day(date_str: Optional[str] = None) -> dict:
     from db import get_admin_client
     sb = get_admin_client()
 
+    cleaned = 0
+    if clean:
+        cleaned = _clean_date_for_symbols(sb, date, symbols)
+
     rows_iter = _stream_filtered_rows(s3, cfg["bucket"], key, symbols)
     bars_iter = _build_observable_bars(rows_iter)
     inserted = _upsert_bars(sb, bars_iter)
@@ -332,6 +505,7 @@ def ingest_day(date_str: Optional[str] = None) -> dict:
     summary = {
         "date": date.strftime("%Y-%m-%d"),
         "symbols": sorted(symbols),
+        "cleaned_rows": cleaned,
         "bars_inserted": inserted,
         "purged": purged,
         "elapsed_s": round(elapsed, 1),
@@ -341,10 +515,19 @@ def ingest_day(date_str: Optional[str] = None) -> dict:
 
 
 def main() -> int:
-    """CLI entry: `python -m flat_file_ingestion [YYYY-MM-DD]`."""
-    date_arg = sys.argv[1] if len(sys.argv) > 1 else None
+    """CLI entry: `python -m flat_file_ingestion [YYYY-MM-DD] [--clean]`.
+
+    Flags:
+      --clean: delete existing rows for date+symbols before ingest. Use when
+               filter rules changed so stale junk-conditioned rows don't
+               survive the re-run via upsert idempotency.
+    """
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    flags = {a for a in sys.argv[1:] if a.startswith('--')}
+    date_arg = args[0] if args else None
+    clean = '--clean' in flags
     try:
-        result = ingest_day(date_arg)
+        result = ingest_day(date_arg, clean=clean)
         print(result)
         return 0
     except Exception as e:

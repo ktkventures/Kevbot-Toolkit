@@ -67,6 +67,20 @@ function fromLocalInput(local: string): string {
   return `${local}:00Z`;
 }
 
+/** Parse strategy.timeframe strings like "10Sec" / "1Min" / "5Min" /
+ *  "1Hour" / "1Day" → seconds. Mirrors backend TIMEFRAME_SECONDS dict.
+ *  Used to align observable bar TF with the strategy's primary so the
+ *  Ticks tab shows apples-to-apples granularity on cache + observable. */
+function parseTfSeconds(tf: string | undefined | null): number {
+  if (!tf) return 60;
+  const n = parseInt(tf) || 1;
+  if (tf.includes('Sec')) return n;
+  if (tf.includes('Min')) return n * 60;
+  if (tf.includes('Hour') || tf === '1H') return n * 3600;
+  if (tf.includes('Day') || tf === '1D') return n * 86400;
+  return 60;
+}
+
 export default function AdminParityPage() {
   const { data: strategies, isLoading: stratsLoading } = useStrategies();
   const [strategyId, setStrategyId] = useState<number | null>(null);
@@ -76,6 +90,11 @@ export default function AdminParityPage() {
   const selected: StrategyDTO | undefined = strategies?.find(
     (s) => s.id === strategyId,
   );
+
+  // Phase F.2: align observable TF with the strategy's primary so cache
+  // and observable have matching granularity. REST stays at 1Min (Polygon
+  // REST aggs minimum); the asymmetry is expected.
+  const strategyTfSeconds = parseTfSeconds(selected?.timeframe);
 
   // Phase B: bar comparison (existing hook)
   const parityBars = useAdminParityBars({
@@ -91,12 +110,14 @@ export default function AdminParityPage() {
   // Phase C: 1Min bars for the entry-overlay chart
   const overlayBars = useBars(selected?.symbol ?? null, '1Min', 2);
 
-  // Phase E: observable bars for the Ticks tab (aggregated server-side to 1Min)
+  // Phase E: observable bars for the Ticks tab. Phase F.2: TF now
+  // matches strategy primary so cache and observable have matching
+  // granularity (10-sec for sid 169, 1-min for sid 153, etc.).
   const observableQ = useObservableBars(
     selected?.symbol ?? null,
     windowStart,
     windowEnd,
-    60,
+    strategyTfSeconds,
   );
 
   const windowBarsForOverlay = useMemo(() => {

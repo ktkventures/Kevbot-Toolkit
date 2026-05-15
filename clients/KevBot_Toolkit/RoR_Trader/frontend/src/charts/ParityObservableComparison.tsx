@@ -82,7 +82,7 @@ export default function ParityObservableComparison({
         Three lenses on <strong>{symbol}</strong> for the selected window. <strong>Cache</strong> = what the live engine wrote. <strong>Observable</strong> = what was actually emitted (rebuilt from flat-file trades). <strong>Settled</strong> = Polygon REST aggregates (post-correction). If cache ≈ observable, our live engine is faithful. If they diverge, WS handling has gaps.
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 gap-4">
         <div>
           <div className="text-sm mb-1 flex justify-between">
             <strong>Cache (live_bars)</strong>
