@@ -33,22 +33,21 @@ import {
   type ObservableBar,
 } from '@/hooks/queries/useAdminParity';
 
-type SourceKey = 'cache' | 'observable' | 'rest';
+type SourceKey = 'cache' | 'observable' | 'rest' | 'rest1s';
 
 interface Props {
   cacheBars: CacheBar[];
   observableBars: ObservableBar[];
-  /** @deprecated Phase G.2: kept for backward compat but unused.
-   *  REST bars are now fetched internally via useRestBars at the
-   *  selected TF (supports sub-minute via Polygon 1-sec aggs). */
-  restBars?: BarData[];
+  /** Polygon REST 1Min aggregates — the established baseline source.
+   *  Available only at TF ≥ 1Min. */
+  restBars: BarData[];
   cacheValueType: string | null;
   cacheNotes: string[];
   observableEmpty: boolean;
   observableLoading: boolean;
   windowStart?: string | null;
   windowEnd?: string | null;
-  /** Symbol — needed by useRestBars to fetch on TF change. */
+  /** Symbol — needed by useRestBars (rest1s source) on TF change. */
   symbol?: string | null;
 }
 
@@ -83,15 +82,16 @@ interface TfOption {
   restAvailable: boolean;
 }
 
-// Phase G.2 (2026-05-15): REST is now available at ALL TFs (including
-// sub-minute) via the new /api/admin/parity/rest-bars endpoint which
-// fetches Polygon 1-sec aggs for tf<60 and 1-min aggs for tf≥60.
+// Phase G.2 (2026-05-15): two REST sources now.
+//   - 'rest'   = Polygon 1Min aggs (established baseline; ≥1Min only)
+//   - 'rest1s' = Polygon 1-sec aggs rolled up to selected TF (any TF)
+// The TfOption.restAvailable flag now governs only the 1Min source.
 const TF_OPTIONS: TfOption[] = [
-  { value: 10,  label: '10Sec',  restAvailable: true },
-  { value: 30,  label: '30Sec',  restAvailable: true },
-  { value: 60,  label: '1Min',   restAvailable: true },
-  { value: 300, label: '5Min',   restAvailable: true },
-  { value: 900, label: '15Min',  restAvailable: true },
+  { value: 10,  label: '10Sec',  restAvailable: false },
+  { value: 30,  label: '30Sec',  restAvailable: false },
+  { value: 60,  label: '1Min',   restAvailable: true  },
+  { value: 300, label: '5Min',   restAvailable: true  },
+  { value: 900, label: '15Min',  restAvailable: true  },
 ];
 
 function formatBucketLabel(epochSec: number, tfSeconds: number): string {
@@ -110,13 +110,15 @@ const PAGE_SIZE = 50;
 const SOURCE_LABELS: Record<SourceKey, string> = {
   cache: 'Cache (live_bars)',
   observable: 'Observable (flat-file)',
-  rest: 'REST (Polygon aggregates)',
+  rest: 'REST 1Min aggs',
+  rest1s: 'REST 1Sec aggs',
 };
 
 const SOURCE_DESCRIPTIONS: Record<SourceKey, string> = {
   cache: 'what the live engine wrote in real time',
   observable: 'what was actually emitted to subscribers (rebuilt from flat-file trades)',
-  rest: 'Polygon REST aggregates (settled, post-correction)',
+  rest: "Polygon's settled 1Min aggregates — established baseline from yesterday's observable comparison",
+  rest1s: "Polygon's per-second aggregates rolled up to selected TF — supports sub-minute",
 };
 
 function toCandle(bars: NormBar[]): CandleData[] {
@@ -279,7 +281,7 @@ function DivergenceHistogram({ rows }: { rows: ComparisonRow[] }) {
 export default function ParityBarComparison({
   cacheBars,
   observableBars,
-  restBars: _restBarsLegacy,  // unused; kept for prop-shape compat
+  restBars,
   cacheValueType,
   cacheNotes,
   observableEmpty,
@@ -297,42 +299,41 @@ export default function ParityBarComparison({
   const [sortDesc, setSortDesc] = useState(true);
   const [page, setPage] = useState(0);
 
-  // Phase G.0: TF dropdown auto-disables REST when user picks sub-minute
-  // (Polygon REST aggregates API minimum is 1Min). If user has REST
-  // selected and switches TF below 1Min, force REST off either side.
+  // Phase G.0/G.2: 'rest' (1Min aggs) only available at TF ≥ 60s.
+  // 'rest1s' (1-sec aggs) available at all TFs.
   const tfOption = TF_OPTIONS.find((t) => t.value === tfSeconds) ?? TF_OPTIONS[2];
-  const restDisabled = !tfOption.restAvailable;
-  // Effective sources: if REST is disabled and selected, fall back to
-  // observable (most diagnostic alternative).
+  const rest1MinDisabled = !tfOption.restAvailable;
   const effectiveLeftSource: SourceKey =
-    restDisabled && leftSource === 'rest' ? 'observable' : leftSource;
+    rest1MinDisabled && leftSource === 'rest' ? 'observable' : leftSource;
   const effectiveRightSource: SourceKey =
-    restDisabled && rightSource === 'rest' ? 'observable' : rightSource;
+    rest1MinDisabled && rightSource === 'rest' ? 'observable' : rightSource;
 
-  // Phase G.2: REST bars fetched via the parity rest-bars endpoint
-  // at the selected TF — supports sub-minute via Polygon 1-sec aggs.
-  // The query runs only when the user actually has REST on either side
-  // (avoids needless Polygon REST calls).
-  const restNeeded = effectiveLeftSource === 'rest' || effectiveRightSource === 'rest';
-  const restQuery = useRestBars(
-    restNeeded ? symbol ?? null : null,
-    restNeeded ? windowStart ?? null : null,
-    restNeeded ? windowEnd ?? null : null,
+  // Phase G.2: rest1s bars fetched lazily via useRestBars only when
+  // user has rest1s selected on either side (avoids needless Polygon
+  // REST calls). At sub-minute TFs the endpoint uses Polygon 1-sec
+  // aggs; at ≥60s it uses 1-min aggs then aggregates up.
+  const rest1sNeeded = effectiveLeftSource === 'rest1s' || effectiveRightSource === 'rest1s';
+  const rest1sQuery = useRestBars(
+    rest1sNeeded ? symbol ?? null : null,
+    rest1sNeeded ? windowStart ?? null : null,
+    rest1sNeeded ? windowEnd ?? null : null,
     tfSeconds,
   );
-  const restBarsForTf = restQuery.data?.bars ?? [];
+  const rest1sBars = rest1sQuery.data?.bars ?? [];
 
   // Normalize each series to NormBar[] for shared handling.
   const cacheNorm = useMemo(() => normCache(cacheBars), [cacheBars]);
   const observableNorm = useMemo(() => normObservable(observableBars), [observableBars]);
-  // restBarsForTf already has the bucketed shape — use observable normalizer
-  // (it shares the OHLCV + trade_count shape).
-  const restNorm = useMemo(() => normObservable(restBarsForTf), [restBarsForTf]);
+  // Original REST 1Min aggs from the legacy useBars hook — unchanged shape.
+  const restNorm = useMemo(() => normRest(restBars), [restBars]);
+  // REST 1-sec aggs from new endpoint — observable-shape (already aggregated server-side).
+  const rest1sNorm = useMemo(() => normObservable(rest1sBars), [rest1sBars]);
 
   const seriesByKey: Record<SourceKey, NormBar[]> = {
     cache: cacheNorm,
     observable: observableNorm,
     rest: restNorm,
+    rest1s: rest1sNorm,
   };
 
   // Clamp each side to the window for both chart and diff computation.
@@ -422,9 +423,10 @@ export default function ParityBarComparison({
           >
             <option value="cache">Cache (live_bars)</option>
             <option value="observable">Observable (flat-file)</option>
-            <option value="rest" disabled={restDisabled}>
-              REST (Polygon aggregates){restDisabled ? ' — ≥1Min only' : ''}
+            <option value="rest" disabled={rest1MinDisabled}>
+              REST 1Min aggs{rest1MinDisabled ? ' — ≥1Min only' : ''}
             </option>
+            <option value="rest1s">REST 1Sec aggs (any TF)</option>
           </select>
         </div>
         <div>
@@ -439,9 +441,10 @@ export default function ParityBarComparison({
           >
             <option value="cache">Cache (live_bars)</option>
             <option value="observable">Observable (flat-file)</option>
-            <option value="rest" disabled={restDisabled}>
-              REST (Polygon aggregates){restDisabled ? ' — ≥1Min only' : ''}
+            <option value="rest" disabled={rest1MinDisabled}>
+              REST 1Min aggs{rest1MinDisabled ? ' — ≥1Min only' : ''}
             </option>
+            <option value="rest1s">REST 1Sec aggs (any TF)</option>
           </select>
         </div>
         <div>
@@ -462,9 +465,9 @@ export default function ParityBarComparison({
         <div className="text-xs" style={{ color: 'var(--text-muted)', maxWidth: 460 }}>
           <strong>{SOURCE_LABELS[effectiveLeftSource]}</strong> = {SOURCE_DESCRIPTIONS[effectiveLeftSource]}<br />
           <strong>{SOURCE_LABELS[effectiveRightSource]}</strong> = {SOURCE_DESCRIPTIONS[effectiveRightSource]}
-          {restDisabled && (leftSource === 'rest' || rightSource === 'rest') && (
+          {rest1MinDisabled && (leftSource === 'rest' || rightSource === 'rest') && (
             <div className="mt-1" style={{ color: 'var(--orange)' }}>
-              REST not available below 1Min — falling back to Observable.
+              REST 1Min aggs not available below 1Min — falling back to Observable. Use "REST 1Sec aggs" for sub-minute comparison.
             </div>
           )}
         </div>
