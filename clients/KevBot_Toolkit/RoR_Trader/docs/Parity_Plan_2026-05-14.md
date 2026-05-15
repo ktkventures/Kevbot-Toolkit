@@ -193,7 +193,7 @@ so Kevin can reference it from inside the project and so we stay aligned across 
 - **Expansion path**: if Phase E delivers value, scope decision is "watch symbols" (~5-10) vs "all tickers" (~180GB/year = ~$20/month). That decision deferred.
 
 **Files (new)**:
-- `src/services/flat_file_ingestion.py` — boto3 client for Polygon S3 (us_stocks_sip/trades_v1 bucket). Streams + filters per-symbol → builds 1-second observable bars → writes to Supabase. Watchlist driven by env or config.
+- `src/flat_file_ingestion.py` — boto3 client for Polygon S3 (us_stocks_sip/trades_v1 bucket). Streams + filters per-symbol → builds 1-second observable bars → writes to Supabase. Watchlist driven by env or config.
 - Supabase migration: new `polygon_observable_bars` table — `(ticker, sip_second_ts, open, high, low, close, volume, trade_count)` indexed on `(ticker, sip_second_ts)`. 7-day TTL via daily purge.
 - `src/cron/flat_file_daily.py` — wraps the ingestion in a Railway cron entry point.
 - `railway.json` or equivalent — add daily cron schedule (weekdays, 12:30 PM ET).

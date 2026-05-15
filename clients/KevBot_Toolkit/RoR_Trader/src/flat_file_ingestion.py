@@ -10,8 +10,8 @@ Daily Railway cron job:
   6. Purge bars older than 7 days (rolling window).
 
 Usage:
-  python -m services.flat_file_ingestion              # ingest yesterday
-  python -m services.flat_file_ingestion 2026-05-13   # ingest specific date
+  python -m flat_file_ingestion              # ingest yesterday
+  python -m flat_file_ingestion 2026-05-13   # ingest specific date
 
 Env vars required:
   POLYGON_S3_ACCESS_KEY  — from your Polygon dashboard
@@ -341,7 +341,7 @@ def ingest_day(date_str: Optional[str] = None) -> dict:
 
 
 def main() -> int:
-    """CLI entry: `python -m services.flat_file_ingestion [YYYY-MM-DD]`."""
+    """CLI entry: `python -m flat_file_ingestion [YYYY-MM-DD]`."""
     date_arg = sys.argv[1] if len(sys.argv) > 1 else None
     try:
         result = ingest_day(date_arg)

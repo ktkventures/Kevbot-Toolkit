@@ -4,7 +4,7 @@ This document covers the operational setup for Phase E: ingesting Polygon's dail
 
 ## What ships in Phase E
 
-- `src/services/flat_file_ingestion.py` — streaming ingestion module (boto3 + gzip CSV + bar builder + Supabase upsert + retention purge).
+- `src/flat_file_ingestion.py` — streaming ingestion module (boto3 + gzip CSV + bar builder + Supabase upsert + retention purge).
 - `src/migrations/polygon_observable_bars.sql` — table schema.
 - `src/api/routers/admin_parity.py` — new `GET /api/admin/parity/observable` endpoint.
 - `frontend/src/charts/ParityObservableComparison.tsx` — three-pane Cache/Observable/Settled view.
@@ -50,7 +50,7 @@ Railway → service → Cron Jobs → add:
 | Field | Value |
 |---|---|
 | **Schedule** | `30 17 * * 1-5` (Mon-Fri at 17:30 UTC = 12:30 PM ET during EDT; adjust to `30 18 * * 1-5` during EST) |
-| **Command** | `cd /app/clients/KevBot_Toolkit/RoR_Trader/src && python -m services.flat_file_ingestion` |
+| **Command** | `cd /app/clients/KevBot_Toolkit/RoR_Trader/src && python -m flat_file_ingestion` |
 
 Why 12:30 PM ET: Polygon publishes day-N's flat file at ~11 AM ET on day N+1. We add buffer for upstream delays.
 
@@ -61,7 +61,7 @@ To populate the table for the last 7 days without waiting for the cron:
 ```bash
 # From /app/clients/KevBot_Toolkit/RoR_Trader/src on Railway shell:
 for d in 2026-05-08 2026-05-09 2026-05-12 2026-05-13 2026-05-14; do
-  python -m services.flat_file_ingestion "$d"
+  python -m flat_file_ingestion "$d"
 done
 ```
 
