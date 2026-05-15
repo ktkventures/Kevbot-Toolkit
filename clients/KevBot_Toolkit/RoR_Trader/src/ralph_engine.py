@@ -2678,6 +2678,13 @@ class RalphEngine:
         # When None, alert dispatch runs synchronously on the event loop
         # (legacy behavior, fine for CLI / tests — blocks ~200-500ms per alert).
         self._alert_executor = None
+        # Phase H.1 (2026-05-15): shadow trade-channel bar builder. Subscribes
+        # to Polygon T.* channels for SPY+TSLA and writes the resulting OHLCV
+        # to `live_bars_trades` at three wait-time variants in parallel.
+        # Doesn't touch the production alert path. Disabled by setting
+        # POLYGON_TRADE_SHADOW_ENABLED=false on the worker.
+        from trade_bar_builder import TradeBarShadowManager
+        self._trade_shadow = TradeBarShadowManager()
 
     def start(self, strategies: list, config: dict):
         """Start the engine (blocking — runs the async event loop)."""
@@ -2823,6 +2830,13 @@ class RalphEngine:
         try:
             from bar_engine_state_writer import shutdown as _bes_shutdown
             _bes_shutdown(wait=True)
+        except Exception:
+            pass
+        # Phase H.1 (2026-05-15): drain shadow trade-bar writes so the last
+        # few bars of the session land in live_bars_trades cleanly.
+        try:
+            from trade_bar_builder import shutdown as _trade_bar_shutdown
+            _trade_bar_shutdown(wait=True)
         except Exception:
             pass
 
@@ -3083,6 +3097,15 @@ class RalphEngine:
                     )
                     if has_ltype or has_subminute or has_ws_agg:
                         stock_channels.append(f"A.{sym}")
+                # Phase H.1 (2026-05-15): shadow trade channels for SPY/TSLA.
+                # Only added for symbols the manager is configured to track AND
+                # that we already have hubs for, so we never subscribe to a
+                # symbol we're not otherwise streaming.
+                shadow_channels = [
+                    ch for ch in self._trade_shadow.trade_channels()
+                    if ch.split(".", 1)[-1] in stock_symbols
+                ]
+                stock_channels.extend(shadow_channels)
                 crypto_channels = [f"XA.X:{s.replace('/', '')}" for s in crypto_symbols]
 
                 all_channels = stock_channels + crypto_channels
@@ -3149,6 +3172,19 @@ class RalphEngine:
                                     events = [events]
                                 for ev in events:
                                     ev_type = ev.get('ev', '')
+                                    # Phase H.1: route trade events to the
+                                    # shadow bar builder. Returns fast when
+                                    # the symbol isn't in shadow scope so we
+                                    # don't pay any cost for non-shadowed
+                                    # streams.
+                                    if ev_type == 'T':
+                                        try:
+                                            self._trade_shadow.on_trade_event(ev)
+                                        except Exception as _e:
+                                            logger.debug(
+                                                "trade shadow ingest error: %s",
+                                                _e)
+                                        continue
                                     if ev_type not in ('AM', 'XA', 'A', 'XAS'):
                                         continue  # skip status/other messages
 
@@ -3563,6 +3599,14 @@ class RalphEngine:
                         )
                 except Exception as e:
                     logger.debug("Stale bar flush error: %s", e)
+
+                # Phase H.1: timer-driven close for shadow trade bars,
+                # so bars from quiet-period buckets eventually emit
+                # even when no follow-on trade arrives.
+                try:
+                    self._trade_shadow.flush_due()
+                except Exception as e:
+                    logger.debug("Trade shadow flush error: %s", e)
 
                 # Pickle writes — offloaded to thread pool
                 try:
