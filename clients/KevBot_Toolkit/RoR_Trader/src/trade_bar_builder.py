@@ -202,13 +202,15 @@ class TradeBarBuilder:
         self,
         price: float,
         size: int,
-        sip_ns: int,
+        sip_ms: int,
         conditions,
         wall_clock_sec: float,
     ) -> None:
         """Ingest one trade event.
 
-        - `sip_ns`: Polygon's nanosecond SIP timestamp from the T event.
+        - `sip_ms`: Polygon WS SIP timestamp in MILLISECONDS — the format
+          stocks T events use. (Flat-file CSV uses nanoseconds; WS uses
+          milliseconds. Distinct units, distinct sources — don't confuse.)
         - `conditions`: raw conditions field from the T event (list[int]
           or string — `_classify_eligibility` normalizes both).
         - `wall_clock_sec`: time.time() at the moment the event was
@@ -222,7 +224,7 @@ class TradeBarBuilder:
         if not ohlc_ok and not vol_ok:
             return  # ineligible for both → no contribution at all
 
-        sec_ts = sip_ns // 1_000_000_000
+        sec_ts = sip_ms // 1000
         bucket_start = (sec_ts // self.tf_seconds) * self.tf_seconds
 
         # Flush any due buckets BEFORE inserting — that way a trade with
@@ -367,12 +369,16 @@ class TradeBarShadowManager:
         sym = ev.get("sym")
         if not sym or sym not in self.symbols:
             return
-        # Polygon T event field reference:
-        #   p = price, s = size, t = sip_timestamp ns, c = conditions list
+        # Polygon stocks WS T event:
+        #   p = price (float)
+        #   s = size (int, shares)
+        #   t = SIP timestamp in MILLISECONDS (NOT nanoseconds — that's
+        #       only the flat-file CSV format)
+        #   c = conditions (list[int])
         try:
             price = float(ev["p"])
             size = int(ev["s"])
-            sip_ns = int(ev["t"])
+            sip_ms = int(ev["t"])
         except (KeyError, TypeError, ValueError):
             return
         conditions = ev.get("c")
@@ -381,7 +387,7 @@ class TradeBarShadowManager:
             for w in self.waits:
                 b = self._builders.get((sym, tf, w))
                 if b is not None:
-                    b.accept_trade(price, size, sip_ns, conditions, now)
+                    b.accept_trade(price, size, sip_ms, conditions, now)
 
     def flush_due(self) -> None:
         """Periodic timer-driven close — call from the engine heartbeat."""
