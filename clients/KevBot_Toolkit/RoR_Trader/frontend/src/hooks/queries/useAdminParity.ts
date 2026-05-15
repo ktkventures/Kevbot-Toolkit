@@ -259,11 +259,11 @@ export function useRestBars(
 // ============================================================
 
 export function useAdminParityBars(
-  args: UseAdminParityBarsArgs,
+  args: UseAdminParityBarsArgs & { valueType?: 'first' | 'latest' },
 ): UseAdminParityBarsResult {
-  const { strategyId, symbol, timeframe, days = 2 } = args;
+  const { strategyId, symbol, timeframe, days = 2, valueType = 'first' } = args;
 
-  const cacheQuery = useStrategyCacheBars(strategyId, 'first', !!strategyId);
+  const cacheQuery = useStrategyCacheBars(strategyId, valueType, !!strategyId);
   const restQuery = useBars(symbol, timeframe || '1Min', days);
 
   const rows = useMemo(() => {

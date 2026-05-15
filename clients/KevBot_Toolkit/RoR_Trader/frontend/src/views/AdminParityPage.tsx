@@ -96,12 +96,24 @@ export default function AdminParityPage() {
   // REST aggs minimum); the asymmetry is expected.
   const strategyTfSeconds = parseTfSeconds(selected?.timeframe);
 
-  // Phase B: bar comparison (existing hook)
+  // Phase B: bar comparison — first_* (decision-time) values.
   const parityBars = useAdminParityBars({
     strategyId,
     symbol: selected?.symbol ?? null,
     timeframe: selected?.timeframe ?? '1Min',
     days: 2,
+    valueType: 'first',
+  });
+  // Phase G.3 (2026-05-15): also fetch latest_* (post-rebroadcast)
+  // cache values so Bars Comparison can show BOTH views — surfaces
+  // Polygon WS rebroadcast deltas (16% of 10Sec bars get revised
+  // 7-19¢ after first emission in observed data).
+  const parityBarsLatest = useAdminParityBars({
+    strategyId,
+    symbol: selected?.symbol ?? null,
+    timeframe: selected?.timeframe ?? '1Min',
+    days: 2,
+    valueType: 'latest',
   });
 
   // Phase C: snapshot (live + algo + bt entries) for chosen window
@@ -260,6 +272,7 @@ export default function AdminParityPage() {
                 return (
                   <ParityBarComparison
                     cacheBars={parityBars.cacheBars}
+                    cacheBarsLatest={parityBarsLatest.cacheBars}
                     observableBars={observableQ.data?.bars ?? []}
                     restBars={parityBars.restBars}
                     cacheValueType={parityBars.cacheValueType}

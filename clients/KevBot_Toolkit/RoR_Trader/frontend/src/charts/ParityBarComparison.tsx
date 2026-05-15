@@ -33,10 +33,15 @@ import {
   type ObservableBar,
 } from '@/hooks/queries/useAdminParity';
 
-type SourceKey = 'cache' | 'observable' | 'rest' | 'rest1s';
+type SourceKey = 'cache' | 'cache_latest' | 'observable' | 'rest' | 'rest1s';
 
 interface Props {
+  /** Cache decision-time view (first_* columns — what the engine saw at bar close). */
   cacheBars: CacheBar[];
+  /** Phase G.3: cache POST-rebroadcast view (open/close columns — revised
+   *  by Polygon's late-print updates). Compare against cacheBars to see
+   *  rebroadcast deltas. */
+  cacheBarsLatest?: CacheBar[];
   observableBars: ObservableBar[];
   /** Polygon REST 1Min aggregates — the established baseline source.
    *  Available only at TF ≥ 1Min. */
@@ -108,17 +113,19 @@ function formatBucketLabel(epochSec: number, tfSeconds: number): string {
 const PAGE_SIZE = 50;
 
 const SOURCE_LABELS: Record<SourceKey, string> = {
-  cache: 'Cache (live_bars)',
+  cache: 'Cache (decision-time)',
+  cache_latest: 'Cache (post-rebroadcast)',
   observable: 'Observable (flat-file)',
   rest: 'REST 1Min aggs',
   rest1s: 'REST 1Sec aggs',
 };
 
 const SOURCE_DESCRIPTIONS: Record<SourceKey, string> = {
-  cache: 'what the live engine wrote in real time',
-  observable: 'what was actually emitted to subscribers (rebuilt from flat-file trades)',
-  rest: "Polygon's settled 1Min aggregates — established baseline from yesterday's observable comparison",
-  rest1s: "Polygon's per-second aggregates rolled up to selected TF — supports sub-minute",
+  cache: "first_* columns — what the live engine SAW at bar close (first WS emission, BEFORE Polygon's rebroadcast updates)",
+  cache_latest: "open/close columns — POST-rebroadcast cache state (after Polygon's revised bars arrive). Closer to REST settled.",
+  observable: 'what was actually emitted to subscribers (rebuilt from flat-file trades using sip_timestamp)',
+  rest: "Polygon's settled 1Min aggregates — yesterday's gospel-truth baseline",
+  rest1s: "Polygon's 1Sec aggregates rolled up to selected TF — supports sub-minute",
 };
 
 function toCandle(bars: NormBar[]): CandleData[] {
@@ -280,6 +287,7 @@ function DivergenceHistogram({ rows }: { rows: ComparisonRow[] }) {
 
 export default function ParityBarComparison({
   cacheBars,
+  cacheBarsLatest = [],
   observableBars,
   restBars,
   cacheValueType,
@@ -323,6 +331,7 @@ export default function ParityBarComparison({
 
   // Normalize each series to NormBar[] for shared handling.
   const cacheNorm = useMemo(() => normCache(cacheBars), [cacheBars]);
+  const cacheLatestNorm = useMemo(() => normCache(cacheBarsLatest), [cacheBarsLatest]);
   const observableNorm = useMemo(() => normObservable(observableBars), [observableBars]);
   // Original REST 1Min aggs from the legacy useBars hook — unchanged shape.
   const restNorm = useMemo(() => normRest(restBars), [restBars]);
@@ -331,6 +340,7 @@ export default function ParityBarComparison({
 
   const seriesByKey: Record<SourceKey, NormBar[]> = {
     cache: cacheNorm,
+    cache_latest: cacheLatestNorm,
     observable: observableNorm,
     rest: restNorm,
     rest1s: rest1sNorm,
@@ -421,7 +431,8 @@ export default function ParityBarComparison({
             className="text-sm px-2 py-1.5 rounded"
             style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text)' }}
           >
-            <option value="cache">Cache (live_bars)</option>
+            <option value="cache">Cache (decision-time)</option>
+            <option value="cache_latest">Cache (post-rebroadcast)</option>
             <option value="observable">Observable (flat-file)</option>
             <option value="rest" disabled={rest1MinDisabled}>
               REST 1Min aggs{rest1MinDisabled ? ' — ≥1Min only' : ''}
@@ -439,7 +450,8 @@ export default function ParityBarComparison({
             className="text-sm px-2 py-1.5 rounded"
             style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text)' }}
           >
-            <option value="cache">Cache (live_bars)</option>
+            <option value="cache">Cache (decision-time)</option>
+            <option value="cache_latest">Cache (post-rebroadcast)</option>
             <option value="observable">Observable (flat-file)</option>
             <option value="rest" disabled={rest1MinDisabled}>
               REST 1Min aggs{rest1MinDisabled ? ' — ≥1Min only' : ''}
@@ -520,7 +532,8 @@ export default function ParityBarComparison({
           <span style={{ color: 'var(--text-muted)' }}>Combined: </span>
           <strong style={{ color: 'var(--text-muted)' }}>{combinedMatchPct}%</strong>
         </div>
-        {effectiveLeftSource === 'cache' || effectiveRightSource === 'cache' ? (
+        {(effectiveLeftSource === 'cache' || effectiveLeftSource === 'cache_latest'
+          || effectiveRightSource === 'cache' || effectiveRightSource === 'cache_latest') ? (
           <div>
             <span style={{ color: 'var(--text-muted)' }}>Cache value_type: </span>
             <code>{cacheValueType ?? '—'}</code>
