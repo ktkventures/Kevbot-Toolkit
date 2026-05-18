@@ -109,7 +109,7 @@ BACKTEST_MODELS = {
 LIVE_MODELS = {
     'ws_with_corrections': {
         'label': 'AM with corrections',
-        'available': True,
+        'available': False,  # retired 2026-05-18 — see description
         'default': False,  # was True; demoted 2026-05-05 in favor of ws_agg_locked
         'description': (
             'Engine consumes Polygon AM.<symbol> per-minute events. '
@@ -117,10 +117,12 @@ LIVE_MODELS = {
             'window are applied via recompute-from-history (Option '
             'B, 2026-05-02 fix). NOT recommended on high-volume '
             'symbols today — Mon-1/Tue-1 validation showed AAPL/AMD/'
-            'SPY/TSLA AM coverage falls to ~0% during RTH. Use '
-            'ws_agg_locked instead for those symbols. Kept available '
-            'for low-volume tickers (META, TSLL) where AM is healthy '
-            'and saves the per-second processing cost.'
+            'SPY/TSLA AM coverage falls to ~0% during RTH. '
+            'RETIRED 2026-05-18: the worker no longer subscribes to '
+            'Polygon AM.* for stocks — ws_agg is the sole live_bars '
+            'source. Subscribing AM created a second writer that '
+            'contaminated the first_* decision-time columns. Do not '
+            'select this model.'
         ),
     },
     'ws_first_lock': {

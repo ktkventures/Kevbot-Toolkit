@@ -3063,7 +3063,8 @@ class RalphEngine:
                 self._subscribed_symbols = all_symbols
 
                 # Build subscription channels
-                # AM.{ticker} = per-minute aggregates (stocks)
+                # AM.{ticker} = per-minute aggregates (stocks) — NO LONGER
+                #   subscribed (see below).
                 # A.{ticker}  = per-second aggregates — subscribed when ANY
                 #   monitor on this symbol needs per-second data:
                 #     * L-type intrabar trigger (level-cross detection), or
@@ -3077,7 +3078,15 @@ class RalphEngine:
                 #   to the post-M8.5 alert-latency regression. See
                 #   docs/Alert_Recovery_Plan_2026-04-17.md Phase 2.
                 # XA.X:{BASE}{QUOTE} = per-minute aggregates (crypto)
-                stock_channels = [f"AM.{s}" for s in stock_symbols]
+                #
+                # AM.* is NOT subscribed for stocks (2026-05-18): ws_agg
+                # (built from A.* per-second) is the sole live_bars writer.
+                # Subscribing AM created a second writer racing the same
+                # PK, which contaminated the first_* decision-time columns
+                # (whichever path inserted first won the snapshot). Every
+                # monitor runs a ws_agg live_model, so AM contributed
+                # nothing to alert decisions — only cache noise and WS load.
+                stock_channels: List[str] = []
                 for sym in stock_symbols:
                     hub = self.hubs.get(sym)
                     if hub is None:
