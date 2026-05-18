@@ -2697,6 +2697,64 @@ class RalphEngine:
         # POLYGON_TRADE_SHADOW_ENABLED=false on the worker.
         from trade_bar_builder import TradeBarShadowManager
         self._trade_shadow = TradeBarShadowManager()
+        # Phase H+ diag (2026-05-18): A-channel ingestion-lag histogram.
+        # Sizes the sub-minute builder grace window — how late per-second
+        # bars reach us drives how long a 10Sec bucket must stay open.
+        self._a_lag_n = 0
+        self._a_lag_sum = 0.0
+        self._a_lag_min = float('inf')
+        self._a_lag_max = 0.0
+        self._a_lag_hist = [0, 0, 0, 0, 0, 0, 0]
+        self._a_lag_last_log = 0.0
+
+    def _record_a_lag(self, bar_start_ms) -> None:
+        """Accumulate A-channel ingestion lag (wall-clock minus the
+        per-second bar's start ms) and log a cumulative histogram every
+        30s. Diagnostic only — no behavior change."""
+        try:
+            start_s = float(bar_start_ms) / 1000.0
+        except (TypeError, ValueError):
+            return
+        if start_s <= 0:
+            return
+        now = time.time()
+        lag = now - start_s
+        self._a_lag_n += 1
+        self._a_lag_sum += lag
+        if lag < self._a_lag_min:
+            self._a_lag_min = lag
+        if lag > self._a_lag_max:
+            self._a_lag_max = lag
+        edges = (0.5, 1.0, 2.0, 3.0, 5.0, 10.0)
+        placed = False
+        for i, e in enumerate(edges):
+            if lag <= e:
+                self._a_lag_hist[i] += 1
+                placed = True
+                break
+        if not placed:
+            self._a_lag_hist[6] += 1
+        if now - self._a_lag_last_log >= 30.0:
+            self._a_lag_last_log = now
+            n = self._a_lag_n
+            avg = self._a_lag_sum / n if n else 0.0
+            lo = self._a_lag_min if self._a_lag_min != float('inf') else 0.0
+            run = 0
+            cum = []
+            for i, e in enumerate(edges):
+                run += self._a_lag_hist[i]
+                cum.append('<=%ss:%.1f%%' % (
+                    e, 100.0 * run / n if n else 0.0))
+            logger.info(
+                "A-channel lag (30s window): n=%d avg=%.2fs min=%.2fs "
+                "max=%.2fs | %s >10s:%d",
+                n, avg, lo, self._a_lag_max, ' '.join(cum),
+                self._a_lag_hist[6])
+            self._a_lag_n = 0
+            self._a_lag_sum = 0.0
+            self._a_lag_min = float('inf')
+            self._a_lag_max = 0.0
+            self._a_lag_hist = [0, 0, 0, 0, 0, 0, 0]
 
     def start(self, strategies: list, config: dict):
         """Start the engine (blocking — runs the async event loop)."""
@@ -3243,6 +3301,9 @@ class RalphEngine:
                                     }
 
                                     if ev_type in ('A', 'XAS'):
+                                        # Phase H+ diag: A-channel ingestion lag.
+                                        self._record_a_lag(
+                                            ev.get('s', ev.get('e', 0)))
                                         # Per-second bar → L-type intra-bar detection
                                         hub.on_second_bar(
                                             bar_dict,
