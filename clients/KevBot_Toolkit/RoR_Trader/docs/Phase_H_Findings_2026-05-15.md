@@ -1,6 +1,48 @@
 # Phase H — Trade-Channel Bar Findings (EOD 2026-05-15)
 
-**Status:** Pipeline shipped & writing cleanly. Close-match against REST/Observable is poor (~48% RTH, ~72% ETH). Cause is **not** the wait window. Iteration resumes Monday 2026-05-18 during RTH.
+**Status (updated 2026-05-18):** CONCLUDED — Option C. Trade-channel self-built bars are shelved. Monday RTH diagnosis found an 86-second ingestion lag that makes self-built T-channel bars unviable for live alert gating. Separately, the parity tool showed the existing decision-time cache already matches a correct REST baseline at 93-100% — the problem Phase H set out to solve is, in practice, near-zero. See [Phase H Conclusion](#phase-h-conclusion-2026-05-18).
+
+---
+
+## Phase H Conclusion (2026-05-18)
+
+### What Monday's diagnosis found
+Trade-channel close-match vs REST 1Min measured **2-3%** during Monday RTH (SPY/TSLA) — far worse than Friday's 48% vs REST 1Sec. Instrumentation (`trade_bar_builder.py`, commit `d70fdf2`) gave the verdict:
+
+- **WebSocket delivery is fine** — 43,354 T events ingested in the sample window, zero parse failures, zero wrong-symbol.
+- **86-second average ingestion lag** (range 32-151s). The worker's single asyncio event loop runs WS-read + the full alert engine + synchronous DB writes; it cannot also drain the raw T firehose in real time.
+- The builder closes buckets on **wall-clock** time. With trades arriving ~86s after their SIP timestamp, every bucket closes ~86s before its trades arrive → **60%+ of trades dropped as `_dropped_late`**, bars built from a sparse early-minute trickle (which is why bar *opens* matched REST but nothing else did).
+- Secondary: the `size < 1` filter drops **25% (SPY) / 53% (TSLA)** of trades — fractional-share prints, a large unintended volume sink.
+
+### Why Phase H's premise is falsified
+Phase H bet that self-built T-channel bars would be **fresher** than Polygon's AM/A rebroadcast (the 20-100s rebroadcast lag we were trying to escape). But our own ingestion lag (**86s**) *exceeds* that rebroadcast lag. Self-built T-channel bars cannot gate live alerts faster or more accurately than the AM/A first-emission cache on the current architecture. The 0/200/500 ms wait variants tuned milliseconds against a problem measured in minutes.
+
+### The encouraging counter-finding
+While diagnosing, the parity tool's Bars Comparison gave the result that actually matters: the **decision-time cache** (`live_bars.first_*` = Polygon's first WS emission, what the engine gated on) matched a *correct* REST baseline at:
+
+- **93.1%** vs REST 1Sec (image copy 74)
+- **100%** vs REST 1Sec (image copy 77)
+- **100%** vs REST 1Min (image copy 78)
+
+The ~16% first-vs-settled correction rate Phase G feared is, across the windows observed, frequently **0%**. The decision-time cache is already tracking settled reality.
+
+### Decision: Option C
+**Shelve the trade-channel self-built-bar approach.** The decision-time cache (AM/A first emission) remains the production alert source — Phase H never replaced it; the trade builder was always a shadow. No production change is required to "conclude" Phase H.
+
+Recommended cleanup:
+- **Disable the shadow on the worker**: `POLYGON_TRADE_SHADOW_ENABLED=false`. Beyond saving resources, the `T.SPY`/`T.TSLA` subscription is *itself adding load* to the overloaded event loop — disabling it may slightly *reduce* the production engine's own latency. (Railway env-var change — apply manually.)
+- `trade_bar_builder.py`, the `live_bars_trades` table, and the `/trade-bars` endpoint can stay in place (disabled) as a record, or be removed in a later cleanup.
+- Instrumentation commit `d70fdf2` is harmless; it can stay.
+
+### Open caveats — validate before fully trusting
+1. **Stress-test the 100% match** across more windows / days / strategies — a single clean window is not proof. Confirm it is not a tool artifact (e.g., both panes accidentally sourcing the same series, or TF-misalignment hiding mismatches).
+2. **Verify backtest ↔ cache decision-time parity.** If the backtest engine also lines up with the decision-time cache, that closes the loop on backtest/live fidelity — the real prize.
+3. **REST 1Min UI source is buggy** — shows ~$480 (≈ SPY's Jan-2024 price; suspected date-window bug) and partially-loading charts (TF-alignment: REST 1Min is fixed 60s while REST 1Sec is "any TF"). Frontend-side; the backend `/rest-bars` minute path is verified correct. Needs the frontend repo to fix.
+
+### Superseded
+The "Monday plan" and "Iteration cycle" sections below are superseded by this conclusion. The 20-min hypothesis-iteration cadence was abandoned once the 86s lag was found — it was a single-cause architectural problem, not a tuning problem.
+
+---
 
 ## Quick navigation
 
