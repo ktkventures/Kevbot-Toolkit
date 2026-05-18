@@ -2532,6 +2532,7 @@ def get_strategy_cache_bars(
     strategy_id: int,
     value_type: str = Query("latest", description="'latest' = post-rebroadcast WS values; 'first' = decision-time values"),
     days: int = Query(None, description="How many days of bars to return (default: strategy.data_days, capped at cache coverage)"),
+    source: str = Query("all", description="'all' (default — includes rest_backfill gap fills) or 'live' (ws_agg/ws only — excludes REST backfill, so genuine cache gaps stay visible)"),
     user=Depends(get_current_user),
 ):
     """OHLCV bars for this strategy's (symbol, tf) sourced from `live_bars`.
@@ -2572,14 +2573,20 @@ def get_strategy_cache_bars(
     rows = []
     page_size = 1000
     offset = 0
+    # source='live' excludes rest_backfill rows so genuine cache gaps stay
+    # visible (the parity "Cache (decision-time)" view). 'all' keeps them
+    # (the gap-free "Cache + backfill" view).
+    exclude_backfill = source == 'live'
     while True:
         try:
-            r = c.table('live_bars').select(cols) \
+            q = c.table('live_bars').select(cols) \
                 .eq('symbol', symbol) \
                 .eq('timeframe_seconds', tf_seconds) \
                 .gte('bar_start', start_dt.isoformat()) \
-                .lte('bar_start', end_dt.isoformat()) \
-                .order('bar_start') \
+                .lte('bar_start', end_dt.isoformat())
+            if exclude_backfill:
+                q = q.neq('source', 'rest_backfill')
+            r = q.order('bar_start') \
                 .range(offset, offset + page_size - 1) \
                 .execute()
         except Exception as e:
@@ -2617,9 +2624,16 @@ def get_strategy_cache_bars(
     if use_first and null_first:
         notes.append(f"{null_first} bars predate the first_values migration; latest values used as fallback")
 
+    source_counts: dict = {}
+    for row in rows:
+        s = row.get('source') or 'unknown'
+        source_counts[s] = source_counts.get(s, 0) + 1
+
     return {
         "chart_data": chart_data,
         "value_type": value_type,
+        "source_filter": source,
+        "source_counts": source_counts,
         "symbol": symbol,
         "timeframe": tf,
         "tf_seconds": tf_seconds,
