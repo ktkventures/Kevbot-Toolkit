@@ -226,6 +226,25 @@ class TradeBarBuilder:
         # bucket for a sip_ts older than what we already closed).
         self._last_closed_bucket_sec: Optional[int] = None
         self._dropped_late = 0
+        # Phase H diagnostic counters (cumulative). The ratios between
+        # these expose where trades go — see TradeBarShadowManager stats log.
+        self._dropped_small = 0
+        self._dropped_both_ineligible = 0
+        self._accepted = 0
+        self._bars_emitted = 0
+
+    def stats(self) -> dict:
+        """Cumulative ingest breakdown for this builder."""
+        return {
+            "src": self.source,
+            "tf": self.tf_seconds,
+            "accepted": self._accepted,
+            "late": self._dropped_late,
+            "small": self._dropped_small,
+            "ineligible": self._dropped_both_ineligible,
+            "emitted": self._bars_emitted,
+            "open": len(self._open),
+        }
 
     # -- Public API ----------------------------------------------------
 
@@ -249,10 +268,12 @@ class TradeBarBuilder:
         """
         # Skip fractional shares — settlement micro-prints, not market activity.
         if size < 1:
+            self._dropped_small += 1
             return
 
         ohlc_ok, vol_ok = _classify_eligibility(conditions)
         if not ohlc_ok and not vol_ok:
+            self._dropped_both_ineligible += 1
             return  # ineligible for both → no contribution at all
 
         sec_ts = sip_ms // 1000
@@ -286,6 +307,7 @@ class TradeBarBuilder:
             bar.update(price, size, update_ohlc=True, update_volume=False)
         else:
             bar.update(price, size, update_ohlc=True, update_volume=True)
+        self._accepted += 1
 
     def flush_due(self, wall_clock_sec: float) -> None:
         """Public flush hook for the periodic timer in the WS loop."""
@@ -364,6 +386,7 @@ class TradeBarBuilder:
                 "trade_bar_builder: submit failed sym=%s tf=%ss src=%s: %s",
                 self.symbol, self.tf_seconds, self.source, e)
         self._last_closed_bucket_sec = bucket_start
+        self._bars_emitted += 1
 
 
 # ---------------------------------------------------------------------------
@@ -381,6 +404,18 @@ class TradeBarShadowManager:
         self.tfs = configured_tfs_seconds()
         self.waits = configured_wait_variants_ms()
         self._builders: dict[tuple[str, int, int], TradeBarBuilder] = {}
+        # Phase H diagnostic counters — receive-side. `_events_seen` vs the
+        # REST trade count tells us whether the WS is delivering trades at
+        # all; the lag window tells us whether bars close before their
+        # trades finish arriving.
+        self._events_seen = 0
+        self._events_wrong_sym = 0
+        self._events_parse_fail = 0
+        self._lag_n = 0
+        self._lag_sum = 0.0
+        self._lag_min = float("inf")
+        self._lag_max = 0.0
+        self._last_stats_log = 0.0
         if self.enabled and self.symbols and self.tfs and self.waits:
             for sym in self.symbols:
                 for tf in self.tfs:
@@ -408,8 +443,10 @@ class TradeBarShadowManager:
         """Handle one Polygon T event. Cheap no-op if shadow is off."""
         if not self.enabled:
             return
+        self._events_seen += 1
         sym = ev.get("sym")
         if not sym or sym not in self.symbols:
+            self._events_wrong_sym += 1
             return
         # Polygon stocks WS T event:
         #   p = price (float)
@@ -422,9 +459,17 @@ class TradeBarShadowManager:
             size = int(ev["s"])
             sip_ms = int(ev["t"])
         except (KeyError, TypeError, ValueError):
+            self._events_parse_fail += 1
             return
         conditions = ev.get("c")
         now = time.time()
+        lag = now - sip_ms / 1000.0
+        self._lag_n += 1
+        self._lag_sum += lag
+        if lag < self._lag_min:
+            self._lag_min = lag
+        if lag > self._lag_max:
+            self._lag_max = lag
         for tf in self.tfs:
             for w in self.waits:
                 b = self._builders.get((sym, tf, w))
@@ -438,3 +483,27 @@ class TradeBarShadowManager:
         now = time.time()
         for b in self._builders.values():
             b.flush_due(now)
+        self._maybe_log_stats(now)
+
+    def _maybe_log_stats(self, now: float) -> None:
+        """Emit a diagnostic stats line at most every 30s.
+
+        Lag stats are windowed (reset each line) so each line reflects
+        the last 30s; counters are cumulative — read the deltas.
+        """
+        if now - self._last_stats_log < 30.0:
+            return
+        self._last_stats_log = now
+        avg_lag = (self._lag_sum / self._lag_n) if self._lag_n else 0.0
+        lag_min = self._lag_min if self._lag_min != float("inf") else 0.0
+        logger.info(
+            "trade_shadow STATS: events_seen=%d wrong_sym=%d parse_fail=%d | "
+            "lag(s) n=%d avg=%.1f min=%.1f max=%.1f | builders=%s",
+            self._events_seen, self._events_wrong_sym, self._events_parse_fail,
+            self._lag_n, avg_lag, lag_min, self._lag_max,
+            [b.stats() for b in self._builders.values()],
+        )
+        self._lag_n = 0
+        self._lag_sum = 0.0
+        self._lag_min = float("inf")
+        self._lag_max = 0.0
