@@ -45,9 +45,10 @@ instead of a fake flat one.
 
 ## The grace-window shadow (commit — this change)
 
-`src/grace_shadow.py` builds 10Sec bars at **three grace windows — 2s /
-3s / 4s past `bar_end`** — in parallel from the same `A` per-second stream,
-for SPY and TSLA. Shadow-only: writes to `live_bars_trades` with
+`src/grace_shadow.py` builds 10Sec bars at **four grace windows — 2s /
+2.5s / 3s / 4s past `bar_end`** — in parallel from the same `A` per-second
+stream, for SPY and TSLA. (`grace_2.5s` added after the after-hours read
+below — the measured-lag "precise best guess".) Shadow-only: writes to `live_bars_trades` with
 `source = grace_2s / grace_3s / grace_4s` (PK includes `source`, so the
 variants coexist). Production alerts are unaffected.
 
@@ -71,18 +72,32 @@ variants coexist). Production alerts are unaffected.
    `Grace 2s/3s/4s` in turn, right pane = `REST 1Sec aggs`. Eyeball
    close-match % and candle shape for each.
 
+### After-hours read (2026-05-18 ~22:47 UTC — thin, indicative only)
+Close-match vs REST 1Sec-rolled-to-10s, ~5h ETH window:
+
+| Variant | SPY | TSLA |
+|---|---|---|
+| grace_2s | 91% | 86% |
+| grace_3s | 95% | 94% |
+| grace_4s | 95% | 94% |
+
+`flat(v=0)` = 0 for all variants — the empty-bar symptom is gone with any
+grace ≥ 2s. 2s is too tight (closes at `B+12.0`, misses the ~`B+12.05`
+arrival); 3s and 4s are identical. **`grace_2.5s` was added after this** as
+the "precise best guess" — closes at `B+12.5`, catching the structural lag
+with ~0.4s margin at 0.5s less latency than 3s.
+
 ### Predicted outcome (from the ~3s lag)
-- **Grace 2s** — bucket closes at `B+12`; last second arrives ≈`B+12.05`
-  → just misses it. Expect slightly worse close-match.
-- **Grace 3s** — closes at `B+13`; catches the structural lag. Expect the
-  best balance.
-- **Grace 4s** — closes at `B+14`; same as 3s plus margin for outliers,
-  at +1s more latency.
+- **Grace 2s** — closes at `B+12`; misses the last second. Worse.
+- **Grace 2.5s** — closes at `B+12.5`; should match 3s. If it does, it wins
+  (0.5s less latency).
+- **Grace 3s** — closes at `B+13`; comfortably catches the lag.
+- **Grace 4s** — closes at `B+14`; same as 3s + outlier margin, +1s latency.
 
 ### Decision
 Pick the smallest grace that reaches the ~99% close-match ceiling (the
 Claude-app analysis put correctly-built 10Sec bars at ~99% exact vs
-settled). Likely **3s**. Then promote that grace into the real
+settled). Likely **2.5s or 3s** — tomorrow's RTH read decides. Then promote that grace into the real
 sub-minute builder (`force_close_stale_bar`) — that is the Bug B fix.
 
 Bucket the misses by time-of-day when comparing: clustered at the
