@@ -37,6 +37,7 @@ import {
 
 type SourceKey =
   | 'cache'
+  | 'cache_backfill'
   | 'cache_latest'
   | 'observable'
   | 'rest'
@@ -125,6 +126,7 @@ const PAGE_SIZE = 50;
 
 const SOURCE_LABELS: Record<SourceKey, string> = {
   cache: 'Cache (decision-time)',
+  cache_backfill: 'Cache + backfill',
   cache_latest: 'Cache (post-rebroadcast)',
   observable: 'Observable (flat-file)',
   rest: 'REST 1Min aggs',
@@ -135,7 +137,8 @@ const SOURCE_LABELS: Record<SourceKey, string> = {
 };
 
 const SOURCE_DESCRIPTIONS: Record<SourceKey, string> = {
-  cache: "first_* columns — what the live engine SAW at bar close (first WS emission, BEFORE Polygon's rebroadcast updates)",
+  cache: "first_* columns, ws_agg only — what the live engine SAW at bar close. Genuine cache gaps left visible (excludes REST backfill rows).",
+  cache_backfill: "first_* columns + REST gap-fill — the decision-time cache with rest_backfill rows patching minutes the ws_agg path missed. Gap-free view.",
   cache_latest: "open/close columns — POST-rebroadcast cache state (after Polygon's revised bars arrive). Closer to REST settled.",
   observable: 'what was actually emitted to subscribers (rebuilt from flat-file trades using sip_timestamp)',
   rest: "Polygon's settled 1Min aggregates — yesterday's gospel-truth baseline",
@@ -379,7 +382,14 @@ export default function ParityBarComparison({
   );
 
   // Normalize each series to NormBar[] for shared handling.
-  const cacheNorm = useMemo(() => normCache(cacheBars), [cacheBars]);
+  // 'cache' = decision-time, ws_agg only (rest_backfill rows filtered out
+  // so genuine gaps stay visible). 'cache_backfill' = the same series WITH
+  // the REST gap-fill rows included (gap-free view).
+  const cacheNorm = useMemo(
+    () => normCache(cacheBars.filter((b) => b.source !== 'rest_backfill')),
+    [cacheBars],
+  );
+  const cacheBackfillNorm = useMemo(() => normCache(cacheBars), [cacheBars]);
   const cacheLatestNorm = useMemo(() => normCache(cacheBarsLatest), [cacheBarsLatest]);
   const observableNorm = useMemo(() => normObservable(observableBars), [observableBars]);
   // Original REST 1Min aggs from the legacy useBars hook — unchanged shape.
@@ -402,6 +412,7 @@ export default function ParityBarComparison({
 
   const seriesByKey: Record<SourceKey, NormBar[]> = {
     cache: cacheNorm,
+    cache_backfill: cacheBackfillNorm,
     cache_latest: cacheLatestNorm,
     observable: observableNorm,
     rest: restNorm,
@@ -497,6 +508,7 @@ export default function ParityBarComparison({
             style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text)' }}
           >
             <option value="cache">Cache (decision-time)</option>
+            <option value="cache_backfill">Cache + backfill</option>
             <option value="cache_latest">Cache (post-rebroadcast)</option>
             <option value="observable">Observable (flat-file)</option>
             <option value="rest" disabled={rest1MinDisabled}>
@@ -519,6 +531,7 @@ export default function ParityBarComparison({
             style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text)' }}
           >
             <option value="cache">Cache (decision-time)</option>
+            <option value="cache_backfill">Cache + backfill</option>
             <option value="cache_latest">Cache (post-rebroadcast)</option>
             <option value="observable">Observable (flat-file)</option>
             <option value="rest" disabled={rest1MinDisabled}>
@@ -608,8 +621,10 @@ export default function ParityBarComparison({
           <span style={{ color: 'var(--text-muted)' }}>Combined: </span>
           <strong style={{ color: 'var(--text-muted)' }}>{combinedMatchPct}%</strong>
         </div>
-        {(effectiveLeftSource === 'cache' || effectiveLeftSource === 'cache_latest'
-          || effectiveRightSource === 'cache' || effectiveRightSource === 'cache_latest') ? (
+        {(effectiveLeftSource === 'cache' || effectiveLeftSource === 'cache_backfill'
+          || effectiveLeftSource === 'cache_latest'
+          || effectiveRightSource === 'cache' || effectiveRightSource === 'cache_backfill'
+          || effectiveRightSource === 'cache_latest') ? (
           <div>
             <span style={{ color: 'var(--text-muted)' }}>Cache value_type: </span>
             <code>{cacheValueType ?? '—'}</code>
@@ -652,7 +667,9 @@ export default function ParityBarComparison({
       </div>
 
       {/* Cache notes (only when cache is one of the panes) */}
-      {(effectiveLeftSource === 'cache' || effectiveRightSource === 'cache') && cacheNotes.length > 0 && (
+      {(effectiveLeftSource === 'cache' || effectiveLeftSource === 'cache_backfill'
+        || effectiveRightSource === 'cache' || effectiveRightSource === 'cache_backfill')
+        && cacheNotes.length > 0 && (
         <div className="text-xs p-2 rounded" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
           {cacheNotes.map((n, i) => <div key={i}>· {n}</div>)}
         </div>
