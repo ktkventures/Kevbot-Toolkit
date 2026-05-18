@@ -1133,6 +1133,10 @@ class WorkerManager:
         # ordering inside append_recent_trades_for_user.
         self._algo_history_thread: Optional[threading.Thread] = None
         self._algo_history_stop = threading.Event()
+        # live_bars REST-backfill cron (Stage B — 2026-05-18). Fills 1Min
+        # cache gaps the ws_agg per-second path missed. Own thread, env-gated.
+        self._live_bars_backfill_thread: Optional[threading.Thread] = None
+        self._live_bars_backfill_stop = threading.Event()
 
     def run(self):
         """Main loop — poll DB, start/stop engines, write heartbeats."""
@@ -1143,11 +1147,14 @@ class WorkerManager:
             logger.info("Received signal %d — shutting down", signum)
             self._running = False
             self._algo_history_stop.set()
+            self._live_bars_backfill_stop.set()
         signal.signal(signal.SIGTERM, handle_signal)
         signal.signal(signal.SIGINT, handle_signal)
 
         # Spin up algo-history cron in its own thread.
         self._start_algo_history_cron()
+        # Spin up the live_bars REST-backfill cron in its own thread.
+        self._start_live_bars_backfill_cron()
 
         while self._running:
             try:
@@ -1213,6 +1220,43 @@ class WorkerManager:
         self._algo_history_thread = threading.Thread(
             target=loop, daemon=True, name="algo-history-cron")
         self._algo_history_thread.start()
+
+    def _start_live_bars_backfill_cron(self):
+        """Launch the live_bars REST-backfill cron in a background thread.
+
+        Fills 1Min live_bars gaps left when the ws_agg per-second path
+        missed a minute. Disabled by default — set
+        LIVE_BARS_BACKFILL_ENABLED=true on the Railway worker to enable.
+        Daemon thread so the process can exit without joining.
+        """
+        from live_bars_rest_backfill import (
+            is_enabled, interval_seconds, run_backfill_cycle)
+        if not is_enabled():
+            logger.info(
+                "live_bars REST-backfill cron disabled — set "
+                "LIVE_BARS_BACKFILL_ENABLED=true on Railway worker to enable")
+            return
+
+        interval = interval_seconds()
+
+        def loop():
+            logger.info(
+                "live_bars REST-backfill cron started (interval=%ss)",
+                interval)
+            # Stagger first run so worker startup + first poll finish.
+            self._live_bars_backfill_stop.wait(90.0)
+            while not self._live_bars_backfill_stop.is_set():
+                try:
+                    run_backfill_cycle()
+                except Exception as e:
+                    logger.error(
+                        "live_bars REST-backfill cycle crashed: %s",
+                        e, exc_info=True)
+                self._live_bars_backfill_stop.wait(interval)
+
+        self._live_bars_backfill_thread = threading.Thread(
+            target=loop, daemon=True, name="live-bars-backfill-cron")
+        self._live_bars_backfill_thread.start()
 
     def _run_algo_history_cycle(self):
         """Iterate active users + invoke append_recent_trades_for_user.
