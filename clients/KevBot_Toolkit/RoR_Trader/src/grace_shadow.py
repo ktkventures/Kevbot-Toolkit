@@ -31,7 +31,12 @@ logger = logging.getLogger(__name__)
 
 TF_SECONDS = 10  # grace shadow is sub-minute only — 10Sec strategies
 _DEFAULT_SYMBOLS = "SPY,TSLA"
-_DEFAULT_GRACE = "2,3,4"  # seconds past bar_end
+_DEFAULT_GRACE = "2,2.5,3,4"  # seconds past bar_end (fractional allowed)
+
+
+def _grace_label(g: float) -> str:
+    """Format a grace value for the `source` tag: 3.0 -> '3', 2.5 -> '2.5'."""
+    return str(int(g)) if g == int(g) else ("%g" % g)
 
 
 def is_enabled() -> bool:
@@ -44,15 +49,15 @@ def configured_symbols() -> list[str]:
     return [s.strip().upper() for s in raw.split(",") if s.strip()]
 
 
-def configured_grace_variants() -> list[int]:
+def configured_grace_variants() -> list[float]:
     raw = os.environ.get("GRACE_SHADOW_VARIANTS", _DEFAULT_GRACE)
-    out: list[int] = []
+    out: list[float] = []
     for s in raw.split(","):
         s = s.strip()
         if not s:
             continue
         try:
-            g = int(s)
+            g = float(s)
             if g >= 0:
                 out.append(g)
         except ValueError:
@@ -94,10 +99,10 @@ class GraceBuilder:
     misattributed to a later bucket.
     """
 
-    def __init__(self, symbol: str, grace_sec: int):
+    def __init__(self, symbol: str, grace_sec: float):
         self.symbol = symbol
         self.grace_sec = grace_sec
-        self.source = f"grace_{grace_sec}s"
+        self.source = f"grace_{_grace_label(grace_sec)}s"
         self._open: dict[int, _GraceBar] = {}
         self._last_closed_sec: Optional[int] = None
 
@@ -161,7 +166,7 @@ class GraceShadowManager:
         self.enabled = is_enabled()
         self.symbols = set(configured_symbols())
         self.grace_variants = configured_grace_variants()
-        self._builders: dict[tuple[str, int], GraceBuilder] = {}
+        self._builders: dict[tuple[str, float], GraceBuilder] = {}
         if self.enabled and self.symbols and self.grace_variants:
             for sym in self.symbols:
                 for g in self.grace_variants:
