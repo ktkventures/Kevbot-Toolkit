@@ -449,6 +449,18 @@ class BarBuilder:
             self.last_was_duplicate = False
             return completed
 
+        # Late bar: period_start is OLDER than the current partial — its
+        # bucket already closed. Drop it. Aggregating it into the current
+        # partial would misattribute its volume/price to the wrong period
+        # — the cause of flat empty sub-minute bars (the real bucket
+        # closed empty) plus volume dumped into a later bucket, under
+        # WebSocket delivery jitter. A late bar for the immediately-
+        # previous closed bar is already handled above as a rebroadcast
+        # correction; this catches anything older.
+        if period_start < self._partial.bar_start:
+            self.last_was_duplicate = False
+            return None
+
         # Same period — aggregate into existing partial
         self._partial.high = max(self._partial.high, sec_high)
         self._partial.low = min(self._partial.low, sec_low)
