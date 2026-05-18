@@ -142,7 +142,8 @@ class GraceBuilder:
             "source": self.source,
             "open": float(bar.open), "high": float(bar.high),
             "low": float(bar.low), "close": float(bar.close),
-            "volume": float(bar.volume),
+            # live_bars_trades.volume is bigint — must be an int.
+            "volume": int(round(bar.volume)),
             "trade_count": int(bar.sec_count),
         }
         try:
