@@ -411,10 +411,14 @@ def get_trade_bars(
     end_iso = end or datetime.now(timezone.utc).isoformat()
     if start >= end_iso:
         raise HTTPException(status_code=400, detail="start must be < end")
-    if source not in ('t_wait0', 't_wait200', 't_wait500'):
+    _allowed_sources = (
+        't_wait0', 't_wait200', 't_wait500',   # Phase H trade-channel shadow
+        'grace_2s', 'grace_3s', 'grace_4s',    # 10Sec grace-window shadow
+    )
+    if source not in _allowed_sources:
         raise HTTPException(
             status_code=400,
-            detail="source must be one of: t_wait0, t_wait200, t_wait500")
+            detail=f"source must be one of: {', '.join(_allowed_sources)}")
 
     from db import get_admin_client
     sb = get_admin_client()

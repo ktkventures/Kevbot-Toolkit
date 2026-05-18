@@ -45,7 +45,11 @@ type SourceKey =
   // Phase H.2 (2026-05-15): three trade-channel shadow variants.
   | 't_wait0'
   | 't_wait200'
-  | 't_wait500';
+  | 't_wait500'
+  // 10Sec grace-window shadow (2026-05-18): 2s / 3s / 4s past bar_end.
+  | 'grace_2s'
+  | 'grace_3s'
+  | 'grace_4s';
 
 interface Props {
   /** Cache decision-time view (first_* columns — what the engine saw at bar close). */
@@ -134,6 +138,9 @@ const SOURCE_LABELS: Record<SourceKey, string> = {
   t_wait0: 'Trade ch. (wait 0ms)',
   t_wait200: 'Trade ch. (wait 200ms)',
   t_wait500: 'Trade ch. (wait 500ms)',
+  grace_2s: 'Grace 2s (10Sec shadow)',
+  grace_3s: 'Grace 3s (10Sec shadow)',
+  grace_4s: 'Grace 4s (10Sec shadow)',
 };
 
 const SOURCE_DESCRIPTIONS: Record<SourceKey, string> = {
@@ -146,10 +153,17 @@ const SOURCE_DESCRIPTIONS: Record<SourceKey, string> = {
   t_wait0: 'Phase H shadow: bars built from Polygon T (trade) channel; bucket closes immediately when next-bucket trade arrives. Zero wait = strict decision-time.',
   t_wait200: 'Phase H shadow: bars built from Polygon T (trade) channel; bucket holds open 200ms past period end to catch in-flight late prints.',
   t_wait500: 'Phase H shadow: bars built from Polygon T (trade) channel; bucket holds open 500ms past period end. Most forgiving — closest to settled.',
+  grace_2s: 'Grace shadow: 10Sec bars from the A per-second stream, bucket held open 2s past bar_end before close. Tightest — may miss the structural ~3s feed lag.',
+  grace_3s: 'Grace shadow: 10Sec bars from the A per-second stream, bucket held open 3s past bar_end. Sized to the measured ~3s A-channel ingestion lag.',
+  grace_4s: 'Grace shadow: 10Sec bars from the A per-second stream, bucket held open 4s past bar_end. Most margin against late-feed outliers.',
 };
 
 function isTradeSource(key: SourceKey): boolean {
   return key === 't_wait0' || key === 't_wait200' || key === 't_wait500';
+}
+
+function isGraceSource(key: SourceKey): boolean {
+  return key === 'grace_2s' || key === 'grace_3s' || key === 'grace_4s';
 }
 
 function toCandle(bars: NormBar[]): CandleData[] {
@@ -380,6 +394,29 @@ export default function ParityBarComparison({
     tfSeconds,
     tradeNeeded('t_wait500') ? 't_wait500' : null,
   );
+  // 10Sec grace-window shadow variants — same /trade-bars endpoint
+  // (reads live_bars_trades by source), lazy-fetched per selection.
+  const grace2Query = useTradeBars(
+    tradeNeeded('grace_2s') ? symbol ?? null : null,
+    tradeNeeded('grace_2s') ? windowStart ?? null : null,
+    tradeNeeded('grace_2s') ? windowEnd ?? null : null,
+    tfSeconds,
+    tradeNeeded('grace_2s') ? 'grace_2s' : null,
+  );
+  const grace3Query = useTradeBars(
+    tradeNeeded('grace_3s') ? symbol ?? null : null,
+    tradeNeeded('grace_3s') ? windowStart ?? null : null,
+    tradeNeeded('grace_3s') ? windowEnd ?? null : null,
+    tfSeconds,
+    tradeNeeded('grace_3s') ? 'grace_3s' : null,
+  );
+  const grace4Query = useTradeBars(
+    tradeNeeded('grace_4s') ? symbol ?? null : null,
+    tradeNeeded('grace_4s') ? windowStart ?? null : null,
+    tradeNeeded('grace_4s') ? windowEnd ?? null : null,
+    tfSeconds,
+    tradeNeeded('grace_4s') ? 'grace_4s' : null,
+  );
 
   // Normalize each series to NormBar[] for shared handling.
   // 'cache' = decision-time, ws_agg only (rest_backfill rows filtered out
@@ -409,6 +446,18 @@ export default function ParityBarComparison({
     () => normObservable(tradeWait500Query.data?.bars ?? []),
     [tradeWait500Query.data],
   );
+  const grace2Norm = useMemo(
+    () => normObservable(grace2Query.data?.bars ?? []),
+    [grace2Query.data],
+  );
+  const grace3Norm = useMemo(
+    () => normObservable(grace3Query.data?.bars ?? []),
+    [grace3Query.data],
+  );
+  const grace4Norm = useMemo(
+    () => normObservable(grace4Query.data?.bars ?? []),
+    [grace4Query.data],
+  );
 
   const seriesByKey: Record<SourceKey, NormBar[]> = {
     cache: cacheNorm,
@@ -420,6 +469,9 @@ export default function ParityBarComparison({
     t_wait0: tradeWait0Norm,
     t_wait200: tradeWait200Norm,
     t_wait500: tradeWait500Norm,
+    grace_2s: grace2Norm,
+    grace_3s: grace3Norm,
+    grace_4s: grace4Norm,
   };
 
   // Clamp each side to the window for both chart and diff computation.
@@ -518,6 +570,9 @@ export default function ParityBarComparison({
             <option value="t_wait0">Trade ch. (wait 0ms) — Phase H shadow</option>
             <option value="t_wait200">Trade ch. (wait 200ms) — Phase H shadow</option>
             <option value="t_wait500">Trade ch. (wait 500ms) — Phase H shadow</option>
+            <option value="grace_2s">Grace 2s — 10Sec shadow</option>
+            <option value="grace_3s">Grace 3s — 10Sec shadow</option>
+            <option value="grace_4s">Grace 4s — 10Sec shadow</option>
           </select>
         </div>
         <div>
@@ -541,6 +596,9 @@ export default function ParityBarComparison({
             <option value="t_wait0">Trade ch. (wait 0ms) — Phase H shadow</option>
             <option value="t_wait200">Trade ch. (wait 200ms) — Phase H shadow</option>
             <option value="t_wait500">Trade ch. (wait 500ms) — Phase H shadow</option>
+            <option value="grace_2s">Grace 2s — 10Sec shadow</option>
+            <option value="grace_3s">Grace 3s — 10Sec shadow</option>
+            <option value="grace_4s">Grace 4s — 10Sec shadow</option>
           </select>
         </div>
         <div>
@@ -569,6 +627,11 @@ export default function ParityBarComparison({
           {(isTradeSource(effectiveLeftSource) || isTradeSource(effectiveRightSource)) && (
             <div className="mt-1" style={{ color: 'var(--text-muted)' }}>
               Phase H shadow: trade-channel bars are currently captured for <strong>SPY</strong> and <strong>TSLA</strong> at <strong>10Sec</strong> + <strong>1Min</strong>. Other TFs aggregate up from those server-side. Other symbols will show empty.
+            </div>
+          )}
+          {(isGraceSource(effectiveLeftSource) || isGraceSource(effectiveRightSource)) && (
+            <div className="mt-1" style={{ color: 'var(--text-muted)' }}>
+              Grace shadow: 10Sec bars built from the A per-second stream at 2s/3s/4s grace past bar_end, for <strong>SPY</strong> and <strong>TSLA</strong>. Set Timeframe to <strong>10Sec</strong> and compare against <strong>REST 1Sec aggs</strong>. Other symbols/TFs show empty.
             </div>
           )}
         </div>

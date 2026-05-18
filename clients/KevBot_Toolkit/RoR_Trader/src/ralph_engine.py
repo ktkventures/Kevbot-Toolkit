@@ -2697,6 +2697,11 @@ class RalphEngine:
         # POLYGON_TRADE_SHADOW_ENABLED=false on the worker.
         from trade_bar_builder import TradeBarShadowManager
         self._trade_shadow = TradeBarShadowManager()
+        # Grace-window shadow (2026-05-18): builds 10Sec bars at 2/3/4s
+        # grace from the A per-second stream → live_bars_trades, so Bars
+        # Comparison can A/B which grace window best matches REST.
+        from grace_shadow import GraceShadowManager
+        self._grace_shadow = GraceShadowManager()
         # Phase H+ diag (2026-05-18): A-channel ingestion-lag histogram.
         # Sizes the sub-minute builder grace window — how late per-second
         # bars reach us drives how long a 10Sec bucket must stay open.
@@ -3304,6 +3309,15 @@ class RalphEngine:
                                         # Phase H+ diag: A-channel ingestion lag.
                                         self._record_a_lag(
                                             ev.get('s', ev.get('e', 0)))
+                                        # Grace-window shadow: 10Sec bars
+                                        # at 2/3/4s grace (shadow-only).
+                                        try:
+                                            self._grace_shadow.on_second_bar(
+                                                sym_raw, bar_dict)
+                                        except Exception as _ge:
+                                            logger.debug(
+                                                "grace shadow ingest error: %s",
+                                                _ge)
                                         # Per-second bar → L-type intra-bar detection
                                         hub.on_second_bar(
                                             bar_dict,
@@ -3689,6 +3703,10 @@ class RalphEngine:
                     self._trade_shadow.flush_due()
                 except Exception as e:
                     logger.debug("Trade shadow flush error: %s", e)
+                try:
+                    self._grace_shadow.flush_due()
+                except Exception as e:
+                    logger.debug("Grace shadow flush error: %s", e)
 
                 # Pickle writes — offloaded to thread pool
                 try:
