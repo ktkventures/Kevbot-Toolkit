@@ -833,6 +833,10 @@ class StrategyMonitor:
     def warmup(self, df: pd.DataFrame):
         """Initialize indicator state from historical bars."""
         self.indicators.warmup(df)
+        # Live engine: enable pre-bar snapshotting so a Polygon rebroadcast
+        # correction resolves in O(1) (apply_last_bar_correction) rather
+        # than an O(N) recompute_from_history replay.
+        self.indicators._snapshot_enabled = True
 
     @_prof_fn('m_on_bar_close')
     def on_bar_close(self, bar: dict,
@@ -960,6 +964,13 @@ class StrategyMonitor:
         import copy as _copy
         state_snapshot = _copy.deepcopy(self.indicators.state)
         init_snapshot = self.indicators._initialized
+        # The forming-bar update_bar() below overwrites _pre_bar_snapshot
+        # (it snapshots at entry). Hold the real pre-bar token and restore
+        # it, or a later Polygon rebroadcast correction would rewind to
+        # the wrong (post-bar) state. Reference hold is enough — update_bar
+        # replaces the attribute, never mutates the token in place.
+        prebar_snapshot = getattr(
+            self.indicators, '_pre_bar_snapshot', None)
         # User-pack incremental classes hold their own internal state (e.g.
         # UtBotV4Incremental's _trail_stop / _prev_close). Forming-bar
         # tentative computation MUST snapshot/restore these alongside the
@@ -986,6 +997,7 @@ class StrategyMonitor:
             self.indicators._initialized = init_snapshot
             if user_pack_snapshot:
                 self.indicators._user_pack_engines = user_pack_snapshot
+            self.indicators._pre_bar_snapshot = prebar_snapshot
         return current, interps
 
     @_prof_fn('m_on_tick')
@@ -1249,6 +1261,8 @@ class _ShadowIndicatorEngine:
 
     def warmup(self, df: pd.DataFrame):
         self.indicators.warmup(df)
+        # Live shadow engine — enable O(1) rebroadcast correction.
+        self.indicators._snapshot_enabled = True
 
     @_prof_fn('sh_on_bar_close')
     def on_bar_close(self, bar: dict) -> Set[str]:

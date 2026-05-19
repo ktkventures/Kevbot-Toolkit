@@ -686,6 +686,15 @@ class IncrementalIndicatorEngine:
         self.state = IndicatorState()
         self._initialized = False
 
+        # O(1) rebroadcast-correction support (2026-05-19). When enabled
+        # (live engines only — see StrategyMonitor / _ShadowIndicatorEngine
+        # warmup), update_bar() snapshots pre-bar state so a Polygon
+        # correction of the most-recent bar can be applied by rewinding
+        # one bar instead of an O(N) recompute_from_history replay.
+        # Left False for backtest engines so they pay no deepcopy cost.
+        self._snapshot_enabled = False
+        self._pre_bar_snapshot = None
+
         if 'ema' in self.required:
             for p in params['ema_periods']:
                 self.state.ema[p] = 0.0
@@ -809,43 +818,95 @@ class IncrementalIndicatorEngine:
 
         self._initialized = True
 
-    def recompute_from_history(self, df: pd.DataFrame) -> None:
-        """Reset all indicator state and replay every bar in df.
+    def snapshot_state(self):
+        """Deep-copy the engine's mutable state — built-in IndicatorState,
+        the _initialized flag, and every user-pack incremental engine —
+        into an opaque token for O(1) rewind. Mirrors the snapshot/restore
+        StrategyMonitor.compute_tentative_state already does per forming
+        bar, so the deepcopy cost is a known, accepted quantity."""
+        import copy
+        return (
+            copy.deepcopy(self.state),
+            self._initialized,
+            {slug: copy.deepcopy(eng)
+             for slug, eng in getattr(
+                 self, '_user_pack_engines', {}).items()},
+        )
 
-        M8.7 rebroadcast handling (2026-05-02): when Polygon WS rebroadcasts
-        a corrected version of the most recent bar (within their 15-min
-        FINRA late-print window), the BarBuilder replaces the history row
-        in place via accept_bar's duplicate detection. The indicator
-        engine's accumulated state, however, was incrementally computed
-        from the OLD (uncorrected) bar values. Calling this method after
-        a duplicate-detected accept_bar resets state from scratch and
-        replays the corrected history — equivalent to a fresh engine
-        warmup against the corrected df. O(N) per correction; acceptable
-        for typical N≈few-hundred bar history sizes.
+    def restore_state(self, snap) -> None:
+        """Restore a snapshot_state() token in place."""
+        state, initialized, packs = snap
+        self.state = state
+        self._initialized = initialized
+        if packs:
+            self._user_pack_engines = packs
 
-        Equivalent to: discard self, build a fresh engine with the same
-        required_indicators+params, call warmup(df) on it, swap in.
-        Implementation just re-runs __init__ and warmup in place.
+    def apply_last_bar_correction(self, df: pd.DataFrame) -> bool:
+        """O(1) re-sync after a Polygon rebroadcast corrected ONLY the
+        most-recent bar (always true for the WS duplicate path — the
+        rebroadcast detector matches `period_start == last_history_ts`).
+
+        Rewinds to the snapshot taken before that bar was first processed,
+        then re-applies the corrected bar. Returns True on success, or
+        False when no snapshot is available (cold start / pre-warmup) so
+        the caller can fall back to a full replay.
         """
-        # Re-run __init__ logic to reset state and re-instantiate user
-        # pack engines. We pass the same required_indicators and params
-        # captured at original instantiation.
+        snap = self._pre_bar_snapshot
+        if snap is None or df is None or len(df) == 0:
+            return False
+        self.restore_state(snap)
+        row = df.iloc[-1]
+        # update_bar re-snapshots the restored (pre-bar) state, so a
+        # second correction of the same bar still resolves in O(1).
+        self.update_bar({
+            'open': float(row['open']), 'high': float(row['high']),
+            'low': float(row['low']), 'close': float(row['close']),
+            'volume': float(row.get('volume', 0)),
+            'timestamp': df.index[-1],
+        })
+        return True
+
+    def recompute_from_history(self, df: pd.DataFrame) -> None:
+        """Re-sync indicator state after a Polygon WS rebroadcast corrected
+        the most-recent history bar.
+
+        Fast path (2026-05-19): a rebroadcast only ever corrects the last
+        bar, so rewind one bar via the pre-bar snapshot and re-apply the
+        corrected bar — O(1). This replaced an O(N) full-history replay
+        that measured ~710ms/call and 90-95% of worker CPU under RTH load.
+
+        Fallback: full reset + replay of df (cold start, or no snapshot
+        yet) — equivalent to discarding self, building a fresh engine with
+        the same required_indicators+params, and warming it up against df.
+        """
         import time as _t
         _t0 = _t.perf_counter()
-        IncrementalIndicatorEngine.__init__(
-            self, self.required, self.params)
-        # Now replay the corrected history.
-        self.warmup(df)
+        fast = False
+        try:
+            fast = self.apply_last_bar_correction(df)
+        except Exception as e:
+            logger.warning("apply_last_bar_correction failed, falling "
+                            "back to full replay: %s", e)
+            fast = False
+        if not fast:
+            # Full O(N) replay. Preserve _snapshot_enabled across the
+            # __init__ reset so the engine keeps snapshotting afterwards.
+            _snap_en = self._snapshot_enabled
+            IncrementalIndicatorEngine.__init__(
+                self, self.required, self.params)
+            self._snapshot_enabled = _snap_en
+            self.warmup(df)
         # Hot-path profiling (2026-05-19): report to ralph_engine's
-        # accumulator if it's loaded + the flag is on. Lazy import avoids
-        # the ralph_engine ↔ unified_engine circular load.
+        # accumulator. Lazy import avoids the ralph_engine ↔ unified_engine
+        # circular load.
         try:
             import ralph_engine as _re
             if _re._HOT_PATH_PROFILE:
-                _d = _re._prof_acc.get('recompute')
+                label = 'recompute_fast' if fast else 'recompute_full'
+                _d = _re._prof_acc.get(label)
                 _dt = _t.perf_counter() - _t0
                 if _d is None:
-                    _re._prof_acc['recompute'] = [_dt, 1]
+                    _re._prof_acc[label] = [_dt, 1]
                 else:
                     _d[0] += _dt
                     _d[1] += 1
@@ -858,6 +919,12 @@ class IncrementalIndicatorEngine:
         Auto-detects first bar (no warmup needed for backtest mode).
         Returns dict of current indicator values.
         """
+        # Snapshot pre-bar state (live engines only) so a Polygon
+        # rebroadcast correction of THIS bar resolves in O(1) via
+        # apply_last_bar_correction instead of a full-history replay.
+        if self._snapshot_enabled:
+            self._pre_bar_snapshot = self.snapshot_state()
+
         self.state.prev2_macd_hist = self.state.prev_macd_hist
         self.state.prev_macd_hist = self.state.current.get('macd_hist', 0.0)
         self.state.prev_values = dict(self.state.current)
