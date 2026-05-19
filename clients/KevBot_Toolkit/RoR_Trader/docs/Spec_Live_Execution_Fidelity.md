@@ -49,9 +49,13 @@ Two structural facts drive this spec:
 
 - Changing data provider (Polygon stays — Phase H shelved the trade
   channel).
-- Reworking 1Min behavior (`ws_agg_locked` is bit-identical to REST on
-  validated samples). The framework is general, but the work is
-  sub-minute-focused.
+- **Reworking 1Min+ behavior — confirmed unnecessary.** Measured
+  2026-05-19 (`src/_cache_vs_rest1s.py`, 2.5h RTH): the `live_bars`
+  cache — *both* decision-time (`first_close`) AND cache+backfill
+  (`close`, all sources) — matches REST 1Sec-rolled at **100.0%** for
+  SPY/AAPL/TSLA at 1Min and 5Min. The grace/reconciliation paradigm is
+  a **sub-minute-only** problem; `ws_agg_locked` stays correct and
+  untouched for 1Min+.
 
 ## 4. Answer to "do we need a new live model?" — YES
 
@@ -102,13 +106,50 @@ that a handful of discrete models can't express cleanly.
 - If user-exposed (5.2), expose as **named tiers**, never a raw seconds
   field.
 
-### 4.3 Parity counterpart
+### 4.3 Model taxonomy after this spec (decided 2026-05-19)
 
-For `ws_agg_reconciled` to be trustworthy it must be checkable on the
-Divergence tab. The `algo_model` lane ("what the live engine *should*
-have produced") must be able to replay the provisional+reconcile logic.
-Open decision (7): whether existing `cache_locked` / `cache_corrected`
-cover this or a new `BACKTEST_MODELS` entry is needed.
+The three model fields converge to a clear division of labour:
+
+- **`backtest_model` = REST 1Sec aggs, rolled to any TF** — the
+  "source of truth" / KPI baseline. Kevin's canonical reference.
+  A new `rest_1s` entry is warranted (see 4.4) — not for a behavior
+  change, but for *uniformity* (one construction for every TF) and
+  *alignment robustness*.
+- **`live_model` = `ws_agg_locked` (1Min+) / `ws_agg_reconciled`
+  (sub-minute)** — what the engine fires on. `ws_agg_reconciled` is
+  *designed to converge toward the backtest_model* — that convergence
+  is the whole point, so it does not need a bespoke backtest simulator.
+- **`algo_model` = a parity counterpart of `ws_agg_reconciled`** — the
+  accountability lane: "what the reconciled live engine *should* have
+  produced," for the Divergence tab. This is the one genuinely new
+  `BACKTEST_MODELS`-side entry the spec needs.
+
+**Decision:** `ws_agg_reconciled` should *eventually become the live
+default* (Kevin, 2026-05-19) — once Phase 3 parity is proven. Until
+then it ships `available: True, default: False`.
+
+### 4.4 The `rest_1s` backtest model — why, and the caveat
+
+Today the backtest data path picks Polygon-native aggregates per TF via
+`_polygon_timespan` (`"10Sec" → (10,"second")`, `"1Min" → (1,"minute")`,
+…) — *two different fetch shapes* (native sub-minute vs native minute).
+
+Polygon **native N-second aggregates align to the query `from`
+parameter**: a date-string `from` (the backtest path) → midnight →
+absolute 10s boundaries (fine, matches the live `BarBuilder._align_to_
+period`); but an arbitrary ms-timestamp `from` → phase-shifted buckets.
+That `from`-dependence is a latent fragility.
+
+A `rest_1s` model — fetch 1Sec aggs, roll with `(sec // tf) * tf` — is
+**unconditionally absolute-aligned for every TF**, and is *literally
+the ground truth the parity Bars Comparison already uses*. Making the
+backtest model identical to the validator removes a class of "is the
+truth even the truth" questions.
+
+It is **not** expected to change results materially (native-N-sec with
+a date `from` ≈ 1Sec-rolled — both Polygon settled, both absolute-
+aligned). **Verify that equivalence first**, then adopt `rest_1s` as a
+clarity + robustness unification, not a behavior change.
 
 ## 5. Detailed design
 
@@ -173,19 +214,25 @@ slow-path state reconciliation source. Lower frequency; never blocks.
   `ws_agg_reconciled` to `available: True`.
 - **Phase 5 — Per-strategy grace UI** (named tiers).
 
-## 7. Open decisions (resolve before the relevant phase)
+## 7. Open decisions
 
-- Grace as a discrete model attribute vs a continuous parameter.
-  *Lean: continuous parameter + per-ticker default.*
+**Resolved 2026-05-19:**
+- Grace = a per-strategy *parameter*, not a discrete model. ✓
+- `ws_agg_reconciled` *will* become the live default once Phase 3
+  parity is proven. ✓
+- `ws_agg_reconciled` needs no bespoke backtest simulator — it is
+  designed to converge toward `backtest_model`. The new model-side
+  entry needed is an **`algo_model` parity counterpart** (4.3). ✓
+- 1Min+ needs no grace — cache = 100% vs REST 1Sec (3, measured). ✓
+
+**Still open (resolve before the relevant phase):**
 - `ε` for "marginal trigger" confidence gating — global, or
-  per-indicator/per-trigger-type?
-- Does `ws_agg_reconciled` eventually become the default, or stay
-  opt-in?
-- Does the parity counterpart need a new `BACKTEST_MODELS` entry, or do
-  `cache_locked` / `cache_corrected` suffice?
+  per-indicator / per-trigger-type?
 - Final grace defaults — pending the 6s/7s sweep (esp. whether SPY
   wants 6–7).
-- Naming: `ws_agg_reconciled` vs alternatives.
+- Adopt an explicit `rest_1s` `backtest_model`? (4.4 — recommended;
+  verify native-N-sec ≈ 1Sec-rolled first.)
+- Naming: `ws_agg_reconciled`, the `algo_model` counterpart.
 
 ## 8. Risks
 
