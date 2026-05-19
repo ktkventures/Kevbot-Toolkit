@@ -62,6 +62,79 @@ _LOG_DATE_FMT = "%H:%M:%S"
 logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, datefmt=_LOG_DATE_FMT)
 logger = logging.getLogger("ralph")
 
+
+# ─── Hot-path profiler (2026-05-19, A-lag optimization) ──────────────────
+# Lightweight cumulative timing of the per-second processing path. Behind
+# HOT_PATH_PROFILE env flag (default off). Dumped every 30s aligned with
+# the A-channel lag histogram in _record_a_lag.
+_HOT_PATH_PROFILE = os.environ.get(
+    'HOT_PATH_PROFILE', '').strip().lower() in ('1', 'true', 'yes', 'on')
+_prof_acc: dict = {}  # label -> [total_seconds, call_count]
+
+
+class _prof:
+    """`with _prof('label'):` — accumulates wall time under that label.
+    Near-zero overhead when HOT_PATH_PROFILE is off."""
+    __slots__ = ('label', '_t0')
+
+    def __init__(self, label: str):
+        self.label = label
+
+    def __enter__(self):
+        if _HOT_PATH_PROFILE:
+            self._t0 = time.perf_counter()
+        return self
+
+    def __exit__(self, *exc):
+        if _HOT_PATH_PROFILE:
+            d = _prof_acc.get(self.label)
+            dt = time.perf_counter() - self._t0
+            if d is None:
+                _prof_acc[self.label] = [dt, 1]
+            else:
+                d[0] += dt
+                d[1] += 1
+        return False
+
+
+def _prof_fn(label: str):
+    """Decorator — accumulate wall time of a function under `label`.
+    Returns the function unchanged when HOT_PATH_PROFILE is off."""
+    def deco(fn):
+        if not _HOT_PATH_PROFILE:
+            return fn
+        import functools
+
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            _t0 = time.perf_counter()
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                d = _prof_acc.get(label)
+                dt = time.perf_counter() - _t0
+                if d is None:
+                    _prof_acc[label] = [dt, 1]
+                else:
+                    d[0] += dt
+                    d[1] += 1
+        return wrapper
+    return deco
+
+
+def _prof_dump_and_reset() -> None:
+    """Log accumulated hot-path timings and clear. Called every 30s."""
+    if not _HOT_PATH_PROFILE or not _prof_acc:
+        return
+    parts = []
+    for label, (tot, n) in sorted(
+            _prof_acc.items(), key=lambda kv: -kv[1][0]):
+        parts.append('%s=%.0fms/%d(%.2fms)' % (
+            label, tot * 1000.0, n, tot / n * 1000.0 if n else 0.0))
+    logger.info("HOT-PATH PROFILE (30s window): %s", ' | '.join(parts))
+    _prof_acc.clear()
+
+
 # Add file handler with rotation (5 MB max, keep 3 backups).
 # Guard: this module runs both as __main__ and via `from ralph_engine import X`
 # (separate sys.modules entries), so getLogger("ralph") would accumulate
@@ -759,6 +832,7 @@ class StrategyMonitor:
         """Initialize indicator state from historical bars."""
         self.indicators.warmup(df)
 
+    @_prof_fn('m_on_bar_close')
     def on_bar_close(self, bar: dict,
                      bar_count: int,
                      mtf_confluence: Dict[int, Set[str]] = None,
@@ -912,6 +986,7 @@ class StrategyMonitor:
                 self.indicators._user_pack_engines = user_pack_snapshot
         return current, interps
 
+    @_prof_fn('m_on_tick')
     def on_tick(self, price: float, timestamp: str,
                 bar_count: int) -> List[dict]:
         """Process a tick for intra-bar detection. Returns list of signals."""
@@ -1892,6 +1967,7 @@ class SymbolHub:
             # M8.5: broadcast completed bar to Supabase Realtime (live chart)
             self._publish_completed_bar(tf_seconds, completed)
 
+    @_prof_fn('s_mon_pipeline')
     def _run_monitor_pipeline_for_completed_bar(
         self,
         tf_seconds: int,
@@ -2234,6 +2310,7 @@ class SymbolHub:
                     "ws_agg primary pipeline dispatch failed "
                     "(%ss, %s): %s", tf, self.symbol, e)
 
+    @_prof_fn('s_on_polygon_bar')
     def on_polygon_bar(self, bar_dict: dict, tf_seconds: int,
                         alert_callback: Callable = None,
                         config: dict = None,
@@ -2331,6 +2408,7 @@ class SymbolHub:
         # ws_agg minute-close path in on_second_bar.
         self._fanout_to_secondary_builders(bar_dict, source_label='ws')
 
+    @_prof_fn('s_on_second_bar')
     def on_second_bar(self, bar_dict: dict,
                        alert_callback: Callable = None,
                        config: dict = None,
@@ -2803,6 +2881,7 @@ class RalphEngine:
             self._a_lag_min = float('inf')
             self._a_lag_max = 0.0
             self._a_lag_hist = [0, 0, 0, 0, 0, 0, 0]
+            _prof_dump_and_reset()
 
     def start(self, strategies: list, config: dict):
         """Start the engine (blocking — runs the async event loop)."""
