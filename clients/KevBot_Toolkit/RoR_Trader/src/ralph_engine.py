@@ -224,6 +224,14 @@ class BarBuilder:
         # calling accept_*. Default False so existing callers (tests,
         # audit scripts) work unchanged.
         self.last_was_duplicate: bool = False
+        # True only when a rebroadcast (last_was_duplicate) actually changed
+        # the bar's OHLCV vs the existing history row. Pure re-deliveries
+        # (identical values — common when the worker drains a backlog of
+        # per-second bars) set this False so callers skip the expensive
+        # recompute_from_history sweep. Without this, every re-delivered
+        # second-bar in a closed bucket triggered a full O(N)×monitors
+        # replay — a self-feeding lag spiral (2026-05-19).
+        self.last_was_correction: bool = False
 
     def seed_history(self, df: pd.DataFrame):
         """Seed builder history from a DataFrame.
@@ -421,10 +429,14 @@ class BarBuilder:
                 # "Must have equal len keys and value when setting with
                 # an iterable" once secondary builders started getting
                 # seeded by the hot-reload path.
-                self.history.loc[
-                    self.history.index[-1],
-                    ['open', 'high', 'low', 'close', 'volume']
-                ] = [sec_open, sec_high, sec_low, sec_close, sec_volume]
+                _cols = ['open', 'high', 'low', 'close', 'volume']
+                _new = [sec_open, sec_high, sec_low, sec_close, sec_volume]
+                _row = self.history.loc[self.history.index[-1]]
+                self.last_was_correction = any(
+                    abs(float(_row[c]) - v) > 1e-9
+                    for c, v in zip(_cols, _new)
+                )
+                self.history.loc[self.history.index[-1], _cols] = _new
                 self.last_was_duplicate = True
                 # Return the corrected bar dict so caller knows this was a
                 # close-on-boundary (treats it like a completed-bar return).
@@ -537,16 +549,20 @@ class BarBuilder:
                 # Replace the row's OHLCV with the corrected values.
                 # 2026-05-13: column-targeted assignment (see
                 # accept_second_bar above for the same fix).
-                self.history.loc[
-                    self.history.index[-1],
-                    ['open', 'high', 'low', 'close', 'volume']
-                ] = [
+                _cols = ['open', 'high', 'low', 'close', 'volume']
+                _new = [
                     float(bar_dict['open']),
                     float(bar_dict['high']),
                     float(bar_dict['low']),
                     float(bar_dict['close']),
                     float(bar_dict.get('volume', 0)),
                 ]
+                _row = self.history.loc[self.history.index[-1]]
+                self.last_was_correction = any(
+                    abs(float(_row[c]) - v) > 1e-9
+                    for c, v in zip(_cols, _new)
+                )
+                self.history.loc[self.history.index[-1], _cols] = _new
                 self.last_was_duplicate = True
                 return bar_dict
 
@@ -2164,6 +2180,7 @@ class SymbolHub:
             if completed is None:
                 continue
             primary_was_duplicate = builder.last_was_duplicate
+            primary_was_correction = builder.last_was_correction
             try:
                 from live_bars_writer import write_bar as _live_bars_write
                 _live_bars_write(
@@ -2173,21 +2190,25 @@ class SymbolHub:
 
             if primary_was_duplicate:
                 # AM beat us to this period and ws_agg is the rebroadcast.
-                # Recompute monitor indicators silently; do NOT re-fire alerts.
-                for monitor in self.monitors.values():
-                    if monitor.tf_seconds != tf:
-                        continue
-                    try:
-                        monitor.indicators.recompute_from_history(builder.history)
-                    except Exception as e:
-                        logger.warning(
-                            "Rebroadcast recompute failed for strat %s "
-                            "(tf=%ss, src=ws_agg): %s",
-                            monitor.strat_id, tf, e)
-                logger.info(
-                    "Rebroadcast applied: %s tf=%ss bar=%s — "
-                    "indicators recomputed (>60s primary, src=ws_agg), no alerts",
-                    self.symbol, tf, completed.get('timestamp'))
+                # Only recompute if values actually changed — a pure
+                # re-delivery (identical OHLCV) needs no work. Never
+                # re-fire alerts. See last_was_correction (spiral fix).
+                if primary_was_correction:
+                    for monitor in self.monitors.values():
+                        if monitor.tf_seconds != tf:
+                            continue
+                        try:
+                            monitor.indicators.recompute_from_history(builder.history)
+                        except Exception as e:
+                            logger.warning(
+                                "Rebroadcast recompute failed for strat %s "
+                                "(tf=%ss, src=ws_agg): %s",
+                                monitor.strat_id, tf, e)
+                    logger.info(
+                        "Rebroadcast applied: %s tf=%ss bar=%s — "
+                        "indicators recomputed (>60s primary, src=ws_agg), "
+                        "no alerts", self.symbol, tf,
+                        completed.get('timestamp'))
                 continue
 
             try:
@@ -2237,6 +2258,7 @@ class SymbolHub:
         # replaces the history row in place and sets last_was_duplicate.
         builder.accept_bar(bar_dict)
         was_duplicate = builder.last_was_duplicate
+        was_correction = builder.last_was_correction
 
         # M8.7: record the WS-aggregated bar to live_bars (fire-and-forget).
         # Always write — even on duplicate, since this is how cache.close
@@ -2253,33 +2275,36 @@ class SymbolHub:
             # Do NOT re-fire alerts — once an alert is saved it's fact;
             # the corrected bar's own trigger evaluation was already done
             # with the original values at the moment it first arrived.
-            for monitor in self.monitors.values():
-                if monitor.tf_seconds != tf_seconds:
-                    continue
-                try:
-                    monitor.indicators.recompute_from_history(builder.history)
-                except Exception as e:
-                    logger.warning(
-                        "Rebroadcast recompute failed for strat %s "
-                        "(tf=%ss): %s",
-                        monitor.strat_id, tf_seconds, e)
-                # User-pack engines: if the monitor has any, they live on
-                # IncrementalIndicatorEngine via _user_pack_engines; the
-                # __init__ called by recompute_from_history rebuilds them
-                # cleanly with fresh state.
-            # Also recompute any shadow engine for this TF
-            shadow_self = self._shadow_engines.get(tf_seconds)
-            if shadow_self is not None:
-                try:
-                    shadow_self.indicators.recompute_from_history(builder.history)
-                except Exception as e:
-                    logger.warning(
-                        "Rebroadcast recompute failed for shadow %ss: %s",
-                        tf_seconds, e)
-            logger.info(
-                "Rebroadcast applied: %s tf=%ss bar=%s — indicators "
-                "recomputed, no alerts fired",
-                self.symbol, tf_seconds, bar_dict.get('timestamp'))
+            # Skip the recompute entirely on a pure re-delivery (identical
+            # OHLCV) — that work is wasted and drives the lag spiral.
+            if was_correction:
+                for monitor in self.monitors.values():
+                    if monitor.tf_seconds != tf_seconds:
+                        continue
+                    try:
+                        monitor.indicators.recompute_from_history(builder.history)
+                    except Exception as e:
+                        logger.warning(
+                            "Rebroadcast recompute failed for strat %s "
+                            "(tf=%ss): %s",
+                            monitor.strat_id, tf_seconds, e)
+                    # User-pack engines: if the monitor has any, they live on
+                    # IncrementalIndicatorEngine via _user_pack_engines; the
+                    # __init__ called by recompute_from_history rebuilds them
+                    # cleanly with fresh state.
+                # Also recompute any shadow engine for this TF
+                shadow_self = self._shadow_engines.get(tf_seconds)
+                if shadow_self is not None:
+                    try:
+                        shadow_self.indicators.recompute_from_history(builder.history)
+                    except Exception as e:
+                        logger.warning(
+                            "Rebroadcast recompute failed for shadow %ss: %s",
+                            tf_seconds, e)
+                logger.info(
+                    "Rebroadcast applied: %s tf=%ss bar=%s — indicators "
+                    "recomputed, no alerts fired",
+                    self.symbol, tf_seconds, bar_dict.get('timestamp'))
         else:
             self._run_monitor_pipeline_for_completed_bar(
                 tf_seconds=tf_seconds,
@@ -2506,6 +2531,7 @@ class SymbolHub:
             if completed is None:
                 continue
             sec_was_duplicate = sec_builder.last_was_duplicate
+            sec_was_correction = sec_builder.last_was_correction
             # M8.7: record sub-minute secondary-TF bar to live_bars.
             try:
                 from live_bars_writer import write_bar as _live_bars_write
@@ -2521,15 +2547,18 @@ class SymbolHub:
                 # the most recent sub-minute period. Recompute shadow
                 # indicator state from corrected history; skip on_bar_close
                 # to avoid emitting confluence records that already fired.
-                try:
-                    shadow.indicators.recompute_from_history(sec_builder.history)
-                    logger.info(
-                        "Rebroadcast cascade: shadow %s/%ss recomputed",
-                        self.symbol, sec_tf)
-                except Exception as e:
-                    logger.warning(
-                        "shadow recompute_from_history failed (%ss): %s",
-                        sec_tf, e)
+                # Skip the recompute on a pure re-delivery (no value change)
+                # — that is the lag-spiral hot path (2026-05-19).
+                if sec_was_correction:
+                    try:
+                        shadow.indicators.recompute_from_history(sec_builder.history)
+                        logger.info(
+                            "Rebroadcast cascade: shadow %s/%ss recomputed",
+                            self.symbol, sec_tf)
+                    except Exception as e:
+                        logger.warning(
+                            "shadow recompute_from_history failed (%ss): %s",
+                            sec_tf, e)
                 continue
 
             # Note: do NOT gate on shadow.indicators._initialized here.
@@ -2559,6 +2588,7 @@ class SymbolHub:
                 completed = b.accept_second_bar(bar_dict, close_on_boundary=True)
                 if completed is not None:
                     primary_was_duplicate = b.last_was_duplicate
+                    primary_was_correction = b.last_was_correction
                     # M8.7: record sub-minute primary-TF bar to live_bars.
                     try:
                         from live_bars_writer import write_bar as _live_bars_write
@@ -2571,28 +2601,33 @@ class SymbolHub:
                         # M8.7 (2026-05-02): Polygon per-second rebroadcast
                         # for the most recent sub-minute primary bar. Recompute
                         # indicator state silently; skip alert pipeline.
-                        for monitor in self.monitors.values():
-                            if monitor.tf_seconds != tf_seconds:
-                                continue
-                            try:
-                                monitor.indicators.recompute_from_history(b.history)
-                            except Exception as e:
-                                logger.warning(
-                                    "Rebroadcast recompute failed for strat %s "
-                                    "(tf=%ss): %s",
-                                    monitor.strat_id, tf_seconds, e)
-                        shadow_self = self._shadow_engines.get(tf_seconds)
-                        if shadow_self is not None:
-                            try:
-                                shadow_self.indicators.recompute_from_history(b.history)
-                            except Exception as e:
-                                logger.warning(
-                                    "Rebroadcast recompute failed for shadow "
-                                    "%ss: %s", tf_seconds, e)
-                        logger.info(
-                            "Rebroadcast applied: %s tf=%ss bar=%s — "
-                            "indicators recomputed (sub-minute), no alerts",
-                            self.symbol, tf_seconds, completed.get('timestamp'))
+                        # Pure re-deliveries (identical OHLCV — rampant when
+                        # the worker drains a per-second backlog) skip the
+                        # recompute: this is THE lag-spiral fix (2026-05-19).
+                        if primary_was_correction:
+                            for monitor in self.monitors.values():
+                                if monitor.tf_seconds != tf_seconds:
+                                    continue
+                                try:
+                                    monitor.indicators.recompute_from_history(b.history)
+                                except Exception as e:
+                                    logger.warning(
+                                        "Rebroadcast recompute failed for strat %s "
+                                        "(tf=%ss): %s",
+                                        monitor.strat_id, tf_seconds, e)
+                            shadow_self = self._shadow_engines.get(tf_seconds)
+                            if shadow_self is not None:
+                                try:
+                                    shadow_self.indicators.recompute_from_history(b.history)
+                                except Exception as e:
+                                    logger.warning(
+                                        "Rebroadcast recompute failed for shadow "
+                                        "%ss: %s", tf_seconds, e)
+                            logger.info(
+                                "Rebroadcast applied: %s tf=%ss bar=%s — "
+                                "indicators recomputed (sub-minute), no alerts",
+                                self.symbol, tf_seconds,
+                                completed.get('timestamp'))
                     else:
                         # Run the full monitor pipeline on the closed sub-minute bar
                         self._run_monitor_pipeline_for_completed_bar(
