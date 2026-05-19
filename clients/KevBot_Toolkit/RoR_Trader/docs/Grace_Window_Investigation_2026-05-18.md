@@ -103,6 +103,18 @@ sub-minute builder (`force_close_stale_bar`) — that is the Bug B fix.
 Bucket the misses by time-of-day when comparing: clustered at the
 open/close auctions → an auction bug; uniform → physics ceiling.
 
+## ADDENDUM 2026-05-19 — RTH A-lag measured; Grace 5 added
+
+The 2026-05-19 RTH session settled the open question. After the
+worker lag-spiral was fixed (see `EOD_2026-05-19.md`), the A-channel
+ingestion lag measured **~3.7s avg, 3.06s min, ~6.3s max** under full
+RTH load — not the ~3s the thin after-hours sample suggested. The 10Sec
+grace window must cover ~3.7s avg + jitter, so the winning grace is
+likely **4s or 5s**, not 2.5–3s. A **Grace 5s** shadow variant was added
+(`_DEFAULT_GRACE = "2,2.5,3,4,5"`, API allowlist, Bars Comparison UI) to
+bracket that. Re-enable `GRACE_SHADOW_ENABLED` to collect 5-variant data
+and pick the smallest grace at ~99% close-match — now expected at 4–5s.
+
 ## Reference
 
 - Lag instrumentation: `ralph_engine.py` `_record_a_lag`, commit `f501126`.

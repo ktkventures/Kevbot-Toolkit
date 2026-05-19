@@ -413,7 +413,7 @@ def get_trade_bars(
         raise HTTPException(status_code=400, detail="start must be < end")
     _allowed_sources = (
         't_wait0', 't_wait200', 't_wait500',          # Phase H trade-channel shadow
-        'grace_2s', 'grace_2.5s', 'grace_3s', 'grace_4s',  # 10Sec grace-window shadow
+        'grace_2s', 'grace_2.5s', 'grace_3s', 'grace_4s', 'grace_5s',  # 10Sec grace-window shadow
     )
     if source not in _allowed_sources:
         raise HTTPException(
