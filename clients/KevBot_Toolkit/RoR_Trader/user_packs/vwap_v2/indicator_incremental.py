@@ -25,15 +25,22 @@ _VWAP_SESSION_GAP_SECONDS = 30 * 60  # 30 minutes — matches built-in
 
 
 def _to_epoch(ts):
-    """Convert a pandas Timestamp / datetime to UNIX epoch float.
+    """Convert a timestamp to UNIX epoch float.
 
-    Returns None if ts is None. Assumes ts has a .timestamp() method
-    (pandas Timestamp and datetime.datetime both do — that's what the
-    engine and batch wrapper pass).
+    Returns None if ts is None. The batch wrapper passes a pandas
+    Timestamp / datetime (has `.timestamp()`), but the live engine bar
+    path passes an ISO string — mirror the built-in vwap (unified_engine
+    line ~913) and coerce via pd.Timestamp when there's no `.timestamp()`.
     """
     if ts is None:
         return None
-    return ts.timestamp()
+    if hasattr(ts, "timestamp"):
+        return ts.timestamp()
+    import pandas as pd
+    try:
+        return pd.Timestamp(ts).timestamp()
+    except (ValueError, TypeError):
+        return None
 
 
 class VwapV2Incremental:
