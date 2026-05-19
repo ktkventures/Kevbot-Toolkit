@@ -163,6 +163,13 @@ TIMEFRAME_SECONDS = {
 }
 SECONDS_TO_TIMEFRAME = {v: k for k, v in TIMEFRAME_SECONDS.items()}
 
+# Grace window (seconds) for sub-minute bar force-close. See
+# BarBuilder.force_close_stale_bar — picked from the 2026-05-19 RTH
+# sweep (TSLA 95-100% / SPY 87% within $0.10 vs REST; diminishing
+# returns past 5). Future: per-strategy parameter via the Live
+# Execution Fidelity spec (`ws_agg_reconciled` live_model).
+SUBMINUTE_FORCE_CLOSE_GRACE_SEC = 5
+
 # Short TF labels → seconds (both cases for normalization)
 _LABEL_TO_TF_SECONDS = {}
 for _tf_name, _tf_sec in TIMEFRAME_SECONDS.items():
@@ -679,14 +686,29 @@ class BarBuilder:
     def force_close_stale_bar(self, now: datetime) -> Optional[dict]:
         """Close the partial bar if wall-clock time has passed bar_end.
 
+        Sub-minute bars get a grace window past bar_end before force-close
+        to absorb Polygon's ~3-7s A-channel ingestion lag. Without it,
+        force_close fired BEFORE the last per-second data could arrive
+        and emitted a flat carry-forward bar (Bug B — the SPY/TSLA 10Sec
+        empty-bar symptom from 2026-05-18). 1Min+ doesn't need a grace
+        — cache vs REST is already 100% there (see Backtest_Speed_
+        Analysis_2026-05-19.md §3).
+
+        Grace = 5s is the value picked from the 2026-05-19 RTH grace
+        sweep: TSLA 95-100% exact vs REST, SPY 87% within $0.10 / 100%
+        within $0.25 (unbiased microstructure noise). Diminishing
+        returns past grace 5. Future: per-strategy parameter via the
+        Live Execution Fidelity spec (`ws_agg_reconciled` live_model).
+
         Returns the completed bar dict, or None if no bar was stale.
         Gap-fills any missing intermediate bars (same logic as process_tick).
         """
         if self._partial is None:
             return None
         bar_end = self._partial.bar_start + timedelta(seconds=self.tf_seconds)
-        if now < bar_end:
-            return None  # Bar still forming
+        grace_sec = SUBMINUTE_FORCE_CLOSE_GRACE_SEC if self.tf_seconds < 60 else 0
+        if now < bar_end + timedelta(seconds=grace_sec):
+            return None  # Bar still forming (or within sub-minute grace)
         fill_close = self._partial.close
         completed = self._close_bar()
         # Fill gap bars between bar_end and current period
