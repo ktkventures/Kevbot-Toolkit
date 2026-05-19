@@ -282,6 +282,7 @@ export default function AdminParityPage() {
                     windowStart={windowStart}
                     windowEnd={windowEnd}
                     symbol={selected?.symbol ?? null}
+                    primaryTfSeconds={strategyTfSeconds}
                   />
                 );
               }

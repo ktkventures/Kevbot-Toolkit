@@ -24,7 +24,7 @@
  *   - "REST"       Polygon aggregates (settled, post-correction)
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import TradingChart, { type CandleData } from './TradingChart';
 import type { CacheBar } from '@/hooks/queries/useStrategies';
 import type { BarData } from '@/hooks/queries/useMarketData';
@@ -75,6 +75,10 @@ interface Props {
   windowEnd?: string | null;
   /** Symbol — needed by useRestBars (rest1s source) on TF change. */
   symbol?: string | null;
+  /** Selected strategy's primary timeframe (seconds). Used as the
+   *  initial/default value of the Timeframe dropdown — the dropdown
+   *  stays manually selectable for diagnostics. */
+  primaryTfSeconds?: number;
 }
 
 interface NormBar {
@@ -350,15 +354,24 @@ export default function ParityBarComparison({
   windowStart,
   windowEnd,
   symbol,
+  primaryTfSeconds,
 }: Props) {
   // Phase F.3: user picks which two sources to compare. Defaults are
   // Cache (left) vs Observable (right) — the most diagnostic pair
   // (answers "did our live engine match what was emitted?").
   const [leftSource, setLeftSource] = useState<SourceKey>('cache');
   const [rightSource, setRightSource] = useState<SourceKey>('observable');
-  const [tfSeconds, setTfSeconds] = useState<number>(60);
+  // Default the Timeframe to the selected strategy's primary TF (still
+  // manually overridable). The useEffect re-applies it when the user
+  // switches strategy (primaryTfSeconds changes) — the component
+  // re-renders rather than re-mounting, so useState's init isn't enough.
+  const [tfSeconds, setTfSeconds] = useState<number>(primaryTfSeconds ?? 60);
   const [sortDesc, setSortDesc] = useState(true);
   const [page, setPage] = useState(0);
+
+  useEffect(() => {
+    if (primaryTfSeconds) setTfSeconds(primaryTfSeconds);
+  }, [primaryTfSeconds]);
 
   // Phase G.0/G.2: 'rest' (1Min aggs) only available at TF ≥ 60s.
   // 'rest1s' (1-sec aggs) available at all TFs.
