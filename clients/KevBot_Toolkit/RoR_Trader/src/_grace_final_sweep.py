@@ -21,7 +21,8 @@ from db import get_admin_client
 from data_loader import _polygon_fetch_bars, _to_polygon_ticker
 
 SYMBOLS = ['SPY', 'TSLA']
-VARIANTS = ['grace_2s', 'grace_2.5s', 'grace_3s', 'grace_4s', 'grace_5s']
+VARIANTS = ['grace_2s', 'grace_2.5s', 'grace_3s', 'grace_4s',
+            'grace_5s', 'grace_6s', 'grace_7s']
 TF = 10
 TOL = 0.01
 MINUTES = int(os.environ.get('MINUTES', '35'))

@@ -151,6 +151,42 @@ climbing materially, the production grace may want to be 6–7.
 The after-hours read (grace_3s 95%) was thin-sample optimism — RTH
 grace_3s is only 50% for SPY.
 
+## SWEEP RESULTS 2026-05-19 ~21:50 UTC — grace 6/7 included, magnitude analysis
+
+Second RTH session with all 7 variants. Window: 18:30–20:00 UTC (90 min
+of mid-to-late RTH, including the closing auction at 20:00). Includes
+the closing window, so this is the *harder* slice.
+
+| variant | SPY close=$0.01 | SPY within $0.10 | TSLA close=$0.01 |
+|---|---|---|---|
+| grace_2s   | 21% | 71% | 26% |
+| grace_2.5s | 22% | 73% | 48% |
+| grace_3s   | 25% | 75% | 79% |
+| grace_4s   | 35% | 79% | 92% |
+| grace_5s   | 41% | **87%** | 95% |
+| grace_6s   | 44% | 87% | 95% |
+| grace_7s   | 47% | 87% | 96% |
+
+Flat bars = 0 across all variants (Bug B confirmed fixed).
+
+**SPY magnitude breakdown** (grace_5s, this window, 477 bars):
+- mean signed diff: **−$0.0007** (essentially zero — no systematic bias)
+- median |diff|: **$0.02**, max |diff|: **$0.29**
+- 41% exact / 28% ≤$0.05 / 18% ≤$0.10 / 13% ≤$0.25 / 0% >$0.25
+  → **87% within a dime, 100% within a quarter** on a ~$590 stock.
+
+**grace_5s → grace_7s for SPY** barely changes the magnitude distribution
+— max $0.29 both, median $0.02 both, only ~6% more bars shift from
+`≤$0.05` into `exact`. The remaining misses are A-channel-vs-REST-1Sec
+microstructure noise (heavier near the close), **not** a lateness
+problem more grace can fix.
+
+**Final recommendation:** **grace 5** for production `force_close_stale_bar`.
+- TSLA: 95–100% exact, perfect.
+- SPY: 87% within $0.10, 100% within $0.25, unbiased — indicator-grade.
+  (The $0.01 "exact" headline is misleadingly tight on a $590 stock.)
+- grace 6/7 add latency for negligible fidelity gain.
+
 ## Reference
 
 - Lag instrumentation: `ralph_engine.py` `_record_a_lag`, commit `f501126`.
