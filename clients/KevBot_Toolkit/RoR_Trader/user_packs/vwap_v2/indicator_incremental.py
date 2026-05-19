@@ -20,6 +20,8 @@ column's current value.
 
 import math
 
+import pandas as pd
+
 
 _VWAP_SESSION_GAP_SECONDS = 30 * 60  # 30 minutes — matches built-in
 
@@ -28,19 +30,22 @@ def _to_epoch(ts):
     """Convert a timestamp to UNIX epoch float.
 
     Returns None if ts is None. The batch wrapper passes a pandas
-    Timestamp / datetime (has `.timestamp()`), but the live engine bar
-    path passes an ISO string — mirror the built-in vwap (unified_engine
-    line ~913) and coerce via pd.Timestamp when there's no `.timestamp()`.
+    Timestamp / datetime (`.timestamp()` works directly), but the live
+    engine bar path passes an ISO string — coerce that via pd.Timestamp,
+    mirroring the built-in vwap (unified_engine line ~913).
+
+    Note: the pack sandbox (pack_spec.SAFE_BUILTINS) does not expose
+    `hasattr` / `getattr` / `AttributeError`, so type-test with the
+    allowed `isinstance` rather than duck-typing on `.timestamp`.
     """
     if ts is None:
         return None
-    if hasattr(ts, "timestamp"):
-        return ts.timestamp()
-    import pandas as pd
-    try:
-        return pd.Timestamp(ts).timestamp()
-    except (ValueError, TypeError):
-        return None
+    if isinstance(ts, str):
+        try:
+            return pd.Timestamp(ts).timestamp()
+        except (ValueError, TypeError):
+            return None
+    return ts.timestamp()
 
 
 class VwapV2Incremental:
