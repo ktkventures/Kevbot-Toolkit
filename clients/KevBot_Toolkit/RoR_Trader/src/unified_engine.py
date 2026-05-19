@@ -830,10 +830,27 @@ class IncrementalIndicatorEngine:
         # Re-run __init__ logic to reset state and re-instantiate user
         # pack engines. We pass the same required_indicators and params
         # captured at original instantiation.
+        import time as _t
+        _t0 = _t.perf_counter()
         IncrementalIndicatorEngine.__init__(
             self, self.required, self.params)
         # Now replay the corrected history.
         self.warmup(df)
+        # Hot-path profiling (2026-05-19): report to ralph_engine's
+        # accumulator if it's loaded + the flag is on. Lazy import avoids
+        # the ralph_engine ↔ unified_engine circular load.
+        try:
+            import ralph_engine as _re
+            if _re._HOT_PATH_PROFILE:
+                _d = _re._prof_acc.get('recompute')
+                _dt = _t.perf_counter() - _t0
+                if _d is None:
+                    _re._prof_acc['recompute'] = [_dt, 1]
+                else:
+                    _d[0] += _dt
+                    _d[1] += 1
+        except Exception:
+            pass
 
     def update_bar(self, bar: dict) -> Dict[str, float]:
         """Incremental O(1) update for a new completed bar.

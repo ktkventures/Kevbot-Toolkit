@@ -429,6 +429,7 @@ class BarBuilder:
                              update_volume=update_volume)
         return None
 
+    @_prof_fn('b_accept_second')
     def accept_second_bar(self, bar_dict: dict,
                           close_on_boundary: bool = True) -> Optional[dict]:
         """Aggregate a per-second OHLCV bar into the current period's partial.
@@ -599,6 +600,7 @@ class BarBuilder:
         if len(self.history) > MAX_HISTORY:
             self.history = self.history.iloc[-MAX_HISTORY:]
 
+    @_prof_fn('b_accept_bar')
     def accept_bar(self, bar_dict: dict) -> dict:
         """Accept a pre-built bar (from Polygon WebSocket).
 
@@ -1071,6 +1073,7 @@ class WsAggMinuteBuilder:
         self._volume: float = 0.0
         self._tick_count: int = 0
 
+    @_prof_fn('wsagg_accept')
     def accept_second_bar(self, bar_dict: dict) -> Optional[dict]:
         """Feed one per-second bar.  Returns a completed 1Min bar dict
         when the minute boundary closes (i.e. a per-second bar arrives
@@ -1247,6 +1250,7 @@ class _ShadowIndicatorEngine:
     def warmup(self, df: pd.DataFrame):
         self.indicators.warmup(df)
 
+    @_prof_fn('sh_on_bar_close')
     def on_bar_close(self, bar: dict) -> Set[str]:
         """Process a completed bar and return confluence records."""
         current = self.indicators.update_bar(bar)
@@ -2120,6 +2124,7 @@ class SymbolHub:
         self._publish_completed_bar(
             tf_seconds, bar_dict, is_forming=False, extras=extras)
 
+    @_prof_fn('s_fanout_sec')
     def _fanout_to_secondary_builders(
         self,
         bar_dict: dict,
@@ -2201,6 +2206,7 @@ class SymbolHub:
                 logger.warning(
                     "shadow on_bar_close failed (%ss): %s", sec_tf, e)
 
+    @_prof_fn('s_fanout_pri')
     def _fanout_to_primary_builders_gt_60(
         self,
         completed_min: dict,
