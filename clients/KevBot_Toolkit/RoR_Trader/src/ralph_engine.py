@@ -224,14 +224,16 @@ class BarBuilder:
         # calling accept_*. Default False so existing callers (tests,
         # audit scripts) work unchanged.
         self.last_was_duplicate: bool = False
-        # True only when a rebroadcast (last_was_duplicate) actually changed
-        # the bar's OHLCV vs the existing history row. Pure re-deliveries
-        # (identical values — common when the worker drains a backlog of
-        # per-second bars) set this False so callers skip the expensive
-        # recompute_from_history sweep. Without this, every re-delivered
-        # second-bar in a closed bucket triggered a full O(N)×monitors
-        # replay — a self-feeding lag spiral (2026-05-19).
+        # last_was_correction: True only for the FIRST rebroadcast of a
+        # given (newer) bucket — callers gate recompute_from_history on it.
+        # A closed bucket gets many late / out-of-order per-second
+        # re-deliveries when the worker drains a backlog; recomputing for
+        # every one is a self-feeding lag spiral (2026-05-19). The
+        # monotonic _last_rebroadcast_recompute_ts marker bounds it to one
+        # recompute per bucket. Genuine Polygon corrections march forward
+        # in time, so they still get their recompute.
         self.last_was_correction: bool = False
+        self._last_rebroadcast_recompute_ts = None
 
     def seed_history(self, df: pd.DataFrame):
         """Seed builder history from a DataFrame.
@@ -431,13 +433,16 @@ class BarBuilder:
                 # seeded by the hot-reload path.
                 _cols = ['open', 'high', 'low', 'close', 'volume']
                 _new = [sec_open, sec_high, sec_low, sec_close, sec_volume]
-                _row = self.history.loc[self.history.index[-1]]
-                self.last_was_correction = any(
-                    abs(float(_row[c]) - v) > 1e-9
-                    for c, v in zip(_cols, _new)
-                )
                 self.history.loc[self.history.index[-1], _cols] = _new
                 self.last_was_duplicate = True
+                # Recompute at most once per bucket — see __init__ note.
+                _bts = pd.Timestamp(period_start)
+                if (self._last_rebroadcast_recompute_ts is None
+                        or _bts > self._last_rebroadcast_recompute_ts):
+                    self._last_rebroadcast_recompute_ts = _bts
+                    self.last_was_correction = True
+                else:
+                    self.last_was_correction = False
                 # Return the corrected bar dict so caller knows this was a
                 # close-on-boundary (treats it like a completed-bar return).
                 return {
@@ -557,13 +562,16 @@ class BarBuilder:
                     float(bar_dict['close']),
                     float(bar_dict.get('volume', 0)),
                 ]
-                _row = self.history.loc[self.history.index[-1]]
-                self.last_was_correction = any(
-                    abs(float(_row[c]) - v) > 1e-9
-                    for c, v in zip(_cols, _new)
-                )
                 self.history.loc[self.history.index[-1], _cols] = _new
                 self.last_was_duplicate = True
+                # Recompute at most once per bucket — see __init__ note.
+                _bts = pd.Timestamp(bar_start)
+                if (self._last_rebroadcast_recompute_ts is None
+                        or _bts > self._last_rebroadcast_recompute_ts):
+                    self._last_rebroadcast_recompute_ts = _bts
+                    self.last_was_correction = True
+                else:
+                    self.last_was_correction = False
                 return bar_dict
 
         # Gap-fill if there are missing bars between last history and this bar
