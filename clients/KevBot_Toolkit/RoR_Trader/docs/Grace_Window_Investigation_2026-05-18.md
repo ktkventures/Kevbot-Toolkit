@@ -115,6 +115,42 @@ likely **4s or 5s**, not 2.5–3s. A **Grace 5s** shadow variant was added
 bracket that. Re-enable `GRACE_SHADOW_ENABLED` to collect 5-variant data
 and pick the smallest grace at ~99% close-match — now expected at 4–5s.
 
+## SWEEP RESULTS 2026-05-19 ~18:10 UTC — 35 min RTH, all 5 variants
+
+`src/_grace_final_sweep.py` — each grace variant's 10Sec bars vs Polygon
+REST 1Sec aggs rolled to 10s, close-match within $0.01:
+
+| variant | SPY close= | TSLA close= | flat bars |
+|---|---|---|---|
+| grace_2s   | 29% | 31%  | 0 |
+| grace_2.5s | 41% | 59%  | 0 |
+| grace_3s   | 50% | 91%  | 0 |
+| grace_4s   | 68% | 98%  | 0 |
+| grace_5s   | **81%** | **100%** | 0 |
+
+**Findings:**
+- **Bug B is fixed by any grace ≥ 2** — `flat (v=0)` carry-forward bars
+  = **0** for every variant. The empty-bar symptom is gone.
+- **TSLA** reconstructs cleanly: grace 4 = 98%, grace 5 = 100%.
+- **SPY** climbs monotonically but tops at 81% exact at grace 5 — and is
+  *still climbing* (g4→g5 was +13pts). The SPY misses are **small and
+  unbiased**: mean signed diff +0.0014, median |diff| $0.00, 80% exact,
+  92% within $0.05, 97% within $0.10 (on a ~$590 instrument). This is
+  A-channel-vs-REST-1Sec microstructure noise (SPY has far more late
+  prints), not a grace deficiency — but the still-rising curve means
+  more grace would still help SPY.
+
+**Recommendation:** ship **grace 5** as the Bug B fix — it eliminates
+flat bars, reconstructs TSLA perfectly and SPY well (97% within a dime,
+unbiased), and the +1s vs grace 4 is negligible against the bar's ~4s
+structural A-lag. BUT: SPY is 11 of the 12 sub-minute strategies and its
+curve is still rising at grace 5 — so also collect **grace 6 & 7** for
+one more RTH session before locking the production value; if SPY keeps
+climbing materially, the production grace may want to be 6–7.
+
+The after-hours read (grace_3s 95%) was thin-sample optimism — RTH
+grace_3s is only 50% for SPY.
+
 ## Reference
 
 - Lag instrumentation: `ralph_engine.py` `_record_a_lag`, commit `f501126`.
