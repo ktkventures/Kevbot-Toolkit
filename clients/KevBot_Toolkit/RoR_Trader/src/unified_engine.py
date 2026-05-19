@@ -727,33 +727,58 @@ class IncrementalIndicatorEngine:
                 # confluence group for that pack, falling back to the
                 # manifest's parameters_schema defaults. This matches
                 # what the batch path (run_indicators_for_group) does.
-                from confluence_groups import load_confluence_groups
-                try:
-                    groups = load_confluence_groups()
-                except Exception:
-                    groups = []
-                groups_by_template = {g.base_template: g for g in groups}
-                for marker in user_pack_markers:
-                    slug = marker[len('_user_pack_'):]
+                #
+                # PERF (2026-05-19): cache the resolved params on the
+                # instance. recompute_from_history() re-runs this __init__
+                # on every Polygon WS rebroadcast; without the cache each
+                # call made a blocking load_confluence_groups() DB
+                # round-trip — and in the worker's user-less context a
+                # *failing* one (confluence_groups?user_id=eq.None → 400).
+                # Across ~50 strategies that storm starved A-channel
+                # ingestion (12-19s lag tail). Params don't change between
+                # rebroadcasts, so resolve once.
+                pack_params_cache = getattr(self, '_pack_params_cache', None)
+                first_resolve = pack_params_cache is None
+                if first_resolve:
+                    from confluence_groups import load_confluence_groups
+                    try:
+                        groups = load_confluence_groups()
+                    except Exception:
+                        groups = []
+                    groups_by_template = {g.base_template: g for g in groups}
+                    pack_params_cache = {}
+                    for marker in user_pack_markers:
+                        slug = marker[len('_user_pack_'):]
+                        pack = pack_registry.get_pack(slug)
+                        if pack is None or pack.incremental_class is None:
+                            continue  # batch-only — no live wiring
+                        pack_params = {}
+                        g = groups_by_template.get(slug)
+                        if g and isinstance(g.parameters, dict):
+                            pack_params = dict(g.parameters)
+                        # Fill in any missing keys from manifest defaults
+                        for key, spec in pack.manifest.get(
+                            'parameters_schema', {}
+                        ).items():
+                            pack_params.setdefault(key, spec.get('default'))
+                        pack_params_cache[slug] = pack_params
+                    self._pack_params_cache = pack_params_cache
+                for slug, pack_params in pack_params_cache.items():
                     pack = pack_registry.get_pack(slug)
                     if pack is None or pack.incremental_class is None:
                         continue  # batch-only — no live wiring
-                    pack_params = {}
-                    g = groups_by_template.get(slug)
-                    if g and isinstance(g.parameters, dict):
-                        pack_params = dict(g.parameters)
-                    # Fill in any missing keys from manifest defaults
-                    for key, spec in pack.manifest.get(
-                        'parameters_schema', {}
-                    ).items():
-                        pack_params.setdefault(key, spec.get('default'))
                     try:
                         self._user_pack_engines[slug] = pack.incremental_class(
                             **pack_params
                         )
-                        logger.info(
-                            "user pack instantiated: slug=%s params=%s",
-                            slug, pack_params)
+                        if first_resolve:
+                            logger.info(
+                                "user pack instantiated: slug=%s params=%s",
+                                slug, pack_params)
+                        else:
+                            logger.debug(
+                                "user pack re-instantiated (recompute): "
+                                "slug=%s", slug)
                     except Exception as e:
                         logger.warning(
                             "could not instantiate incremental_class for "
