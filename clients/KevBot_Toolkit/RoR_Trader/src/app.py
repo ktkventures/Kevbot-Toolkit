@@ -312,7 +312,12 @@ def format_display_ts(ts, fmt='%Y-%m-%d %H:%M:%S', date_only=False):
     if not ts:
         return "\u2014"
     try:
-        tz_name = st.session_state.get('display_timezone', 'US/Eastern')
+        # st.session_state read is unsafe off the main thread (bulk-refresh
+        # workers) — fall back to the default tz when there's no context.
+        try:
+            tz_name = st.session_state.get('display_timezone', 'US/Eastern')
+        except Exception:
+            tz_name = 'US/Eastern'
         target_tz = pytz.timezone(tz_name)
 
         if isinstance(ts, str):
@@ -666,25 +671,39 @@ def _unified_trades(df: pd.DataFrame, strategy: dict,
         cache_metadata=cache_metadata)
 
 
-def prepare_forward_test_data(strat: dict, data_days_override: int = None):
-    """Load continuous data and split trades at forward test boundary. Delegates to services."""
+def prepare_forward_test_data(strat: dict, data_days_override: int = None,
+                              data_feed: str = None):
+    """Load continuous data and split trades at forward test boundary. Delegates to services.
+
+    `data_feed` lets a caller (e.g. the bulk-refresh worker thread) pass
+    the feed explicitly so `_get_data_feed()` — which reads Streamlit
+    session state — is never hit off the main thread.
+    """
     import services as _svc
     return _svc.prepare_forward_test_data(
-        strat, data_feed=_get_data_feed(), data_days_override=data_days_override)
+        strat, data_feed=(data_feed or _get_data_feed()),
+        data_days_override=data_days_override)
 
 
-def get_strategy_trades(strat: dict) -> pd.DataFrame:
-    """Get trades for any modern strategy. Delegates to services."""
+def get_strategy_trades(strat: dict, data_feed: str = None) -> pd.DataFrame:
+    """Get trades for any modern strategy. Delegates to services.
+
+    `data_feed`: see prepare_forward_test_data — pass explicitly from
+    worker threads to avoid the Streamlit session lookup.
+    """
     import services as _svc
-    return _svc.get_strategy_trades(strat, data_feed=_get_data_feed())
+    return _svc.get_strategy_trades(strat, data_feed=(data_feed or _get_data_feed()))
 
 
-def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
+def _generate_incremental_trades(strat: dict, since_dt,
+                                 data_feed: str = None) -> pd.DataFrame:
     """Load a small data window and generate trades for the recent period only.
 
     Args:
         strat: Strategy config dict
         since_dt: Only return trades with entry_time after this timestamp
+        data_feed: Optional explicit feed ('sip'/'iex'); pass from worker
+            threads so `_get_data_feed()` (Streamlit session) isn't hit.
 
     Returns:
         DataFrame of new trades (may be empty)
@@ -711,10 +730,15 @@ def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
     req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
     sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
 
-    df = prepare_data_with_indicators(
+    # Call the services impl directly (NOT the @st.cache_data app.py
+    # wrapper) — this runs inside bulk-refresh worker threads where
+    # Streamlit caching is unsafe. services.prepare_data_with_indicators
+    # has its own threading.Lock-guarded cache.
+    import services as _svc
+    df = _svc.prepare_data_with_indicators(
         strat['symbol'], seed=data_seed,
         start_date=start_date, end_date=end_date,
-        timeframe=timeframe, data_feed=_get_data_feed(),
+        timeframe=timeframe, data_feed=(data_feed or _get_data_feed()),
         session=strat.get('trading_session', 'RTH'),
         secondary_tfs=sec_tfs,
     )
@@ -734,7 +758,8 @@ def _generate_incremental_trades(strat: dict, since_dt) -> pd.DataFrame:
     return trades[trades['entry_time'] > since_ts]
 
 
-def _process_inbound_webhook_signals(strat: dict, existing_stored: list):
+def _process_inbound_webhook_signals(strat: dict, existing_stored: list,
+                                     data_feed: str = None):
     """Process queued inbound webhook signals for a webhook-origin strategy.
 
     Pairs new inbound signals into trades, applies stop/target logic,
@@ -795,6 +820,7 @@ def _process_inbound_webhook_signals(strat: dict, existing_stored: list):
         strat.get('stop_atr_mult', 1.5),
         strat.get('stop_config', {'method': 'atr', 'atr_mult': 1.5}),
         strat.get('target_config'),
+        data_feed=data_feed,
     )
 
     if len(trades_df) > 0:
@@ -920,6 +946,7 @@ def _generate_webhook_backtest_trades(
     signals, symbol, direction, data_days, data_seed,
     start_date, end_date, timeframe,
     risk_per_trade, stop_atr_mult, stop_config, target_config,
+    data_feed: str = None,
 ):
     """Generate trades from webhook backtest signals.
 
@@ -961,10 +988,11 @@ def _generate_webhook_backtest_trades(
             latest = pd.Timestamp(pairs[-1][1]['timestamp'])
             _sd = earliest.to_pydatetime() - timedelta(days=5)
             _ed = latest.to_pydatetime() + timedelta(days=5)
-            df_market = prepare_data_with_indicators(
+            import services as _svc
+            df_market = _svc.prepare_data_with_indicators(
                 symbol, seed=data_seed,
                 start_date=_sd, end_date=_ed,
-                timeframe=timeframe, data_feed=_get_data_feed(),
+                timeframe=timeframe, data_feed=(data_feed or _get_data_feed()),
                 session=strat.get('trading_session', 'RTH'),
             )
             if len(df_market) == 0:
@@ -3143,145 +3171,177 @@ def update_strategy(strategy_id: int, updated_strategy: dict):
     return False
 
 
-def refresh_strategy_data(strategy_id: int) -> bool:
-    """Incrementally refresh strategy data.
+import threading as _threading
+# Serializes update_portfolio() writes during parallel bulk refresh —
+# two workers refreshing strategies in the same portfolio would
+# otherwise race on the ledger (lost update).
+_portfolio_write_lock = _threading.Lock()
 
-    If stored_trades exist: only processes new forward test data
-    (small data window) and appends new trades.
-    If not (migration): does a full refresh and populates stored_trades.
+
+def _refresh_strategy_inplace(strat: dict, *, data_feed: str) -> bool:
+    """Refresh one already-loaded strategy dict IN PLACE.
+
+    Mutates `strat` (stored_trades / kpis / equity_curve_data /
+    live_executions / discrepancies / data_refreshed_at). Does NOT load
+    the strategies collection and does NOT persist — the caller owns
+    load + save. Returns False for a legacy strategy, True on success.
+
+    `data_feed` must be resolved by the caller on the main thread
+    (Streamlit `st.session_state` is unsafe off-thread), so this is safe
+    to run inside a ThreadPoolExecutor worker.
+
+    Does NOT modify forward_test_start or any configuration fields.
+    """
+    if strat.get('strategy_origin') != 'webhook_inbound' and 'entry_trigger_confluence_id' not in strat:
+        return False  # legacy strategy
+
+    existing_stored = strat.get('stored_trades')
+
+    if existing_stored:
+        # --- INCREMENTAL PATH ---
+        if strat.get('strategy_origin') == 'webhook_inbound':
+            # Webhook origin: process queued inbound signals
+            _process_inbound_webhook_signals(
+                strat, existing_stored, data_feed=data_feed)
+        else:
+            # Standard origin: generate new trades from market data
+            # Find the last known trade entry time
+            last_entry_dt = max(
+                pd.Timestamp(t['entry_time']) for t in existing_stored
+            )
+
+            # Generate only new trades since last known entry
+            new_trades = _generate_incremental_trades(
+                strat, last_entry_dt, data_feed=data_feed)
+
+            if len(new_trades) > 0:
+                new_records = _extract_minimal_trades(new_trades)
+                existing_stored.extend(new_records)
+
+        # Recompute KPIs + equity curve from all stored trades
+        all_trades_df = _trades_df_from_stored(existing_stored)
+
+        boundary_dt = None
+        if strat.get('forward_test_start'):
+            boundary_dt = datetime.fromisoformat(
+                strat['forward_test_start'])
+
+        kpis = calculate_kpis(
+            all_trades_df,
+            starting_balance=strat.get('starting_balance', 10000.0),
+            risk_per_trade=strat.get('risk_per_trade', 100.0),
+        )
+        eq_data = extract_equity_curve_data(
+            all_trades_df, boundary_dt=boundary_dt)
+
+        strat['stored_trades'] = existing_stored
+        strat['kpis'] = kpis
+        strat['equity_curve_data'] = eq_data
+    else:
+        # --- COLD START (migration) ---
+        trades = get_strategy_trades(strat, data_feed=data_feed)
+
+        boundary_dt = None
+        if strat.get('forward_test_start'):
+            boundary_dt = datetime.fromisoformat(
+                strat['forward_test_start'])
+
+        total_days = None
+        if strat.get('forward_testing') and strat.get('forward_test_start'):
+            df, _, _, _ = prepare_forward_test_data(strat, data_feed=data_feed)
+            if len(df) > 0:
+                total_days = count_trading_days(df)
+
+        kpis = calculate_kpis(
+            trades,
+            starting_balance=strat.get('starting_balance', 10000.0),
+            risk_per_trade=strat.get('risk_per_trade', 100.0),
+            total_trading_days=total_days,
+        )
+        eq_data = extract_equity_curve_data(
+            trades, boundary_dt=boundary_dt)
+
+        strat['stored_trades'] = _extract_minimal_trades(trades)
+        strat['kpis'] = kpis
+        strat['equity_curve_data'] = eq_data
+
+    # Run alert matching if alert tracking is enabled
+    if strat.get('alert_tracking_enabled', False):
+        _sid = strat.get('id')
+        from alerts import match_alerts_to_trades
+        old_exec_count = len(strat.get('live_executions', []))
+        match_result = match_alerts_to_trades(strat)
+        new_execs = match_result.get('live_executions', [])
+        strat['live_executions'] = new_execs
+
+        # Preserve detected_at for previously-known discrepancies so dismiss stays valid
+        _old_disc = strat.get('discrepancies', [])
+        _new_disc = match_result.get('discrepancies', [])
+        _old_detected = {}
+        for _od in _old_disc:
+            if _od.get('type') == 'missed_alert':
+                _old_detected[('missed', _od.get('trade_index'))] = _od.get('detected_at')
+            elif _od.get('type') == 'phantom_alert':
+                _old_detected[('phantom', _od.get('alert_id'))] = _od.get('detected_at')
+        for _nd in _new_disc:
+            if _nd.get('type') == 'missed_alert':
+                _key = ('missed', _nd.get('trade_index'))
+            elif _nd.get('type') == 'phantom_alert':
+                _key = ('phantom', _nd.get('alert_id'))
+            else:
+                continue
+            if _key in _old_detected:
+                _nd['detected_at'] = _old_detected[_key]
+        strat['discrepancies'] = _new_disc
+
+        # Auto-generate trading P&L ledger entries for new exit executions
+        if len(new_execs) > old_exec_count:
+            _new_exit_execs = [e for e in new_execs[old_exec_count:]
+                               if e.get('type') == 'exit' and e.get('matched_trade_index') is not None]
+            if _new_exit_execs:
+                from portfolios import get_portfolio_alert_context, add_ledger_entry as _add_ledger
+                _port_contexts = get_portfolio_alert_context(_sid)
+                for _pctx in _port_contexts:
+                    _pid = _pctx['portfolio_id']
+                    _risk = _pctx.get('risk_per_trade', 100.0)
+                    _prt = get_portfolio_by_id(_pid)
+                    if _prt is None:
+                        continue
+                    for _ex in _new_exit_execs:
+                        _ti = _ex['matched_trade_index']
+                        _stored = strat.get('stored_trades', [])
+                        if _ti < len(_stored):
+                            _r_mult = _stored[_ti].get('r_multiple', 0) - _ex.get('slippage_r', 0)
+                            _dollar_pnl = _r_mult * _risk
+                            _add_ledger(_prt, 'trading_pnl', round(_dollar_pnl, 2),
+                                        note=f"{strat.get('name', '')} trade #{_ti}",
+                                        date=format_display_ts(_ex.get('alert_timestamp', ''), date_only=True),
+                                        auto=True)
+                    # Lock: parallel bulk refresh may touch the same portfolio.
+                    with _portfolio_write_lock:
+                        update_portfolio(_pid, _prt)
+
+    strat['data_refreshed_at'] = datetime.now(timezone.utc).isoformat()
+    return True
+
+
+def refresh_strategy_data(strategy_id: int) -> bool:
+    """Incrementally refresh one strategy: load, refresh in place, persist.
+
+    Thin wrapper over `_refresh_strategy_inplace` for single-strategy
+    callers. If stored_trades exist only new forward-test data is
+    processed; otherwise a full cold-start refresh runs.
 
     Does NOT modify forward_test_start or any configuration fields.
     """
     strategies = load_strategies()
+    data_feed = _get_data_feed()
 
     for i, strat in enumerate(strategies):
         if strat.get('id') != strategy_id:
             continue
-        if strat.get('strategy_origin') != 'webhook_inbound' and 'entry_trigger_confluence_id' not in strat:
+        if not _refresh_strategy_inplace(strat, data_feed=data_feed):
             return False  # legacy strategy
-
-        existing_stored = strat.get('stored_trades')
-
-        if existing_stored:
-            # --- INCREMENTAL PATH ---
-            if strat.get('strategy_origin') == 'webhook_inbound':
-                # Webhook origin: process queued inbound signals
-                _process_inbound_webhook_signals(strat, existing_stored)
-            else:
-                # Standard origin: generate new trades from market data
-                # Find the last known trade entry time
-                last_entry_dt = max(
-                    pd.Timestamp(t['entry_time']) for t in existing_stored
-                )
-
-                # Generate only new trades since last known entry
-                new_trades = _generate_incremental_trades(strat, last_entry_dt)
-
-                if len(new_trades) > 0:
-                    new_records = _extract_minimal_trades(new_trades)
-                    existing_stored.extend(new_records)
-
-            # Recompute KPIs + equity curve from all stored trades
-            all_trades_df = _trades_df_from_stored(existing_stored)
-
-            boundary_dt = None
-            if strat.get('forward_test_start'):
-                boundary_dt = datetime.fromisoformat(
-                    strat['forward_test_start'])
-
-            kpis = calculate_kpis(
-                all_trades_df,
-                starting_balance=strat.get('starting_balance', 10000.0),
-                risk_per_trade=strat.get('risk_per_trade', 100.0),
-            )
-            eq_data = extract_equity_curve_data(
-                all_trades_df, boundary_dt=boundary_dt)
-
-            strat['stored_trades'] = existing_stored
-            strat['kpis'] = kpis
-            strat['equity_curve_data'] = eq_data
-        else:
-            # --- COLD START (migration) ---
-            trades = get_strategy_trades(strat)
-
-            boundary_dt = None
-            if strat.get('forward_test_start'):
-                boundary_dt = datetime.fromisoformat(
-                    strat['forward_test_start'])
-
-            total_days = None
-            if strat.get('forward_testing') and strat.get('forward_test_start'):
-                df, _, _, _ = prepare_forward_test_data(strat)
-                if len(df) > 0:
-                    total_days = count_trading_days(df)
-
-            kpis = calculate_kpis(
-                trades,
-                starting_balance=strat.get('starting_balance', 10000.0),
-                risk_per_trade=strat.get('risk_per_trade', 100.0),
-                total_trading_days=total_days,
-            )
-            eq_data = extract_equity_curve_data(
-                trades, boundary_dt=boundary_dt)
-
-            strat['stored_trades'] = _extract_minimal_trades(trades)
-            strat['kpis'] = kpis
-            strat['equity_curve_data'] = eq_data
-
-        # Run alert matching if alert tracking is enabled
-        if strat.get('alert_tracking_enabled', False):
-            from alerts import match_alerts_to_trades
-            old_exec_count = len(strat.get('live_executions', []))
-            match_result = match_alerts_to_trades(strat)
-            new_execs = match_result.get('live_executions', [])
-            strat['live_executions'] = new_execs
-
-            # Preserve detected_at for previously-known discrepancies so dismiss stays valid
-            _old_disc = strat.get('discrepancies', [])
-            _new_disc = match_result.get('discrepancies', [])
-            _old_detected = {}
-            for _od in _old_disc:
-                if _od.get('type') == 'missed_alert':
-                    _old_detected[('missed', _od.get('trade_index'))] = _od.get('detected_at')
-                elif _od.get('type') == 'phantom_alert':
-                    _old_detected[('phantom', _od.get('alert_id'))] = _od.get('detected_at')
-            for _nd in _new_disc:
-                if _nd.get('type') == 'missed_alert':
-                    _key = ('missed', _nd.get('trade_index'))
-                elif _nd.get('type') == 'phantom_alert':
-                    _key = ('phantom', _nd.get('alert_id'))
-                else:
-                    continue
-                if _key in _old_detected:
-                    _nd['detected_at'] = _old_detected[_key]
-            strat['discrepancies'] = _new_disc
-
-            # Auto-generate trading P&L ledger entries for new exit executions
-            if len(new_execs) > old_exec_count:
-                _new_exit_execs = [e for e in new_execs[old_exec_count:]
-                                   if e.get('type') == 'exit' and e.get('matched_trade_index') is not None]
-                if _new_exit_execs:
-                    from portfolios import get_portfolio_alert_context, add_ledger_entry as _add_ledger
-                    _port_contexts = get_portfolio_alert_context(strategy_id)
-                    for _pctx in _port_contexts:
-                        _pid = _pctx['portfolio_id']
-                        _risk = _pctx.get('risk_per_trade', 100.0)
-                        _prt = get_portfolio_by_id(_pid)
-                        if _prt is None:
-                            continue
-                        for _ex in _new_exit_execs:
-                            _ti = _ex['matched_trade_index']
-                            _stored = strat.get('stored_trades', [])
-                            if _ti < len(_stored):
-                                _r_mult = _stored[_ti].get('r_multiple', 0) - _ex.get('slippage_r', 0)
-                                _dollar_pnl = _r_mult * _risk
-                                _add_ledger(_prt, 'trading_pnl', round(_dollar_pnl, 2),
-                                            note=f"{strat.get('name', '')} trade #{_ti}",
-                                            date=format_display_ts(_ex.get('alert_timestamp', ''), date_only=True),
-                                            auto=True)
-                        update_portfolio(_pid, _prt)
-
-        strat['data_refreshed_at'] = datetime.now(timezone.utc).isoformat()
         strategies[i] = strat
 
         from db import USE_DB
@@ -3296,40 +3356,85 @@ def refresh_strategy_data(strategy_id: int) -> bool:
     return False
 
 
-def bulk_refresh_all_strategies(progress_callback=None) -> dict:
-    """Refresh data for all non-legacy strategies.
+def bulk_refresh_all_strategies(progress_callback=None,
+                                max_workers: int = 6) -> dict:
+    """Refresh data for all non-legacy strategies — parallel.
+
+    The strategies collection is loaded ONCE (the old code re-loaded the
+    whole collection per strategy — O(N²)). Each strategy is refreshed
+    in its own ThreadPoolExecutor worker via `_refresh_strategy_inplace`
+    (independent dicts, no shared mutable state). Persistence is batched
+    after all workers finish. `progress_callback` and `st.*` stay on the
+    calling (main) thread via `as_completed`.
 
     Args:
         progress_callback: Optional function(current, total, strategy_name)
+        max_workers: Thread pool size (I/O- + numpy-bound work releases
+            the GIL, so threads give a real speedup).
 
     Returns dict with 'success_count', 'skipped_count', 'failed_ids',
     'total_processed'.
     """
-    strategies = load_strategies()
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from db import USE_DB
+
+    strategies = load_strategies()                 # ONE load
+    data_feed = _get_data_feed()                   # resolved on MAIN thread
     processable = [s for s in strategies
                     if 'entry_trigger_confluence_id' in s or s.get('strategy_origin') == 'webhook_inbound']
     skipped = len(strategies) - len(processable)
+    total = len(processable)
     success = 0
     failed = []
+    refreshed_ok = []                              # strats to persist
 
-    for idx, strat in enumerate(processable):
-        sid = strat.get('id')
-        if progress_callback:
-            progress_callback(idx + 1, len(processable),
-                              strat.get('name', f'Strategy {sid}'))
-        try:
-            if refresh_strategy_data(sid):
-                success += 1
-            else:
-                failed.append(sid)
-        except Exception:
-            failed.append(sid)
+    def _work(strat):
+        # Worker thread — mutates its own dict; no shared state.
+        ok = _refresh_strategy_inplace(strat, data_feed=data_feed)
+        return strat, ok
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(_work, s): s for s in processable}
+        for fut in as_completed(futures):
+            src = futures[fut]
+            done += 1
+            try:
+                strat, ok = fut.result()
+                if ok:
+                    success += 1
+                    refreshed_ok.append(strat)
+                else:
+                    failed.append(src.get('id'))
+            except Exception:
+                failed.append(src.get('id'))
+            if progress_callback:                  # MAIN thread
+                progress_callback(done, total,
+                                  src.get('name', f"Strategy {src.get('id')}"))
+
+    # --- batched persistence (after all workers finish) ---
+    if USE_DB:
+        from db import update_strategy_db
+        for strat in refreshed_ok:
+            try:
+                update_strategy_db(strat.get('id'), strat)
+            except Exception:
+                _sid = strat.get('id')
+                if _sid not in failed:
+                    failed.append(_sid)
+                    success -= 1
+    else:
+        # Workers mutated dicts that are elements of `strategies`, so the
+        # single dump captures every success; failed strats keep their
+        # prior state in the same list (file stays valid).
+        with open(STRATEGIES_FILE, 'w') as f:
+            json.dump(strategies, f, indent=2)
 
     return {
         'success_count': success,
         'skipped_count': skipped,
         'failed_ids': failed,
-        'total_processed': len(processable),
+        'total_processed': total,
     }
 
 
