@@ -13,6 +13,7 @@ A user pack consists of:
 """
 
 import ast
+import builtins as _py_builtins
 import re
 from pathlib import Path
 from typing import List, Tuple
@@ -595,6 +596,12 @@ def validate_python_file(file_path: str) -> Tuple[bool, List[str]]:
                         f"Line {node.lineno}: Disallowed access to '__builtins__'"
                     )
 
+    # Allowlist check: any builtin used must be in the pack sandbox's
+    # SAFE_BUILTINS. Catches hasattr/getattr/vars/Exception/etc. that the
+    # legacy DISALLOWED_CALLS denylist misses (see validate_builtin_usage).
+    _bi_ok, _bi_errors = validate_builtin_usage(file_path)
+    errors.extend(_bi_errors)
+
     return len(errors) == 0, errors
 
 
@@ -635,6 +642,91 @@ def _get_call_name(node: ast.Call) -> str:
     elif isinstance(node.func, ast.Attribute):
         return node.func.attr
     return ""
+
+
+# Dunders the pack loader explicitly re-adds to the restricted builtins
+# (pack_registry._import_module_restricted), plus the module global Python
+# always injects. Not in SAFE_BUILTINS but legitimately resolvable in a pack.
+_LOADER_PROVIDED_NAMES = {
+    "__import__", "__build_class__", "__name__", "__builtins__",
+    "__file__", "__doc__", "__spec__", "__loader__", "__package__",
+}
+_ALL_PY_BUILTINS = set(dir(_py_builtins))
+
+
+def _collect_bound_names(tree: ast.AST) -> set:
+    """Names bound anywhere in the module — defs, imports, assignments,
+    args, comprehension/for targets, except-as, global/nonlocal.
+
+    Used to distinguish a *builtin reference* from a pack-defined name.
+    Module-wide (not scope-precise) on purpose: an over-broad bound set
+    only makes the builtin check leaner, never falsely strict.
+    """
+    bound: set = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                bound.add((a.asname or a.name).split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                bound.add(a.asname or a.name)
+        elif isinstance(node, ast.Name) and isinstance(
+                node.ctx, (ast.Store, ast.Del)):
+            bound.add(node.id)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            bound.update(node.names)
+    return bound
+
+
+def validate_builtin_usage(file_path: str) -> Tuple[bool, List[str]]:
+    """Flag free names that are Python builtins NOT in the pack sandbox.
+
+    Packs execute with a restricted ``__builtins__`` — the loader installs
+    only ``SAFE_BUILTINS`` (+ a few dunders). A name like ``hasattr`` /
+    ``getattr`` / ``vars`` / ``Exception`` / ``AttributeError`` is a
+    perfectly valid builtin in normal Python, so it passes import and the
+    AST import/call checks — but raises ``NameError`` the instant that
+    code path runs inside a pack.
+
+    This is an *allowlist* check (vs the legacy DISALLOWED_CALLS denylist,
+    which silently missed ``hasattr`` and produced a live exception storm
+    on 2026-05-19). It catches the whole class deterministically at
+    validate-time, before the pack is ever installed.
+    """
+    path = Path(file_path)
+    if not path.exists():
+        return False, [f"File not found: {file_path}"]
+    try:
+        tree = ast.parse(path.read_text(), filename=str(path))
+    except SyntaxError as e:
+        return False, [f"Syntax error: {e}"]
+
+    bound = _collect_bound_names(tree)
+    allowed = SAFE_BUILTINS | _LOADER_PROVIDED_NAMES
+    offenders: dict = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            name = node.id
+            if name in bound or name in allowed:
+                continue
+            if name not in _ALL_PY_BUILTINS:
+                continue  # pack-defined / imported elsewhere — not our job
+            offenders.setdefault(name, node.lineno)
+
+    errors = [
+        f"Line {ln}: builtin '{name}' is not in the pack sandbox "
+        f"(SAFE_BUILTINS) — it will raise NameError at runtime. "
+        f"Allowed builtins: {', '.join(sorted(SAFE_BUILTINS))}."
+        for name, ln in sorted(offenders.items(), key=lambda kv: kv[1])
+    ]
+    return len(errors) == 0, errors
 
 
 # =============================================================================

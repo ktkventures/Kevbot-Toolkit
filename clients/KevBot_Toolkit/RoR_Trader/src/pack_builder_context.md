@@ -378,6 +378,54 @@ class YourPackIncremental:
 - Pack uses look-ahead patterns that genuinely can't be computed online (e.g., needs to know "this is a swing high" which requires future bars). Document this in the description; users see "batch-only" in the UI.
 - Pack is pure exploration / not yet ready for live deployment.
 
+### CRITICAL: The Restricted Sandbox — builtins and bar types
+
+Pack code runs under a **restricted `__builtins__`**. Only these builtins
+exist at runtime — anything else raises `NameError` *when that line
+executes* (not at import, so a bad branch can lurk silently):
+
+```
+range len min max abs round int float str bool list dict set tuple object
+enumerate zip sorted reversed any all isinstance print map filter sum pow
+divmod  True False None  ValueError TypeError KeyError IndexError RuntimeError
+```
+
+- **Do NOT use** `hasattr`, `getattr`, `setattr`, `vars`, `dir`, `globals`,
+  `locals`, `type`, `repr`, `id`, `hash`, `iter`, `next`, `super`,
+  `property`, `staticmethod`, `open`, `eval`, `exec`. They are normal
+  Python builtins but are **not** in the pack sandbox.
+- **Exceptions:** only `ValueError`, `TypeError`, `KeyError`, `IndexError`,
+  `RuntimeError` are catchable by name. `except Exception:` will itself
+  raise `NameError`. Catch a specific allowed type, or use a bare
+  `except:`.
+- To test an object's type, use `isinstance(x, str)` — **not**
+  `hasattr(x, "...")`.
+- `validate_builtin_usage` (pack_spec.py) rejects packs that use a
+  disallowed builtin, so this is caught before install — but write it
+  right the first time.
+
+**The `bar['timestamp']` type is NOT stable across paths.** In the batch
+wrapper and `warmup()` it is a pandas `Timestamp`; in the **live engine**
+it arrives as an **ISO string**. So `bar["timestamp"].timestamp()` works
+in backtest and throws `'str' object has no attribute 'timestamp'` live.
+Always coerce defensively:
+
+```python
+import pandas as pd
+def _to_epoch(ts):
+    if ts is None:
+        return None
+    if isinstance(ts, str):
+        try:
+            return pd.Timestamp(ts).timestamp()
+        except (ValueError, TypeError):
+            return None
+    return ts.timestamp()
+```
+
+The same applies to any field you assume is a particular type — the
+live bar dict is built by a different code path than the batch row.
+
 ### Triggers and Execution Types — The Modular Pattern
 
 This is the single most important section of this document. Read it carefully and follow it exactly.
