@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 TF_SECONDS = 10  # grace shadow is sub-minute only — 10Sec strategies
 _DEFAULT_SYMBOLS = "SPY,TSLA"
-_DEFAULT_GRACE = "2,2.5,3,4,5"  # seconds past bar_end (fractional allowed)
+_DEFAULT_GRACE = "2,2.5,3,4,5,6,7"  # seconds past bar_end (fractional allowed)
 
 
 def _grace_label(g: float) -> str:

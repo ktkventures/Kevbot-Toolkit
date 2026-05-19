@@ -261,7 +261,8 @@ export function useRestBars(
 export type TradeBarSource =
   | 't_wait0' | 't_wait200' | 't_wait500'
   // 10Sec grace-window shadow — same /trade-bars endpoint, source-tagged.
-  | 'grace_2s' | 'grace_2.5s' | 'grace_3s' | 'grace_4s' | 'grace_5s';
+  | 'grace_2s' | 'grace_2.5s' | 'grace_3s' | 'grace_4s' | 'grace_5s'
+  | 'grace_6s' | 'grace_7s';
 
 export interface TradeBarsResponse {
   symbol: string;

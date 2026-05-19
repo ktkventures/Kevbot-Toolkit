@@ -52,7 +52,9 @@ type SourceKey =
   | 'grace_2.5s'
   | 'grace_3s'
   | 'grace_4s'
-  | 'grace_5s';
+  | 'grace_5s'
+  | 'grace_6s'
+  | 'grace_7s';
 
 interface Props {
   /** Cache decision-time view (first_* columns — what the engine saw at bar close). */
@@ -146,6 +148,8 @@ const SOURCE_LABELS: Record<SourceKey, string> = {
   grace_3s: 'Grace 3s (10Sec shadow)',
   grace_4s: 'Grace 4s (10Sec shadow)',
   grace_5s: 'Grace 5s (10Sec shadow)',
+  grace_6s: 'Grace 6s (10Sec shadow)',
+  grace_7s: 'Grace 7s (10Sec shadow)',
 };
 
 const SOURCE_DESCRIPTIONS: Record<SourceKey, string> = {
@@ -162,7 +166,9 @@ const SOURCE_DESCRIPTIONS: Record<SourceKey, string> = {
   'grace_2.5s': 'Grace shadow: 10Sec bars, bucket held open 2.5s past bar_end. The measured-lag "precise best guess" — catches the structural feed lag with ~0.4s margin, 0.5s less latency than 3s.',
   grace_3s: 'Grace shadow: 10Sec bars from the A per-second stream, bucket held open 3s past bar_end. Comfortably covers the measured ~3s A-channel ingestion lag.',
   grace_4s: 'Grace shadow: 10Sec bars from the A per-second stream, bucket held open 4s past bar_end. Strong margin against late-feed outliers.',
-  grace_5s: 'Grace shadow: 10Sec bars from the A per-second stream, bucket held open 5s past bar_end. Widest margin — covers the RTH A-channel average (~3.7s) plus its jitter tail.',
+  grace_5s: 'Grace shadow: 10Sec bars from the A per-second stream, bucket held open 5s past bar_end. Covers the RTH A-channel average (~3.7s) plus its jitter tail.',
+  grace_6s: 'Grace shadow: 10Sec bars from the A per-second stream, bucket held open 6s past bar_end. Extra margin for SPY, whose close-match curve was still rising at grace 5.',
+  grace_7s: 'Grace shadow: 10Sec bars from the A per-second stream, bucket held open 7s past bar_end. Widest tested — for SPY late-print tail capture.',
 };
 
 function isTradeSource(key: SourceKey): boolean {
@@ -171,7 +177,8 @@ function isTradeSource(key: SourceKey): boolean {
 
 function isGraceSource(key: SourceKey): boolean {
   return key === 'grace_2s' || key === 'grace_2.5s'
-    || key === 'grace_3s' || key === 'grace_4s' || key === 'grace_5s';
+    || key === 'grace_3s' || key === 'grace_4s' || key === 'grace_5s'
+    || key === 'grace_6s' || key === 'grace_7s';
 }
 
 function toCandle(bars: NormBar[]): CandleData[] {
@@ -439,6 +446,20 @@ export default function ParityBarComparison({
     tfSeconds,
     tradeNeeded('grace_5s') ? 'grace_5s' : null,
   );
+  const grace6Query = useTradeBars(
+    tradeNeeded('grace_6s') ? symbol ?? null : null,
+    tradeNeeded('grace_6s') ? windowStart ?? null : null,
+    tradeNeeded('grace_6s') ? windowEnd ?? null : null,
+    tfSeconds,
+    tradeNeeded('grace_6s') ? 'grace_6s' : null,
+  );
+  const grace7Query = useTradeBars(
+    tradeNeeded('grace_7s') ? symbol ?? null : null,
+    tradeNeeded('grace_7s') ? windowStart ?? null : null,
+    tradeNeeded('grace_7s') ? windowEnd ?? null : null,
+    tfSeconds,
+    tradeNeeded('grace_7s') ? 'grace_7s' : null,
+  );
 
   // Normalize each series to NormBar[] for shared handling.
   // 'cache' = decision-time, ws_agg only (rest_backfill rows filtered out
@@ -488,6 +509,14 @@ export default function ParityBarComparison({
     () => normObservable(grace5Query.data?.bars ?? []),
     [grace5Query.data],
   );
+  const grace6Norm = useMemo(
+    () => normObservable(grace6Query.data?.bars ?? []),
+    [grace6Query.data],
+  );
+  const grace7Norm = useMemo(
+    () => normObservable(grace7Query.data?.bars ?? []),
+    [grace7Query.data],
+  );
 
   const seriesByKey: Record<SourceKey, NormBar[]> = {
     cache: cacheNorm,
@@ -504,6 +533,8 @@ export default function ParityBarComparison({
     grace_3s: grace3Norm,
     grace_4s: grace4Norm,
     grace_5s: grace5Norm,
+    grace_6s: grace6Norm,
+    grace_7s: grace7Norm,
   };
 
   // Clamp each side to the window for both chart and diff computation.
@@ -607,6 +638,8 @@ export default function ParityBarComparison({
             <option value="grace_3s">Grace 3s — 10Sec shadow</option>
             <option value="grace_4s">Grace 4s — 10Sec shadow</option>
             <option value="grace_5s">Grace 5s — 10Sec shadow</option>
+            <option value="grace_6s">Grace 6s — 10Sec shadow</option>
+            <option value="grace_7s">Grace 7s — 10Sec shadow</option>
           </select>
         </div>
         <div>
@@ -635,6 +668,8 @@ export default function ParityBarComparison({
             <option value="grace_3s">Grace 3s — 10Sec shadow</option>
             <option value="grace_4s">Grace 4s — 10Sec shadow</option>
             <option value="grace_5s">Grace 5s — 10Sec shadow</option>
+            <option value="grace_6s">Grace 6s — 10Sec shadow</option>
+            <option value="grace_7s">Grace 7s — 10Sec shadow</option>
           </select>
         </div>
         <div>
