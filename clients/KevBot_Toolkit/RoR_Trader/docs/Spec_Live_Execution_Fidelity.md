@@ -79,18 +79,31 @@ So the answer is not just "yes" — adding a new `live_model` is the
   ModelsCard) → wire engine dispatch in a phase → flip
   `available: True` once proven.
 
-### 4.1 Proposed model
+### 4.1 Proposed model — one timeframe-aware model
 
-Keep `ws_agg_locked` as-is (current default — lock at close, no
-corrections). Add one new live model:
+`ws_agg_locked` is the **existing** current default
+(`strategy_models.py` LIVE_MODELS, `available: True, default: True`) —
+*not* something new. It locks the bar at close, no corrections.
 
-- **`ws_agg_reconciled`** — "A-aggregated (reconciled)". Fires on a
-  *decision-grade* sub-minute bar; reconciles indicator state via the
-  O(1) `apply_last_bar_correction` path when the corrected bar lands.
-  `available: False` until the engine phase ships.
+Add **one** new live model:
 
-Start with the binary (locked vs reconciled). Resist a proliferation of
-fixed-grace models — see 4.2.
+- **`ws_agg_reconciled`** — "A-aggregated (reconciled)".
+  **Timeframe-aware — one model, both behaviors:**
+  - **1Min+** — locks at close, exactly like `ws_agg_locked`.
+    Reconciliation is a no-op here (the cache is already 100% vs REST —
+    see §3), so a 1Min strategy on this model behaves identically to
+    `ws_agg_locked`.
+  - **Sub-minute** — fires on a *decision-grade* bar (calibrated
+    grace); reconciles indicator state via the O(1)
+    `apply_last_bar_correction` path when the corrected bar lands.
+
+  A strategy carries a single `live_model`; its **timeframe** decides
+  which behavior runs — no need for the user to match a model to a TF.
+  Ships `available: True, default: False`, then becomes the default
+  once Phase 3 parity is proven.
+
+`ws_agg_locked` stays in the registry as the legacy / explicit-lock
+option. `ws_agg_reconciled` is the single forward model.
 
 ### 4.2 Grace is a parameter, not a model
 
@@ -115,10 +128,11 @@ The three model fields converge to a clear division of labour:
   A new `rest_1s` entry is warranted (see 4.4) — not for a behavior
   change, but for *uniformity* (one construction for every TF) and
   *alignment robustness*.
-- **`live_model` = `ws_agg_locked` (1Min+) / `ws_agg_reconciled`
-  (sub-minute)** — what the engine fires on. `ws_agg_reconciled` is
-  *designed to converge toward the backtest_model* — that convergence
-  is the whole point, so it does not need a bespoke backtest simulator.
+- **`live_model` = `ws_agg_reconciled`** (the single timeframe-aware
+  forward model — §4.1; `ws_agg_locked` kept as legacy) — what the
+  engine fires on. `ws_agg_reconciled` is *designed to converge toward
+  the backtest_model* — that convergence is the whole point, so it does
+  not need a bespoke backtest simulator.
 - **`algo_model` = a parity counterpart of `ws_agg_reconciled`** — the
   accountability lane: "what the reconciled live engine *should* have
   produced," for the Divergence tab. This is the one genuinely new
@@ -199,6 +213,33 @@ slow-path state reconciliation source. Lower frequency; never blocks.
 - Pairs with the Strategy Health Badge and the read-only ModelsCard;
   natural home for the 5.2 grace tier selector.
 
+### 5.6 Outage fallback — and the sub-minute backfill gap
+
+Reconciliation (fix a bar you *have*) and backfill (fill a bar you do
+*not* have) are different mechanisms. A monitor outage is a backfill
+problem, not a reconciliation problem.
+
+Current fallback after an outage:
+1. **Data** — `live_bars_rest_backfill.py` (`LIVE_BARS_BACKFILL_ENABLED`)
+   fills missing **1Min** rows from Polygon REST, then rolls them up to
+   the **derived ≥60s** timeframes. cache+backfill becomes whole for
+   1Min+.
+2. **Live engine indicator state** — on restart the engine warms up
+   from the (now-backfilled) history; state is rebuilt across the gap.
+3. **Missed signals** — flagged as `missed_alert` (alert recovery,
+   shipped 2026-04-17).
+
+Two honest gaps to record:
+- The REST backfill is **cosmetic** — for charts/backtests; it does not
+  feed the live engine in real time. The real-time gap is covered by
+  warmup-on-restart, not by backfill.
+- **There is no sub-minute backfill.** `live_bars_rest_backfill.py`
+  covers 1Min + derived ≥60s only. A 10Sec strategy that suffers a
+  monitor outage has a **permanent hole** in its 10Sec `live_bars`
+  cache. This spec should add a **sub-minute REST backfill** (Polygon
+  native 10-sec aggs, or 1Sec-rolled per §4.4) so cache+backfill is
+  whole at sub-minute too — folded into Phase 1/3.
+
 ## 6. Phased delivery
 
 - **Phase 1 — Calibration & scaffolding.** Collect grace 2–7 shadow
@@ -209,7 +250,9 @@ slow-path state reconciliation source. Lower frequency; never blocks.
   reconciliation in the live engine; confidence-gated firing. The
   actual `force_close_stale_bar` grace becomes parameter-driven.
 - **Phase 3 — Backtest/algo parity counterpart.** Backtest can
-  simulate the reconciled model; Divergence tab covers it.
+  simulate the reconciled model; Divergence tab covers it. Add the
+  **sub-minute REST backfill** (§5.6) so cache+backfill is whole at
+  10Sec, closing the outage hole.
 - **Phase 4 — Fidelity tab + ModelsCard wiring.** Flip
   `ws_agg_reconciled` to `available: True`.
 - **Phase 5 — Per-strategy grace UI** (named tiers).
