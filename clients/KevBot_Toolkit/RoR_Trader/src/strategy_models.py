@@ -169,7 +169,63 @@ LIVE_MODELS = {
             '— needs Phase C + D.'
         ),
     },
+    'ws_agg_reconciled': {
+        'label': 'A-aggregated (reconciled, TF-aware)',
+        'available': False,  # Phase 2 wires the engine — Live Execution Fidelity spec
+        'default': False,
+        'description': (
+            'Timeframe-aware single forward model. At 1Min+ this is '
+            'identical to `ws_agg_locked` (lock at close, no '
+            'corrections — cache is already 100% vs REST there per '
+            'Backtest_Speed_Analysis_2026-05-19.md §3). At sub-minute, '
+            'the engine fires on a decision-grade bar (per-strategy '
+            'grace via `config.grace_seconds`, default 5s per the '
+            '2026-05-19 RTH grace sweep) and reconciles indicator '
+            'state via the O(1) `apply_last_bar_correction` path on '
+            'a Polygon rebroadcast correction. Coming soon — needs '
+            'Phase 2 (engine wiring). See '
+            '`docs/Spec_Live_Execution_Fidelity.md`.'
+        ),
+    },
 }
+
+
+# ─── Grace seconds config (LEF Phase 1 scaffolding, 2026-05-20) ──────────
+# Per-strategy grace window for sub-minute force-close. Phase 1 ships only
+# the field schema + resolver; the engine still reads ralph_engine.
+# SUBMINUTE_FORCE_CLOSE_GRACE_SEC until Phase 2 wires `ws_agg_reconciled`
+# to consume this. Resolution order in `resolve_grace_seconds`:
+#   1. strategy.config.grace_seconds  (per-strategy override)
+#   2. GRACE_SECONDS_PER_SYMBOL[symbol]  (per-ticker default)
+#   3. GRACE_SECONDS_DEFAULT  (global default — 5)
+
+GRACE_SECONDS_DEFAULT: int = 5  # validated 2026-05-19 (SPY/TSLA 10Sec RTH)
+
+# Per-ticker overrides — empty by default; populate as shadow-sweep data
+# warrants. SPY and TSLA both validated at the global default, so no
+# overrides are needed today.
+GRACE_SECONDS_PER_SYMBOL: dict = {}
+
+
+def resolve_grace_seconds(strategy: dict) -> int:
+    """Resolve the per-strategy sub-minute force-close grace (seconds).
+
+    Phase 1 scaffolding — defined but not yet consumed by the engine.
+    Phase 2 (`ws_agg_reconciled` live_model) wires this into
+    `BarBuilder.force_close_stale_bar`. Until then,
+    `SUBMINUTE_FORCE_CLOSE_GRACE_SEC` in ralph_engine.py is the source
+    of truth at runtime.
+
+    Returns the configured grace regardless of timeframe — the 1Min+
+    "no grace" behavior is a wiring decision in the engine, not a
+    property of the strategy config.
+    """
+    cfg = strategy.get('config') or {}
+    override = cfg.get('grace_seconds')
+    if override is not None:
+        return int(override)
+    symbol = strategy.get('symbol') or ''
+    return GRACE_SECONDS_PER_SYMBOL.get(symbol, GRACE_SECONDS_DEFAULT)
 
 
 def get_default_backtest_model() -> str:
