@@ -4409,6 +4409,14 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   strategyId={Number(strategy.id)}
                 />
 
+                {/* Tier 3 §8.4 (2026-05-20) — open trade carryover. Surfaces
+                    any pre-boundary positions that the engine has marked
+                    FLAT under the Tier 3 contract but that may still be
+                    open on the broker side. Renders only when present;
+                    silently hidden in normal operation. §8.3 will write
+                    the entries; this card is the read surface. */}
+                <OpenTradeCarryoverCard strategy={apiStrategy as any} />
+
                 {/* Confluence conditions with fidelity badges */}
                 <Card>
                   <h4 className="text-sm font-medium mb-3">Confluence Conditions</h4>
@@ -5607,6 +5615,85 @@ function _graceSecondsToTier(seconds: number) {
   }
   return best;
 }
+
+// ----------------------------------------------------------------------------
+// OpenTradeCarryoverCard — Tier 3 §8.4 (2026-05-20)
+// Shows pre-boundary positions that the engine has flattened under the
+// Tier 3 contract but that may still be open on the broker side. Reads
+// live_executions for entries of type 'position_carryover' (§4.2 spec).
+// Forward-compatible: §8.3 will populate the field; this card silently
+// hides when no carryovers exist.
+// ----------------------------------------------------------------------------
+function OpenTradeCarryoverCard({ strategy }: { strategy: any }) {
+  const carryovers = useMemo(() => {
+    const execs = strategy?.live_executions || strategy?.liveExecutions || [];
+    if (!Array.isArray(execs)) return [];
+    return execs.filter((e: any) =>
+      (e.type || e.event_type) === 'position_carryover'
+    );
+  }, [strategy]);
+
+  // Silent hide when nothing to surface — common case
+  if (carryovers.length === 0) return null;
+
+  return (
+    <Card className="mb-6" style={{
+      borderLeft: '3px solid #f59e0b',
+    } as any}>
+      <h4 className="text-sm font-medium mb-2">
+        ⚠️ Open Trade Carryover{' '}
+        <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+          ({carryovers.length})
+        </span>
+      </h4>
+      <p className="text-xs mb-3" style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
+        These positions were open when a Tier 3 boundary was crossed (worker
+        restart, config change, or refresh). The engine has reset to FLAT
+        under the always-start-flat contract, but the broker may still hold
+        the underlying position — verify manually and close in-broker if
+        needed. Per Tier 3 §4.1, the pre-boundary window owns these trades;
+        they will not get an automatic exit applied.
+      </p>
+      <div className="space-y-2">
+        {carryovers.map((c: any, i: number) => (
+          <div
+            key={c.id || i}
+            className="text-xs grid grid-cols-2 md:grid-cols-4 gap-2 py-2 px-3 rounded"
+            style={{ background: 'var(--bg-input)' }}
+          >
+            <div>
+              <div style={{ color: 'var(--text-muted)' }}>Entry</div>
+              <div className="font-mono mt-0.5">
+                {c.entry_time || c.entryTime || '—'}
+              </div>
+            </div>
+            <div>
+              <div style={{ color: 'var(--text-muted)' }}>Entry Price</div>
+              <div className="font-mono mt-0.5">
+                {typeof c.entry_price === 'number'
+                  ? `$${c.entry_price.toFixed(2)}`
+                  : (c.entryPrice || '—')}
+              </div>
+            </div>
+            <div>
+              <div style={{ color: 'var(--text-muted)' }}>Direction</div>
+              <div className="font-mono mt-0.5">
+                {c.direction || '—'}
+              </div>
+            </div>
+            <div>
+              <div style={{ color: 'var(--text-muted)' }}>Recorded</div>
+              <div className="font-mono mt-0.5">
+                {c.recorded_at || c.timestamp || '—'}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
 
 // ----------------------------------------------------------------------------
 // GraceTierEditor — Phase 5 (LEF spec §5.2)
