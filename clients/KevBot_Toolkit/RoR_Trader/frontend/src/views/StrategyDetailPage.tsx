@@ -5932,7 +5932,15 @@ function GraceTierEditor({
         alert(`Save failed: ${text.slice(0, 200)}`);
         return;
       }
-      queryClient.invalidateQueries({ queryKey: ['strategy', strategyId] });
+      // Only refetch the strategy-self query (exact:true). Without this
+      // flag, TanStack Query partial-matches the key and invalidates
+      // every ['strategy', id, ...] child — kpis, trades, chart-data,
+      // forward-test, cache-coverage etc. — making the UI wait ~3-5s
+      // on every tier click. Grace change only needs the strategy doc
+      // to refresh; the rest is unchanged.
+      queryClient.invalidateQueries({
+        queryKey: ['strategy', strategyId], exact: true,
+      });
     } catch (e: any) {
       alert(`Save failed: ${String(e?.message || e)}`);
     } finally {
@@ -6400,7 +6408,12 @@ function ModelsCard({
         alert(`Save failed: ${text.slice(0, 200)}`);
         return;
       }
-      queryClient.invalidateQueries({ queryKey: ['strategy', strategyId] });
+      // Tier-click perf fix (2026-05-20): exact:true so we don't
+      // cascade-invalidate kpis/trades/chart-data on every model
+      // change. Same rationale as GraceTierEditor.
+      queryClient.invalidateQueries({
+        queryKey: ['strategy', strategyId], exact: true,
+      });
       queryClient.invalidateQueries({ queryKey: ['strategy-divergence', strategyId] });
     } catch (e: any) {
       alert(`Save failed: ${String(e?.message || e)}`);
