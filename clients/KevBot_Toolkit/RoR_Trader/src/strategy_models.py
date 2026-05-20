@@ -210,18 +210,23 @@ GRACE_SECONDS_PER_SYMBOL: dict = {}
 def resolve_grace_seconds(strategy: dict) -> int:
     """Resolve the per-strategy sub-minute force-close grace (seconds).
 
-    Phase 1 scaffolding — defined but not yet consumed by the engine.
-    Phase 2 (`ws_agg_reconciled` live_model) wires this into
-    `BarBuilder.force_close_stale_bar`. Until then,
-    `SUBMINUTE_FORCE_CLOSE_GRACE_SEC` in ralph_engine.py is the source
-    of truth at runtime.
-
-    Returns the configured grace regardless of timeframe — the 1Min+
-    "no grace" behavior is a wiring decision in the engine, not a
+    Phase 1 scaffolding consumed by Phase 2a (BarBuilder grace override)
+    and Phase 2b (StrategyMonitor.grace_seconds for fire-at-strategy-
+    grace). Returns the configured grace regardless of timeframe — the
+    1Min+ "no grace" behavior is a wiring decision in the engine, not a
     property of the strategy config.
+
+    Permissive lookup: top-level FIRST, then nested in `config`. The
+    DB loader (load_strategies_monitoring_admin) flattens config JSONB
+    onto the strategy dict, but other code paths may pass an unflattened
+    dict — handle both. (Pre-2026-05-20-fix this only checked `config`,
+    silently ignoring the canary's grace_seconds=3 and falling back to
+    the global default 5.)
     """
-    cfg = strategy.get('config') or {}
-    override = cfg.get('grace_seconds')
+    override = strategy.get('grace_seconds')
+    if override is None:
+        cfg = strategy.get('config') or {}
+        override = cfg.get('grace_seconds')
     if override is not None:
         return int(override)
     symbol = strategy.get('symbol') or ''
