@@ -779,13 +779,25 @@ class StrategyMonitor:
         # Strategies with stale or unknown live_model values fall back to
         # the platform default — never crash on a deleted experimental ID.
         from strategy_models import (
-            get_default_live_model, is_valid_live_model
+            get_default_live_model, is_valid_live_model,
+            resolve_grace_seconds,
         )
         declared = strategy.get('live_model') or strategy.get('config', {}).get('live_model')
         self.live_model = (
             declared if (declared and is_valid_live_model(declared))
             else get_default_live_model()
         )
+        # LEF Phase 2b (2026-05-20): cached strategy-level grace + the
+        # "already-fired this bucket" tracker.
+        #
+        # `grace_seconds` is consumed by the new fire-at-strategy-grace
+        # path; `_fired_bucket` is the epoch-second bar_start of the
+        # most recent bucket this monitor fired on via fire_on_partial_
+        # bucket, used to suppress double-fire within a single bucket.
+        # Both are NO-OPs for live_model != 'ws_agg_reconciled' — the
+        # existing on_bar_close path stays the source of truth.
+        self.grace_seconds: int = resolve_grace_seconds(strategy)
+        self._fired_bucket: Optional[int] = None
 
         # Resolve requirements (uses confluence mapping for trigger IDs)
         req_ind, req_interp, req_trig, params = (
@@ -1036,6 +1048,62 @@ class StrategyMonitor:
                 self.indicators._user_pack_engines = user_pack_snapshot
             self.indicators._pre_bar_snapshot = prebar_snapshot
         return current, interps
+
+    @_prof_fn('m_fire_partial')
+    def fire_on_partial_bucket(self, partial_bar: dict,
+                                bar_count: int,
+                                mtf_confluence=None) -> tuple:
+        """Fire on a still-forming sub-minute bucket at strategy-grace.
+
+        LEF Phase 2b (2026-05-20). Snapshots indicator state and the
+        user-pack engines, runs the FULL `on_bar_close` path on
+        `partial_bar` (which evaluates triggers + may mutate position),
+        then RESTORES the indicator state — leaving the position state
+        machine's transition intact (a fired alert means we're in
+        position; that must persist) but rolling back the per-bar
+        indicator commits so the official commit happens later at the
+        builder's bar-close with the FINAL aggregate.
+
+        Returns (signals, audit_data) like on_bar_close — the caller
+        dispatches alerts.
+
+        Failure mode: on any exception in the snapshot/run/restore
+        block, returns ([], {}) — the caller treats it as "no fire,"
+        and the next builder bar-close runs on_bar_close normally as
+        the fallback. No silent alert drop because the regular
+        bar-close path is the safety net.
+        """
+        if not self.indicators._initialized:
+            return [], {}
+        import copy as _copy
+        state_snapshot = _copy.deepcopy(self.indicators.state)
+        init_snapshot = self.indicators._initialized
+        prebar_snapshot = getattr(
+            self.indicators, '_pre_bar_snapshot', None)
+        user_pack_snapshot = {
+            slug: _copy.deepcopy(eng)
+            for slug, eng in getattr(
+                self.indicators, '_user_pack_engines', {}).items()
+        }
+        try:
+            signals, audit_data = self.on_bar_close(
+                partial_bar, bar_count, mtf_confluence=mtf_confluence)
+        except Exception as e:
+            logger.warning(
+                "fire_on_partial_bucket strat=%s bucket=%s failed: %s — "
+                "falling back to builder bar-close",
+                self.strat_id, partial_bar.get('timestamp'), e)
+            return [], {}
+        finally:
+            # Restore INDICATOR state only — position state must keep
+            # whatever transition just happened, so any fired alert
+            # corresponds to a real entry/exit on the strategy.
+            self.indicators.state = state_snapshot
+            self.indicators._initialized = init_snapshot
+            if user_pack_snapshot:
+                self.indicators._user_pack_engines = user_pack_snapshot
+            self.indicators._pre_bar_snapshot = prebar_snapshot
+        return signals, audit_data
 
     @_prof_fn('m_on_tick')
     def on_tick(self, price: float, timestamp: str,
@@ -1691,6 +1759,88 @@ class SymbolHub:
         if monitor.tf_seconds < 60:
             self._refresh_builder_grace(monitor.tf_seconds)
 
+    def _check_strategy_grace_fires(self, tf_seconds: int, builder,
+                                     alert_callback, config) -> None:
+        """LEF Phase 2b — fire ws_agg_reconciled monitors at their own
+        strategy-grace on the current partial bucket.
+
+        For each monitor on this (symbol, TF) with live_model
+        'ws_agg_reconciled' whose grace window has just elapsed on the
+        current partial bucket (and which hasn't already fired for this
+        bucket), build a partial_bar dict from the builder's partial
+        and call `fire_on_partial_bucket`. Dispatch any returned
+        signals via `_fire_alert` and mark `_fired_bucket` so subsequent
+        per-second events don't double-fire.
+
+        Cheap no-op short-circuit when no monitor on this hub uses
+        ws_agg_reconciled — the common case while the model is still
+        `available: False` in `LIVE_MODELS`.
+
+        Misses (e.g. monitor added mid-bucket so the grace deadline
+        already passed) fall through to the existing on_bar_close
+        path at builder bar-close — never a silent drop.
+        """
+        # Short-circuit: nothing reconciled on this hub.
+        if not any(m.live_model == 'ws_agg_reconciled'
+                   for m in self.monitors.values()):
+            return
+        partial = getattr(builder, '_partial', None)
+        if partial is None:
+            return
+        bucket_start_dt = partial.bar_start
+        if bucket_start_dt.tzinfo is None:
+            bucket_start_dt = bucket_start_dt.replace(tzinfo=timezone.utc)
+        bucket_start_epoch = int(bucket_start_dt.timestamp())
+        # Wall clock = the timestamp of the latest per-second event we
+        # processed (set in on_second_bar). Falls back to UTC now() if
+        # the engine hasn't received any tick yet (cold start).
+        wall = self.last_tick_time
+        if wall is None:
+            wall = datetime.now(timezone.utc)
+        elif wall.tzinfo is None:
+            wall = wall.replace(tzinfo=timezone.utc)
+        # Build the partial bar dict once — every reconciled monitor on
+        # this builder sees the same forming-bar snapshot.
+        partial_bar = {
+            'open': float(partial.open),
+            'high': float(partial.high),
+            'low': float(partial.low),
+            'close': float(partial.close),
+            'volume': float(partial.volume),
+            'timestamp': bucket_start_dt.isoformat(),
+        }
+        bar_count_for_partial = getattr(builder, '_bar_count', 0) + 1
+        for monitor in self.monitors.values():
+            if monitor.tf_seconds != tf_seconds:
+                continue
+            if monitor.live_model != 'ws_agg_reconciled':
+                continue
+            if monitor._fired_bucket == bucket_start_epoch:
+                continue  # already fired this bucket
+            due_at = bucket_start_dt + timedelta(
+                seconds=tf_seconds + monitor.grace_seconds)
+            if wall < due_at:
+                continue  # grace window still open
+            try:
+                signals, _audit = monitor.fire_on_partial_bucket(
+                    partial_bar, bar_count_for_partial,
+                    mtf_confluence=self._mtf_confluence)
+            except Exception as e:
+                logger.warning(
+                    "strategy-grace fire failed strat=%s tf=%ss: %s — "
+                    "monitor will catch up at builder bar-close",
+                    monitor.strat_id, tf_seconds, e)
+                continue
+            monitor._fired_bucket = bucket_start_epoch
+            if signals and alert_callback:
+                logger.info(
+                    "STRATEGY_GRACE_FIRE strat=%s tf=%ss grace=%ss bar=%s "
+                    "signals=%d",
+                    monitor.strat_id, tf_seconds, monitor.grace_seconds,
+                    partial_bar['timestamp'], len(signals))
+                for sig in signals:
+                    self._fire_alert(sig, monitor, config, alert_callback)
+
     def _refresh_builder_grace(self, tf_seconds: int) -> None:
         """Recompute and apply a sub-minute builder's `grace_sec_override`
         as max(resolve_grace_seconds) across active monitors on that
@@ -2106,6 +2256,22 @@ class SymbolHub:
             signals, audit_data = monitor.on_bar_close(
                 bar_dict, bar_count,
                 mtf_confluence=self._mtf_confluence)
+
+            # LEF Phase 2b (2026-05-20): if a ws_agg_reconciled monitor
+            # already fired at strategy-grace for this bucket, suppress
+            # any signals on_bar_close re-emits — we already dispatched
+            # at the partial-bucket fire-time. Indicator state still
+            # commits (engine.update_bar ran inside on_bar_close), which
+            # is exactly what we want: official commit at builder close.
+            if monitor.live_model == 'ws_agg_reconciled' and signals:
+                try:
+                    _bs_dt = pd.Timestamp(bar_dict['timestamp'])
+                    if _bs_dt.tzinfo is None:
+                        _bs_dt = _bs_dt.tz_localize('UTC')
+                    if monitor._fired_bucket == int(_bs_dt.timestamp()):
+                        signals = []
+                except Exception:
+                    pass  # if timestamp parsing fails, let signals through
 
             # M8.7 M6 (2026-05-02): capture engine indicator state at bar
             # close for engine-truth replay/analysis. Fire-and-forget,
@@ -2757,6 +2923,13 @@ class SymbolHub:
             if tf_seconds < 60:
                 # Sub-minute: per-second is the canonical source. Aggregate.
                 completed = b.accept_second_bar(bar_dict, close_on_boundary=True)
+                # LEF Phase 2b (2026-05-20): for any ws_agg_reconciled monitor
+                # on this (symbol, TF) whose strategy-grace deadline just
+                # elapsed on the *current partial bucket*, fire on the
+                # forming bar via fire_on_partial_bucket. Cheap no-op when
+                # no monitor uses ws_agg_reconciled.
+                self._check_strategy_grace_fires(
+                    tf_seconds, b, alert_callback, config)
                 if completed is not None:
                     primary_was_duplicate = b.last_was_duplicate
                     primary_was_correction = b.last_was_correction
