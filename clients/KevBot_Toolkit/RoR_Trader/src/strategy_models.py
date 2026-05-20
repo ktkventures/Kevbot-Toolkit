@@ -140,7 +140,7 @@ LIVE_MODELS = {
     'ws_agg_locked': {
         'label': 'A-aggregated (locked)',
         'available': True,  # Phase C shipped 2026-05-05
-        'default': True,    # promoted 2026-05-05 — AM proven unreliable on high-volume symbols
+        'default': False,   # demoted 2026-05-20 — ws_agg_reconciled is now default (Tier 3 §8.3 verified)
         'description': (
             'Engine consumes 1Min bars built client-side from '
             'Polygon A.<symbol> per-second events. Locks at minute '
@@ -172,7 +172,10 @@ LIVE_MODELS = {
     'ws_agg_reconciled': {
         'label': 'A-aggregated (reconciled, TF-aware)',
         'available': True,   # Phase 4 flip 2026-05-20 — canary sid 151 verified
-        'default': False,    # promote to default after Phase 4 widening — open §7
+        'default': True,     # promoted 2026-05-20 EOD — Tier 3 §8.3 caught 7 real positions
+                              # at restart cleanly; canaries sid 151/154/etc. firing without
+                              # incident; cache=100% at 1Min+ means no behavior change for
+                              # the majority of strategies (sub-minute is where the win is)
         'description': (
             'Timeframe-aware single forward model. At 1Min+ this is '
             'identical to `ws_agg_locked` (lock at close, no '
@@ -182,11 +185,11 @@ LIVE_MODELS = {
             'grace via `config.grace_seconds`, default 5s per the '
             '2026-05-19 RTH grace sweep) and reconciles indicator '
             'state via the O(1) `apply_last_bar_correction` path on '
-            'a Polygon rebroadcast correction. Phase 2 engine wiring '
-            'shipped 2026-05-20; available as a selectable model — '
-            'flip to default in a follow-up once production telemetry '
-            'across a representative ticker set confirms no regression '
-            'vs `ws_agg_locked`. See `docs/Spec_Live_Execution_Fidelity.md`.'
+            'a Polygon rebroadcast correction. Default as of '
+            '2026-05-20 EOD — Tier 3 §8.3 carryover path validated '
+            'on 7 real IN_POSITION strategies at restart; canaries '
+            'verified firing without incident. See '
+            '`docs/Spec_Live_Execution_Fidelity.md`.'
         ),
     },
 }

@@ -1032,6 +1032,30 @@ def append_new_trades_for_strategy(
         do_full_update = (inserted > 0) or is_first_run
         update_payload: Dict[str, Any] = {}
 
+        # Algo-lane OOM guard (task #30 fix, 2026-05-20) — same as backtest
+        # lane: cheap count, skip full load + mark stale if over threshold.
+        import os as _os_a
+        _kpi_max_a = int(_os_a.environ.get('KPI_RECOMPUTE_MAX_TRADES', '5000'))
+        algo_trade_count = 0
+        if do_full_update and engine_path == 'windowed':
+            try:
+                _cnt_a = _raw_client.table('trades') \
+                    .select('id', count='exact', head=True) \
+                    .eq('strategy_id', strategy_id).eq('user_id', user_id) \
+                    .like('data_source', 'cache_%').execute()
+                algo_trade_count = _cnt_a.count or 0
+            except Exception:
+                algo_trade_count = 0  # On count failure, legacy fallthrough
+
+        if do_full_update and algo_trade_count > _kpi_max_a:
+            logger.warning(
+                "[ALGO-APPEND] sid=%s skipping KPI recompute — trade "
+                "count %d exceeds KPI_RECOMPUTE_MAX_TRADES=%d (OOM guard). "
+                "Trades appended successfully; KPIs marked stale.",
+                strategy_id, algo_trade_count, _kpi_max_a)
+            do_full_update = False
+            update_payload['kpis_stale_since'] = now_iso
+
         if do_full_update:
             try:
                 if engine_path == 'windowed':
@@ -1471,11 +1495,45 @@ def append_new_backtest_trades_for_strategy(
 
         refreshed_at = now_iso
 
-        # Lazy KPI recompute: re-read all backtest_% rows for this
-        # strategy and compute KPIs over the full set. Read is paginated
-        # but cheap relative to the legacy DELETE+INSERT cycle. UPDATE
-        # writes only KPIs + equity_curve_data on the strategy row.
-        from db import load_trades_admin
+        # Lazy KPI recompute with OOM guard (task #30 fix, 2026-05-20):
+        # Loading ALL backtest trades into memory for KPI recompute
+        # OOM-killed the API on sid 151 (7000+ trades). Cheap pre-check
+        # via a `count='exact'` HEAD query: if the strategy exceeds
+        # KPI_RECOMPUTE_MAX_TRADES (default 5000, env-tunable), skip
+        # the full load + mark KPIs stale instead. User triggers a full
+        # KPI recompute manually via mode='all' when they want fresh
+        # numbers. Below threshold, behavior is unchanged.
+        from db import load_trades_admin, get_admin_client as _gc
+        import os as _os
+        _kpi_max = int(_os.environ.get('KPI_RECOMPUTE_MAX_TRADES', '5000'))
+        _cnt_client = _gc()
+        try:
+            _cnt = _cnt_client.table('trades').select('id', count='exact', head=True) \
+                .eq('strategy_id', strategy_id).eq('user_id', user_id) \
+                .like('data_source', 'backtest_%').execute()
+            bt_trade_count = _cnt.count or 0
+        except Exception:
+            bt_trade_count = 0  # On count failure, attempt full load (legacy behavior)
+        if bt_trade_count > _kpi_max:
+            logger.warning(
+                "[BT-APPEND] sid=%s skipping KPI recompute — trade count "
+                "%d exceeds KPI_RECOMPUTE_MAX_TRADES=%d (OOM guard). "
+                "Trades appended successfully; KPIs marked stale. "
+                "Run mode='all' (Update All Data) to refresh KPIs.",
+                strategy_id, bt_trade_count, _kpi_max)
+            # Mark stale + bump data_refreshed_at; skip the heavy load.
+            update_strategy_admin(strategy_id, user_id, {
+                'data_refreshed_at': refreshed_at,
+                'kpis_stale_since': refreshed_at,
+            })
+            cfg['last_recompute_until_ts'] = now_iso
+            _stamp_config(strategy_id, user_id, cfg)
+            return {
+                'status': 'appended_kpis_stale',
+                'inserted': inserted_count,
+                'elapsed_s': round(_time.time() - t0, 2),
+                'reason': f'trade_count {bt_trade_count} > {_kpi_max}',
+            }
         all_backtest = load_trades_admin(
             strategy_id, user_id, data_source_filter='backtest_%') or []
         # Sort chronologically for the KPI + equity curve math
