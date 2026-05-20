@@ -429,6 +429,7 @@ const TABS = [
   'Unified Trades',
   'Parity',
   'Divergence',
+  'Data Fidelity',
 ];
 
 /* ========================================================================= */
@@ -5511,6 +5512,15 @@ export default function StrategyDetailPage({ strategyId }: Props) {
             {tab === 'Divergence' && (
               <DivergenceTabContent strategyId={strategyId} />
             )}
+
+            {tab === 'Data Fidelity' && (
+              <DataFidelityTabContent
+                strategyId={strategyId}
+                strategy={apiStrategy}
+                alerts={alerts}
+                cacheCoverage={cacheCoverage}
+              />
+            )}
           </div>
         )}
       </TabBar>
@@ -5532,6 +5542,352 @@ export default function StrategyDetailPage({ strategyId }: Props) {
           } : null}
         />
       )}
+    </div>
+  );
+}
+
+
+// ============================================================================
+// Data Fidelity tab — LEF Phase 4 (2026-05-20)
+// ----------------------------------------------------------------------------
+// Consolidates the user-facing fidelity surface for a single strategy:
+//   - Live model + grace_seconds (with the spec's recommendation note)
+//   - Engine snapshot status (Tier 2 / LEF 2c — surfaces refresh resume health)
+//   - Recent alert latency (post-bar-close → fill_ts) from the alerts list
+//     already loaded by useStrategyAlerts
+//   - Cache coverage summary (from useStrategyCacheCoverage)
+//   - Links to the deeper Parity + Divergence tabs for raw tables
+// Recommendation-first per spec §5.5; does NOT include the multi-grace
+// shadow comparison ("close-match % at each grace") — that needs a backend
+// job and lands as a follow-up.
+// ============================================================================
+
+function DataFidelityTabContent({
+  strategyId,
+  strategy,
+  alerts,
+  cacheCoverage,
+}: {
+  strategyId: number;
+  strategy: any;
+  alerts: any;
+  cacheCoverage: any;
+}) {
+  // ---- Resolve fields with the same permissive lookup the backend uses
+  // (top-level OR nested in config). The loader flattens config onto the
+  // strategy dict, but some PUT round-trips leave duplicates in both
+  // spots; check top-level first.
+  const cfg = strategy?.config || {};
+  const liveModel = strategy?.live_model || cfg.live_model || 'ws_agg_locked';
+  const backtestModel = strategy?.backtest_model || cfg.backtest_model || 'rest_hifi';
+  const algoModel = strategy?.algo_model || cfg.algo_model || 'cache_locked';
+  const graceSec = (strategy?.grace_seconds ?? cfg.grace_seconds);
+  const graceShown = graceSec == null ? 5 : Number(graceSec); // global default
+  const tf = strategy?.timeframe || '1Min';
+  const isSubMinute = /^\d+Sec$/i.test(tf);
+  const snapB64 = strategy?.engine_snapshot_b64 || cfg.engine_snapshot_b64;
+  const snapAt = strategy?.engine_snapshot_at || cfg.engine_snapshot_at;
+  const dataSrc = strategy?.data_source;
+
+  // ---- Latency stats from recent alerts. Anchor is bar_time (close of
+  // the bar that fired) → fill_ts (when the alert actually landed). The
+  // spec calls this "expected post-close alert latency".
+  const latencyStats = useMemo(() => {
+    if (!alerts || !Array.isArray(alerts) || alerts.length === 0) {
+      return null;
+    }
+    const samples: number[] = [];
+    for (const a of alerts) {
+      const barTime = a.bar_time || a.barTime;
+      const fillTs = a.fill_ts || a.fillTs;
+      if (!barTime || !fillTs) continue;
+      try {
+        const dBar = new Date(barTime).getTime();
+        const dFill = new Date(fillTs).getTime();
+        if (!isNaN(dBar) && !isNaN(dFill) && dFill >= dBar) {
+          // Bar represents the close of the bar — assume bar_time is the
+          // bar's START. Add the TF duration to estimate the close moment.
+          // For 1Min: latency ≈ fill_ts - (bar_time + 60s). For sub-minute,
+          // tighten. This is a rough estimate; production refinement
+          // belongs in Phase 4.5.
+          const tfSec = (() => {
+            const m = String(tf).match(/^(\d+)(Sec|Min)$/i);
+            if (!m) return 60;
+            const n = parseInt(m[1], 10);
+            return m[2].toLowerCase() === 'sec' ? n : n * 60;
+          })();
+          const latencyMs = dFill - dBar - tfSec * 1000;
+          // Negative = fired BEFORE close (sub-minute fire-at-grace path)
+          samples.push(latencyMs / 1000);
+        }
+      } catch { /* skip malformed */ }
+    }
+    if (samples.length === 0) return null;
+    const sorted = [...samples].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    const p95 = sorted[Math.floor(sorted.length * 0.95)];
+    const min = sorted[0];
+    const max = sorted[sorted.length - 1];
+    return { count: samples.length, median, p95, min, max };
+  }, [alerts, tf]);
+
+  // ---- Snapshot freshness. "Stale" if older than the strategy's
+  // typical refresh cadence (~24h is generous default). User-facing
+  // signal: if green → resume is working; if amber/red → may force
+  // full warmup next refresh.
+  const snapFreshness = useMemo(() => {
+    if (!snapB64) return { state: 'absent', label: 'No snapshot yet' };
+    if (!snapAt) return { state: 'amber', label: 'Snapshot present, capture time unknown' };
+    const dT = new Date(snapAt).getTime();
+    if (isNaN(dT)) return { state: 'amber', label: 'Snapshot timestamp unreadable' };
+    const ageH = (Date.now() - dT) / 1000 / 3600;
+    if (ageH < 6) return { state: 'green', label: `${ageH.toFixed(1)} h old` };
+    if (ageH < 72) return { state: 'amber', label: `${(ageH / 24).toFixed(1)} d old` };
+    return { state: 'red', label: `${(ageH / 24).toFixed(0)} d old — stale` };
+  }, [snapB64, snapAt]);
+
+  // ---- Recommendation: live model + grace, per the LEF spec §5.5.
+  const recommendation = useMemo(() => {
+    if (!isSubMinute) {
+      return {
+        title: liveModel === 'ws_agg_reconciled'
+          ? 'No change needed.'
+          : 'Optional: switch to ws_agg_reconciled for forward compatibility.',
+        body: (
+          `At ${tf} the reconciled model is identical to ws_agg_locked — `
+          + 'cache fidelity is 100% vs REST at 1Min+. Grace has no effect '
+          + 'at this timeframe; the engine fires at bar close.'
+        ),
+      };
+    }
+    // sub-minute: grace matters
+    if (liveModel === 'ws_agg_reconciled') {
+      return {
+        title: `Sub-minute on reconciled model, grace=${graceShown}s.`,
+        body: (
+          `The engine will fire ~${graceShown}s after each bucket start `
+          + 'and reconcile late prices via O(1) snapshot restore. The '
+          + '2026-05-19 RTH sweep validated grace=5s on SPY/TSLA 10Sec '
+          + '(0% false flats vs ~46% pre-fix). Lower grace = faster '
+          + 'alerts but more phantom risk on marginal triggers.'
+        ),
+      };
+    }
+    return {
+      title: 'Recommended: switch to ws_agg_reconciled.',
+      body: (
+        'You are running sub-minute on ws_agg_locked, which fires only '
+        + 'at builder bar-close. ws_agg_reconciled fires at a strategy-'
+        + 'tuneable grace earlier and reconciles late data without '
+        + 'duplicate firing. See the live-model dropdown on the '
+        + 'Configuration tab to switch.'
+      ),
+    };
+  }, [tf, isSubMinute, liveModel, graceShown]);
+
+  return (
+    <div className="space-y-6">
+      {/* ---- Header / Recommendation banner ---- */}
+      <Card>
+        <h3 className="text-base font-semibold mb-2">
+          Data Fidelity{' '}
+          <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+            (LEF Phase 4 — 2026-05-20)
+          </span>
+        </h3>
+        <p className="text-sm font-medium mb-1">{recommendation.title}</p>
+        <p className="text-xs" style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
+          {recommendation.body}
+        </p>
+      </Card>
+
+      {/* ---- Live model + grace ---- */}
+      <Card>
+        <h4 className="text-sm font-semibold mb-3">Live execution</h4>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+          <div>
+            <div style={{ color: 'var(--text-muted)' }}>Live model</div>
+            <div className="font-mono text-sm mt-0.5">{liveModel}</div>
+          </div>
+          <div>
+            <div style={{ color: 'var(--text-muted)' }}>Grace (seconds)</div>
+            <div className="font-mono text-sm mt-0.5">
+              {graceShown}
+              {graceSec == null && (
+                <span className="ml-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  (default)
+                </span>
+              )}
+              {!isSubMinute && (
+                <span className="ml-2 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                  N/A at {tf}
+                </span>
+              )}
+            </div>
+          </div>
+          <div>
+            <div style={{ color: 'var(--text-muted)' }}>Timeframe</div>
+            <div className="font-mono text-sm mt-0.5">{tf}</div>
+          </div>
+        </div>
+      </Card>
+
+      {/* ---- Recent alert latency ---- */}
+      <Card>
+        <h4 className="text-sm font-semibold mb-3">
+          Post-close alert latency{' '}
+          <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+            (bar close → fill_ts)
+          </span>
+        </h4>
+        {latencyStats ? (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+            <div>
+              <div style={{ color: 'var(--text-muted)' }}>Samples</div>
+              <div className="font-mono text-sm mt-0.5">{latencyStats.count}</div>
+            </div>
+            <div>
+              <div style={{ color: 'var(--text-muted)' }}>Median</div>
+              <div className="font-mono text-sm mt-0.5">
+                {latencyStats.median.toFixed(1)}s
+              </div>
+            </div>
+            <div>
+              <div style={{ color: 'var(--text-muted)' }}>p95</div>
+              <div className="font-mono text-sm mt-0.5">
+                {latencyStats.p95.toFixed(1)}s
+              </div>
+            </div>
+            <div>
+              <div style={{ color: 'var(--text-muted)' }}>Range</div>
+              <div className="font-mono text-sm mt-0.5">
+                {latencyStats.min.toFixed(1)}s — {latencyStats.max.toFixed(1)}s
+              </div>
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+            No alerts with paired bar_time + fill_ts yet. Latency populates
+            once this strategy fires alerts with the
+            Trade_Timestamps_Spec four-timestamp model (2026-04-20+).
+          </p>
+        )}
+        <p className="text-[10px] mt-3" style={{ color: 'var(--text-muted)', lineHeight: 1.4 }}>
+          Negative values = fired before the bar closed (sub-minute
+          fire-at-grace path, ws_agg_reconciled only). Positive = post-
+          close latency from the engine + dispatch chain.
+        </p>
+      </Card>
+
+      {/* ---- Engine snapshot status (Tier 2 / LEF 2c) ---- */}
+      <Card>
+        <h4 className="text-sm font-semibold mb-3">
+          Engine snapshot{' '}
+          <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+            (Tier 2 — refresh resume)
+          </span>
+        </h4>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+          <div>
+            <div style={{ color: 'var(--text-muted)' }}>Status</div>
+            <div className="font-mono text-sm mt-0.5 flex items-center gap-2">
+              <span
+                style={{
+                  display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                  background:
+                    snapFreshness.state === 'green' ? 'var(--green)' :
+                    snapFreshness.state === 'amber' ? '#f59e0b' :
+                    snapFreshness.state === 'red' ? 'var(--red)' :
+                    'var(--text-muted)',
+                }}
+              />
+              {snapFreshness.label}
+            </div>
+          </div>
+          <div>
+            <div style={{ color: 'var(--text-muted)' }}>Last captured</div>
+            <div className="font-mono text-sm mt-0.5">
+              {snapAt ? new Date(snapAt).toLocaleString() : '—'}
+            </div>
+          </div>
+          <div>
+            <div style={{ color: 'var(--text-muted)' }}>Size</div>
+            <div className="font-mono text-sm mt-0.5">
+              {snapB64 ? `${Math.round(snapB64.length / 1024)} KB (b64)` : '—'}
+            </div>
+          </div>
+        </div>
+        <p className="text-[10px] mt-3" style={{ color: 'var(--text-muted)', lineHeight: 1.4 }}>
+          When present, the next "Update Data" refresh resumes from this
+          snapshot — only bars after the snapshot are processed (no warmup
+          replay). Fingerprint-invalidates automatically on any
+          behavior-driving config change (triggers, confluence, stop/
+          target method, direction, TF).
+        </p>
+      </Card>
+
+      {/* ---- Cache coverage + models summary ---- */}
+      <Card>
+        <h4 className="text-sm font-semibold mb-3">Backtest + algo lanes</h4>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+          <div>
+            <div style={{ color: 'var(--text-muted)' }}>Backtest model</div>
+            <div className="font-mono text-sm mt-0.5">{backtestModel}</div>
+            {dataSrc && (
+              <div className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                data_source: <code>{dataSrc}</code>
+              </div>
+            )}
+          </div>
+          <div>
+            <div style={{ color: 'var(--text-muted)' }}>Algo model</div>
+            <div className="font-mono text-sm mt-0.5">{algoModel}</div>
+          </div>
+        </div>
+        {cacheCoverage && typeof cacheCoverage === 'object' && (
+          <div className="mt-4 text-xs">
+            <div style={{ color: 'var(--text-muted)' }}>
+              Cache coverage{' '}
+              {cacheCoverage.timeframe && (
+                <span>· {cacheCoverage.timeframe}</span>
+              )}
+            </div>
+            <div className="font-mono text-sm mt-0.5">
+              {typeof cacheCoverage.bars_in_window === 'number'
+                ? `${cacheCoverage.bars_in_window} bars in window`
+                : '—'}
+              {typeof cacheCoverage.coverage_pct === 'number' && (
+                <span className="ml-2">
+                  ({(cacheCoverage.coverage_pct * 100).toFixed(1)}%)
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+        <p className="text-[10px] mt-3" style={{ color: 'var(--text-muted)', lineHeight: 1.4 }}>
+          For raw trade-level comparison see the Parity and Divergence
+          tabs. Backtest_model drives KPIs; algo_model drives the
+          accountability lane the Divergence tab uses.
+        </p>
+      </Card>
+
+      {/* ---- Coming soon — recommendation engine ---- */}
+      <Card>
+        <h4 className="text-sm font-semibold mb-2">
+          Coming soon
+        </h4>
+        <ul className="text-xs space-y-1" style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
+          <li>• <strong>Multi-grace shadow comparison</strong> — close-match %
+            at grace 2/3/4/5/6/7s on this strategy's symbol+TF (Phase 4.5).
+          </li>
+          <li>• <strong>Named grace tiers</strong> — Fastest / Balanced /
+            Highest-fidelity selector (Phase 5).
+          </li>
+          <li>• <strong>Confidence-gated firing</strong> — phantom-alert
+            margin detection per trigger (Phase 2.5).
+          </li>
+        </ul>
+      </Card>
     </div>
   );
 }

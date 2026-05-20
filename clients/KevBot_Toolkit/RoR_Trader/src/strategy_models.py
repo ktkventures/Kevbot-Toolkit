@@ -171,8 +171,8 @@ LIVE_MODELS = {
     },
     'ws_agg_reconciled': {
         'label': 'A-aggregated (reconciled, TF-aware)',
-        'available': False,  # Phase 2 wires the engine — Live Execution Fidelity spec
-        'default': False,
+        'available': True,   # Phase 4 flip 2026-05-20 — canary sid 151 verified
+        'default': False,    # promote to default after Phase 4 widening — open §7
         'description': (
             'Timeframe-aware single forward model. At 1Min+ this is '
             'identical to `ws_agg_locked` (lock at close, no '
@@ -182,9 +182,11 @@ LIVE_MODELS = {
             'grace via `config.grace_seconds`, default 5s per the '
             '2026-05-19 RTH grace sweep) and reconciles indicator '
             'state via the O(1) `apply_last_bar_correction` path on '
-            'a Polygon rebroadcast correction. Coming soon — needs '
-            'Phase 2 (engine wiring). See '
-            '`docs/Spec_Live_Execution_Fidelity.md`.'
+            'a Polygon rebroadcast correction. Phase 2 engine wiring '
+            'shipped 2026-05-20; available as a selectable model — '
+            'flip to default in a follow-up once production telemetry '
+            'across a representative ticker set confirms no regression '
+            'vs `ws_agg_locked`. See `docs/Spec_Live_Execution_Fidelity.md`.'
         ),
     },
 }
