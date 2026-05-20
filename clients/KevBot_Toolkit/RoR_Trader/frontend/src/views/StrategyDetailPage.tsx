@@ -5667,35 +5667,66 @@ function OpenTradeCarryoverCard({ strategy }: { strategy: any }) {
         {carryovers.map((c: any, i: number) => (
           <div
             key={c.id || i}
-            className="text-xs grid grid-cols-2 md:grid-cols-4 gap-2 py-2 px-3 rounded"
+            className="text-xs py-2 px-3 rounded"
             style={{ background: 'var(--bg-input)' }}
           >
-            <div>
-              <div style={{ color: 'var(--text-muted)' }}>Entry</div>
-              <div className="font-mono mt-0.5">
-                {c.entry_time || c.entryTime || '—'}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-2">
+              <div>
+                <div style={{ color: 'var(--text-muted)' }}>Entry</div>
+                <div className="font-mono mt-0.5">
+                  {c.entry_time || c.entryTime || '—'}
+                </div>
+              </div>
+              <div>
+                <div style={{ color: 'var(--text-muted)' }}>Entry Price</div>
+                <div className="font-mono mt-0.5">
+                  {typeof c.entry_price === 'number'
+                    ? `$${c.entry_price.toFixed(2)}`
+                    : (c.entryPrice || '—')}
+                </div>
+              </div>
+              <div>
+                <div style={{ color: 'var(--text-muted)' }}>Direction</div>
+                <div className="font-mono mt-0.5">
+                  {c.direction || '—'}
+                </div>
+              </div>
+              <div>
+                <div style={{ color: 'var(--text-muted)' }}>Recorded</div>
+                <div className="font-mono mt-0.5">
+                  {c.recorded_at || c.timestamp || '—'}
+                </div>
               </div>
             </div>
-            <div>
-              <div style={{ color: 'var(--text-muted)' }}>Entry Price</div>
-              <div className="font-mono mt-0.5">
-                {typeof c.entry_price === 'number'
-                  ? `$${c.entry_price.toFixed(2)}`
-                  : (c.entryPrice || '—')}
+            {/* Audit fix 2026-05-20: surface stop+target for manual-close decisions. */}
+            {(c.stop_price != null || c.target_price != null || c.entry_bar_count != null) && (
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2 pt-2"
+                style={{ borderTop: '1px solid var(--border)' }}
+              >
+                <div>
+                  <div style={{ color: 'var(--text-muted)' }}>Stop</div>
+                  <div className="font-mono mt-0.5">
+                    {typeof c.stop_price === 'number' && c.stop_price > 0
+                      ? `$${c.stop_price.toFixed(2)}`
+                      : '—'}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ color: 'var(--text-muted)' }}>Target</div>
+                  <div className="font-mono mt-0.5">
+                    {typeof c.target_price === 'number' && c.target_price > 0
+                      ? `$${c.target_price.toFixed(2)}`
+                      : '—'}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ color: 'var(--text-muted)' }}>Bars Held</div>
+                  <div className="font-mono mt-0.5">
+                    {c.entry_bar_count != null ? c.entry_bar_count : '—'}
+                  </div>
+                </div>
               </div>
-            </div>
-            <div>
-              <div style={{ color: 'var(--text-muted)' }}>Direction</div>
-              <div className="font-mono mt-0.5">
-                {c.direction || '—'}
-              </div>
-            </div>
-            <div>
-              <div style={{ color: 'var(--text-muted)' }}>Recorded</div>
-              <div className="font-mono mt-0.5">
-                {c.recorded_at || c.timestamp || '—'}
-              </div>
-            </div>
+            )}
           </div>
         ))}
       </div>

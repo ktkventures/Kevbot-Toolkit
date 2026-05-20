@@ -882,20 +882,30 @@ class StrategyMonitor:
                 'type': 'position_carryover',
                 'strategy_id': self.strat_id,
                 'recorded_at': datetime.now(timezone.utc).isoformat(),
+                # Audit fix 2026-05-20: capture broker-relevant fields
+                # too so the user has the full picture for a manual
+                # close (stop + target + age) — not just the entry.
                 'entry_time': carryover_data.get('entry_time'),
                 'entry_price': carryover_data.get('entry_price'),
+                'stop_price': carryover_data.get('stop_price'),
+                'target_price': carryover_data.get('target_price'),
+                'entry_bar_count': carryover_data.get('entry_bar_count'),
                 'direction': carryover_data.get('direction'),
                 'entry_trigger': carryover_data.get('entry_trigger'),
                 'reason': 'tier3_restart_flat',
             }
             logger.warning(
-                "Tier 3 MIGRATION sid=%s (%s/%ds): pre-restart position "
-                "was IN_POSITION (entry_price=%s, entry_time=%s) — "
-                "engine now starts FLAT per always-start-flat contract. "
-                "Broker may still hold the position; verify and close "
-                "manually if needed. Carryover queued for persistence.",
-                self.strat_id, self.symbol, self.tf_seconds,
+                "Tier 3 MIGRATION sid=%s user=%s (%s/%ds): pre-restart "
+                "position was IN_POSITION (entry_price=%s, stop_price=%s, "
+                "target_price=%s, entry_time=%s) — engine now starts FLAT "
+                "per always-start-flat contract. Broker may still hold "
+                "the position; verify and close manually if needed. "
+                "Carryover queued for persistence.",
+                self.strat_id, (self.user_id[:8] if self.user_id else '?'),
+                self.symbol, self.tf_seconds,
                 carryover_data.get('entry_price'),
+                carryover_data.get('stop_price'),
+                carryover_data.get('target_price'),
                 carryover_data.get('entry_time'))
         # Pass None to PositionStateMachine — engine ALWAYS starts FLAT
         # at construction. The Tier 3 contract is enforced here, not

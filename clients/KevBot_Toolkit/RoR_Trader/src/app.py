@@ -818,13 +818,38 @@ def _generate_incremental_trades(strat: dict, since_dt,
         # return_snapshot=True → 3-tuple
         trades, _enriched, new_b64 = result
     except Exception as e:
-        # Hard failure — fall back to the legacy unified_trades path
-        # (no snapshot capture); same shape as today.
+        # Hard failure — fall back to the legacy unified_trades path.
+        # Audit fix 2026-05-20 (#14): also attempt a fresh snapshot capture
+        # via a second run with return_snapshot=True so a single bad-pack
+        # failure doesn't permanently leave us snapshot-less on the cold-
+        # start path. If the second attempt also fails, preserve the old
+        # snapshot — fingerprint invalidation will eventually rebuild it.
         logger.warning(
             "incremental run_unified_backtest failed (%s) — falling back "
-            "to legacy unified_trades, snapshot not captured this run", e)
+            "to legacy unified_trades; attempting snapshot recapture", e)
         trades = _unified_trades(df, strat)
-        new_b64 = snap_b64  # preserve the old one rather than invalidate
+        new_b64 = snap_b64  # default: preserve the old one
+        try:
+            _r2 = run_unified_backtest(
+                df, strat,
+                general_packs=enabled_gen,
+                secondary_tf_map=sec_tf_map if sec_tf_map else None,
+                include_open_position=True,
+                last_bar_partial=False,
+                # NOTE: no resume_snapshot — cold-start to bypass whatever
+                # broke the resume path, then capture fresh.
+                return_snapshot=True,
+            )
+            _t2, _e2, _b64_2 = _r2
+            if _b64_2 is not None:
+                new_b64 = _b64_2
+                logger.info(
+                    "incremental snapshot recapture succeeded after "
+                    "engine-exception fallback")
+        except Exception as e2:
+            logger.warning(
+                "snapshot recapture also failed (%s) — preserving old "
+                "snapshot; fingerprint will eventually rebuild", e2)
 
     if not isinstance(trades, pd.DataFrame) or len(trades) == 0:
         return pd.DataFrame(), new_b64
