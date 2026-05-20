@@ -5548,10 +5548,12 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 
 
 // ============================================================================
-// Data Fidelity tab — LEF Phase 4 (2026-05-20)
+// Data Fidelity tab — LEF Phase 4 (2026-05-20), Phase 5 grace selector
 // ----------------------------------------------------------------------------
 // Consolidates the user-facing fidelity surface for a single strategy:
 //   - Live model + grace_seconds (with the spec's recommendation note)
+//   - Grace Tier editor (Phase 5) — named tiers, never raw seconds, with
+//     inline parity-consequence notes per LEF spec §5.2
 //   - Engine snapshot status (Tier 2 / LEF 2c — surfaces refresh resume health)
 //   - Recent alert latency (post-bar-close → fill_ts) from the alerts list
 //     already loaded by useStrategyAlerts
@@ -5561,6 +5563,169 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 // shadow comparison ("close-match % at each grace") — that needs a backend
 // job and lands as a follow-up.
 // ============================================================================
+
+// Phase 5: named-tier mapping per LEF spec §5.2. NEVER expose raw seconds.
+// Anchors validated by the 2026-05-19 RTH grace sweep on SPY/TSLA 10Sec —
+// 5s = 0% false flats. Faster trades fidelity for ~2s; slower buys ~2s
+// extra safety margin at minimal latency cost.
+const GRACE_TIERS: {
+  id: 'fastest' | 'balanced' | 'highest_fidelity';
+  label: string;
+  seconds: number;
+  note: string;
+}[] = [
+  {
+    id: 'fastest',
+    label: 'Fastest',
+    seconds: 3,
+    note: '~2s earlier than Balanced. Higher phantom risk on marginal triggers — use when latency matters more than precision (e.g., scalping liquid majors).',
+  },
+  {
+    id: 'balanced',
+    label: 'Balanced',
+    seconds: 5,
+    note: 'Default. The 2026-05-19 RTH sweep verified 0% false flats on SPY/TSLA 10Sec at this setting. Right for most strategies.',
+  },
+  {
+    id: 'highest_fidelity',
+    label: 'Highest-fidelity',
+    seconds: 7,
+    note: '~2s slower than Balanced; near-perfect alignment with backtest. Pick for strategies where every cent of slippage matters more than alert speed.',
+  },
+];
+
+function _graceSecondsToTier(seconds: number) {
+  // Snap to closest tier; ties resolve to balanced.
+  let best = GRACE_TIERS[1];
+  let bestDist = Math.abs(seconds - best.seconds);
+  for (const t of GRACE_TIERS) {
+    const d = Math.abs(seconds - t.seconds);
+    if (d < bestDist) {
+      best = t;
+      bestDist = d;
+    }
+  }
+  return best;
+}
+
+// ----------------------------------------------------------------------------
+// GraceTierEditor — Phase 5 (LEF spec §5.2)
+// PUTs strategy with the new grace_seconds; the worker hot-reload path
+// (db_hot_reload, see ralph_engine.py _monitor_config_hash) picks up the
+// change and re-instantiates the monitor preserving its position state.
+// Per spec: NEVER raw seconds in the UI — only named tiers with their
+// parity-consequence note inline.
+// ----------------------------------------------------------------------------
+function GraceTierEditor({
+  strategyId,
+  strategy,
+  currentGraceSeconds,
+}: {
+  strategyId: number;
+  strategy: any;
+  currentGraceSeconds: number;
+}) {
+  const queryClient = useQueryClient();
+  const [saving, setSaving] = useState<string | null>(null);
+  const activeTier = _graceSecondsToTier(currentGraceSeconds);
+
+  const handlePick = async (tier: typeof GRACE_TIERS[number]) => {
+    if (tier.id === activeTier.id) return;
+    setSaving(tier.id);
+    const token = localStorage.getItem('ror_access_token') || '';
+    const base = process.env.NEXT_PUBLIC_API_URL || '';
+    try {
+      // PUT replaces — merge with existing strategy so we don't wipe
+      // sibling config fields (per feedback_jsonb_partial_updates).
+      const merged = { ...strategy, grace_seconds: tier.seconds };
+      const resp = await fetch(`${base}/api/strategies/${strategyId}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(merged),
+      });
+      if (!resp.ok) {
+        const text = await resp.text();
+        alert(`Save failed: ${text.slice(0, 200)}`);
+        return;
+      }
+      queryClient.invalidateQueries({ queryKey: ['strategy', strategyId] });
+    } catch (e: any) {
+      alert(`Save failed: ${String(e?.message || e)}`);
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  return (
+    <Card>
+      <h4 className="text-sm font-semibold mb-1">
+        Grace tier{' '}
+        <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+          (Phase 5 — sub-minute only)
+        </span>
+      </h4>
+      <p className="text-xs mb-3" style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
+        How long the engine waits after a sub-minute bucket starts before
+        firing on its provisional state. Lower = faster alerts but more
+        phantom-trigger risk; higher = closer to backtest fidelity.
+        Reconciliation on late data is automatic regardless of tier.
+      </p>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {GRACE_TIERS.map((t) => {
+          const isActive = t.id === activeTier.id;
+          const isSaving = saving === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => handlePick(t)}
+              disabled={saving !== null}
+              style={{
+                textAlign: 'left',
+                padding: '12px 14px',
+                borderRadius: 8,
+                border: isActive
+                  ? '2px solid var(--blue)'
+                  : '1px solid var(--border)',
+                background: isActive
+                  ? 'rgba(59, 130, 246, 0.06)'
+                  : 'var(--bg-input)',
+                color: 'var(--text)',
+                cursor: saving === null ? 'pointer' : 'wait',
+                opacity: isSaving ? 0.5 : 1,
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-semibold text-sm">{t.label}</span>
+                {isActive && (
+                  <span
+                    className="text-[10px] font-mono px-1.5 py-0.5 rounded"
+                    style={{ background: 'var(--blue)', color: 'white' }}
+                  >
+                    ACTIVE
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px]" style={{ color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                {t.note}
+              </p>
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[10px] mt-3" style={{ color: 'var(--text-muted)', lineHeight: 1.4 }}>
+        Change takes effect at the worker's next hot-reload cycle
+        (typically &lt; 60s). The monitor's position state and snapshot
+        survive the change — no warmup replay.
+      </p>
+    </Card>
+  );
+}
+
 
 function DataFidelityTabContent({
   strategyId,
@@ -5732,6 +5897,15 @@ function DataFidelityTabContent({
         </div>
       </Card>
 
+      {/* ---- Grace Tier editor (Phase 5) — only meaningful sub-minute ---- */}
+      {isSubMinute && (
+        <GraceTierEditor
+          strategyId={strategyId}
+          strategy={strategy}
+          currentGraceSeconds={graceShown}
+        />
+      )}
+
       {/* ---- Recent alert latency ---- */}
       <Card>
         <h4 className="text-sm font-semibold mb-3">
@@ -5880,11 +6054,12 @@ function DataFidelityTabContent({
           <li>• <strong>Multi-grace shadow comparison</strong> — close-match %
             at grace 2/3/4/5/6/7s on this strategy's symbol+TF (Phase 4.5).
           </li>
-          <li>• <strong>Named grace tiers</strong> — Fastest / Balanced /
-            Highest-fidelity selector (Phase 5).
-          </li>
           <li>• <strong>Confidence-gated firing</strong> — phantom-alert
             margin detection per trigger (Phase 2.5).
+          </li>
+          <li>• <strong>Per-ticker grace defaults</strong> — populate
+            GRACE_SECONDS_PER_SYMBOL from production telemetry instead of
+            relying on the global 5s default.
           </li>
         </ul>
       </Card>
