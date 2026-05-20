@@ -3205,10 +3205,28 @@ def deserialize_backtest_snapshot(
 
 def apply_backtest_snapshot(strat, envelope: dict) -> None:
     """Restore a deserialized snapshot envelope into a fresh
-    UnifiedStrategy. The engine + position state are mutated in place."""
-    import copy as _copy
+    UnifiedStrategy.
+
+    Tier 3 §8.2 (always-start-flat, 2026-05-20): INDICATOR state is
+    restored from the envelope; POSITION state is NOT — the position
+    machine always starts FLAT across a refresh/restart boundary
+    regardless of what the snapshot recorded. The envelope still
+    carries `envelope['position']` for back-compat with older
+    snapshots and for diagnostic purposes, but apply_backtest_
+    snapshot intentionally drops it. Per Tier 3 §4.1, any open
+    pre-boundary trade is owned by the pre-boundary window's
+    stored_trades; the post-boundary window owns trades it
+    originates itself.
+
+    Was previously (LEF 2c, 2026-05-20 morning): also restored
+    position state — that landed before Tier 3 §6 decisions resolved.
+    Tier 3 supersedes that behavior; this function is the single
+    place to enforce the FLAT contract for backtest resumes.
+    """
     strat.indicators.restore_state(envelope['engine'])
-    strat.position.state = _copy.deepcopy(envelope['position'])
+    # NOTE: deliberately not restoring envelope['position'] —
+    # see docstring. The Tier 3 contract trumps the snapshot's
+    # recorded state.
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3228,6 +3246,13 @@ def run_unified_backtest(
 ):
     """Run unified backtest on historical OHLCV data.
 
+    Tier 3 invariant (§8.2, 2026-05-20): position state ALWAYS starts
+    FLAT at the first bar of `df`, even when `resume_snapshot` is
+    provided. INDICATOR state may be restored from the snapshot to
+    skip warmup, but no open position is ever inherited across the
+    boundary. The pre-boundary window owns any open trade per Tier 3
+    §4.1. See `docs/Spec_Tier3_Always_Start_Flat.md`.
+
     Args:
         df: DataFrame (timestamp-indexed). Must contain OHLCV columns.
             May also contain pre-computed MTF columns (e.g. EMA_STACK__5m).
@@ -3243,9 +3268,10 @@ def run_unified_backtest(
             on that bar, preventing premature markers on live charts.
         resume_snapshot: Tier 2 (LEF 2c) — a deserialized snapshot envelope
             (`deserialize_backtest_snapshot` output). When provided, the
-            engine + position state are restored from it; `df` is assumed
-            to contain ONLY bars AFTER `envelope['last_bar_ts']`. Caller
-            owns fingerprint validation.
+            INDICATOR state is restored from it; POSITION state is NOT
+            inherited (Tier 3 §8.2). `df` is assumed to contain ONLY bars
+            AFTER `envelope['last_bar_ts']`. Caller owns fingerprint
+            validation.
         return_snapshot: When True, the return tuple includes a freshly
             serialized snapshot of the engine's end state as a base64
             string (or None on serialization failure). Used by the
@@ -3262,11 +3288,13 @@ def run_unified_backtest(
         return empty_trades, df.copy()
 
     strat = UnifiedStrategy(strategy, general_packs)
-    # Tier 2 (LEF 2c): if a valid snapshot was passed, restore engine +
-    # position state from it. df is assumed to start AFTER the snapshot's
+    # Tier 3 §8.2 (always-start-flat): UnifiedStrategy.__init__ creates a
+    # PositionStateMachine that starts in FLAT — that's the contract.
+    # If a snapshot was provided, restore INDICATOR state only (the
+    # apply_backtest_snapshot function intentionally drops the snapshot's
+    # position field). df is assumed to start AFTER the snapshot's
     # last_bar_ts — caller's responsibility to slice. The engine then
-    # processes only the new bars (no warmup), and any open position
-    # from the snapshot can have its exit applied normally.
+    # processes only the new bars without re-warming.
     if resume_snapshot is not None:
         try:
             apply_backtest_snapshot(strat, resume_snapshot)

@@ -838,12 +838,28 @@ def _generate_incremental_trades(strat: dict, since_dt,
         trades['exit_time'] = pd.to_datetime(
             trades['exit_fill_ts'], utc=True, errors='coerce')
 
-    # Filter to only truly new trades (entered after the cutoff)
-    since_ts = pd.Timestamp(since_dt)
+    # Tier 3 §8.2 (window-boundary filter, 2026-05-20):
+    # Pre-Tier-3 this filtered `entry_time > last_entry` — a band-aid
+    # that prevented duplicates by leaning on the entry timestamp of the
+    # most-recently-stored trade. Tier 3 replaces that with an explicit
+    # WINDOW BOUNDARY:
+    #   - snapshot path → boundary = snapshot's last_bar_ts (the engine
+    #     processed up to and including this bar in the previous run;
+    #     anything strictly after is new-window territory)
+    #   - cold-start path → boundary = since_dt (the last known entry,
+    #     preserves cold-start dedup contract until §8.5 unifies the
+    #     two paths)
+    # The semantic shift: we're filtering by window membership, not by
+    # last-known-entry identity. Per Tier 3 spec §3.1 and the §5
+    # architectural change row.
+    if envelope is not None:
+        window_start = pd.Timestamp(envelope['last_bar_ts'])
+    else:
+        window_start = pd.Timestamp(since_dt)
     if (trades['entry_time'].dt.tz is not None
-            and since_ts.tz is None):
-        since_ts = since_ts.tz_localize('UTC')
-    new_trades = trades[trades['entry_time'] > since_ts]
+            and window_start.tz is None):
+        window_start = window_start.tz_localize('UTC')
+    new_trades = trades[trades['entry_time'] > window_start]
     return new_trades, new_b64
 
 
