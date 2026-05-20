@@ -750,6 +750,48 @@ class BarBuilder:
 # STRATEGY MONITOR — one per strategy, owns indicator + trigger + position
 # ═══════════════════════════════════════════════════════════════════════════
 
+# Fields whose values define a monitor's behavior. The worker's hot-reload
+# (see worker.py) compares the hash before/after to detect config changes
+# on RUNNING strategies and re-instantiate the monitor — pre-2026-05-20
+# the hot-reload only diffed by ID, so a UI edit to a running strategy's
+# config silently did nothing until the next deploy.
+# Lookup is permissive: each field is checked at top level first, then
+# inside `config`, because different load paths flatten the JSONB
+# differently. Volatile fields (stored_trades, kpis, equity_curve_data,
+# live_executions, discrepancies, data_refreshed_at) are intentionally
+# excluded so a normal data refresh doesn't trigger a re-instantiation.
+_MONITOR_CONFIG_FIELDS = (
+    'live_model', 'timeframe', 'symbol', 'direction',
+    'entry_trigger_confluence_id', 'entry_trigger',
+    'exit_trigger', 'exit_triggers', 'confluence',
+    'stop_config', 'target_config', 'stop_atr_mult',
+    'risk_per_trade', 'starting_balance', 'position_size',
+    'trading_session', 'data_seed', 'strategy_origin',
+    'grace_seconds',
+    'alert_tracking_enabled',
+)
+
+
+def _monitor_config_hash(strategy: dict) -> str:
+    """Short stable hash of the fields that affect monitor behavior.
+
+    Worker hot-reload uses this to detect config changes on existing
+    monitors and re-instantiate them. 12-char hex is plenty.
+    """
+    import hashlib
+    import json
+    cfg = strategy.get('config') or {}
+    parts: dict = {}
+    for f in _MONITOR_CONFIG_FIELDS:
+        if f in strategy:
+            parts[f] = strategy[f]
+        elif f in cfg:
+            parts[f] = cfg[f]
+    return hashlib.sha256(
+        json.dumps(parts, sort_keys=True, default=str).encode()
+    ).hexdigest()[:12]
+
+
 class StrategyMonitor:
     """Monitors one strategy: indicators → triggers → position state."""
 
@@ -878,6 +920,13 @@ class StrategyMonitor:
                      f", secondary_tfs={self._required_secondary_tf}"
                      if self._required_secondary_tf else "",
                      params.get('ema_periods'))
+
+        # Hash of the behavior-driving config fields — the worker's
+        # hot-reload (worker.py db_hot_reload) compares this before/after
+        # on each cycle and re-instantiates the monitor when it changes,
+        # so live edits (live_model / grace_seconds / triggers / stops)
+        # activate without a deploy.
+        self._config_hash: str = _monitor_config_hash(strategy)
 
     def warmup(self, df: pd.DataFrame):
         """Initialize indicator state from historical bars."""

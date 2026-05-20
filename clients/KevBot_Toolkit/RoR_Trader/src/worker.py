@@ -892,10 +892,67 @@ class DBRalphEngine:
                         logger.warning("Warmup failed for strategy %d: %s",
                                        strat['id'], e)
 
+                # Detect config changes on EXISTING monitors and re-
+                # instantiate them so updates (live_model, grace_seconds,
+                # triggers, stops, …) activate without a worker restart.
+                # Pre-2026-05-20 the hot-reload only diffed by ID — so a
+                # UI edit to a running strategy's config silently did
+                # nothing until the next deploy. Discovered during the
+                # LEF 2b canary on 2026-05-20.
+                from ralph_engine import (
+                    _monitor_config_hash, StrategyMonitor as _SM)
+                unchanged_ids = new_ids & current_ids
+                strats_by_id = {s['id']: s for s in strategies}
+                rebuilt = 0
+                for sid in unchanged_ids:
+                    monitor = engine.monitors.get(sid)
+                    new_strat = strats_by_id.get(sid)
+                    if monitor is None or new_strat is None:
+                        continue
+                    new_hash = _monitor_config_hash(new_strat)
+                    old_hash = getattr(monitor, '_config_hash', None)
+                    if old_hash == new_hash:
+                        continue
+                    logger.info(
+                        "Strategy %d config changed (%s → %s) — "
+                        "re-instantiating monitor",
+                        sid, old_hash, new_hash)
+                    # Preserve position state so an open trade survives
+                    # the re-instantiation cycle.
+                    saved_pos = getattr(monitor, 'position', None)
+                    saved_pos_state = saved_pos.state if saved_pos else None
+                    # Remove old monitor from hub.
+                    sym = monitor.symbol
+                    hub = engine.hubs.get(sym)
+                    if hub and sid in hub.monitors:
+                        del hub.monitors[sid]
+                    # Re-instantiate with the new config.
+                    new_strat.setdefault('user_id', self.user_id)
+                    rebuilt_monitor = _SM(
+                        new_strat, saved_pos_state,
+                        general_packs=engine._general_packs)
+                    rebuilt_monitor._config_hash = new_hash
+                    if hub is not None:
+                        hub.add_monitor(rebuilt_monitor)
+                    engine.monitors[sid] = rebuilt_monitor
+                    # Warm up the rebuilt monitor from the hub's existing
+                    # builder history (already populated by the prior
+                    # monitor) — fast vs re-fetching market data.
+                    try:
+                        builder = hub.builders.get(rebuilt_monitor.tf_seconds) if hub else None
+                        if builder is not None and len(builder.history) > 0:
+                            rebuilt_monitor.warmup(builder.history)
+                    except Exception as _we:
+                        logger.warning(
+                            "Re-warmup from hub history failed for %d: %s",
+                            sid, _we)
+                    rebuilt += 1
+
                 self._config_updated_at = new_updated_at
                 logger.info("Hot-reload complete: %d strategies "
-                            "(%d added, %d removed)",
-                            len(engine.monitors), len(added), len(removed))
+                            "(%d added, %d removed, %d rebuilt)",
+                            len(engine.monitors), len(added), len(removed),
+                            rebuilt)
 
                 # If new symbols were added, force a WebSocket reconnect
                 # so the stream subscribes to the updated symbol list.
