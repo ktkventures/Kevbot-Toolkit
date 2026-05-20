@@ -1416,6 +1416,79 @@ def append_audit_log_db(entry: dict, user_id: str = None):
 
 
 # ============================================================
+# Tier 3 §8.3 (always-start-flat, 2026-05-20) — carryover persistence
+# ============================================================
+
+def append_position_carryovers_admin(carryovers: list, user_id: str):
+    """Append `position_carryover` entries to each affected strategy's
+    config.position_carryovers list. Worker uses admin client to bypass
+    RLS — this is fire-and-forget from the engine's perspective.
+
+    Each carryover dict must include a `strategy_id` field. Carryovers
+    for the same strategy_id are batched into one strategy update.
+
+    Per the `feedback_jsonb_partial_updates` rule, this loads each
+    strategy via admin client → appends to position_carryovers in
+    config → writes the FULL config back (no partial dict). Cap at 50
+    entries per strategy so a long-running carryover history doesn't
+    bloat the JSONB row indefinitely; older entries truncated FIFO.
+
+    Defensive: per-strategy failures are logged but do not raise. The
+    engine has already enforced FLAT — losing a UI-banner write is
+    a degradation, not a correctness failure.
+    """
+    if not carryovers:
+        return
+    client = get_admin_client()
+    # Group by strategy_id
+    by_sid: dict[int, list] = {}
+    for c in carryovers:
+        sid = c.get('strategy_id')
+        if sid is None:
+            continue
+        by_sid.setdefault(sid, []).append(c)
+
+    import logging as _l
+    log = _l.getLogger(__name__)
+
+    for sid, new_entries in by_sid.items():
+        try:
+            # Load current strategy
+            res = client.table('strategies') \
+                .select('config') \
+                .eq('id', sid).eq('user_id', user_id) \
+                .maybe_single().execute()
+            if not (res and res.data):
+                log.warning(
+                    "Tier 3 carryover: strategy %s not found for user %s",
+                    sid, user_id[:8])
+                continue
+            cfg = res.data.get('config') or {}
+            if isinstance(cfg, str):
+                import json as _j
+                cfg = _j.loads(cfg)
+            existing = list(cfg.get('position_carryovers') or [])
+            existing.extend(new_entries)
+            # Truncate FIFO at 50 — keep most recent
+            if len(existing) > 50:
+                existing = existing[-50:]
+            cfg['position_carryovers'] = existing
+            # Direct config JSONB update — full config dict so we don't
+            # trip the partial-update wipe guard.
+            client.table('strategies') \
+                .update({'config': cfg}) \
+                .eq('id', sid).eq('user_id', user_id) \
+                .execute()
+            log.info(
+                "Tier 3 carryover persisted for sid=%s (now %d total)",
+                sid, len(existing))
+        except Exception as e:
+            log.error(
+                "Tier 3 carryover persist failed sid=%s: %s",
+                sid, e, exc_info=True)
+
+
+# ============================================================
 # Admin-only functions (worker service — bypasses RLS)
 # ============================================================
 

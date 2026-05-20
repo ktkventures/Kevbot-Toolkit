@@ -713,6 +713,19 @@ class DBRalphEngine:
         # DB writes + webhook delivery off the event loop.
         engine._alert_executor = self._ft_executor
 
+        # Tier 3 §8.3 (2026-05-20): register the carryover persister.
+        # When the engine starts and finds inherited-IN_POSITION state
+        # in any monitor's saved-positions payload, it enforces FLAT
+        # and queues a position_carryover entry; this callback writes
+        # those entries to the strategy's config.position_carryovers
+        # via the admin client. Surfaced via the Configuration tab's
+        # Open Trade Carryover card.
+        _uid = self.user_id
+        def _persist_carryovers(carryovers):
+            from db import append_position_carryovers_admin
+            append_position_carryovers_admin(carryovers, _uid)
+        engine._carryover_persister = _persist_carryovers
+
         # Bar-close recompute hook is OFF. stored_trades is now appended
         # atomically by DBAlertDispatcher.dispatch on exit signals (see
         # docs/Alert_Recovery_Plan_2026-04-17.md, Phase 1). The

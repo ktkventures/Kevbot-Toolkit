@@ -5626,6 +5626,15 @@ function _graceSecondsToTier(seconds: number) {
 // ----------------------------------------------------------------------------
 function OpenTradeCarryoverCard({ strategy }: { strategy: any }) {
   const carryovers = useMemo(() => {
+    // Primary source (Tier 3 §8.3): position_carryovers field on the
+    // strategy config — flattened to top-level by the API/db loader.
+    // Fallback: scan live_executions for entries with type='position_
+    // carryover' (forward-compat with the original UI scaffolding).
+    const direct = strategy?.position_carryovers
+      || strategy?.config?.position_carryovers;
+    if (Array.isArray(direct) && direct.length > 0) {
+      return direct;
+    }
     const execs = strategy?.live_executions || strategy?.liveExecutions || [];
     if (!Array.isArray(execs)) return [];
     return execs.filter((e: any) =>

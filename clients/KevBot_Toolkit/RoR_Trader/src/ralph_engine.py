@@ -856,8 +856,52 @@ class StrategyMonitor:
         self.indicators = IncrementalIndicatorEngine(req_ind, params)
         self.trigger_eval = TriggerEvaluator(
             req_interp, req_trig, params['ema_periods'])
+
+        # Tier 3 §8.3 (always-start-flat, 2026-05-20): a restart-context
+        # `position_state` carrying IN_POSITION is NOT inherited. The
+        # engine starts FLAT regardless; the inherited state is captured
+        # to `_tier3_inherited_carryover` for the worker to persist as a
+        # `position_carryover` entry (§4.2). Operators see the broker may
+        # still hold the underlying position — surfaced via the Data
+        # Fidelity / Configuration tab Open Trade Carryover card.
+        #
+        # When position_state is None or FLAT, no carryover is recorded —
+        # this is the cold-start case (worker first boot, brand-new
+        # strategy, or already-flat at last shutdown).
+        self._tier3_inherited_carryover: Optional[dict] = None
+        if position_state is not None and getattr(
+                position_state, 'status', 'FLAT') == 'IN_POSITION':
+            from dataclasses import asdict as _asdict
+            try:
+                carryover_data = _asdict(position_state)
+            except TypeError:
+                # Defensive: position_state might not be a dataclass
+                # under some test paths. Convert via __dict__.
+                carryover_data = dict(getattr(position_state, '__dict__', {}))
+            self._tier3_inherited_carryover = {
+                'type': 'position_carryover',
+                'strategy_id': self.strat_id,
+                'recorded_at': datetime.now(timezone.utc).isoformat(),
+                'entry_time': carryover_data.get('entry_time'),
+                'entry_price': carryover_data.get('entry_price'),
+                'direction': carryover_data.get('direction'),
+                'entry_trigger': carryover_data.get('entry_trigger'),
+                'reason': 'tier3_restart_flat',
+            }
+            logger.warning(
+                "Tier 3 MIGRATION sid=%s (%s/%ds): pre-restart position "
+                "was IN_POSITION (entry_price=%s, entry_time=%s) — "
+                "engine now starts FLAT per always-start-flat contract. "
+                "Broker may still hold the position; verify and close "
+                "manually if needed. Carryover queued for persistence.",
+                self.strat_id, self.symbol, self.tf_seconds,
+                carryover_data.get('entry_price'),
+                carryover_data.get('entry_time'))
+        # Pass None to PositionStateMachine — engine ALWAYS starts FLAT
+        # at construction. The Tier 3 contract is enforced here, not
+        # downstream.
         self.position = PositionStateMachine(
-            strategy, position_state,
+            strategy, None,
             resolved_entry=resolved_entry,
             resolved_exits=resolved_exits)
 
@@ -3110,6 +3154,17 @@ class RalphEngine:
         self._last_pickle_write = 0.0
         self._last_strategy_refresh = 0.0
         self._subscribed_symbols: List[str] = []
+        # Tier 3 §8.3 (always-start-flat, 2026-05-20): collected from
+        # monitor._tier3_inherited_carryover during start(). The worker
+        # registers `_carryover_persister` to a callable that writes
+        # each entry to the strategy's position_carryovers field. The
+        # engine calls the persister synchronously between monitor
+        # construction and the event-loop start (so the persistence
+        # is durable BEFORE any live alerts can fire). When no
+        # persister is registered (CLI dry-run, tests), the list is
+        # left available for inspection but not auto-written.
+        self._pending_carryovers: List[dict] = []
+        self._carryover_persister = None  # type: Optional[callable]
         # M8.5: Live-bar publisher — set by worker before start().
         # None = live chart disabled (no broadcasts). Harmless default.
         self._publisher: Optional['LiveBarPublisher'] = None
@@ -3226,7 +3281,31 @@ class RalphEngine:
                 hub.add_monitor(monitor)
                 self.monitors[strat_id] = monitor
 
+                # Tier 3 §8.3: drain inherited-position carryover for the
+                # worker to persist after engine.start() completes.
+                if monitor._tier3_inherited_carryover is not None:
+                    self._pending_carryovers.append(
+                        monitor._tier3_inherited_carryover)
+
             self.hubs[sym] = hub
+
+        # Tier 3 §8.3: flush pending carryovers to the worker's persister
+        # before any monitor goes live. If the persister raises, log it
+        # but proceed — the engine itself is FLAT either way; loss of
+        # the carryover write is a UI-surface degradation, not a
+        # correctness failure.
+        if self._pending_carryovers and self._carryover_persister is not None:
+            try:
+                self._carryover_persister(list(self._pending_carryovers))
+                logger.info(
+                    "Tier 3: persisted %d position_carryover entries",
+                    len(self._pending_carryovers))
+            except Exception as e:
+                logger.error(
+                    "Tier 3: carryover persister raised %s — UI banner "
+                    "will not surface but engine is FLAT correctly",
+                    e, exc_info=True)
+            self._pending_carryovers.clear()
 
         # Create shadow indicator engines for cross-TF confluence
         for sym, hub in self.hubs.items():
@@ -4738,6 +4817,11 @@ def cmd_dry_run():
                 strat, pos_state, general_packs=engine._general_packs)
             hub.add_monitor(monitor)
             engine.monitors[strat['id']] = monitor
+            # Tier 3 §8.3: dry-run collects carryovers for diagnostic
+            # display; same semantic as the production path.
+            if monitor._tier3_inherited_carryover is not None:
+                engine._pending_carryovers.append(
+                    monitor._tier3_inherited_carryover)
         engine.hubs[sym] = hub
 
     print("\nRunning warmup...")
