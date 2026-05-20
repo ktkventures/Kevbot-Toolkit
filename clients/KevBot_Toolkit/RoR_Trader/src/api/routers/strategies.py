@@ -1040,6 +1040,40 @@ def run_parity(strategy_id: int, user=Depends(get_current_user)):
     return queue_parity_for_strategy(strategy_id, user_id)
 
 
+@router.get("/{strategy_id}/grace-shadow-comparison")
+def grace_shadow_comparison(
+    strategy_id: int,
+    window_hours: int = Query(6, ge=1, le=48),
+    user=Depends(get_current_user),
+):
+    """Phase 4.5 (LEF spec §5.5) — multi-grace shadow comparison.
+
+    Runs the unified backtest engine against each grace variant's
+    recorded shadow bars (grace_2s … grace_7s) and reports per-variant
+    trade counts + close-match % vs reference (grace_7s). Returns a
+    recommendation ('Fastest' / 'Balanced' / 'Highest-fidelity') based
+    on the fastest variant achieving >= 95% close-match.
+
+    Available only for sub-minute strategies on (SPY, TSLA) at 10Sec
+    (the grace shadow's recorded scope today). For all other
+    strategies, returns `available: false` with an explanation.
+
+    Engine-risk-free: read-only against live_bars_trades, fresh
+    UnifiedStrategy per variant, no live-engine touch.
+    """
+    strat = _get_or_404(strategy_id, user)
+    from grace_shadow_compare import compare_strategy
+    try:
+        return compare_strategy(strat, window_hours=window_hours)
+    except Exception as e:
+        import logging as _l
+        _l.getLogger(__name__).warning(
+            "grace_shadow_comparison sid=%s failed: %s", strategy_id, e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"grace shadow comparison failed: {str(e)[:200]}")
+
+
 @router.post("/run-parity-bulk")
 def run_parity_bulk(
     body: dict = Body(...),

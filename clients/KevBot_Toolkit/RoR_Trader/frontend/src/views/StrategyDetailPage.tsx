@@ -5646,9 +5646,14 @@ function OpenTradeCarryoverCard({ strategy }: { strategy: any }) {
   if (carryovers.length === 0) return null;
 
   return (
-    <Card className="mb-6" style={{
-      borderLeft: '3px solid #f59e0b',
-    } as any}>
+    <Card className="mb-6">
+      {/* Amber-rule wrapper — Card doesn't accept style, but a styled
+          inner div carries the visual emphasis the same way. */}
+      <div style={{
+        borderLeft: '3px solid #f59e0b',
+        paddingLeft: '12px',
+        marginLeft: '-4px',
+      }}>
       <h4 className="text-sm font-medium mb-2">
         ⚠️ Open Trade Carryover{' '}
         <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
@@ -5730,6 +5735,155 @@ function OpenTradeCarryoverCard({ strategy }: { strategy: any }) {
           </div>
         ))}
       </div>
+      </div>
+    </Card>
+  );
+}
+
+
+// ----------------------------------------------------------------------------
+// MultiGraceComparisonCard — Phase 4.5 (LEF spec §5.5)
+// On-demand fetch (button click) of the per-strategy grace-shadow
+// comparison. Recommendation-first per spec — shows the recommended
+// tier prominently with rationale, then the per-variant breakdown
+// below for power users who want the numbers.
+// Only renders for sub-minute strategies (caller already gates).
+// ----------------------------------------------------------------------------
+function MultiGraceComparisonCard({ strategyId }: { strategyId: number }) {
+  const [loading, setLoading] = useState(false);
+  const [data, setData] = useState<any | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const runCompare = async () => {
+    setLoading(true);
+    setError(null);
+    setData(null);
+    try {
+      const token = localStorage.getItem('ror_access_token') || '';
+      const base = process.env.NEXT_PUBLIC_API_URL || '';
+      const resp = await fetch(
+        `${base}/api/strategies/${strategyId}/grace-shadow-comparison?window_hours=6`,
+        { headers: { 'Authorization': `Bearer ${token}` } },
+      );
+      if (!resp.ok) {
+        const text = await resp.text();
+        setError(`Server error: ${text.slice(0, 200)}`);
+        return;
+      }
+      const j = await resp.json();
+      setData(j);
+    } catch (e: any) {
+      setError(String(e?.message || e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-2">
+        <h4 className="text-sm font-semibold">
+          Multi-grace shadow comparison{' '}
+          <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+            (Phase 4.5)
+          </span>
+        </h4>
+        <button
+          onClick={runCompare}
+          disabled={loading}
+          className="text-xs px-3 py-1 rounded"
+          style={{
+            background: loading ? 'var(--bg-input)' : 'var(--blue)',
+            color: loading ? 'var(--text-muted)' : 'white',
+            cursor: loading ? 'wait' : 'pointer',
+          }}
+        >
+          {loading ? 'Running...' : data ? 'Re-run' : 'Run comparison'}
+        </button>
+      </div>
+      <p className="text-xs mb-3" style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
+        Replays this strategy against each grace variant's recorded
+        shadow bars (last 6 RTH hours) and reports close-match % vs
+        the highest-fidelity variant (grace 7s). Available only for
+        sub-minute SPY/TSLA at 10Sec (grace-shadow's current scope).
+      </p>
+
+      {error && (
+        <div className="text-xs p-2 rounded mb-3" style={{
+          background: 'rgba(239,68,68,0.1)', color: 'var(--red)',
+        }}>
+          {error}
+        </div>
+      )}
+
+      {data && data.available === false && (
+        <p className="text-xs italic" style={{ color: 'var(--text-muted)' }}>
+          {data.reason || 'Not available for this strategy.'}
+        </p>
+      )}
+
+      {data && data.available && (
+        <>
+          {/* Recommendation banner */}
+          {data.recommendation && (
+            <div className="p-3 rounded mb-4" style={{
+              borderLeft: '3px solid var(--blue)',
+              background: 'rgba(59,130,246,0.06)',
+            } as any}>
+              <div className="text-xs font-semibold mb-1">
+                Recommended: {data.recommendation.label} (grace {data.recommendation.grace}s)
+              </div>
+              <p className="text-xs" style={{ color: 'var(--text-muted)', lineHeight: 1.4 }}>
+                {data.recommendation.rationale}
+              </p>
+            </div>
+          )}
+
+          {/* Per-variant table */}
+          <div className="text-xs">
+            <div className="grid grid-cols-4 gap-2 py-1 px-2 font-semibold"
+              style={{ borderBottom: '1px solid var(--border)' }}>
+              <div>Variant</div>
+              <div className="text-right">Trades</div>
+              <div className="text-right">Close-match %</div>
+              <div className="text-right">Bars</div>
+            </div>
+            {Object.entries(data.variants || {}).map(([label, v]: [string, any]) => {
+              const isReference = label === data.reference_variant;
+              const pct = (v.close_match_pct ?? 0) * 100;
+              const pctColor = pct >= 95 ? 'var(--green)'
+                : pct >= 70 ? '#f59e0b' : 'var(--red)';
+              return (
+                <div key={label}
+                  className="grid grid-cols-4 gap-2 py-1 px-2"
+                  style={{ borderBottom: '1px solid var(--border)' }}
+                >
+                  <div className="font-mono">
+                    {label}{isReference && (
+                      <span className="ml-1 text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                        (ref)
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-right font-mono">{v.trade_count}</div>
+                  <div className="text-right font-mono" style={{ color: isReference ? 'var(--text-muted)' : pctColor }}>
+                    {isReference ? '—' : `${pct.toFixed(1)}%`}
+                  </div>
+                  <div className="text-right font-mono" style={{ color: 'var(--text-muted)' }}>
+                    {v.bars_available}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <p className="text-[10px] mt-3" style={{ color: 'var(--text-muted)', lineHeight: 1.4 }}>
+            Window: {data.window_start?.slice(0, 16)} → {data.window_end?.slice(0, 16)}{' '}
+            · {data.symbol} {data.tf_seconds}s
+            · Close-match tolerance: $0.01 on entry price · Reference: {data.reference_variant}
+          </p>
+        </>
+      )}
     </Card>
   );
 }
@@ -6033,6 +6187,11 @@ function DataFidelityTabContent({
         />
       )}
 
+      {/* ---- Multi-grace shadow comparison (Phase 4.5) — sub-minute only ---- */}
+      {isSubMinute && (
+        <MultiGraceComparisonCard strategyId={strategyId} />
+      )}
+
       {/* ---- Recent alert latency ---- */}
       <Card>
         <h4 className="text-sm font-semibold mb-3">
@@ -6178,15 +6337,16 @@ function DataFidelityTabContent({
           Coming soon
         </h4>
         <ul className="text-xs space-y-1" style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
-          <li>• <strong>Multi-grace shadow comparison</strong> — close-match %
-            at grace 2/3/4/5/6/7s on this strategy's symbol+TF (Phase 4.5).
-          </li>
           <li>• <strong>Confidence-gated firing</strong> — phantom-alert
             margin detection per trigger (Phase 2.5).
           </li>
           <li>• <strong>Per-ticker grace defaults</strong> — populate
             GRACE_SECONDS_PER_SYMBOL from production telemetry instead of
             relying on the global 5s default.
+          </li>
+          <li>• <strong>Wider grace shadow coverage</strong> — extend
+            grace shadow recording beyond SPY/TSLA 10Sec to enable
+            multi-grace comparison on more strategies.
           </li>
         </ul>
       </Card>
