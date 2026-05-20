@@ -501,7 +501,11 @@ def get_strategy_trades_for_window(
     warmup_bars: int = 100,
     data_feed: str = "sip",
     model_override: str | None = None,
-) -> pd.DataFrame:
+    resume_snapshot_b64: str | None = None,
+    expected_fingerprint: str | None = None,
+    expected_model_id: str | None = None,
+    return_snapshot: bool = False,
+):
     """Run the unified engine over a small windowed slice of bars.
 
     Mirrors get_strategy_trades return shape but loads only:
@@ -520,6 +524,23 @@ def get_strategy_trades_for_window(
     on every cycle. For 1Min strategies this drops engine time from
     ~30-60s (90 days) to ~3-5s (1-2 days).
 
+    Snapshot resume (2026-05-20, LEF 2c port to API path):
+      When `resume_snapshot_b64` is provided AND it deserializes
+      validly (matching fingerprint + model_id), the engine resumes
+      from the snapshot's `last_bar_ts` instead of warming up — the
+      data window becomes `[last_bar_ts, until_dt]` and indicator
+      state carries forward byte-identically. On any invalidation
+      (fingerprint mismatch, model change, corrupt blob), falls back
+      to the standard warmup-windowed path.
+
+      `return_snapshot=True` makes this function return
+      `(trades_df, new_snapshot_b64)` instead of just `trades_df`.
+      The new_b64 captures the engine's end-of-run state for the
+      caller to persist (next refresh resumes from it). Per Tier 3
+      §8.2 (always-start-flat, 2026-05-20), the snapshot stores
+      INDICATOR state only — position state is intentionally not
+      inherited across the boundary.
+
     LIMITATION: 100-bar warmup isn't enough for strategies whose
     confluence references long-cycle secondary TFs (1Hour or larger).
     Caller should detect those and either bump warmup_bars OR fall back
@@ -531,12 +552,35 @@ def get_strategy_trades_for_window(
         BARS_PER_DAY, get_required_tfs_from_confluence, get_tf_from_label,
     )
 
+    def _result(trades_df, new_b64=None):
+        """Shape the return per the caller's request mode."""
+        if return_snapshot:
+            return trades_df, new_b64
+        return trades_df
+
     if 'entry_trigger_confluence_id' not in strat:
-        return pd.DataFrame()
+        return _result(pd.DataFrame())
     if strat.get('strategy_origin') == 'webhook_inbound':
-        return trades_df_from_stored(strat.get('stored_trades', []))
+        return _result(trades_df_from_stored(strat.get('stored_trades', [])))
 
     timeframe = strat.get('timeframe', '1Min')
+
+    # Snapshot resume: try to deserialize and use the snapshot's
+    # last_bar_ts as the window-start. Falls back to warmup-windowed
+    # cold-start on any mismatch.
+    envelope = None
+    if resume_snapshot_b64:
+        try:
+            from unified_engine import deserialize_backtest_snapshot
+            envelope = deserialize_backtest_snapshot(
+                resume_snapshot_b64,
+                expected_fingerprint=expected_fingerprint,
+                expected_model_id=expected_model_id,
+            )
+        except Exception as e:
+            _logger.warning("snapshot deserialize failed in "
+                            "get_strategy_trades_for_window: %s", e)
+            envelope = None
 
     # Compute warmup_days from the LONGEST TF the strategy uses
     # (primary OR any secondary). A 10Sec strategy with a 15Min
@@ -555,7 +599,16 @@ def get_strategy_trades_for_window(
     # Strip tz for comparison if since_dt carries one — prepare_data_with_indicators
     # accepts naive or aware; staying naive matches the Streamlit pattern.
     since_naive = since_dt.replace(tzinfo=None) if since_dt.tzinfo else since_dt
-    start_date = since_naive - timedelta(days=warmup_days)
+    if envelope is not None:
+        # Resume path: window starts AT the snapshot's last_bar_ts
+        # (engine processed up to and including this bar previously).
+        # No warmup needed — indicator state restored byte-identically.
+        last_bar_naive = pd.Timestamp(envelope['last_bar_ts'])
+        if last_bar_naive.tz is not None:
+            last_bar_naive = last_bar_naive.tz_localize(None)
+        start_date = last_bar_naive.to_pydatetime()
+    else:
+        start_date = since_naive - timedelta(days=warmup_days)
     end_date = until_dt.replace(tzinfo=None) if until_dt.tzinfo else until_dt
 
     df = prepare_data_with_indicators(
@@ -571,11 +624,64 @@ def get_strategy_trades_for_window(
         model_override=model_override,  # algo_model split (2026-05-07)
     )
     if len(df) == 0:
-        return pd.DataFrame()
+        return _result(pd.DataFrame(), resume_snapshot_b64)
 
-    trades = unified_trades(df, strat)
+    if envelope is not None:
+        # Strip bars at or before the snapshot — already absorbed.
+        last_bar_for_filter = pd.Timestamp(envelope['last_bar_ts'])
+        if last_bar_for_filter.tz is None:
+            last_bar_for_filter = last_bar_for_filter.tz_localize('UTC')
+        if df.index.tz is None:
+            last_bar_for_filter = last_bar_for_filter.tz_localize(None)
+        df = df[df.index > last_bar_for_filter]
+        if len(df) == 0:
+            # No new bars since snapshot — snapshot still valid.
+            return _result(pd.DataFrame(), resume_snapshot_b64)
+
+    new_b64 = resume_snapshot_b64  # default: preserve existing on engine miss
+
+    if return_snapshot:
+        # Call run_unified_backtest directly so we can ride the resume
+        # + return_snapshot path. Bypasses unified_trades.
+        try:
+            from unified_engine import run_unified_backtest
+            import general_packs as gp_module
+            enabled_gen = gp_module.get_enabled_general_packs(
+                gp_module.load_general_packs())
+            sec_tf_map = get_secondary_tf_map(df)
+            _result_tuple = run_unified_backtest(
+                df, strat,
+                general_packs=enabled_gen,
+                secondary_tf_map=sec_tf_map if sec_tf_map else None,
+                include_open_position=False,
+                last_bar_partial=False,
+                resume_snapshot=envelope,
+                return_snapshot=True,
+                snapshot_model_id=expected_model_id,
+            )
+            trades, _enriched, captured_b64 = _result_tuple
+            if captured_b64 is not None:
+                new_b64 = captured_b64
+            # Bridge entry_fill_ts → entry_time
+            if isinstance(trades, pd.DataFrame) and len(trades) > 0:
+                if 'entry_fill_ts' in trades.columns and 'entry_time' not in trades.columns:
+                    trades['entry_time'] = pd.to_datetime(
+                        trades['entry_fill_ts'], utc=True, errors='coerce')
+                if 'exit_fill_ts' in trades.columns and 'exit_time' not in trades.columns:
+                    trades['exit_time'] = pd.to_datetime(
+                        trades['exit_fill_ts'], utc=True, errors='coerce')
+            else:
+                trades = pd.DataFrame()
+        except Exception as e:
+            _logger.warning(
+                "get_strategy_trades_for_window: snapshot-aware engine "
+                "call failed (%s) — falling back to legacy unified_trades", e)
+            trades = unified_trades(df, strat)
+    else:
+        trades = unified_trades(df, strat)
+
     if len(trades) == 0:
-        return pd.DataFrame()
+        return _result(pd.DataFrame(), new_b64)
 
     # Filter to trades that started AFTER since_dt — anything earlier
     # was already in the existing trades set the caller fed in.
@@ -597,7 +703,7 @@ def get_strategy_trades_for_window(
     # candles-vs-trades semantics.
     trades.attrs['source_bar_count'] = len(df)
     trades.attrs['window_days'] = (end_date - start_date).days
-    return trades
+    return _result(trades, new_b64)
 
 
 def _has_long_cycle_secondary_tf(strat: dict) -> bool:

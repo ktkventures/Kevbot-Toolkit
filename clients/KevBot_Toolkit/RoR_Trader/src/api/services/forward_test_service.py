@@ -842,6 +842,16 @@ def append_new_trades_for_strategy(
         )
         engine_path = 'windowed' if use_windowed else 'full'
 
+        # LEF 2c port (2026-05-20): algo-lane snapshot resume. Uses
+        # engine_snapshot_b64_algo (separate from backtest lane's
+        # engine_snapshot_b64) since the two lanes may use different
+        # models and produce different indicator-state trajectories.
+        from unified_engine import compute_backtest_fingerprint
+        algo_model = cfg.get('algo_model') or cfg.get('backtest_model')
+        algo_snapshot_b64 = cfg.get('engine_snapshot_b64_algo')
+        algo_fingerprint = compute_backtest_fingerprint(strat)
+        new_algo_snapshot_b64 = None
+
         try:
             if use_windowed:
                 since_dt = datetime.fromisoformat(latest_entry_iso)
@@ -852,12 +862,18 @@ def append_new_trades_for_strategy(
                 # live engine SHOULD have produced on the same data
                 # (cache_locked by default). Falls back to backtest_model
                 # for strategies that pre-date the algo_model field.
-                algo_model = cfg.get('algo_model') or cfg.get('backtest_model')
-                all_trades_df = svc.get_strategy_trades_for_window(
+                all_trades_df, new_algo_snapshot_b64 = svc.get_strategy_trades_for_window(
                     strat, since_dt=since_dt, until_dt=now_dt,
-                    model_override=algo_model)
+                    model_override=algo_model,
+                    resume_snapshot_b64=algo_snapshot_b64,
+                    expected_fingerprint=algo_fingerprint,
+                    expected_model_id=f"algo_{algo_model}",
+                    return_snapshot=True,
+                )
             else:
-                algo_model = cfg.get('algo_model') or cfg.get('backtest_model')
+                # Full-path: no snapshot benefit (this branch runs the
+                # full strategy history; resume_snapshot would skip too
+                # much). Snapshot is captured by the windowed path.
                 all_trades_df = svc.get_strategy_trades(
                     strat, model_override=algo_model)
         except Exception as e:
@@ -866,6 +882,14 @@ def append_new_trades_for_strategy(
                 strategy_id, engine_path, e)
             return {'status': 'error', 'reason': f'engine: {e}',
                     'inserted': 0}
+
+        # Persist fresh algo-lane snapshot to config — same pattern as
+        # backtest lane. Only update if engine produced a new one (the
+        # full-path branch above doesn't return a snapshot).
+        if (new_algo_snapshot_b64 is not None
+                and new_algo_snapshot_b64 != algo_snapshot_b64):
+            cfg['engine_snapshot_b64_algo'] = new_algo_snapshot_b64
+            cfg['engine_snapshot_at_algo'] = now_iso
 
         if all_trades_df is None or len(all_trades_df) == 0:
             # Stamp last_recompute_until_ts so we don't re-run engine
@@ -1313,17 +1337,40 @@ def append_new_backtest_trades_for_strategy(
     if _need_ctx_swap:
         set_admin_user_context(user_id)
 
+    # LEF 2c port (2026-05-20): snapshot resume on the backtest lane.
+    # Read the stored snapshot from config (one-per-lane scheme:
+    # engine_snapshot_b64 = backtest lane, engine_snapshot_b64_algo =
+    # algo lane). Fingerprint + model_id are validated in the deserialize
+    # path — any mismatch silently falls back to warmup-windowed.
+    from unified_engine import compute_backtest_fingerprint
+    bt_snapshot_b64 = cfg.get('engine_snapshot_b64')
+    bt_fingerprint = compute_backtest_fingerprint(strat)
+
     try:
         try:
-            all_trades_df = svc.get_strategy_trades_for_window(
+            all_trades_df, new_bt_snapshot_b64 = svc.get_strategy_trades_for_window(
                 strat, since_dt=since_dt, until_dt=now_dt,
-                model_override=bt_model)
+                model_override=bt_model,
+                resume_snapshot_b64=bt_snapshot_b64,
+                expected_fingerprint=bt_fingerprint,
+                expected_model_id=f"backtest_{bt_model}",
+                return_snapshot=True,
+            )
         except Exception as e:
             logger.warning(
                 "[BT-APPEND] strategy=%s engine run failed: %s",
                 strategy_id, e)
             return {'status': 'error', 'reason': f'engine: {e}',
                     'inserted': 0}
+
+        # LEF 2c port: persist the fresh snapshot into cfg so all
+        # subsequent paths (early-return + main-path) write it via
+        # `_stamp_config`. Only update if engine actually produced a new
+        # one (engine miss → keep prior snapshot to avoid invalidation
+        # cascade).
+        if new_bt_snapshot_b64 is not None and new_bt_snapshot_b64 != bt_snapshot_b64:
+            cfg['engine_snapshot_b64'] = new_bt_snapshot_b64
+            cfg['engine_snapshot_at'] = now_iso
 
         if all_trades_df is None or len(all_trades_df) == 0:
             cfg['last_recompute_until_ts'] = now_iso

@@ -3140,11 +3140,20 @@ def compute_backtest_fingerprint(strategy: dict) -> str:
 
 
 def serialize_backtest_snapshot(strat, last_bar_ts: str,
-                                fingerprint: str) -> Optional[str]:
+                                fingerprint: str,
+                                model_id: Optional[str] = None) -> Optional[str]:
     """Pickle + base64-encode a UnifiedStrategy's full state.
 
     Returns None on any failure — caller MUST fall back to full rebuild
     on None. Never raises (pickle errors silently downgrade).
+
+    `model_id` (2026-05-20, Tier 2 forward_test_service port): identifies
+    which data lane the snapshot was built from — e.g. 'rest_hifi' for
+    the backtest lane or 'cache_locked' for the algo lane. The
+    deserializer validates this matches the expected model on resume so
+    we never apply a snapshot built from one model's bars while a
+    different model's bars are being processed. Optional for back-compat
+    with snapshots produced before this field existed (None == any).
     """
     import pickle
     import base64
@@ -3153,6 +3162,7 @@ def serialize_backtest_snapshot(strat, last_bar_ts: str,
         envelope = {
             'schema_version': SNAPSHOT_SCHEMA_VERSION,
             'fingerprint': fingerprint,
+            'model_id': model_id,
             'last_bar_ts': last_bar_ts,
             'engine': strat.indicators.snapshot_state(),
             'position': _copy.deepcopy(strat.position.state),
@@ -3166,7 +3176,8 @@ def serialize_backtest_snapshot(strat, last_bar_ts: str,
 
 def deserialize_backtest_snapshot(
         b64: Optional[str],
-        expected_fingerprint: Optional[str] = None) -> Optional[dict]:
+        expected_fingerprint: Optional[str] = None,
+        expected_model_id: Optional[str] = None) -> Optional[dict]:
     """Reverse serialize_backtest_snapshot.
 
     Returns None for any of:
@@ -3174,6 +3185,8 @@ def deserialize_backtest_snapshot(
       - schema_version mismatch (code update invalidated old snapshots)
       - fingerprint mismatch when `expected_fingerprint` is provided
         (strategy config changed since snapshot)
+      - model_id mismatch when `expected_model_id` is provided
+        (data lane / model changed since snapshot — see serialize docstring)
       - pickle / b64 decode failure (corruption)
 
     Callers treat None as "no valid snapshot — full rebuild."
@@ -3199,6 +3212,13 @@ def deserialize_backtest_snapshot(
         logger.info("snapshot fingerprint mismatch (got %s, want %s) — "
                     "config changed; full rebuild",
                     envelope.get('fingerprint'), expected_fingerprint)
+        return None
+    if (expected_model_id
+            and envelope.get('model_id') is not None
+            and envelope.get('model_id') != expected_model_id):
+        logger.info("snapshot model_id mismatch (got %s, want %s) — "
+                    "data lane changed; full rebuild",
+                    envelope.get('model_id'), expected_model_id)
         return None
     return envelope
 
@@ -3243,6 +3263,7 @@ def run_unified_backtest(
     progress_cb=None,
     resume_snapshot: Optional[dict] = None,
     return_snapshot: bool = False,
+    snapshot_model_id: Optional[str] = None,
 ):
     """Run unified backtest on historical OHLCV data.
 
@@ -3498,7 +3519,8 @@ def run_unified_backtest(
                     last_bar_iso = str(last_ts)
                 fingerprint = compute_backtest_fingerprint(strategy)
                 snapshot_b64 = serialize_backtest_snapshot(
-                    strat, last_bar_iso, fingerprint
+                    strat, last_bar_iso, fingerprint,
+                    model_id=snapshot_model_id,
                 )
         except Exception as e:
             logger.warning("serialize_backtest_snapshot failed: %s", e)
