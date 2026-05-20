@@ -6312,25 +6312,51 @@ function DataFidelityTabContent({
             <div className="font-mono text-sm mt-0.5">{algoModel}</div>
           </div>
         </div>
-        {cacheCoverage && typeof cacheCoverage === 'object' && (
+        {cacheCoverage?.coverage?.length ? (
           <div className="mt-4 text-xs">
-            <div style={{ color: 'var(--text-muted)' }}>
-              Cache coverage{' '}
-              {cacheCoverage.timeframe && (
-                <span>· {cacheCoverage.timeframe}</span>
-              )}
+            <div style={{ color: 'var(--text-muted)' }} className="mb-1">
+              Cache freshness per timeframe
             </div>
-            <div className="font-mono text-sm mt-0.5">
-              {typeof cacheCoverage.bars_in_window === 'number'
-                ? `${cacheCoverage.bars_in_window} bars in window`
-                : '—'}
-              {typeof cacheCoverage.coverage_pct === 'number' && (
-                <span className="ml-2">
-                  ({(cacheCoverage.coverage_pct * 100).toFixed(1)}%)
-                </span>
-              )}
+            <div className="flex flex-wrap items-center gap-2">
+              {cacheCoverage.coverage.map((c: any) => {
+                const colorMap: any = {
+                  green: { bg: 'var(--green-muted)', fg: 'var(--green)' },
+                  yellow: { bg: 'var(--yellow-muted)', fg: 'var(--yellow)' },
+                  red: { bg: 'var(--red-muted)', fg: 'var(--red)' },
+                };
+                const col = colorMap[c.color] || colorMap.red;
+                const ageLabel = c.seconds_since == null
+                  ? 'no bars'
+                  : c.seconds_since < 60
+                    ? `${Math.round(c.seconds_since)}s ago`
+                    : c.seconds_since < 3600
+                      ? `${Math.round(c.seconds_since / 60)}m ago`
+                      : `${(c.seconds_since / 3600).toFixed(1)}h ago`;
+                return (
+                  <div key={c.tf_label}
+                    className="px-2 py-1 rounded"
+                    style={{ background: col.bg, color: col.fg, fontSize: '11px' }}
+                    title={`Last bar: ${c.latest_bar_start || '—'}`}
+                  >
+                    <span className="font-mono font-semibold">{c.tf_label}</span>
+                    {c.is_primary && (
+                      <span className="ml-1 text-[9px] opacity-70">(primary)</span>
+                    )}
+                    <span className="ml-2 font-mono">{ageLabel}</span>
+                  </div>
+                );
+              })}
             </div>
+            <p className="text-[10px] mt-2" style={{ color: 'var(--text-muted)', lineHeight: 1.4 }}>
+              Green = bar &lt; 2× TF interval old · Yellow = &lt; 6× · Red = stale
+              (worker likely not writing this TF). Hover for last-bar timestamp.
+            </p>
           </div>
+        ) : (
+          <p className="text-[10px] mt-3" style={{ color: 'var(--text-muted)', lineHeight: 1.4 }}>
+            No cache coverage data available — strategy may be on a symbol
+            outside the worker's cached TF set.
+          </p>
         )}
         <p className="text-[10px] mt-3" style={{ color: 'var(--text-muted)', lineHeight: 1.4 }}>
           For raw trade-level comparison see the Parity and Divergence
