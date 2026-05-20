@@ -696,8 +696,16 @@ def get_strategy_trades(strat: dict, data_feed: str = None) -> pd.DataFrame:
 
 
 def _generate_incremental_trades(strat: dict, since_dt,
-                                 data_feed: str = None) -> pd.DataFrame:
+                                 data_feed: str = None):
     """Load a small data window and generate trades for the recent period only.
+
+    Tier 2 (LEF 2c, 2026-05-20): when `strat` carries a valid
+    `engine_snapshot_b64` (matching schema_version + fingerprint), the
+    engine resumes from it — bars from `snapshot.last_bar_ts` onward
+    are processed and indicators/position state are NOT re-warmed.
+    Falls back to the windowed warmup (today's behavior) on any of:
+    missing/invalid snapshot, fingerprint mismatch, deserialize error.
+    Both paths always capture a fresh snapshot for the next refresh.
 
     Args:
         strat: Strategy config dict
@@ -706,25 +714,51 @@ def _generate_incremental_trades(strat: dict, since_dt,
             threads so `_get_data_feed()` (Streamlit session) isn't hit.
 
     Returns:
-        DataFrame of new trades (may be empty)
+        Tuple `(new_trades_df, snapshot_b64 or None)`. The b64 should be
+        persisted onto `strat` by the caller; None means snapshot capture
+        failed for this run (treat as transient, NOT as a strategy error).
     """
     import math
     from data_loader import BARS_PER_DAY
+    from unified_engine import (
+        compute_backtest_fingerprint, deserialize_backtest_snapshot,
+        run_unified_backtest,
+    )
 
     timeframe = strat.get('timeframe', '1Min')
     data_seed = strat.get('data_seed', 42)
     bpd = BARS_PER_DAY.get(timeframe, 390)
 
-    # Warmup: enough bars for longest indicator (EMA-50) + safety margin
-    warmup_bars = 100
-    warmup_days = max(1, math.ceil(warmup_bars / bpd * 365 / 252))
+    # --- Snapshot lookup + validation ---
+    fingerprint = compute_backtest_fingerprint(strat)
+    # The blob lives in config but the loader flattens config onto the
+    # top-level dict — accept both spellings for robustness.
+    cfg = strat.get('config') or {}
+    snap_b64 = strat.get('engine_snapshot_b64') or cfg.get('engine_snapshot_b64')
+    envelope = deserialize_backtest_snapshot(
+        snap_b64, expected_fingerprint=fingerprint)
 
-    since_as_dt = pd.Timestamp(since_dt).to_pydatetime()
-    if since_as_dt.tzinfo is not None:
-        since_as_dt = since_as_dt.replace(tzinfo=None)
+    if envelope is not None:
+        # Resume path: start data load from one bar BEFORE the snapshot's
+        # last_bar_ts so the post-fetch index filter has something to
+        # compare against; we then strip bars <= last_bar_ts so the
+        # engine only sees new data.
+        last_bar_ts = pd.Timestamp(envelope['last_bar_ts'])
+        if last_bar_ts.tz is None:
+            last_bar_ts = last_bar_ts.tz_localize('UTC')
+        start_date = last_bar_ts.to_pydatetime()
+    else:
+        # Fallback: warmup window — enough bars for longest indicator
+        # (EMA-50) + safety margin
+        warmup_bars = 100
+        warmup_days = max(1, math.ceil(warmup_bars / bpd * 365 / 252))
+        since_as_dt = pd.Timestamp(since_dt).to_pydatetime()
+        if since_as_dt.tzinfo is not None:
+            since_as_dt = since_as_dt.replace(tzinfo=None)
+        start_date = since_as_dt - timedelta(days=warmup_days)
 
-    start_date = since_as_dt - timedelta(days=warmup_days)
-    end_date = datetime.now(timezone.utc).replace(hour=23, minute=59, second=0, microsecond=0)
+    end_date = datetime.now(timezone.utc).replace(
+        hour=23, minute=59, second=0, microsecond=0)
 
     from data_loader import get_required_tfs_from_confluence, get_tf_from_label
     req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
@@ -744,18 +778,73 @@ def _generate_incremental_trades(strat: dict, since_dt,
     )
 
     if len(df) == 0:
-        return pd.DataFrame()
+        # Preserve the existing snapshot on a no-data run — invalidating
+        # it because of a transient load failure would force a full
+        # rebuild next time.
+        return pd.DataFrame(), snap_b64
 
-    trades = _unified_trades(df, strat)
+    if envelope is not None:
+        # Strip bars at or before the snapshot — the engine has already
+        # absorbed them. Normalize tz to match df.index.
+        last_bar_for_filter = pd.Timestamp(envelope['last_bar_ts'])
+        if last_bar_for_filter.tz is None:
+            last_bar_for_filter = last_bar_for_filter.tz_localize('UTC')
+        if df.index.tz is None:
+            last_bar_for_filter = last_bar_for_filter.tz_localize(None)
+        df = df[df.index > last_bar_for_filter]
+        if len(df) == 0:
+            # No new bars since snapshot — nothing to do, snapshot still
+            # valid. Return existing blob unchanged.
+            return pd.DataFrame(), snap_b64
 
-    if len(trades) == 0:
-        return pd.DataFrame()
+    # Resolve secondary-TF map + general packs, then call the engine
+    # directly so we can ride the resume_snapshot / return_snapshot path.
+    from services import get_secondary_tf_map
+    import general_packs as gp_module
+    sec_tf_map = get_secondary_tf_map(df)
+    enabled_gen = gp_module.get_enabled_general_packs(
+        gp_module.load_general_packs())
+
+    try:
+        result = run_unified_backtest(
+            df, strat,
+            general_packs=enabled_gen,
+            secondary_tf_map=sec_tf_map if sec_tf_map else None,
+            include_open_position=True,
+            last_bar_partial=False,
+            resume_snapshot=envelope,
+            return_snapshot=True,
+        )
+        # return_snapshot=True → 3-tuple
+        trades, _enriched, new_b64 = result
+    except Exception as e:
+        # Hard failure — fall back to the legacy unified_trades path
+        # (no snapshot capture); same shape as today.
+        logger.warning(
+            "incremental run_unified_backtest failed (%s) — falling back "
+            "to legacy unified_trades, snapshot not captured this run", e)
+        trades = _unified_trades(df, strat)
+        new_b64 = snap_b64  # preserve the old one rather than invalidate
+
+    if not isinstance(trades, pd.DataFrame) or len(trades) == 0:
+        return pd.DataFrame(), new_b64
+
+    # Bridge entry_fill_ts / exit_fill_ts → entry_time / exit_time
+    # (same mapping services.unified_trades performs — we bypassed it).
+    if 'entry_fill_ts' in trades.columns and 'entry_time' not in trades.columns:
+        trades['entry_time'] = pd.to_datetime(
+            trades['entry_fill_ts'], utc=True, errors='coerce')
+    if 'exit_fill_ts' in trades.columns and 'exit_time' not in trades.columns:
+        trades['exit_time'] = pd.to_datetime(
+            trades['exit_fill_ts'], utc=True, errors='coerce')
 
     # Filter to only truly new trades (entered after the cutoff)
     since_ts = pd.Timestamp(since_dt)
-    if trades['entry_time'].dt.tz is not None and since_ts.tz is None:
+    if (trades['entry_time'].dt.tz is not None
+            and since_ts.tz is None):
         since_ts = since_ts.tz_localize('UTC')
-    return trades[trades['entry_time'] > since_ts]
+    new_trades = trades[trades['entry_time'] > since_ts]
+    return new_trades, new_b64
 
 
 def _process_inbound_webhook_signals(strat: dict, existing_stored: list,
@@ -3210,13 +3299,24 @@ def _refresh_strategy_inplace(strat: dict, *, data_feed: str) -> bool:
                 pd.Timestamp(t['entry_time']) for t in existing_stored
             )
 
-            # Generate only new trades since last known entry
-            new_trades = _generate_incremental_trades(
+            # Generate only new trades since last known entry.
+            # Tier 2 (LEF 2c): the helper also returns a fresh engine
+            # snapshot blob to persist for the next refresh's resume.
+            new_trades, new_snapshot_b64 = _generate_incremental_trades(
                 strat, last_entry_dt, data_feed=data_feed)
 
             if len(new_trades) > 0:
                 new_records = _extract_minimal_trades(new_trades)
                 existing_stored.extend(new_records)
+
+            # Stash snapshot as a top-level field; _strategy_to_row
+            # automatically buckets non-COLUMN fields into config JSONB.
+            # `None` means transient capture failure — preserve whatever
+            # was there.
+            if new_snapshot_b64 is not None:
+                strat['engine_snapshot_b64'] = new_snapshot_b64
+                strat['engine_snapshot_at'] = datetime.now(
+                    timezone.utc).isoformat()
 
         # Recompute KPIs + equity curve from all stored trades
         all_trades_df = _trades_df_from_stored(existing_stored)

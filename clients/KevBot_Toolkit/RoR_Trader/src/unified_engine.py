@@ -3093,6 +3093,125 @@ class UnifiedStrategy:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Tier 2 — engine snapshot persistence (LEF 2c, 2026-05-20)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Persist a UnifiedStrategy's full state (indicator engine + position
+# machine + last processed bar) so backtest "Update New Data" can resume
+# from it instead of re-warming the engine from scratch. Stored as a
+# base64-encoded pickle blob inside strategy.config (no schema migration).
+# Fingerprint-based invalidation: any change to a behavior-driving field
+# forces a full rebuild. Pickle failure / schema mismatch / fingerprint
+# drift all fall back gracefully to full rebuild — never a silent error.
+
+SNAPSHOT_SCHEMA_VERSION = 1
+
+# Fields whose change should invalidate a persisted snapshot. Excludes
+# live-only fields (live_model, grace_seconds, alert_tracking_enabled)
+# because they don't affect bar-by-bar backtest replay — keeping them
+# out avoids unnecessary invalidation when a user tunes live behavior.
+_BACKTEST_FINGERPRINT_FIELDS = (
+    'timeframe', 'symbol', 'direction',
+    'entry_trigger_confluence_id', 'entry_trigger',
+    'exit_trigger', 'exit_triggers', 'confluence',
+    'stop_config', 'target_config', 'stop_atr_mult',
+    'data_seed', 'strategy_origin',
+    'risk_per_trade', 'starting_balance', 'position_size',
+    'trading_session',
+)
+
+
+def compute_backtest_fingerprint(strategy: dict) -> str:
+    """sha256[:12] of behavior-driving fields. Same permissive lookup
+    pattern as _monitor_config_hash — top-level first, then nested
+    `config` (DB loaders flatten config onto top-level inconsistently)."""
+    import hashlib
+    import json
+    cfg = strategy.get('config') or {}
+    parts: dict = {}
+    for f in _BACKTEST_FINGERPRINT_FIELDS:
+        if f in strategy:
+            parts[f] = strategy[f]
+        elif f in cfg:
+            parts[f] = cfg[f]
+    return hashlib.sha256(
+        json.dumps(parts, sort_keys=True, default=str).encode()
+    ).hexdigest()[:12]
+
+
+def serialize_backtest_snapshot(strat, last_bar_ts: str,
+                                fingerprint: str) -> Optional[str]:
+    """Pickle + base64-encode a UnifiedStrategy's full state.
+
+    Returns None on any failure — caller MUST fall back to full rebuild
+    on None. Never raises (pickle errors silently downgrade).
+    """
+    import pickle
+    import base64
+    import copy as _copy
+    try:
+        envelope = {
+            'schema_version': SNAPSHOT_SCHEMA_VERSION,
+            'fingerprint': fingerprint,
+            'last_bar_ts': last_bar_ts,
+            'engine': strat.indicators.snapshot_state(),
+            'position': _copy.deepcopy(strat.position.state),
+        }
+        return base64.b64encode(pickle.dumps(envelope)).decode('ascii')
+    except Exception as e:
+        logger.warning("serialize_backtest_snapshot failed: %s — "
+                       "snapshot will not be persisted", e)
+        return None
+
+
+def deserialize_backtest_snapshot(
+        b64: Optional[str],
+        expected_fingerprint: Optional[str] = None) -> Optional[dict]:
+    """Reverse serialize_backtest_snapshot.
+
+    Returns None for any of:
+      - empty / missing blob
+      - schema_version mismatch (code update invalidated old snapshots)
+      - fingerprint mismatch when `expected_fingerprint` is provided
+        (strategy config changed since snapshot)
+      - pickle / b64 decode failure (corruption)
+
+    Callers treat None as "no valid snapshot — full rebuild."
+    """
+    if not b64:
+        return None
+    try:
+        import pickle
+        import base64
+        envelope = pickle.loads(base64.b64decode(b64))
+    except Exception as e:
+        logger.warning("deserialize_backtest_snapshot failed: %s — "
+                       "full rebuild", e)
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    if envelope.get('schema_version') != SNAPSHOT_SCHEMA_VERSION:
+        logger.info("snapshot schema mismatch (got %s, want %s) — full rebuild",
+                    envelope.get('schema_version'), SNAPSHOT_SCHEMA_VERSION)
+        return None
+    if (expected_fingerprint
+            and envelope.get('fingerprint') != expected_fingerprint):
+        logger.info("snapshot fingerprint mismatch (got %s, want %s) — "
+                    "config changed; full rebuild",
+                    envelope.get('fingerprint'), expected_fingerprint)
+        return None
+    return envelope
+
+
+def apply_backtest_snapshot(strat, envelope: dict) -> None:
+    """Restore a deserialized snapshot envelope into a fresh
+    UnifiedStrategy. The engine + position state are mutated in place."""
+    import copy as _copy
+    strat.indicators.restore_state(envelope['engine'])
+    strat.position.state = _copy.deepcopy(envelope['position'])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # PUBLIC API — run_unified_backtest
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -3104,7 +3223,9 @@ def run_unified_backtest(
     include_open_position: bool = False,
     last_bar_partial: bool = False,
     progress_cb=None,
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    resume_snapshot: Optional[dict] = None,
+    return_snapshot: bool = False,
+):
     """Run unified backtest on historical OHLCV data.
 
     Args:
@@ -3120,16 +3241,38 @@ def run_unified_backtest(
         last_bar_partial: If True, treat the last bar as still forming.
             Indicators are updated but entry/exit signals are suppressed
             on that bar, preventing premature markers on live charts.
+        resume_snapshot: Tier 2 (LEF 2c) — a deserialized snapshot envelope
+            (`deserialize_backtest_snapshot` output). When provided, the
+            engine + position state are restored from it; `df` is assumed
+            to contain ONLY bars AFTER `envelope['last_bar_ts']`. Caller
+            owns fingerprint validation.
+        return_snapshot: When True, the return tuple includes a freshly
+            serialized snapshot of the engine's end state as a base64
+            string (or None on serialization failure). Used by the
+            backtest-refresh path to persist resume state.
 
     Returns:
-        (trades_df, enriched_df)
-        trades_df: DataFrame matching generate_trades() output format
-        enriched_df: DataFrame with indicator + interpreter + trigger columns
+        Default: (trades_df, enriched_df) — back-compat 2-tuple.
+        With `return_snapshot=True`: (trades_df, enriched_df, snapshot_b64).
     """
     if len(df) < 2:
-        return pd.DataFrame(), df.copy()
+        empty_trades = pd.DataFrame()
+        if return_snapshot:
+            return empty_trades, df.copy(), None
+        return empty_trades, df.copy()
 
     strat = UnifiedStrategy(strategy, general_packs)
+    # Tier 2 (LEF 2c): if a valid snapshot was passed, restore engine +
+    # position state from it. df is assumed to start AFTER the snapshot's
+    # last_bar_ts — caller's responsibility to slice. The engine then
+    # processes only the new bars (no warmup), and any open position
+    # from the snapshot can have its exit applied normally.
+    if resume_snapshot is not None:
+        try:
+            apply_backtest_snapshot(strat, resume_snapshot)
+        except Exception as e:
+            logger.warning("apply_backtest_snapshot failed: %s — "
+                           "proceeding with cold-start", e)
 
     # Identify user pack columns in the DataFrame for pre-computed fallback.
     # Built-in interpreters are computed incrementally by the engine; user pack
@@ -3308,6 +3451,31 @@ def run_unified_backtest(
         trig_df = pd.DataFrame(trigger_rows, index=df.index)
         for col in trig_df.columns:
             enriched_df[f'trig_{col}'] = trig_df[col]
+
+    if return_snapshot:
+        # Tier 2 (LEF 2c): serialize the engine's end-of-run state so
+        # the caller can persist it. last_bar_ts is the index of the
+        # most recent bar processed — pulled from enriched_df, which
+        # is df.copy() with extra columns. Defensive: on failure return
+        # None for the blob, never raise.
+        snapshot_b64 = None
+        try:
+            if len(enriched_df) > 0:
+                last_ts = enriched_df.index[-1]
+                # Normalize to ISO-UTC. Most paths produce tz-aware
+                # pandas Timestamps; isoformat() is safe either way.
+                if hasattr(last_ts, 'isoformat'):
+                    last_bar_iso = last_ts.isoformat()
+                else:
+                    last_bar_iso = str(last_ts)
+                fingerprint = compute_backtest_fingerprint(strategy)
+                snapshot_b64 = serialize_backtest_snapshot(
+                    strat, last_bar_iso, fingerprint
+                )
+        except Exception as e:
+            logger.warning("serialize_backtest_snapshot failed: %s", e)
+            snapshot_b64 = None
+        return trades_df, enriched_df, snapshot_b64
 
     return trades_df, enriched_df
 
