@@ -368,10 +368,13 @@ reference for the implementation; any deviation requires updating
 - Add an "open trade carryover" line item to the Configuration tab
   showing any pre-boundary holds that are still open in the broker.
 
-### 8.5 Collapse rapid + full (optional)
+### 8.5 Collapse rapid + full
 
-Once 8.2–8.4 are stable on production, collapse the two paths to
-one if §6.4 lands "collapse." Otherwise leave them distinct.
+§6.4 resolved to COLLAPSE — once 8.2–8.4 are stable on production,
+consolidate the two paths into one with a `fidelity` parameter
+(default = windowed, max = full replay). The "Recompute from
+scratch" UI button sets fidelity to max. Not optional after Tier 3
+lands — this is the end-state §6.4 specifies.
 
 ## 9. Risks
 
