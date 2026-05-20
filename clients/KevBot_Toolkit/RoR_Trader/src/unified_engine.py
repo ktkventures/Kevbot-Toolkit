@@ -823,14 +823,40 @@ class IncrementalIndicatorEngine:
         the _initialized flag, and every user-pack incremental engine —
         into an opaque token for O(1) rewind. Mirrors the snapshot/restore
         StrategyMonitor.compute_tentative_state already does per forming
-        bar, so the deepcopy cost is a known, accepted quantity."""
+        bar, so the deepcopy cost is a known, accepted quantity.
+
+        2026-05-20 fix: user-pack engine classes loaded via importlib with
+        synthetic module names (`user_pack_*_indicator_incremental`) cannot
+        be pickled — pickle stores fully-qualified class paths and tries
+        to re-import them on deserialize, which fails because the
+        synthetic name isn't a real package path. Each user-pack engine
+        is now pickle-tested individually; un-picklable engines drop
+        from the snapshot with a warning, and on resume those indicators
+        warmup-from-scratch on the new data window (degraded benefit,
+        not failed snapshot).
+        """
         import copy
+        import pickle as _pickle
+        packs_out: dict = {}
+        for slug, eng in getattr(self, '_user_pack_engines', {}).items():
+            try:
+                deep = copy.deepcopy(eng)
+                # Probe pickle-roundtrip-ability NOW (vs at full-snapshot
+                # serialize time) so we can drop just THIS engine on
+                # failure instead of losing the whole snapshot.
+                _pickle.dumps(deep)
+                packs_out[slug] = deep
+            except Exception as e:
+                logger.warning(
+                    "snapshot_state: user-pack engine %r dropped from "
+                    "snapshot — not picklable (%s). On resume this "
+                    "indicator will warmup from scratch on the new data "
+                    "window.", slug, e)
+                # skip
         return (
             copy.deepcopy(self.state),
             self._initialized,
-            {slug: copy.deepcopy(eng)
-             for slug, eng in getattr(
-                 self, '_user_pack_engines', {}).items()},
+            packs_out,
         )
 
     def restore_state(self, snap) -> None:

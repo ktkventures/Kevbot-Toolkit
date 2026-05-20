@@ -1295,7 +1295,20 @@ def append_new_backtest_trades_for_strategy(
                 'reason': f'strategy {strategy_id} not found',
                 'inserted': 0}
 
-    cfg = (strat.get('config') or {})
+    # BUG FIX 2026-05-20: get_strategy_by_id_admin returns a FLATTENED
+    # strat dict, so strat.get('config') is None even when the JSONB
+    # column has 20+ fields. Reading it via the flattened shape and
+    # passing back through _stamp_config emits a near-empty dict that
+    # the shrink-guard correctly refuses — silently dropping the
+    # snapshot writes (and last_recompute_until_ts stamps) for every
+    # backtest-lane call. The algo lane already does this raw read
+    # (line 691); mirror it here. Surfaced by the LEF 2c port on
+    # 2026-05-20 19:04 (sid 192 snapshot didn't persist).
+    from db import get_admin_client as _get_admin_client_bt
+    _raw_client_bt = _get_admin_client_bt()
+    _raw_resp_bt = _raw_client_bt.table('strategies').select('config') \
+        .eq('id', strategy_id).eq('user_id', user_id).single().execute()
+    cfg = dict(_raw_resp_bt.data.get('config') or {}) if _raw_resp_bt.data else {}
     bt_model = cfg.get('backtest_model') or strat.get('backtest_model')
     now_dt = datetime.now(timezone.utc)
     now_iso = now_dt.isoformat()
