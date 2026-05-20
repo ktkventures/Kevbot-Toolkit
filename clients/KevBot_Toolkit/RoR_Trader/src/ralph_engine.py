@@ -314,6 +314,12 @@ class BarBuilder:
         # in time, so they still get their recompute.
         self.last_was_correction: bool = False
         self._last_rebroadcast_recompute_ts = None
+        # Per-builder grace override — set by RalphEngine._refresh_builder_
+        # _grace as max(grace_seconds) across active monitors on this
+        # (symbol, TF) builder (LEF Phase 2a, 2026-05-20). None → fall
+        # back to SUBMINUTE_FORCE_CLOSE_GRACE_SEC. 1Min+ ignores grace
+        # regardless of this value (see force_close_stale_bar).
+        self.grace_sec_override: Optional[int] = None
 
     def seed_history(self, df: pd.DataFrame):
         """Seed builder history from a DataFrame.
@@ -706,7 +712,16 @@ class BarBuilder:
         if self._partial is None:
             return None
         bar_end = self._partial.bar_start + timedelta(seconds=self.tf_seconds)
-        grace_sec = SUBMINUTE_FORCE_CLOSE_GRACE_SEC if self.tf_seconds < 60 else 0
+        # Sub-minute grace: per-builder override (set by
+        # RalphEngine._refresh_builder_grace from max(active monitor
+        # grace_seconds)) if present, else the global default. 1Min+
+        # ignores grace regardless.
+        if self.tf_seconds < 60:
+            grace_sec = (self.grace_sec_override
+                         if self.grace_sec_override is not None
+                         else SUBMINUTE_FORCE_CLOSE_GRACE_SEC)
+        else:
+            grace_sec = 0
         if now < bar_end + timedelta(seconds=grace_sec):
             return None  # Bar still forming (or within sub-minute grace)
         fill_close = self._partial.close
@@ -1670,6 +1685,34 @@ class SymbolHub:
                 self.builders[sec_tf] = BarBuilder(sec_tf)
                 logger.info("Created BarBuilder for secondary TF %ss (%s)",
                             sec_tf, self.symbol)
+        # LEF Phase 2a: refresh the primary builder's grace override
+        # (max grace_seconds across active monitors on this TF). 1Min+
+        # builders skip this — force_close_stale_bar ignores grace there.
+        if monitor.tf_seconds < 60:
+            self._refresh_builder_grace(monitor.tf_seconds)
+
+    def _refresh_builder_grace(self, tf_seconds: int) -> None:
+        """Recompute and apply a sub-minute builder's `grace_sec_override`
+        as max(resolve_grace_seconds) across active monitors on that
+        timeframe.
+
+        LEF Phase 2a — foundational wiring. With no strategy overriding
+        `config.grace_seconds`, the resolver returns the global default
+        (5), so the override == the existing SUBMINUTE_FORCE_CLOSE_
+        GRACE_SEC constant and behavior is unchanged. The override only
+        diverges from default once a strategy carries an explicit
+        `grace_seconds` in its config.
+        """
+        builder = self.builders.get(tf_seconds)
+        if builder is None or tf_seconds >= 60:
+            return
+        from strategy_models import resolve_grace_seconds
+        graces = [
+            resolve_grace_seconds(m.strategy)
+            for m in self.monitors.values()
+            if m.tf_seconds == tf_seconds
+        ]
+        builder.grace_sec_override = max(graces) if graces else None
 
     def finalize_shadow_engines(self):
         """Create shadow indicator engines for secondary TFs not covered by
