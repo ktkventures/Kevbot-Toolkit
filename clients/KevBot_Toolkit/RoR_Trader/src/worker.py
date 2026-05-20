@@ -1137,6 +1137,11 @@ class WorkerManager:
         # cache gaps the ws_agg per-second path missed. Own thread, env-gated.
         self._live_bars_backfill_thread: Optional[threading.Thread] = None
         self._live_bars_backfill_stop = threading.Event()
+        # Sub-minute REST-backfill cron (LEF Phase 3a, 2026-05-20). Fills
+        # sub-minute (5/10/15/30Sec) cache gaps from REST 1Sec aggs. Own
+        # thread, env-gated by LIVE_BARS_BACKFILL_SUBMINUTE_ENABLED.
+        self._live_bars_backfill_subm_thread: Optional[threading.Thread] = None
+        self._live_bars_backfill_subm_stop = threading.Event()
 
     def run(self):
         """Main loop — poll DB, start/stop engines, write heartbeats."""
@@ -1148,6 +1153,7 @@ class WorkerManager:
             self._running = False
             self._algo_history_stop.set()
             self._live_bars_backfill_stop.set()
+            self._live_bars_backfill_subm_stop.set()
         signal.signal(signal.SIGTERM, handle_signal)
         signal.signal(signal.SIGINT, handle_signal)
 
@@ -1155,6 +1161,8 @@ class WorkerManager:
         self._start_algo_history_cron()
         # Spin up the live_bars REST-backfill cron in its own thread.
         self._start_live_bars_backfill_cron()
+        # Spin up the sub-minute REST-backfill cron (LEF Phase 3a).
+        self._start_live_bars_backfill_subminute_cron()
 
         while self._running:
             try:
@@ -1257,6 +1265,46 @@ class WorkerManager:
         self._live_bars_backfill_thread = threading.Thread(
             target=loop, daemon=True, name="live-bars-backfill-cron")
         self._live_bars_backfill_thread.start()
+
+    def _start_live_bars_backfill_subminute_cron(self):
+        """Launch the sub-minute REST-backfill cron (LEF Phase 3a).
+
+        Fills sub-minute (5/10/15/30Sec) live_bars gaps from Polygon REST
+        1-second aggs. Disabled by default — set
+        LIVE_BARS_BACKFILL_SUBMINUTE_ENABLED=true to enable. Daemon
+        thread; staggers first run to avoid colliding with worker startup.
+        """
+        from live_bars_rest_backfill_subminute import (
+            is_enabled, interval_seconds, run_backfill_cycle)
+        if not is_enabled():
+            logger.info(
+                "sub-minute REST-backfill cron disabled — set "
+                "LIVE_BARS_BACKFILL_SUBMINUTE_ENABLED=true to enable")
+            return
+
+        interval = interval_seconds()
+
+        def loop():
+            logger.info(
+                "sub-minute REST-backfill cron started (interval=%ss)",
+                interval)
+            # Stagger first run so worker startup + first poll finish,
+            # and offset from the 1Min backfill cron so they don't both
+            # hit Polygon at the same instant.
+            self._live_bars_backfill_subm_stop.wait(150.0)
+            while not self._live_bars_backfill_subm_stop.is_set():
+                try:
+                    run_backfill_cycle()
+                except Exception as e:
+                    logger.error(
+                        "sub-minute REST-backfill cycle crashed: %s",
+                        e, exc_info=True)
+                self._live_bars_backfill_subm_stop.wait(interval)
+
+        self._live_bars_backfill_subm_thread = threading.Thread(
+            target=loop, daemon=True,
+            name="live-bars-backfill-subminute-cron")
+        self._live_bars_backfill_subm_thread.start()
 
     def _run_algo_history_cycle(self):
         """Iterate active users + invoke append_recent_trades_for_user.
