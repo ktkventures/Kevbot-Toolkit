@@ -1131,6 +1131,53 @@ def load_trades_admin(
     return [_row_to_trade(r) for r in all_rows]
 
 
+def load_trades_kpi_fields_admin(
+    strategy_id: int,
+    user_id: str | None = None,
+    data_source_filter: str | None = None,
+) -> list:
+    """Load ONLY the columns calculate_kpis() needs — admin client.
+
+    Priority 1 perf fix (2026-05-20): the KPI recompute in
+    forward_test_service's append lanes was doing `select('*')` —
+    pulling every trade's full `data` JSONB blob (confluence_records,
+    stop/target metadata, ~2KB/row). For a 5,000+ trade strategy that
+    OOM-killed the API. KPIs only need 5 fields; this projects to them.
+
+    Returns dicts shaped for `trades_df_from_stored` → `calculate_kpis`:
+      - r_multiple, exit_reason, entry_fill_ts, exit_fill_ts (top-level cols)
+      - win (projected out of the `data` JSONB via PostgREST `data->win`)
+
+    Each row is ~120 bytes vs ~2KB for select('*') — a ~15-20x payload
+    cut. KPIs computed from these are byte-identical to the full-load
+    path (calculate_kpis only ever touches these 5 fields).
+    """
+    client = get_admin_client()
+    PAGE_SIZE = 1000
+    MAX_TRADES = 200_000
+    all_rows: list = []
+    offset = 0
+    # PostgREST projection: top-level cols + `data->win` JSON field.
+    _PROJECTION = 'r_multiple,exit_reason,entry_fill_ts,exit_fill_ts,data->win'
+    while offset < MAX_TRADES:
+        q = client.table('trades') \
+            .select(_PROJECTION) \
+            .eq('strategy_id', strategy_id) \
+            .order('entry_fill_ts') \
+            .range(offset, offset + PAGE_SIZE - 1)
+        if user_id:
+            q = q.eq('user_id', user_id)
+        if data_source_filter:
+            q = q.like('data_source', data_source_filter)
+        result = q.execute()
+        page = result.data or []
+        all_rows.extend(page)
+        if len(page) < PAGE_SIZE:
+            break
+        offset += PAGE_SIZE
+    return all_rows
+
+
 def get_max_entry_ts_admin(
     strategy_id: int,
     user_id: str | None = None,
