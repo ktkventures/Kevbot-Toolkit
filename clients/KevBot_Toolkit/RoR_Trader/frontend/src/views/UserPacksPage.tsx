@@ -1934,6 +1934,28 @@ function PackCard({
             >
               Legacy
             </span>
+            {/* Liveness chips (2026-05-21) — right-aligned on the title
+                row so the metadata row below stays uncluttered.
+                Triggered = pack's trigger caused a live alert.
+                Gated     = a strategy gating on this pack fired. */}
+            <span className="ml-auto flex items-center gap-3 text-[11px] flex-shrink-0"
+                  style={{ color: 'var(--text-muted)' }}>
+              <span title="Last live alert caused by one of this pack's triggers">
+                Triggered:{' '}
+                <span style={{ color: relTime(pack.lastTriggered).color }}>
+                  {relTime(pack.lastTriggered).label}
+                </span>
+                {pack.triggered7d > 0 && (
+                  <span style={{ color: 'var(--text-secondary)' }}> ({pack.triggered7d}× 7d)</span>
+                )}
+              </span>
+              <span title="Last live alert from a strategy that uses this pack as a confluence gate (gate was open)">
+                Gated:{' '}
+                <span style={{ color: relTime(pack.lastGated).color }}>
+                  {relTime(pack.lastGated).label}
+                </span>
+              </span>
+            </span>
           </div>
 
           {/* Parameter summary */}
@@ -1958,24 +1980,6 @@ function PackCard({
             <div className="border-l h-4" style={{ borderColor: 'var(--border)' }} />
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
               Used in {pack.strategiesUsing} {pack.strategiesUsing === 1 ? 'strategy' : 'strategies'}
-            </span>
-            {/* Liveness chips (2026-05-21): is the pack actually firing?
-                Triggered = pack's trigger caused a live alert.
-                Gated     = a strategy gating on this pack fired (gate open). */}
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }} title="Last live alert caused by one of this pack's triggers">
-              &middot; Triggered:{' '}
-              <span style={{ color: relTime(pack.lastTriggered).color }}>
-                {relTime(pack.lastTriggered).label}
-              </span>
-              {pack.triggered7d > 0 && (
-                <span style={{ color: 'var(--text-secondary)' }}> ({pack.triggered7d}× 7d)</span>
-              )}
-            </span>
-            <span className="text-xs" style={{ color: 'var(--text-muted)' }} title="Last live alert from a strategy that uses this pack as a confluence gate (gate was open)">
-              &middot; Gated:{' '}
-              <span style={{ color: relTime(pack.lastGated).color }}>
-                {relTime(pack.lastGated).label}
-              </span>
             </span>
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
               &middot; Modified {pack.lastModified}
