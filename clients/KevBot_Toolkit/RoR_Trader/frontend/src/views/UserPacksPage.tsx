@@ -1508,6 +1508,169 @@ interface FixHistoryEntry {
   installStatus: 'success' | 'failed' | 'pending';
 }
 
+/* ========================================================================
+   Live Test tab — canary-based pack health (Spec_Pack_Live_Test.md)
+   Confirms the pack fires in the REAL deployed live worker — the gap
+   Signal Validation (backtest only) and Parity Simulator (simulated)
+   can't cover.
+   ======================================================================== */
+function CanaryCard({ role, canary, possible }: {
+  role: 'trigger' | 'gate';
+  canary: any | null;
+  possible: boolean;
+}) {
+  const roleLabel = role === 'trigger' ? 'Trigger canary' : 'Gate canary';
+  const roleDesc = role === 'trigger'
+    ? 'Pack used as the entry trigger.'
+    : 'Pack used as a 2-Min cross-TF confluence gate (borrowed entry trigger).';
+
+  if (!possible) {
+    return (
+      <Card>
+        <h4 className="text-sm font-semibold mb-1">{roleLabel}</h4>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          This pack can&apos;t fill the {role} role
+          {role === 'trigger' ? ' — it declares no triggers.' : ' — it declares no interpreter outputs.'}
+        </p>
+      </Card>
+    );
+  }
+  if (!canary || !canary.id) {
+    return (
+      <Card>
+        <h4 className="text-sm font-semibold mb-1">{roleLabel}</h4>
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          {roleDesc} Not created yet.
+        </p>
+      </Card>
+    );
+  }
+  const lv = canary.liveness || {};
+  const statusColor: Record<string, string> = {
+    firing: 'var(--green)', waiting: '#f59e0b',
+    silent: 'var(--red)', unknown: 'var(--text-muted)',
+  };
+  const col = statusColor[lv.status] || 'var(--text-muted)';
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-1">
+        <h4 className="text-sm font-semibold">{roleLabel}</h4>
+        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded uppercase"
+          style={{ background: col, color: 'white' }}>
+          {lv.status || '—'}
+        </span>
+      </div>
+      <p className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>{roleDesc}</p>
+      <div className="text-xs space-y-1" style={{ color: 'var(--text-muted)' }}>
+        <div>
+          Strategy:{' '}
+          <Link href={`/strategies/${canary.id}`}
+            className="font-mono" style={{ color: 'var(--accent)' }}>
+            #{canary.id} {canary.name}
+          </Link>
+        </div>
+        <div>
+          Last live alert:{' '}
+          <span style={{ color: relTime(lv.last_alert ?? null).color }}>
+            {relTime(lv.last_alert ?? null).label}
+          </span>
+          {' · '}today: {lv.alerts_today ?? 0} · 7d: {lv.alerts_7d ?? 0}
+        </div>
+      </div>
+      <p className="text-xs mt-2" style={{ color: col, lineHeight: 1.4 }}>
+        {lv.verdict}
+      </p>
+    </Card>
+  );
+}
+
+function LiveTestTab({ pack }: { pack: UserPack }) {
+  const [data, setData] = useState<any | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await apiFetch<any>(`/api/packs/builder/user-packs/${pack.id}/canaries`);
+      setData(r);
+    } catch (e: any) {
+      setError(String(e?.message || e));
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [pack.id]);
+
+  const createCanaries = async () => {
+    setCreating(true);
+    setError(null);
+    try {
+      await apiFetch(`/api/packs/builder/user-packs/${pack.id}/canaries`, { method: 'POST' });
+      await load();
+    } catch (e: any) {
+      setError(`Create failed: ${String(e?.message || e)}`);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const hasCanaries = !!(data && ((data.trigger && data.trigger.id) || (data.gate && data.gate.id)));
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <h3 className="text-base font-semibold mb-1">Live Test</h3>
+        <p className="text-xs mb-3" style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
+          Confirms this pack actually fires in the <strong>deployed live
+          worker</strong> — the gap Signal Validation (backtest only) and
+          Parity Simulator (simulated replay) can&apos;t cover. Creates two
+          permanent, <code>pack-canary</code>-tagged sentinel strategies:
+          one exercising the pack as a <strong>trigger</strong>, one as a
+          2-Min cross-TF <strong>confluence gate</strong>. They stay live
+          as always-on sniffers; delete them from their strategy pages if
+          you ever want to.
+        </p>
+        <button
+          onClick={createCanaries}
+          disabled={creating || loading}
+          className="text-xs px-3 py-1 rounded"
+          style={{
+            background: (creating || loading) ? 'var(--bg-input)' : 'var(--blue)',
+            color: (creating || loading) ? 'var(--text-muted)' : 'white',
+            cursor: (creating || loading) ? 'wait' : 'pointer',
+          }}
+        >
+          {creating ? 'Creating…'
+            : hasCanaries ? 'Re-check / create missing' : 'Create canaries'}
+        </button>
+        {error && (
+          <p className="text-xs mt-2" style={{ color: 'var(--red)' }}>{error}</p>
+        )}
+        {data?.created?.length > 0 && (
+          <p className="text-xs mt-2" style={{ color: 'var(--green)' }}>
+            Created: {data.created.join(', ')} canary. Give it ~15-30 min
+            of RTH to fire.
+          </p>
+        )}
+      </Card>
+
+      {loading && !data ? (
+        <Card><p className="text-sm" style={{ color: 'var(--text-muted)' }}>Loading…</p></Card>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <CanaryCard role="trigger" canary={data?.trigger}
+            possible={data?.trigger_possible ?? false} />
+          <CanaryCard role="gate" canary={data?.gate}
+            possible={data?.gate_possible ?? false} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CodeTab({ pack }: { pack: UserPack }) {
   const { data: code, isLoading, refetch } = useUserPackCode(pack.id);
   const requestFixMut = useRequestFix();
@@ -1872,7 +2035,7 @@ function DetailView({
         {pack.version} &middot; {pack.strategiesUsing} strategies &middot; Last modified {pack.lastModified}
       </p>
 
-      <TabBar tabs={['Parameters', 'Plot Settings', 'States & Triggers', 'Chart Preview', 'Signal Validation', 'Parity Simulator', 'Code', 'Danger Zone']}>
+      <TabBar tabs={['Parameters', 'Plot Settings', 'States & Triggers', 'Chart Preview', 'Signal Validation', 'Parity Simulator', 'Live Test', 'Code', 'Danger Zone']}>
         {(tab) => (
           <div>
             {tab === 'Parameters' && <ParametersTab pack={pack} />}
@@ -1881,6 +2044,7 @@ function DetailView({
             {tab === 'Chart Preview' && <PreviewTab pack={pack} />}
             {tab === 'Signal Validation' && <SignalValidationTab pack={pack} />}
             {tab === 'Parity Simulator' && <ParitySimulatorTab pack={pack} />}
+            {tab === 'Live Test' && <LiveTestTab pack={pack} />}
             {tab === 'Code' && <CodeTab pack={pack} />}
             {tab === 'Danger Zone' && <DangerZoneTab pack={pack} onDelete={onDelete} />}
           </div>

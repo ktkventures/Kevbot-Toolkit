@@ -169,7 +169,7 @@ def _existing_canaries(slug: str, pack_name: str, user_id: str) -> dict:
     out = {'trigger': None, 'gate': None}
     try:
         rows = get_admin_client().table('strategies') \
-            .select('id,name,config,alert_tracking_enabled') \
+            .select('id,name,config,alert_tracking_enabled,created_at') \
             .eq('user_id', user_id).execute().data or []
     except Exception as e:
         logger.warning("canary lookup failed for %s: %s", slug, e)
@@ -184,6 +184,66 @@ def _existing_canaries(slug: str, pack_name: str, user_id: str) -> dict:
             if nm == wanted:
                 out[role] = r
     return out
+
+
+def _canary_liveness(strategy_id: int, user_id: str, role: str,
+                     created_at: Optional[str]) -> dict:
+    """Per-canary live firing state for the Live Test status panel.
+
+    Returns {last_alert, alerts_today, alerts_7d, status, verdict}.
+    `status`: 'firing' | 'waiting' | 'silent'
+      - waiting: created < 30 min ago and nothing yet — give it time
+      - firing:  fired a live alert in the last 7 days
+      - silent:  old enough to have fired but hasn't → flag it
+    """
+    from db import get_admin_client
+    from datetime import datetime, timezone, timedelta
+    c = get_admin_client()
+    now = datetime.now(timezone.utc)
+    today = now.strftime('%Y-%m-%d')
+    since_7d = (now - timedelta(days=7)).isoformat()
+    try:
+        last = c.table('alerts').select('timestamp') \
+            .eq('strategy_id', strategy_id).eq('user_id', user_id) \
+            .order('timestamp', desc=True).limit(1).execute().data or []
+        last_alert = last[0]['timestamp'] if last else None
+        today_n = c.table('alerts').select('id', count='exact', head=True) \
+            .eq('strategy_id', strategy_id).gte('timestamp', today) \
+            .execute().count or 0
+        week_n = c.table('alerts').select('id', count='exact', head=True) \
+            .eq('strategy_id', strategy_id).gte('timestamp', since_7d) \
+            .execute().count or 0
+    except Exception as e:
+        logger.warning("canary liveness query failed sid=%s: %s",
+                        strategy_id, e)
+        return {'last_alert': None, 'alerts_today': 0, 'alerts_7d': 0,
+                'status': 'unknown', 'verdict': 'liveness query failed'}
+
+    fresh = False
+    if created_at:
+        try:
+            age_min = (now - datetime.fromisoformat(created_at)).total_seconds() / 60
+            fresh = age_min < 30
+        except Exception:
+            pass
+
+    if week_n > 0:
+        status = 'firing'
+        verb = 'fires as a trigger' if role == 'trigger' else 'gates correctly'
+        verdict = f'✓ Pack {verb} — {week_n} alert(s) in 7d'
+    elif fresh:
+        status = 'waiting'
+        verdict = 'Just created — give it a few minutes of RTH to fire'
+    else:
+        status = 'silent'
+        if role == 'gate':
+            verdict = ('⚠ No alerts — the borrowed entry trigger should '
+                       'fire often, so a silent gate canary points at a '
+                       'cross-TF dispatch issue for this pack')
+        else:
+            verdict = '⚠ No alerts in 7d — pack trigger may not be firing'
+    return {'last_alert': last_alert, 'alerts_today': today_n,
+            'alerts_7d': week_n, 'status': status, 'verdict': verdict}
 
 
 def create_canaries_for_pack(slug: str, user_id: str) -> dict:
@@ -261,6 +321,12 @@ def get_canaries_for_pack(slug: str, user_id: str) -> dict:
     m = pack.manifest or {}
     pack_name = m.get('name', slug)
     existing = _existing_canaries(slug, pack_name, user_id)
+    # Attach per-canary liveness for the Live Test status panel.
+    for role in ('trigger', 'gate'):
+        strat = existing[role]
+        if strat and strat.get('id'):
+            strat['liveness'] = _canary_liveness(
+                strat['id'], user_id, role, strat.get('created_at'))
     return {
         'trigger': existing['trigger'],
         'gate': existing['gate'],
