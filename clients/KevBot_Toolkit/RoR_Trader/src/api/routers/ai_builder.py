@@ -357,6 +357,43 @@ def list_user_packs(user=Depends(get_current_user)):
     return result
 
 
+def _canary_user_id(user) -> str:
+    uid = (user.get('id') or user.get('sub')
+           if isinstance(user, dict) else None)
+    if not uid:
+        raise HTTPException(status_code=401, detail="missing user_id")
+    return str(uid)
+
+
+@router.post("/user-packs/{slug}/canaries")
+def create_pack_canaries(slug: str, user=Depends(get_current_user)):
+    """Pack Live Test — create the (up to) two canary strategies for a
+    pack. Idempotent: an already-existing canary is returned untouched.
+    See docs/Spec_Pack_Live_Test.md."""
+    from api.services.pack_canary_service import create_canaries_for_pack
+    try:
+        return create_canaries_for_pack(slug, _canary_user_id(user))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("create_pack_canaries failed slug=%s", slug)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/user-packs/{slug}/canaries")
+def get_pack_canaries(slug: str, user=Depends(get_current_user)):
+    """Pack Live Test — current canary strategies for a pack (no
+    creation). The frontend Live Test tab polls this."""
+    from api.services.pack_canary_service import get_canaries_for_pack
+    try:
+        return get_canaries_for_pack(slug, _canary_user_id(user))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("get_pack_canaries failed slug=%s", slug)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/user-packs/{slug}/code")
 def get_user_pack_code(slug: str, user=Depends(get_current_user)):
     """Return the actual file contents of a user pack."""
