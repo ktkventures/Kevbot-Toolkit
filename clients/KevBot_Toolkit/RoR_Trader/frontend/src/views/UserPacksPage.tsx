@@ -1580,6 +1580,32 @@ function CanaryCard({ role, canary, possible }: {
       <p className="text-xs mt-2" style={{ color: col, lineHeight: 1.4 }}>
         {lv.verdict}
       </p>
+      {/* Alert vs backtest alignment (Phase 3) */}
+      {(() => {
+        const al = canary.alignment || {};
+        if (!al.available) {
+          return (
+            <p className="text-[10px] mt-2 pt-2" style={{
+              color: 'var(--text-muted)', borderTop: '1px solid var(--border)',
+            }}>
+              Alignment: {al.reason || 'warming up'}
+            </p>
+          );
+        }
+        const driftTxt = al.median_drift_s == null
+          ? '—' : `${al.median_drift_s.toFixed(1)}s med`;
+        return (
+          <div className="text-[10px] mt-2 pt-2" style={{
+            color: 'var(--text-muted)', borderTop: '1px solid var(--border)',
+          }}>
+            <div style={{ color: 'var(--text-secondary)' }}>{al.read}</div>
+            <div className="mt-0.5">
+              matched {al.matched} · missed {al.missed} · phantom {al.phantom}
+              {' · drift '}{driftTxt}
+            </div>
+          </div>
+        );
+      })()}
     </Card>
   );
 }

@@ -169,7 +169,8 @@ def _existing_canaries(slug: str, pack_name: str, user_id: str) -> dict:
     out = {'trigger': None, 'gate': None}
     try:
         rows = get_admin_client().table('strategies') \
-            .select('id,name,config,alert_tracking_enabled,created_at') \
+            .select('id,name,config,alert_tracking_enabled,created_at,'
+                    'forward_test_start') \
             .eq('user_id', user_id).execute().data or []
     except Exception as e:
         logger.warning("canary lookup failed for %s: %s", slug, e)
@@ -244,6 +245,62 @@ def _canary_liveness(strategy_id: int, user_id: str, role: str,
             verdict = '⚠ No alerts in 7d — pack trigger may not be firing'
     return {'last_alert': last_alert, 'alerts_today': today_n,
             'alerts_7d': week_n, 'status': status, 'verdict': verdict}
+
+
+def _canary_alignment(strategy_id: int, user_id: str,
+                      forward_test_start: Optional[str]) -> dict:
+    """Alert↔backtest alignment for a canary (Spec §4.3). Reuses the
+    divergence service — pairs the canary's backtest / algo / live
+    lanes and reports the algo↔live (what-should-fire vs what-fired)
+    summary: aligned %, missed (algo-only), phantom (alert-only), and
+    entry-timing drift.
+
+    Canaries are new — for days this returns available:False ('no
+    algo/alert entries yet'). The report becomes meaningful as the
+    canary accumulates history.
+    """
+    try:
+        from db import load_trades_admin, get_alerts_for_strategy_db
+        from api.services.divergence_service import (
+            compute_three_way_divergence,
+        )
+        rest = load_trades_admin(
+            strategy_id, user_id, data_source_filter='backtest_%') or []
+        cache = load_trades_admin(
+            strategy_id, user_id, data_source_filter='cache_%') or []
+        alerts = get_alerts_for_strategy_db(strategy_id, limit=2000) or []
+        div = compute_three_way_divergence(
+            rest, cache, alerts,
+            forward_test_start=forward_test_start,
+            default_direction=CANARY_DIRECTION)
+    except Exception as e:
+        logger.warning("canary alignment failed sid=%s: %s", strategy_id, e)
+        return {'available': False, 'reason': 'alignment query failed'}
+
+    matched = div.get('matched_3way', 0) + div.get('matched_cache_live', 0)
+    missed = div.get('cache_only', 0)   # algo computed an entry, no alert
+    phantom = div.get('live_only', 0)   # alert fired, no algo entry
+    drift = div.get('drift_cache_live_entry') or {}
+    total_algo = matched + missed
+    if total_algo == 0 and phantom == 0:
+        return {'available': False,
+                'reason': 'no algo/alert entries yet — canary still warming up'}
+    align_pct = (matched / total_algo) if total_algo else 0.0
+    median_s = drift.get('median_s')
+    if align_pct >= 0.9 and (median_s is None or median_s <= 5):
+        read = f'✓ Alerts align with backtest ({align_pct*100:.0f}% matched)'
+    elif missed > matched:
+        read = f'⚠ {missed} algo entries, only {matched} alerts — live lagging backtest'
+    else:
+        read = f'{align_pct*100:.0f}% matched · {missed} missed · {phantom} phantom'
+    return {
+        'available': True,
+        'matched': matched, 'missed': missed, 'phantom': phantom,
+        'align_pct': round(align_pct, 3),
+        'median_drift_s': median_s,
+        'p95_drift_s': drift.get('p95_s'),
+        'read': read,
+    }
 
 
 def create_canaries_for_pack(slug: str, user_id: str) -> dict:
@@ -321,12 +378,14 @@ def get_canaries_for_pack(slug: str, user_id: str) -> dict:
     m = pack.manifest or {}
     pack_name = m.get('name', slug)
     existing = _existing_canaries(slug, pack_name, user_id)
-    # Attach per-canary liveness for the Live Test status panel.
+    # Attach per-canary liveness + alert↔backtest alignment.
     for role in ('trigger', 'gate'):
         strat = existing[role]
         if strat and strat.get('id'):
             strat['liveness'] = _canary_liveness(
                 strat['id'], user_id, role, strat.get('created_at'))
+            strat['alignment'] = _canary_alignment(
+                strat['id'], user_id, strat.get('forward_test_start'))
     return {
         'trigger': existing['trigger'],
         'gate': existing['gate'],
