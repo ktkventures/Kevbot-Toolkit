@@ -2280,7 +2280,9 @@ export default function UserPacksPage() {
           enabled: true,
           isDefault: false,
           visibility: 'private' as const,
-          strategiesUsing: 0,
+          // Wired 2026-05-21 — API now returns a real count
+          // (/api/packs/builder/user-packs strategies_using).
+          strategiesUsing: p.strategies_using ?? 0,
           lastModified: new Date().toISOString().slice(0, 10),
           validationStatus: p.is_valid ? 'passed' as const : 'failed' as const,
           parityScore: null,

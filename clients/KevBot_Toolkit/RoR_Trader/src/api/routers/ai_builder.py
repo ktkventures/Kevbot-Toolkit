@@ -155,11 +155,100 @@ def _parse_structure_json(raw_text: str) -> dict:
 # Endpoints
 # =============================================================================
 
+def _compute_user_pack_usage(packs: dict, strategies: list) -> dict:
+    """Count how many strategies reference each user pack.
+
+    A strategy 'uses' a pack if either:
+      - a confluence record's interpreter segment matches one of the
+        pack's declared interpreters (`{tf}-{INTERP}-{state}` format), OR
+      - an entry/exit trigger ID resolves to the pack via longest-
+        matching slug-or-trigger_prefix.
+
+    Longest-match resolution is required so `swing_123_test_default_*`
+    triggers count for `swing_123_test`, not for `swing_123` (whose
+    slug is a strict prefix of the other).
+
+    Returns {slug: int count}.
+    """
+    interp_to_slug: dict = {}      # interpreter name -> pack slug
+    key_to_slug: dict = {}         # slug OR trigger_prefix -> pack slug
+    for slug, pack in packs.items():
+        m = pack.manifest or {}
+        for interp in (m.get('interpreters') or []):
+            interp_to_slug[interp] = slug
+        key_to_slug[slug] = slug
+        tp = m.get('trigger_prefix')
+        if tp:
+            key_to_slug[tp] = slug
+    # Longest keys first → greedy longest-prefix match.
+    sorted_keys = sorted(key_to_slug.keys(), key=len, reverse=True)
+
+    def _trigger_pack(trig) -> str | None:
+        t = str(trig or '')
+        for k in sorted_keys:
+            if t == k or t.startswith(k + '_'):
+                return key_to_slug[k]
+        return None
+
+    counts = {slug: 0 for slug in packs}
+    for strat in strategies:
+        cfg = strat.get('config') or {}
+        if not isinstance(cfg, dict):
+            continue
+        used: set = set()
+        # Confluence-record interpreters. split('-', 2) caps at 3 parts
+        # so states containing dashes (e.g. '<-2σ') stay intact.
+        for f in ('confluence', 'general_confluences'):
+            for rec in (cfg.get(f) or []):
+                parts = str(rec).split('-', 2)
+                if len(parts) >= 2:
+                    slug = interp_to_slug.get(parts[1])
+                    if slug:
+                        used.add(slug)
+        # Entry/exit triggers.
+        trigs: list = []
+        for f in ('entry_trigger', 'entry_trigger_confluence_id', 'exit_trigger'):
+            v = cfg.get(f)
+            if v:
+                trigs.append(v)
+        for f in ('exit_triggers', 'exit_trigger_confluence_ids'):
+            trigs.extend(cfg.get(f) or [])
+        for t in trigs:
+            slug = _trigger_pack(t)
+            if slug:
+                used.add(slug)
+        for slug in used:
+            counts[slug] = counts.get(slug, 0) + 1
+    return counts
+
+
 @router.get("/user-packs")
 def list_user_packs(user=Depends(get_current_user)):
-    """List all installed user packs with their metadata."""
+    """List all installed user packs with their metadata.
+
+    `strategies_using` (2026-05-21): real count of how many of the
+    caller's strategies reference each pack — was previously hardcoded
+    to 0 on the frontend. Lets the UserPacks page show at a glance
+    which packs are safe to delete.
+    """
     import pack_registry
     packs = pack_registry.get_registered_packs()
+
+    # Usage counts — load the caller's strategies once, scan all packs.
+    usage: dict = {}
+    try:
+        user_id = (user.get('id') or user.get('sub')
+                   if isinstance(user, dict) else None)
+        if user_id:
+            from db import get_admin_client
+            rows = get_admin_client().table('strategies') \
+                .select('id,config').eq('user_id', str(user_id)).execute()
+            usage = _compute_user_pack_usage(packs, rows.data or [])
+    except Exception as e:
+        logger.warning("user-packs: usage count failed (%s) — "
+                       "returning 0s", e)
+        usage = {}
+
     result = []
     for slug, pack in packs.items():
         m = pack.manifest
@@ -180,6 +269,7 @@ def list_user_packs(user=Depends(get_current_user)):
             "triggers": m.get("triggers", []),
             "indicator_columns": m.get("indicator_columns", []),
             "status": "private" if pack.is_valid else "verification",
+            "strategies_using": usage.get(slug, 0),
         })
     return result
 
