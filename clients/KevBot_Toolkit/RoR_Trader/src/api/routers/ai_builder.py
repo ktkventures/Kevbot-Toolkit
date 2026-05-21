@@ -306,18 +306,29 @@ def list_user_packs(user=Depends(get_current_user)):
             # `name` is needed for canary detection (_is_canary).
             strat_rows = client.table('strategies') \
                 .select('id,name,config').eq('user_id', str(user_id)).execute()
-            # Recent alerts (7d) — projected to the 3 fields the metric
-            # needs; paginated (PostgREST caps responses at 1000).
+            # Recent alerts — projected to the 3 fields the metric
+            # needs. INCIDENT FIX 2026-05-21: hard-capped. With ~70
+            # strategies (the 36 pack canaries fire constantly) a 7-day
+            # alert pull is tens of thousands of rows — loading them all
+            # into the API process on every User Packs page load
+            # memory-pressured the API and made the page (and, by
+            # collateral, every other page) time out. Now: ordered DESC
+            # + capped at MAX_ALERT_ROWS so memory + latency are
+            # bounded. `last_triggered` / `last_gated` / canary status
+            # stay accurate (most-recent alerts are exactly what's
+            # loaded); `triggered_7d` is a recent-activity approximation
+            # if the cap truncates (only at extreme volume).
             since = (datetime.now(timezone.utc)
                      - timedelta(days=7)).isoformat()
+            MAX_ALERT_ROWS = 4000
             alerts: list = []
             offset = 0
-            while offset < 100_000:
+            while offset < MAX_ALERT_ROWS:
                 page = client.table('alerts') \
                     .select('strategy_id,trigger_id,timestamp') \
                     .eq('user_id', str(user_id)) \
                     .gte('timestamp', since) \
-                    .order('timestamp') \
+                    .order('timestamp', desc=True) \
                     .range(offset, offset + 999).execute().data or []
                 alerts.extend(page)
                 if len(page) < 1000:
