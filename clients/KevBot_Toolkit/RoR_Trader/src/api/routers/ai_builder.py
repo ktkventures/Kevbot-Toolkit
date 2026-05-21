@@ -155,21 +155,35 @@ def _parse_structure_json(raw_text: str) -> dict:
 # Endpoints
 # =============================================================================
 
-def _compute_user_pack_usage(packs: dict, strategies: list) -> dict:
-    """Count how many strategies reference each user pack.
+def _compute_user_pack_metrics(packs: dict, strategies: list,
+                               alerts: list) -> dict:
+    """Per-pack health metrics for the User Packs page cards.
 
     A strategy 'uses' a pack if either:
       - a confluence record's interpreter segment matches one of the
-        pack's declared interpreters (`{tf}-{INTERP}-{state}` format), OR
+        pack's declared interpreters (`{tf}-{INTERP}-{state}` format) —
+        this is the pack acting as a confluence GATE, OR
       - an entry/exit trigger ID resolves to the pack via longest-
-        matching slug-or-trigger_prefix.
+        matching slug-or-trigger_prefix — the pack acting as a TRIGGER.
 
     Longest-match resolution is required so `swing_123_test_default_*`
     triggers count for `swing_123_test`, not for `swing_123` (whose
     slug is a strict prefix of the other).
 
-    Returns {slug: int count}.
+    Returns {slug: {
+        strategies_using: int,   # distinct strategies referencing it
+        last_triggered:   iso|None,  # last live alert from a pack trigger
+        triggered_7d:     int,       # alert count from pack triggers, 7d
+        last_gated:       iso|None,  # last live alert from a strategy that
+                                     # gates on this pack (gate was open)
+    }}
+
+    `alerts` should be a recent window (the endpoint passes ~7 days).
+    A None timestamp therefore means "not in the window" — read as
+    "not firing recently", which is exactly the signal the card wants.
     """
+    from datetime import datetime, timezone, timedelta
+
     interp_to_slug: dict = {}      # interpreter name -> pack slug
     key_to_slug: dict = {}         # slug OR trigger_prefix -> pack slug
     for slug, pack in packs.items():
@@ -180,7 +194,6 @@ def _compute_user_pack_usage(packs: dict, strategies: list) -> dict:
         tp = m.get('trigger_prefix')
         if tp:
             key_to_slug[tp] = slug
-    # Longest keys first → greedy longest-prefix match.
     sorted_keys = sorted(key_to_slug.keys(), key=len, reverse=True)
 
     def _trigger_pack(trig) -> str | None:
@@ -190,22 +203,25 @@ def _compute_user_pack_usage(packs: dict, strategies: list) -> dict:
                 return key_to_slug[k]
         return None
 
-    counts = {slug: 0 for slug in packs}
+    # --- structural usage scan ---
+    pack_strats: dict = {slug: set() for slug in packs}       # used anywhere
+    pack_gate_strats: dict = {slug: set() for slug in packs}  # used as a GATE
     for strat in strategies:
+        sid = strat.get('id')
         cfg = strat.get('config') or {}
         if not isinstance(cfg, dict):
             continue
-        used: set = set()
-        # Confluence-record interpreters. split('-', 2) caps at 3 parts
-        # so states containing dashes (e.g. '<-2σ') stay intact.
+        # confluence interpreters → gate usage. split('-', 2) caps at 3
+        # parts so dash-containing states (e.g. '<-2σ') stay intact.
         for f in ('confluence', 'general_confluences'):
             for rec in (cfg.get(f) or []):
                 parts = str(rec).split('-', 2)
                 if len(parts) >= 2:
-                    slug = interp_to_slug.get(parts[1])
-                    if slug:
-                        used.add(slug)
-        # Entry/exit triggers.
+                    s = interp_to_slug.get(parts[1])
+                    if s:
+                        pack_strats[s].add(sid)
+                        pack_gate_strats[s].add(sid)
+        # entry/exit triggers → trigger usage
         trigs: list = []
         for f in ('entry_trigger', 'entry_trigger_confluence_id', 'exit_trigger'):
             v = cfg.get(f)
@@ -214,44 +230,108 @@ def _compute_user_pack_usage(packs: dict, strategies: list) -> dict:
         for f in ('exit_triggers', 'exit_trigger_confluence_ids'):
             trigs.extend(cfg.get(f) or [])
         for t in trigs:
-            slug = _trigger_pack(t)
-            if slug:
-                used.add(slug)
-        for slug in used:
-            counts[slug] = counts.get(slug, 0) + 1
-    return counts
+            s = _trigger_pack(t)
+            if s:
+                pack_strats[s].add(sid)
+
+    # --- alert-driven liveness ---
+    cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    last_trig: dict = {slug: None for slug in packs}
+    trig_7d: dict = {slug: 0 for slug in packs}
+    last_gated: dict = {slug: None for slug in packs}
+    # strategy_id -> set of pack slugs it gates on (for last_gated)
+    sid_to_gated: dict = {}
+    for slug, sids in pack_gate_strats.items():
+        for sid in sids:
+            sid_to_gated.setdefault(sid, set()).add(slug)
+
+    # Only count alerts from strategies that STILL EXIST. Alerts persist
+    # after a strategy is deleted, so without this filter a pack used
+    # only by now-deleted strategies would show "used in 0 · triggered
+    # 1195×" — a contradictory card. Scoping to current strategies makes
+    # the liveness metrics reflect the live fleet, not history.
+    current_sids = {s.get('id') for s in strategies}
+
+    for a in alerts:
+        ts = a.get('timestamp')
+        if not ts:
+            continue
+        if a.get('strategy_id') not in current_sids:
+            continue
+        # trigger attribution — which pack's trigger caused this alert
+        tp = _trigger_pack(a.get('trigger_id'))
+        if tp is not None:
+            if last_trig[tp] is None or ts > last_trig[tp]:
+                last_trig[tp] = ts
+            if ts >= cutoff_7d:
+                trig_7d[tp] += 1
+        # gate attribution — a fired alert means every gate on that
+        # strategy was open, including any pack used as a gate.
+        for slug in sid_to_gated.get(a.get('strategy_id'), ()):
+            if last_gated[slug] is None or ts > last_gated[slug]:
+                last_gated[slug] = ts
+
+    return {slug: {
+        'strategies_using': len(pack_strats[slug]),
+        'last_triggered': last_trig[slug],
+        'triggered_7d': trig_7d[slug],
+        'last_gated': last_gated[slug],
+    } for slug in packs}
 
 
 @router.get("/user-packs")
 def list_user_packs(user=Depends(get_current_user)):
-    """List all installed user packs with their metadata.
+    """List all installed user packs with their metadata + health metrics.
 
-    `strategies_using` (2026-05-21): real count of how many of the
-    caller's strategies reference each pack — was previously hardcoded
-    to 0 on the frontend. Lets the UserPacks page show at a glance
-    which packs are safe to delete.
+    Per-pack metrics (2026-05-21) — was hardcoded strategies_using:0:
+      - strategies_using: distinct strategies referencing the pack
+      - last_triggered / triggered_7d: liveness as a TRIGGER
+      - last_gated: liveness as a confluence GATE
+    Lets the UserPacks page show at a glance whether a pack is wired
+    in AND actually firing. Metrics derive from a 7-day alert window;
+    a null timestamp means "not firing in the last 7 days".
     """
     import pack_registry
     packs = pack_registry.get_registered_packs()
 
-    # Usage counts — load the caller's strategies once, scan all packs.
-    usage: dict = {}
+    metrics: dict = {}
     try:
         user_id = (user.get('id') or user.get('sub')
                    if isinstance(user, dict) else None)
         if user_id:
             from db import get_admin_client
-            rows = get_admin_client().table('strategies') \
+            from datetime import datetime, timezone, timedelta
+            client = get_admin_client()
+            strat_rows = client.table('strategies') \
                 .select('id,config').eq('user_id', str(user_id)).execute()
-            usage = _compute_user_pack_usage(packs, rows.data or [])
+            # Recent alerts (7d) — projected to the 3 fields the metric
+            # needs; paginated (PostgREST caps responses at 1000).
+            since = (datetime.now(timezone.utc)
+                     - timedelta(days=7)).isoformat()
+            alerts: list = []
+            offset = 0
+            while offset < 100_000:
+                page = client.table('alerts') \
+                    .select('strategy_id,trigger_id,timestamp') \
+                    .eq('user_id', str(user_id)) \
+                    .gte('timestamp', since) \
+                    .order('timestamp') \
+                    .range(offset, offset + 999).execute().data or []
+                alerts.extend(page)
+                if len(page) < 1000:
+                    break
+                offset += 1000
+            metrics = _compute_user_pack_metrics(
+                packs, strat_rows.data or [], alerts)
     except Exception as e:
-        logger.warning("user-packs: usage count failed (%s) — "
-                       "returning 0s", e)
-        usage = {}
+        logger.warning("user-packs: metrics computation failed (%s) — "
+                       "returning zeros", e)
+        metrics = {}
 
     result = []
     for slug, pack in packs.items():
         m = pack.manifest
+        pm = metrics.get(slug) or {}
         result.append({
             "slug": slug,
             "name": m.get("name", slug),
@@ -269,7 +349,10 @@ def list_user_packs(user=Depends(get_current_user)):
             "triggers": m.get("triggers", []),
             "indicator_columns": m.get("indicator_columns", []),
             "status": "private" if pack.is_valid else "verification",
-            "strategies_using": usage.get(slug, 0),
+            "strategies_using": pm.get("strategies_using", 0),
+            "last_triggered": pm.get("last_triggered"),
+            "triggered_7d": pm.get("triggered_7d", 0),
+            "last_gated": pm.get("last_gated"),
         })
     return result
 

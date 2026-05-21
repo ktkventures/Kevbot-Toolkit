@@ -73,6 +73,10 @@ interface UserPack {
   isDefault: boolean;
   visibility: 'private' | 'public';
   strategiesUsing: number;
+  // Liveness metrics (2026-05-21) — null timestamp = not in last 7d.
+  lastTriggered: string | null;
+  triggered7d: number;
+  lastGated: string | null;
   lastModified: string;
   validationStatus: 'passed' | 'warnings' | 'failed';
   parityScore: number | null;
@@ -80,6 +84,18 @@ interface UserPack {
   plotSettings: PlotSetting[];
   outputs: PackOutput[];
   triggers: PackTrigger[];
+}
+
+/* Relative-time + health color for the pack liveness chips.
+   null = not in the 7-day window the API scans → "none (7d)". */
+function relTime(iso: string | null): { label: string; color: string } {
+  if (!iso) return { label: 'none (7d)', color: 'var(--text-muted)' };
+  const d = new Date(iso).getTime();
+  if (isNaN(d)) return { label: '—', color: 'var(--text-muted)' };
+  const ageH = (Date.now() - d) / 3_600_000;
+  if (ageH < 1) return { label: `${Math.max(1, Math.round(ageH * 60))}m ago`, color: 'var(--green)' };
+  if (ageH < 24) return { label: `${Math.round(ageH)}h ago`, color: 'var(--green)' };
+  return { label: `${(ageH / 24).toFixed(1)}d ago`, color: '#f59e0b' };
 }
 
 /* ========================================================================
@@ -1943,6 +1959,24 @@ function PackCard({
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
               Used in {pack.strategiesUsing} {pack.strategiesUsing === 1 ? 'strategy' : 'strategies'}
             </span>
+            {/* Liveness chips (2026-05-21): is the pack actually firing?
+                Triggered = pack's trigger caused a live alert.
+                Gated     = a strategy gating on this pack fired (gate open). */}
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }} title="Last live alert caused by one of this pack's triggers">
+              &middot; Triggered:{' '}
+              <span style={{ color: relTime(pack.lastTriggered).color }}>
+                {relTime(pack.lastTriggered).label}
+              </span>
+              {pack.triggered7d > 0 && (
+                <span style={{ color: 'var(--text-secondary)' }}> ({pack.triggered7d}× 7d)</span>
+              )}
+            </span>
+            <span className="text-xs" style={{ color: 'var(--text-muted)' }} title="Last live alert from a strategy that uses this pack as a confluence gate (gate was open)">
+              &middot; Gated:{' '}
+              <span style={{ color: relTime(pack.lastGated).color }}>
+                {relTime(pack.lastGated).label}
+              </span>
+            </span>
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
               &middot; Modified {pack.lastModified}
             </span>
@@ -2280,9 +2314,12 @@ export default function UserPacksPage() {
           enabled: true,
           isDefault: false,
           visibility: 'private' as const,
-          // Wired 2026-05-21 — API now returns a real count
-          // (/api/packs/builder/user-packs strategies_using).
+          // Wired 2026-05-21 — API now returns real metrics
+          // (/api/packs/builder/user-packs).
           strategiesUsing: p.strategies_using ?? 0,
+          lastTriggered: p.last_triggered ?? null,
+          triggered7d: p.triggered_7d ?? 0,
+          lastGated: p.last_gated ?? null,
           lastModified: new Date().toISOString().slice(0, 10),
           validationStatus: p.is_valid ? 'passed' as const : 'failed' as const,
           parityScore: null,
@@ -2339,6 +2376,9 @@ export default function UserPacksPage() {
       id: newId,
       name: `${pack.name} (Copy)`,
       strategiesUsing: 0,
+      lastTriggered: null,
+      triggered7d: 0,
+      lastGated: null,
       lastModified: new Date().toISOString().slice(0, 10),
       params: pack.params.map((p) => ({ ...p })),
       plotSettings: pack.plotSettings.map((ps) => ({ ...ps })),
@@ -2366,6 +2406,9 @@ export default function UserPacksPage() {
       isDefault: false,
       visibility: 'private',
       strategiesUsing: 0,
+      lastTriggered: null,
+      triggered7d: 0,
+      lastGated: null,
       lastModified: new Date().toISOString().slice(0, 10),
       validationStatus: 'passed',
       parityScore: null,
@@ -2391,6 +2434,9 @@ export default function UserPacksPage() {
       isDefault: false,
       visibility: 'private',
       strategiesUsing: 0,
+      lastTriggered: null,
+      triggered7d: 0,
+      lastGated: null,
       lastModified: new Date().toISOString().slice(0, 10),
       validationStatus: 'passed',
       parityScore: null,
@@ -2423,6 +2469,9 @@ export default function UserPacksPage() {
       isDefault: false,
       visibility: 'private',
       strategiesUsing: 0,
+      lastTriggered: null,
+      triggered7d: 0,
+      lastGated: null,
       lastModified: new Date().toISOString().slice(0, 10),
       validationStatus: 'passed',
       parityScore: null,
