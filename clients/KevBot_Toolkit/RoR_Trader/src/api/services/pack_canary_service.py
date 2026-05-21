@@ -47,9 +47,23 @@ _BULL_HINTS = ('bull', 'long', 'up', 'above', 'cross_up')
 _BEAR_HINTS = ('bear', 'short', 'down', 'below', 'cross_down')
 
 
+_CANARY_NAME_PREFIX = 'PACKTEST · '
+
+
 def _canary_name(pack_name: str, role: str) -> str:
     """role: 'trigger' | 'gate'."""
-    return f'PACKTEST · {pack_name} · {role}'
+    return f'{_CANARY_NAME_PREFIX}{pack_name} · {role}'
+
+
+def _is_canary(strat: dict) -> bool:
+    """A strategy is a canary ONLY if it's double-gated: tagged
+    `pack-canary` AND its name starts with the PACKTEST prefix. This
+    makes bulk delete/toggle structurally unable to touch a real
+    strategy even if one accidentally carries the tag."""
+    cfg = strat.get('config') or {}
+    tags = cfg.get('tags') or []
+    name = strat.get('name') or ''
+    return CANARY_TAG in tags and name.startswith(_CANARY_NAME_PREFIX)
 
 
 def _pick_trigger_base(manifest: dict, bullish: bool) -> Optional[str]:
@@ -392,3 +406,115 @@ def get_canaries_for_pack(slug: str, user_id: str) -> dict:
         'trigger_possible': bool(m.get('triggers')),
         'gate_possible': bool(m.get('interpreters') and m.get('outputs')),
     }
+
+
+# ── Bulk operations (Spec §6 Phase 4) ───────────────────────────────
+
+def _all_canary_strategies(user_id: str) -> list:
+    """Every canary strategy for the user — double-gated via
+    `_is_canary` (tag + PACKTEST name prefix)."""
+    from db import get_admin_client
+    rows = get_admin_client().table('strategies') \
+        .select('id,name,config,alert_tracking_enabled') \
+        .eq('user_id', user_id).execute().data or []
+    return [r for r in rows if _is_canary(r)]
+
+
+def set_all_canaries_enabled(user_id: str, enabled: bool) -> dict:
+    """Bulk enable/disable live monitoring on every canary. Touches
+    ONLY canary strategies (double-gated). `alert_tracking_enabled`
+    is a column → direct scoped update."""
+    from db import get_admin_client
+    canaries = _all_canary_strategies(user_id)
+    ids = [c['id'] for c in canaries if c.get('id')]
+    if not ids:
+        return {'updated': 0, 'enabled': enabled}
+    try:
+        get_admin_client().table('strategies') \
+            .update({'alert_tracking_enabled': enabled}) \
+            .in_('id', ids).eq('user_id', user_id).execute()
+    except Exception as e:
+        logger.error("bulk canary toggle failed: %s", e, exc_info=True)
+        return {'error': str(e), 'updated': 0, 'enabled': enabled}
+    logger.info("Bulk canary toggle: %d canaries -> enabled=%s",
+                len(ids), enabled)
+    return {'updated': len(ids), 'enabled': enabled}
+
+
+def recreate_all_canaries(user_id: str) -> dict:
+    """Delete every existing canary, then create a fresh pair for each
+    registered pack. The explicit 'retest everything after a big
+    change' action. Destructive but double-gated — only `pack-canary`
+    + PACKTEST-named strategies are deleted; real strategies are
+    structurally unreachable.
+
+    Returns {deleted: int, packs_processed: int, created: {...}}.
+    """
+    import pack_registry
+    from db import (
+        delete_strategy_db, set_admin_user_context, get_current_user_id,
+        clear_current_user,
+    )
+
+    _need_ctx = get_current_user_id() != user_id
+    if _need_ctx:
+        set_admin_user_context(user_id)
+    try:
+        # 1. Delete existing canaries (double-gated).
+        old = _all_canary_strategies(user_id)
+        deleted = 0
+        for c in old:
+            try:
+                if delete_strategy_db(c['id']):
+                    deleted += 1
+            except Exception as e:
+                logger.warning("recreate-all: delete sid=%s failed: %s",
+                                c.get('id'), e)
+        # 2. Create a fresh pair for every registered pack.
+        created: dict = {}
+        packs = pack_registry.get_registered_packs()
+        for slug in packs:
+            try:
+                r = create_canaries_for_pack(slug, user_id)
+                created[slug] = r.get('created', [])
+            except Exception as e:
+                logger.warning("recreate-all: create for %s failed: %s",
+                                slug, e)
+                created[slug] = {'error': str(e)}
+        logger.info("recreate_all_canaries: deleted=%d, packs=%d",
+                    deleted, len(packs))
+        return {'deleted': deleted, 'packs_processed': len(packs),
+                'created': created}
+    finally:
+        if _need_ctx:
+            clear_current_user()
+
+
+def canary_status_by_pack(packs: dict, strategies: list,
+                          alerts: list) -> dict:
+    """Light per-pack canary status for the User Packs LIST cards —
+    reuses the strategies + 7d-alert set the list endpoint already
+    loaded (no extra queries). Returns
+    {slug: {'trigger': status, 'gate': status}} where status is
+    'firing' | 'silent' | 'none'.
+    """
+    fired_sids = {a.get('strategy_id') for a in alerts}
+    # Map canary strategy -> (pack_name, role)
+    name_index: dict = {}  # canary name -> strategy
+    for s in strategies:
+        if _is_canary(s):
+            name_index[s.get('name')] = s
+    out: dict = {}
+    for slug, pack in packs.items():
+        pack_name = (pack.manifest or {}).get('name', slug)
+        roles: dict = {}
+        for role in ('trigger', 'gate'):
+            strat = name_index.get(_canary_name(pack_name, role))
+            if not strat:
+                roles[role] = 'none'
+            elif strat.get('id') in fired_sids:
+                roles[role] = 'firing'
+            else:
+                roles[role] = 'silent'
+        out[slug] = roles
+    return out

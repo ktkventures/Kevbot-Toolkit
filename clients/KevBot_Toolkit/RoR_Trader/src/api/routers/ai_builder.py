@@ -295,6 +295,7 @@ def list_user_packs(user=Depends(get_current_user)):
     packs = pack_registry.get_registered_packs()
 
     metrics: dict = {}
+    canary_status: dict = {}
     try:
         user_id = (user.get('id') or user.get('sub')
                    if isinstance(user, dict) else None)
@@ -302,8 +303,9 @@ def list_user_packs(user=Depends(get_current_user)):
             from db import get_admin_client
             from datetime import datetime, timezone, timedelta
             client = get_admin_client()
+            # `name` is needed for canary detection (_is_canary).
             strat_rows = client.table('strategies') \
-                .select('id,config').eq('user_id', str(user_id)).execute()
+                .select('id,name,config').eq('user_id', str(user_id)).execute()
             # Recent alerts (7d) — projected to the 3 fields the metric
             # needs; paginated (PostgREST caps responses at 1000).
             since = (datetime.now(timezone.utc)
@@ -323,10 +325,18 @@ def list_user_packs(user=Depends(get_current_user)):
                 offset += 1000
             metrics = _compute_user_pack_metrics(
                 packs, strat_rows.data or [], alerts)
+            # Per-pack canary status — reuses the same strategies +
+            # alerts already loaded (no extra queries).
+            from api.services.pack_canary_service import (
+                canary_status_by_pack,
+            )
+            canary_status = canary_status_by_pack(
+                packs, strat_rows.data or [], alerts)
     except Exception as e:
         logger.warning("user-packs: metrics computation failed (%s) — "
                        "returning zeros", e)
         metrics = {}
+        canary_status = {}
 
     result = []
     for slug, pack in packs.items():
@@ -353,6 +363,9 @@ def list_user_packs(user=Depends(get_current_user)):
             "last_triggered": pm.get("last_triggered"),
             "triggered_7d": pm.get("triggered_7d", 0),
             "last_gated": pm.get("last_gated"),
+            # Canary status (Spec §4): 'firing' | 'silent' | 'none'
+            "canary_trigger": (canary_status.get(slug) or {}).get("trigger", "none"),
+            "canary_gate": (canary_status.get(slug) or {}).get("gate", "none"),
         })
     return result
 
@@ -391,6 +404,38 @@ def get_pack_canaries(slug: str, user=Depends(get_current_user)):
         raise
     except Exception as e:
         logger.exception("get_pack_canaries failed slug=%s", slug)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/user-packs/canaries/recreate-all")
+def recreate_all_pack_canaries(user=Depends(get_current_user)):
+    """Pack Live Test — delete every canary and create a fresh pair
+    for each registered pack. The explicit 'retest everything after a
+    big change' action. Destructive but double-gated: only
+    `pack-canary`-tagged + PACKTEST-named strategies are deleted."""
+    from api.services.pack_canary_service import recreate_all_canaries
+    try:
+        return recreate_all_canaries(_canary_user_id(user))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("recreate_all_pack_canaries failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/user-packs/canaries/bulk-toggle")
+def bulk_toggle_pack_canaries(body: dict = Body(...),
+                              user=Depends(get_current_user)):
+    """Pack Live Test — bulk enable/disable live monitoring on every
+    canary. Body: {"enabled": bool}. Touches only canary strategies."""
+    from api.services.pack_canary_service import set_all_canaries_enabled
+    enabled = bool(body.get('enabled', True))
+    try:
+        return set_all_canaries_enabled(_canary_user_id(user), enabled)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("bulk_toggle_pack_canaries failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -77,6 +77,9 @@ interface UserPack {
   lastTriggered: string | null;
   triggered7d: number;
   lastGated: string | null;
+  // Canary status (2026-05-21) — 'firing' | 'silent' | 'none'.
+  canaryTrigger: string;
+  canaryGate: string;
   lastModified: string;
   validationStatus: 'passed' | 'warnings' | 'failed';
   parityScore: number | null;
@@ -2171,6 +2174,27 @@ function PackCard({
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
               Used in {pack.strategiesUsing} {pack.strategiesUsing === 1 ? 'strategy' : 'strategies'}
             </span>
+            {/* Canary status (2026-05-21) — at-a-glance from the Live
+                Test canaries. green=firing, red=silent, grey=not created. */}
+            <span className="text-xs flex items-center gap-1.5"
+              style={{ color: 'var(--text-muted)' }}
+              title="Pack Live Test canary status — green: firing live, red: silent (possible issue), grey: no canary created">
+              &middot; Canary
+              {(['trigger', 'gate'] as const).map((role) => {
+                const st = role === 'trigger' ? pack.canaryTrigger : pack.canaryGate;
+                const c = st === 'firing' ? 'var(--green)'
+                  : st === 'silent' ? 'var(--red)' : 'var(--text-muted)';
+                return (
+                  <span key={role} className="flex items-center gap-0.5">
+                    <span style={{
+                      display: 'inline-block', width: 6, height: 6,
+                      borderRadius: '50%', background: c,
+                    }} />
+                    <span style={{ fontSize: '10px' }}>{role[0].toUpperCase()}</span>
+                  </span>
+                );
+              })}
+            </span>
             <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
               &middot; Modified {pack.lastModified}
             </span>
@@ -2484,6 +2508,79 @@ function ImportPackModal({
 }
 
 /* ========================================================================
+   Canary bulk controls — Pack Live Test Phase 4
+   ======================================================================== */
+function CanaryBulkControls() {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const recreateAll = async () => {
+    if (!window.confirm(
+      'Recreate ALL pack canaries?\n\nThis deletes every existing ' +
+      '`pack-canary` strategy and creates a fresh pair for each pack. ' +
+      'Real strategies are never touched. Use after a big change to ' +
+      're-test everything.')) return;
+    setBusy('recreate'); setMsg(null);
+    try {
+      const r = await apiFetch<any>(
+        '/api/packs/builder/user-packs/canaries/recreate-all',
+        { method: 'POST' });
+      setMsg(`Recreated: ${r.deleted ?? 0} deleted, ${r.packs_processed ?? 0} packs processed. Reloading…`);
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (e: any) {
+      setMsg(`Failed: ${String(e?.message || e)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const toggleAll = async (enabled: boolean) => {
+    setBusy(enabled ? 'enable' : 'disable'); setMsg(null);
+    try {
+      const r = await apiFetch<any>(
+        '/api/packs/builder/user-packs/canaries/bulk-toggle',
+        { method: 'POST', body: JSON.stringify({ enabled }) });
+      setMsg(`${enabled ? 'Enabled' : 'Disabled'} ${r.updated ?? 0} canaries.`);
+    } catch (e: any) {
+      setMsg(`Failed: ${String(e?.message || e)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const btn = (label: string, key: string, onClick: () => void, danger = false) => (
+    <button
+      onClick={onClick}
+      disabled={busy !== null}
+      className="text-xs px-2.5 py-1 rounded"
+      style={{
+        background: 'var(--bg-input)',
+        color: danger ? 'var(--red)' : 'var(--text-secondary)',
+        border: '1px solid var(--border)',
+        cursor: busy !== null ? 'wait' : 'pointer',
+        opacity: busy !== null && busy !== key ? 0.5 : 1,
+      }}
+    >
+      {busy === key ? 'Working…' : label}
+    </button>
+  );
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        Pack canaries:
+      </span>
+      {btn('Recreate all', 'recreate', recreateAll, true)}
+      {btn('Enable all', 'enable', () => toggleAll(true))}
+      {btn('Disable all', 'disable', () => toggleAll(false))}
+      {msg && (
+        <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{msg}</span>
+      )}
+    </div>
+  );
+}
+
+/* ========================================================================
    Main Component
    ======================================================================== */
 
@@ -2514,6 +2611,8 @@ export default function UserPacksPage() {
           lastTriggered: p.last_triggered ?? null,
           triggered7d: p.triggered_7d ?? 0,
           lastGated: p.last_gated ?? null,
+          canaryTrigger: p.canary_trigger ?? 'none',
+          canaryGate: p.canary_gate ?? 'none',
           lastModified: new Date().toISOString().slice(0, 10),
           validationStatus: p.is_valid ? 'passed' as const : 'failed' as const,
           parityScore: null,
@@ -2573,6 +2672,8 @@ export default function UserPacksPage() {
       lastTriggered: null,
       triggered7d: 0,
       lastGated: null,
+      canaryTrigger: 'none',
+      canaryGate: 'none',
       lastModified: new Date().toISOString().slice(0, 10),
       params: pack.params.map((p) => ({ ...p })),
       plotSettings: pack.plotSettings.map((ps) => ({ ...ps })),
@@ -2603,6 +2704,8 @@ export default function UserPacksPage() {
       lastTriggered: null,
       triggered7d: 0,
       lastGated: null,
+      canaryTrigger: 'none',
+      canaryGate: 'none',
       lastModified: new Date().toISOString().slice(0, 10),
       validationStatus: 'passed',
       parityScore: null,
@@ -2631,6 +2734,8 @@ export default function UserPacksPage() {
       lastTriggered: null,
       triggered7d: 0,
       lastGated: null,
+      canaryTrigger: 'none',
+      canaryGate: 'none',
       lastModified: new Date().toISOString().slice(0, 10),
       validationStatus: 'passed',
       parityScore: null,
@@ -2666,6 +2771,8 @@ export default function UserPacksPage() {
       lastTriggered: null,
       triggered7d: 0,
       lastGated: null,
+      canaryTrigger: 'none',
+      canaryGate: 'none',
       lastModified: new Date().toISOString().slice(0, 10),
       validationStatus: 'passed',
       parityScore: null,
@@ -2746,6 +2853,13 @@ export default function UserPacksPage() {
           </div>
         )}
       </div>
+
+      {/* Pack Live Test — bulk canary controls */}
+      {packs.length > 0 && (
+        <div className="mb-6">
+          <CanaryBulkControls />
+        </div>
+      )}
 
       {packs.length === 0 ? (
         <Card>
