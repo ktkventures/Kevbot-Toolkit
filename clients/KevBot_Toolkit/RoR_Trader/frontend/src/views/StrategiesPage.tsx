@@ -59,6 +59,7 @@ interface Strategy {
   sigmaFwd: number;
   sigmaAlert: number;
   equityCurveData?: { cumulative_r: number[]; exit_times?: string[]; boundary_index?: number | null };
+  inSampleEnd?: string;  // config.in_sample_end — OOS-Historical band start
   updatedAt: string;
   portfolioCount: number;
   health?: StrategyHealth;
@@ -197,6 +198,7 @@ function apiToStrategy(s: any): Strategy {
     sigmaFwd: s.sigma_fwd ?? 0,
     sigmaAlert: s.sigma_alert ?? 0,
     equityCurveData: s.equity_curve_data || undefined,
+    inSampleEnd: s.config?.in_sample_end || undefined,
     // "Updated X ago" semantically means "when did the strategy's data
     // last refresh" — prefer data_refreshed_at (bumped by every cron
     // cycle + Update button + manual Refresh) over the Postgres
@@ -943,7 +945,7 @@ const EQ_BT_COLOR = '#2196F3';
 const EQ_FWD_COLOR = '#FF9800';
 const EQ_LIVE_COLOR = '#4CAF50';
 
-function MiniEquityCurve({ equityCurveData, fwdStartPct, hasAlerts, showHWM, showEdgeMA, showConfBands, height = 64 }: { equityCurveData?: { cumulative_r: number[]; boundary_index?: number | null }; fwdStartPct: number; hasAlerts: boolean; showHWM: boolean; showEdgeMA: boolean; showConfBands: boolean; height?: number }) {
+function MiniEquityCurve({ equityCurveData, fwdStartPct, hasAlerts, showHWM, showEdgeMA, showConfBands, inSampleEnd, height = 64 }: { equityCurveData?: { cumulative_r: number[]; exit_times?: string[]; boundary_index?: number | null }; fwdStartPct: number; hasAlerts: boolean; showHWM: boolean; showEdgeMA: boolean; showConfBands: boolean; inSampleEnd?: string; height?: number }) {
   // Drop any non-finite values (NaN/Infinity/null) — one of them in cumR
   // makes Math.min/max return NaN, which propagates into every toY() call
   // and Recharts logs "Expected number" errors for every SVG attribute.
@@ -956,6 +958,22 @@ function MiniEquityCurve({ equityCurveData, fwdStartPct, hasAlerts, showHWM, sho
   const fwdIdx = Number.isFinite(rawBoundary)
     ? Math.min(Math.max(rawBoundary as number, 1), totalPoints - 1)
     : Math.max(1, Math.floor(totalPoints * (Number.isFinite(fwdStartPct) ? fwdStartPct : 0.5)));
+
+  // OOS-Historical band start — first equity point whose exit time is at
+  // or after config.in_sample_end. Only valid as a sub-band strictly
+  // inside the in-sample (pre-forward) region. Null → no amber band.
+  let oosIdx: number | null = null;
+  const _exitTimes = equityCurveData?.exit_times;
+  if (inSampleEnd && _exitTimes && _exitTimes.length === totalPoints) {
+    const _iseMs = new Date(inSampleEnd).getTime();
+    if (Number.isFinite(_iseMs)) {
+      for (let i = 0; i < _exitTimes.length; i++) {
+        const _tMs = new Date(_exitTimes[i]).getTime();
+        if (Number.isFinite(_tMs) && _tMs >= _iseMs) { oosIdx = i; break; }
+      }
+    }
+  }
+  if (oosIdx != null && (oosIdx <= 0 || oosIdx >= fwdIdx)) oosIdx = null;
   const w = 320;
   const h = height;
   const pad = 3;
@@ -1025,8 +1043,16 @@ function MiniEquityCurve({ equityCurveData, fwdStartPct, hasAlerts, showHWM, sho
       <polygon points={buildFill(fwdPoints, fwdIdx)} fill={`url(#fwG${uid})`} />
       {/* FWD boundary */}
       <line x1={bndX} y1="0" x2={bndX} y2={h} stroke={EQ_FWD_COLOR} strokeWidth="0.5" strokeDasharray="3 2" opacity="0.5" />
-      {/* BT line */}
-      <polyline points={buildLine(btPoints.slice(0, fwdIdx + 1), 0)} fill="none" stroke={EQ_BT_COLOR} strokeWidth="1.5" />
+      {/* BT line — split into in-sample (blue) + OOS-historical (amber) */}
+      {oosIdx != null ? (
+        <>
+          <polyline points={buildLine(cumR.slice(0, oosIdx + 1), 0)} fill="none" stroke={EQ_BT_COLOR} strokeWidth="1.5" />
+          <polyline points={buildLine(cumR.slice(oosIdx, fwdIdx + 1), oosIdx)} fill="none" stroke="#FFC107" strokeWidth="1.5" />
+          <line x1={toX(oosIdx)} y1="0" x2={toX(oosIdx)} y2={h} stroke="#FFC107" strokeWidth="0.5" strokeDasharray="2 2" opacity="0.5" />
+        </>
+      ) : (
+        <polyline points={buildLine(btPoints.slice(0, fwdIdx + 1), 0)} fill="none" stroke={EQ_BT_COLOR} strokeWidth="1.5" />
+      )}
       {/* FWD line */}
       <polyline points={buildLine(fwdPoints, fwdIdx)} fill="none" stroke={EQ_FWD_COLOR} strokeWidth="1.5" />
       {/* Live alerts — overlaid on FWD x-range, shows slippage */}
@@ -1960,6 +1986,7 @@ export default function StrategiesPage() {
                   showHWM={eqShowHWM}
                   showEdgeMA={eqShowEdgeMA}
                   showConfBands={eqShowConfBands}
+                  inSampleEnd={strat.inSampleEnd}
                   height={chartHeight}
                 />
               </div>
