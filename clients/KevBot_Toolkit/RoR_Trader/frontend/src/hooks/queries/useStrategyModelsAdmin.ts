@@ -20,11 +20,15 @@ export interface StrategyModelRow {
   description: string;
   strategies_using: number;
   sample_strategy_ids: number[];
+  // backtest kind only — the registry doubles as the algo_model registry
+  algo_default?: boolean;
+  algo_strategies_using?: number;
 }
 
 export interface StrategyModelsListResponse {
   kind: ModelKind;
   default_id: string;
+  algo_default_id?: string | null;
   rows: StrategyModelRow[];
 }
 
@@ -38,6 +42,10 @@ export interface StrategyModelDetail {
   description: string;
   strategies: { id: number; name: string }[];
   strategies_using: number;
+  // backtest kind only
+  algo_default?: boolean;
+  algo_strategies?: { id: number; name: string }[];
+  algo_strategies_using?: number;
 }
 
 export function useStrategyModelsList(kind: ModelKind) {

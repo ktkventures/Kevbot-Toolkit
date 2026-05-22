@@ -20,7 +20,7 @@ from api.deps import get_current_user
 from strategy_models import (
     BACKTEST_MODELS, LIVE_MODELS,
     get_default_backtest_model, get_default_live_model,
-    get_model_status,
+    get_default_algo_model, get_model_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -76,13 +76,41 @@ def _strategies_grouped_by_model(kind: Kind) -> Dict[str, List[Dict[str, Any]]]:
     return grouped
 
 
+def _strategies_grouped_by_algo_model() -> Dict[str, List[Dict[str, Any]]]:
+    """Like `_strategies_grouped_by_model` but buckets by the `algo_model`
+    JSONB field. `algo_model` draws from the same BACKTEST_MODELS registry
+    as `backtest_model` — this is the second consumer (the cron's
+    live-accountability lane). A null field counts toward the algo default.
+    """
+    from db import get_admin_client
+    c = get_admin_client()
+    default_id = get_default_algo_model()
+    valid_ids = set(BACKTEST_MODELS.keys())
+
+    result = c.table('strategies').select('id,name,config').execute()
+    rows = result.data or []
+
+    grouped: Dict[str, List[Dict[str, Any]]] = {mid: [] for mid in valid_ids}
+    for row in rows:
+        cfg = row.get('config') or {}
+        selected = cfg.get('algo_model') or default_id
+        if selected not in valid_ids:
+            selected = default_id
+        grouped[selected].append({'id': row['id'], 'name': row.get('name', '')})
+    return grouped
+
+
 def _list_response(kind: Kind) -> Dict[str, Any]:
     grouped = _strategies_grouped_by_model(kind)
     registry = _registry(kind)
+    # The backtest registry doubles as the algo_model registry — surface
+    # the algo default + algo usage so the page can badge both roles.
+    algo_grouped = _strategies_grouped_by_algo_model() if kind == 'backtest' else {}
+    algo_default_id = get_default_algo_model() if kind == 'backtest' else None
     rows = []
     for model_id, meta in registry.items():
         users = grouped.get(model_id, [])
-        rows.append({
+        row = {
             'id': model_id,
             'label': meta.get('label', model_id),
             'available': bool(meta.get('available')),
@@ -91,10 +119,16 @@ def _list_response(kind: Kind) -> Dict[str, Any]:
             'description': meta.get('description', ''),
             'strategies_using': len(users),
             'sample_strategy_ids': [u['id'] for u in users[:5]],
-        })
+        }
+        if kind == 'backtest':
+            algo_users = algo_grouped.get(model_id, [])
+            row['algo_default'] = bool(meta.get('algo_default'))
+            row['algo_strategies_using'] = len(algo_users)
+        rows.append(row)
     return {
         'kind': kind,
         'default_id': _default(kind),
+        'algo_default_id': algo_default_id,
         'rows': rows,
     }
 
@@ -107,7 +141,7 @@ def _detail_response(kind: Kind, model_id: str) -> Dict[str, Any]:
                             detail=f"Unknown {kind} model: {model_id}")
     grouped = _strategies_grouped_by_model(kind)
     users = grouped.get(model_id, [])
-    return {
+    out = {
         'id': model_id,
         'kind': kind,
         'label': meta.get('label', model_id),
@@ -118,6 +152,12 @@ def _detail_response(kind: Kind, model_id: str) -> Dict[str, Any]:
         'strategies': sorted(users, key=lambda s: s['id']),
         'strategies_using': len(users),
     }
+    if kind == 'backtest':
+        algo_users = _strategies_grouped_by_algo_model().get(model_id, [])
+        out['algo_default'] = bool(meta.get('algo_default'))
+        out['algo_strategies'] = sorted(algo_users, key=lambda s: s['id'])
+        out['algo_strategies_using'] = len(algo_users)
+    return out
 
 
 @router.get("/live")

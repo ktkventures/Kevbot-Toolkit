@@ -76,6 +76,8 @@ BACKTEST_MODELS = {
         'label': 'Cache (locked at close)',
         'available': True,  # Phase E preview shipped 2026-05-06
         'default': False,
+        'algo_default': True,  # default `algo_model` — decision-time mirror
+                               # for the live-accountability lane (2026-05-21)
         'description': (
             'Read primary + secondary TF bars from live_bars cache '
             '(source IN ("ws", "ws_agg")). Decision-time view of what '
@@ -249,12 +251,15 @@ def get_default_algo_model() -> str:
     """Default `algo_model` field — what the cron uses for the algo
     accountability lane. Distinct from backtest_model since 2026-05-07.
 
-    Returns 'cache_locked' as the explicit default — closest to what
-    the live engine actually sees, gives the strongest accountability
-    check against live alerts. Strategies on tickers without cache
-    coverage (cache_locked.available will eventually narrow per-symbol)
-    fall back to backtest_model at dispatch time.
+    Resolved from the `algo_default` flag in BACKTEST_MODELS — currently
+    'cache_locked', closest to what the live engine actually sees, gives
+    the strongest accountability check against live alerts. Strategies on
+    tickers without cache coverage (cache_locked.available will eventually
+    narrow per-symbol) fall back to backtest_model at dispatch time.
     """
+    for k, v in BACKTEST_MODELS.items():
+        if v.get('algo_default'):
+            return k
     return 'cache_locked'
 
 

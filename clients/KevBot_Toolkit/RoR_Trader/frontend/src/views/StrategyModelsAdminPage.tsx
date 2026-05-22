@@ -76,8 +76,18 @@ function statusLabel(status: ModelStatus): string {
   return 'Unknown';
 }
 
-function ModelCard({ row, onClick }: {
+// Default-badge styles — backtest role is blue, algo role is violet so
+// the two can sit side by side on a card without ambiguity.
+const BACKTEST_BADGE: React.CSSProperties = {
+  background: 'rgba(33,150,243,0.15)', color: '#64b5f6',
+};
+const ALGO_BADGE: React.CSSProperties = {
+  background: 'rgba(156,39,176,0.18)', color: '#ce93d8',
+};
+
+function ModelCard({ row, kind, onClick }: {
   row: StrategyModelRow;
+  kind: ModelKind;
   onClick: () => void;
 }) {
   const desc = row.description.length > 140
@@ -100,18 +110,34 @@ function ModelCard({ row, onClick }: {
             </span>
             {row.default && (
               <span className="text-[10px] px-2 py-0.5 rounded font-medium"
-                    style={{ background: 'rgba(33,150,243,0.15)', color: '#64b5f6' }}>
-                Default
+                    style={BACKTEST_BADGE}>
+                {kind === 'backtest' ? 'Default · Backtest' : 'Default'}
+              </span>
+            )}
+            {row.algo_default && (
+              <span className="text-[10px] px-2 py-0.5 rounded font-medium"
+                    style={ALGO_BADGE}>
+                Default · ALGO
               </span>
             )}
           </div>
           <p className="text-xs mb-2" style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
             {desc}
           </p>
-          <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-            <strong style={{ color: 'var(--text-primary)' }}>{row.strategies_using}</strong>
-            {' '}strateg{row.strategies_using === 1 ? 'y' : 'ies'} using this model
-          </p>
+          {kind === 'backtest' ? (
+            <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              <strong style={{ color: 'var(--text-primary)' }}>{row.strategies_using}</strong>
+              {' '}as backtest model
+              {'  ·  '}
+              <strong style={{ color: 'var(--text-primary)' }}>{row.algo_strategies_using ?? 0}</strong>
+              {' '}as algo model
+            </p>
+          ) : (
+            <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              <strong style={{ color: 'var(--text-primary)' }}>{row.strategies_using}</strong>
+              {' '}strateg{row.strategies_using === 1 ? 'y' : 'ies'} using this model
+            </p>
+          )}
         </div>
         <div className="text-xl select-none" style={{ color: 'var(--text-muted)' }}>
           ›
@@ -119,6 +145,42 @@ function ModelCard({ row, onClick }: {
         </div>
       </Card>
     </div>
+  );
+}
+
+function StrategyLinkList({ title, count, strategies }: {
+  title: string;
+  count: number;
+  strategies: { id: number; name: string }[];
+}) {
+  return (
+    <Card>
+      <h3 className="text-sm font-medium mb-3">
+        {title}
+        <span className="ml-2 text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+          ({count})
+        </span>
+      </h3>
+      {strategies.length === 0 ? (
+        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+          No strategies are currently using this model.
+        </p>
+      ) : (
+        <div className="space-y-1.5">
+          {strategies.map(s => (
+            <Link key={s.id} href={`/strategies/${s.id}`}
+                  className="flex items-center gap-3 text-xs hover:underline"
+                  style={{ color: 'var(--text-primary)' }}>
+              <code className="text-[10px] px-1.5 py-0.5 rounded"
+                    style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
+                #{s.id}
+              </code>
+              <span>{s.name || '(unnamed)'}</span>
+            </Link>
+          ))}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -169,8 +231,14 @@ function ModelDetail({ kind, id, onBack }: {
           </span>
           {data.default && (
             <span className="text-xs px-2 py-1 rounded font-medium"
-                  style={{ background: 'rgba(33,150,243,0.15)', color: '#64b5f6' }}>
-              Platform Default
+                  style={BACKTEST_BADGE}>
+              {kind === 'backtest' ? 'Default · Backtest Model' : 'Platform Default'}
+            </span>
+          )}
+          {data.algo_default && (
+            <span className="text-xs px-2 py-1 rounded font-medium"
+                  style={ALGO_BADGE}>
+              Default · Algo Model
             </span>
           )}
         </div>
@@ -183,33 +251,21 @@ function ModelDetail({ kind, id, onBack }: {
         </p>
       </Card>
 
-      <Card>
-        <h3 className="text-sm font-medium mb-3">
-          Strategies using this model
-          <span className="ml-2 text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
-            ({data.strategies_using})
-          </span>
-        </h3>
-        {data.strategies.length === 0 ? (
-          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-            No strategies are currently using this model.
-          </p>
-        ) : (
-          <div className="space-y-1.5">
-            {data.strategies.map(s => (
-              <Link key={s.id} href={`/strategies/${s.id}`}
-                    className="flex items-center gap-3 text-xs hover:underline"
-                    style={{ color: 'var(--text-primary)' }}>
-                <code className="text-[10px] px-1.5 py-0.5 rounded"
-                      style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>
-                  #{s.id}
-                </code>
-                <span>{s.name || '(unnamed)'}</span>
-              </Link>
-            ))}
-          </div>
-        )}
-      </Card>
+      <StrategyLinkList
+        title={kind === 'backtest'
+          ? 'Strategies using this as backtest model'
+          : 'Strategies using this model'}
+        count={data.strategies_using}
+        strategies={data.strategies}
+      />
+
+      {kind === 'backtest' && (
+        <StrategyLinkList
+          title="Strategies using this as algo model"
+          count={data.algo_strategies_using ?? 0}
+          strategies={data.algo_strategies ?? []}
+        />
+      )}
 
       {data.status === 'coming_soon' && (
         <Card>
@@ -264,7 +320,7 @@ function StrategyModelsAdminBody({ kind }: PageProps) {
       </div>
       <div className="space-y-3">
         {data?.rows.map(row => (
-          <ModelCard key={row.id} row={row} onClick={() => setSelectedId(row.id)} />
+          <ModelCard key={row.id} row={row} kind={kind} onClick={() => setSelectedId(row.id)} />
         ))}
         {(!data || data.rows.length === 0) && (
           <Card>
