@@ -1,7 +1,37 @@
 # Spec — Data-Worker Service & Streaming Backtest/Algo Models
 
-**Status:** DRAFT v2, 2026-05-22. Revised from v1 (alerts-gated cron) to
-the streaming-engine model after design discussion.
+**Status:** Phase 1 + Phase 2 + Phase 2.5 SHIPPED + LIVE on Railway,
+2026-05-22 EOD. Phase 3 (algo lane) + Phase 4 (cold-start backfill +
+mass-search migration) remain. See `project_session_2026-05-22.md`.
+
+**Implementation notes (post-build, vs original §9 phasing):**
+
+- Tick window contract: `[snapshot.last_bar_ts, now − 15min]` and
+  snapshot advances ONLY to `now − 15min` (the `_ALGO_HISTORY_LAG_MINUTES`
+  commit boundary). Snapshot boundary equals commit boundary → engine
+  never advances past an un-settled trade → no lag-edge drops (strictly
+  better than the prior cron's `until=now` + lag-filter design).
+- A **Phase 2.5 was added** between 2 and 3 to fix a structural gap the
+  90-min 1s Tier-1 store couldn't address: cross-TF confluence warmup.
+  Solution: a per-symbol **Tier-2 1-Minute, 150-day rolling coarse-bar
+  store** (`src/coarse_bar_store.py`) + a `BarStoreFacade`
+  (`src/bar_store_facade.py`) that routes `get_timeframe(tf)` by
+  `TIMEFRAME_SECONDS[tf] >= 120s`. Drop-in for `SymbolBarStore` — the
+  engine path is unchanged. With Tier-2, every REST-model cross-TF
+  strategy is eligible; the `≥1Hour secondary TF → ineligible` rule
+  went away.
+- **Weekend-gap recovery:** when the streaming tick hits `store_gap`
+  AND the snapshot is more than 1 hour stale, the engine resets
+  `catchup_done=False` so the next pass runs a fresh REST-fed
+  `append_new_backtest_trades_for_strategy` (re-anchors the snapshot
+  via REST — the only path that can bridge a multi-hour gap).
+- Scope still TSLA-only; multi-symbol is a trivial extension (more
+  `SymbolBarStore` + `CoarseBarStore` instances per symbol).
+- Eligibility narrows only on non-REST `backtest_model` (`cache_locked`
+  / `cache_corrected`) — those would need a 3rd tier sourced from
+  `live_bars` (out of scope until Phase 3 algo lane).
+
+Original v2 design follows.
 
 ## 1. Why
 
