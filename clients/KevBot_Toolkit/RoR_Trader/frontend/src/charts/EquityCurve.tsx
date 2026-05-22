@@ -14,8 +14,16 @@ interface EquityPoint {
 
 interface EquityCurveProps {
   data: EquityPoint[];
-  /** Index where backtest ends and forward test begins */
+  /** Index where backtest ends and forward test begins (forward_test_start) */
   boundaryIndex?: number | null;
+  /**
+   * Index where the in-sample window ends and the OOS-historical band
+   * begins (in_sample_end). When set, the segment
+   * [oosBoundaryIndex, boundaryIndex) renders in `oosColor`. When null,
+   * the in-sample band runs straight to `boundaryIndex` — pre-OOS
+   * behaviour, unchanged. See docs/Spec_OOS_Test_Periods.md §6.
+   */
+  oosBoundaryIndex?: number | null;
   /** Index where forward test ends and live alerts begin */
   alertBoundaryIndex?: number | null;
   /** Alert trades as separate overlay data (green line on top of FWD) */
@@ -30,6 +38,8 @@ interface EquityCurveProps {
   btColor?: string;
   fwdColor?: string;
   liveColor?: string;
+  /** OOS-historical band color (amber). */
+  oosColor?: string;
   /** Line style: solid (default), smooth (monotone), stepped */
   lineStyle?: 'solid' | 'smooth' | 'stepped';
   /** Show gradient fill under BT and FWD segments */
@@ -39,6 +49,7 @@ interface EquityCurveProps {
 export default function EquityCurve({
   data,
   boundaryIndex,
+  oosBoundaryIndex,
   alertBoundaryIndex,
   alertOverlayData,
   height = 300,
@@ -50,11 +61,24 @@ export default function EquityCurve({
   btColor = '#2196F3',
   fwdColor = '#FF9800',
   liveColor = '#4CAF50',
+  oosColor = '#FFC107',
   lineStyle = 'solid',
   showGradient = true,
 }: EquityCurveProps) {
   // Map lineStyle to Recharts curve type
   const curveType = lineStyle === 'stepped' ? 'stepAfter' : lineStyle === 'smooth' ? 'monotone' : 'linear';
+
+  // Which band an equity point belongs to, by its index. Four ordered
+  // bands: in-sample (bt) -> OOS-historical (oos) -> forward (fwd) ->
+  // live. A null boundary collapses that band — with oosBoundaryIndex
+  // null the in-sample band runs straight into forward (pre-OOS).
+  const segAt = (idx: number): 'bt' | 'oos' | 'fwd' | 'live' => {
+    let s: 'bt' | 'oos' | 'fwd' | 'live' = 'bt';
+    if (oosBoundaryIndex != null && idx >= oosBoundaryIndex) s = 'oos';
+    if (boundaryIndex != null && idx >= boundaryIndex) s = 'fwd';
+    if (alertBoundaryIndex != null && idx >= alertBoundaryIndex) s = 'live';
+    return s;
+  };
 
   const chartData = useMemo(() => {
     if (!data || data.length === 0) return [];
@@ -99,63 +123,44 @@ export default function EquityCurve({
       }
 
       return allDays.map(({ label, totalR, maxIdx }, dayIdx) => {
-        let segment: 'backtest' | 'forward' | 'live' = 'backtest';
-        if (boundaryIndex != null && maxIdx >= boundaryIndex) segment = 'forward';
-        if (alertBoundaryIndex != null && maxIdx >= alertBoundaryIndex) segment = 'live';
-
-        // At segment transitions, include value in both segments for seamless connection
-        let prevSegment: string | null = null;
-        if (dayIdx > 0) {
-          const pi = allDays[dayIdx - 1].maxIdx;
-          prevSegment = 'backtest';
-          if (boundaryIndex != null && pi >= boundaryIndex) prevSegment = 'forward';
-          if (alertBoundaryIndex != null && pi >= alertBoundaryIndex) prevSegment = 'live';
-        }
-        const isBtToFwd = prevSegment === 'backtest' && segment === 'forward';
-        const isFwdToLive = prevSegment === 'forward' && segment === 'live';
-
-        return {
-          x: label,
-          r: totalR,
-          bt: (segment === 'backtest' || isBtToFwd) ? totalR : null,
-          fwd: (segment === 'forward' || isBtToFwd || isFwdToLive) ? totalR : null,
-          live: (segment === 'live' || isFwdToLive) ? totalR : null,
-          btBridge: null,
-          fwdBridge: null,
+        // Light the point's own band; at a transition also light the
+        // previous band so the two coloured lines share the point and
+        // connect seamlessly.
+        const cur = segAt(maxIdx);
+        const prev = dayIdx > 0 ? segAt(allDays[dayIdx - 1].maxIdx) : null;
+        const row: any = {
+          x: label, r: totalR,
+          bt: null, oos: null, fwd: null, live: null,
+          btBridge: null, fwdBridge: null,
         };
+        row[cur] = totalR;
+        if (prev && prev !== cur) row[prev] = totalR;
+        return row;
       });
     }
 
     // Per-trade mode: sequential trade numbers with overlap at segment boundaries
     return data.map((pt, i) => {
-      let segment: 'backtest' | 'forward' | 'live' = 'backtest';
-      if (boundaryIndex != null && i >= boundaryIndex) segment = 'forward';
-      if (alertBoundaryIndex != null && i >= alertBoundaryIndex) segment = 'live';
-
-      // At segment boundaries, include value in BOTH segments so lines connect seamlessly
-      const isLastBT = boundaryIndex != null && i === boundaryIndex - 1;
-      const isFirstFWD = boundaryIndex != null && i === boundaryIndex;
-      const isLastFWD = alertBoundaryIndex != null && i === alertBoundaryIndex - 1;
-      const isFirstLive = alertBoundaryIndex != null && i === alertBoundaryIndex;
-
-      return {
-        x: pt.trade_number,
-        r: pt.cumulative_r,
-        bt: (segment === 'backtest' || isFirstFWD) ? pt.cumulative_r : null,
-        fwd: (segment === 'forward' || isLastBT || isFirstLive) ? pt.cumulative_r : null,
-        live: (segment === 'live' || isLastFWD) ? pt.cumulative_r : null,
-        btBridge: null,
-        fwdBridge: null,
+      const cur = segAt(i);
+      const prev = i > 0 ? segAt(i - 1) : null;
+      const row: any = {
+        x: pt.trade_number, r: pt.cumulative_r,
+        bt: null, oos: null, fwd: null, live: null,
+        btBridge: null, fwdBridge: null,
       };
+      row[cur] = pt.cumulative_r;
+      if (prev && prev !== cur) row[prev] = pt.cumulative_r;
+      return row;
     });
-  }, [data, boundaryIndex, alertBoundaryIndex, xAxis]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, boundaryIndex, oosBoundaryIndex, alertBoundaryIndex, xAxis]);
 
   // Merge HWM into chartData (MUST be before any early return — React hooks rule)
   const chartDataWithHwm = useMemo(() => {
     if (!showHWM || chartData.length === 0) return chartData;
     let max = -Infinity;
     return chartData.map((pt: any) => {
-      const val = pt.r ?? pt.bt ?? pt.fwd ?? pt.live ?? 0;
+      const val = pt.r ?? pt.bt ?? pt.oos ?? pt.fwd ?? pt.live ?? 0;
       max = Math.max(max, val);
       return { ...pt, hwm: max };
     });
@@ -235,6 +240,7 @@ export default function EquityCurve({
 
   // Unique gradient IDs to avoid SVG conflicts
   const btGradId = `btGradient-${height}`;
+  const oosGradId = `oosGradient-${height}`;
   const fwdGradId = `fwdGradient-${height}`;
 
   return (
@@ -244,6 +250,10 @@ export default function EquityCurve({
           <linearGradient id={btGradId} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor={btColor} stopOpacity={0.12} />
             <stop offset="100%" stopColor={btColor} stopOpacity={0} />
+          </linearGradient>
+          <linearGradient id={oosGradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={oosColor} stopOpacity={0.12} />
+            <stop offset="100%" stopColor={oosColor} stopOpacity={0} />
           </linearGradient>
           <linearGradient id={fwdGradId} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor={fwdColor} stopOpacity={0.12} />
@@ -280,10 +290,16 @@ export default function EquityCurve({
           <ReferenceLine y={0} stroke="var(--text-secondary)" strokeDasharray="4 4" strokeOpacity={0.4} />
         )}
 
-        {/* Backtest segment */}
+        {/* In-sample (backtest) segment */}
         <Area
           type={curveType} dataKey="bt" stroke={btColor} strokeWidth={2}
           fill={showGradient ? `url(#${btGradId})` : 'none'} dot={false} isAnimationActive={false}
+          connectNulls={false}
+        />
+        {/* OOS-historical segment (amber) — only renders when oosBoundaryIndex is set */}
+        <Area
+          type={curveType} dataKey="oos" stroke={oosColor} strokeWidth={2}
+          fill={showGradient ? `url(#${oosGradId})` : 'none'} dot={false} isAnimationActive={false}
           connectNulls={false}
         />
         {/* Forward test segment */}

@@ -135,20 +135,26 @@ tracking, divergence windowing) keep using `forward_test_start`.
 
 Each repointed site gets a comment: `# OOS: in_sample_end divider`.
 
-## 6. Charts — three colored bands
+## 6. Charts — banded equity curve
 
-The equity curve / price chart currently splits at `forward_test_start`
-(two regions). Add a second split at `in_sample_end`:
+The equity curve currently splits at `forward_test_start`. Add an
+**additive** split at `in_sample_end` — a new amber band inserted
+*before* the existing forward region (the existing forward orange + the
+green alert overlay are untouched, so pre-OOS charts are unchanged):
 
-| Band | Color |
-|---|---|
-| In-Sample | blue (existing backtest color) |
-| OOS-Historical | **amber/orange (NEW)** |
-| Post-Creation (Forward) | green (existing forward color) |
+| Band | Color | Boundary |
+|---|---|---|
+| In-Sample (Backtest) | blue `#2196F3` | `in_sample_end` |
+| **OOS-Historical** | **amber `#FFC107` (NEW)** | `forward_test_start` |
+| Forward | orange `#FF9800` | (alert start) |
+| Alert overlay | green `#4CAF50` | — |
 
-When `in_sample_end == forward_test_start` the amber band has zero width
-and the chart looks exactly as today. Alert markers continue to overlay
-the Post-Creation region unchanged.
+`EquityCurve` gains an optional `oosBoundaryIndex` prop. When null
+(every pre-OOS strategy — no `in_sample_end`), the amber band has zero
+width and the chart renders exactly as before. The legend shows an
+"Out-of-Sample" chip only when the band is present.
+
+**Implemented in Phase 1** (`EquityCurve.tsx`, `StrategyDetailPage.tsx`).
 
 Surfaces: Strategy Detail equity curve + price chart, forward-test view,
 My Strategies card mini-charts, Portfolio Detail equity curves.

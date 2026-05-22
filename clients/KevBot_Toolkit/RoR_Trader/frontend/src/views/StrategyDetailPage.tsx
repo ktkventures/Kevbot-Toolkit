@@ -47,6 +47,7 @@ const FIDELITY_BADGE_COLOR = '#26C6DA';
 const EQ_BT_COLOR = '#2196F3';
 const EQ_FWD_COLOR = '#FF9800';
 const EQ_LIVE_COLOR = '#4CAF50';
+const EQ_OOS_COLOR = '#FFC107';  // OOS-historical band (amber)
 
 /* ========================================================================= */
 /* API DATA MAPPING                                                           */
@@ -2262,6 +2263,23 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     return null;
   }, [apiStrategy, filteredStoredTrades, isDateFiltered]);
 
+  // In-sample → OOS-historical boundary index, from config.in_sample_end.
+  // Null for pre-OOS strategies (no in_sample_end recorded) → the equity
+  // curve renders with no amber band, identical to before. See
+  // docs/Spec_OOS_Test_Periods.md §6.
+  const equityOosBoundaryIndex = useMemo(() => {
+    const inSampleEnd = apiStrategy?.config?.in_sample_end;
+    if (!inSampleEnd) return null;
+    const isMs = safeDateMs(inSampleEnd);
+    if (!isMs) return null;
+    const raw = isDateFiltered ? filteredStoredTrades : (apiStrategy?.stored_trades || []);
+    for (let i = 0; i < raw.length; i++) {
+      const ms = safeDateMs(raw[i].entry_time);
+      if (ms && ms >= isMs) return i;
+    }
+    return null;
+  }, [apiStrategy, filteredStoredTrades, isDateFiltered]);
+
   // Build alert equity points — offset by FWD cumulative R so the green line
   // starts at the same level as the FWD curve (overlays to show slippage/gaps)
   const alertEquityPoints = useMemo(() => {
@@ -3259,6 +3277,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   <EquityCurve
                     data={equityPoints}
                     boundaryIndex={equityBoundaryIndex}
+                    oosBoundaryIndex={equityOosBoundaryIndex}
+                    oosColor={EQ_OOS_COLOR}
                     height={300}
                     showZeroLine={chartPrefs.eqShowZeroLine}
                     showHWM={eqShowHWM || chartPrefs.eqShowHWM}
@@ -3275,6 +3295,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     <span className="flex items-center gap-1.5">
                       <span style={{ display: 'inline-block', width: 16, height: 2, background: chartPrefs.eqBacktestColor || EQ_BT_COLOR }} /> Backtest
                     </span>
+                    {equityOosBoundaryIndex != null && (
+                      <span className="flex items-center gap-1.5">
+                        <span style={{ display: 'inline-block', width: 16, height: 2, background: EQ_OOS_COLOR }} /> Out-of-Sample
+                      </span>
+                    )}
                     <span className="flex items-center gap-1.5">
                       <span style={{ display: 'inline-block', width: 16, height: 2, background: chartPrefs.eqForwardColor || EQ_FWD_COLOR }} /> Forward
                     </span>
