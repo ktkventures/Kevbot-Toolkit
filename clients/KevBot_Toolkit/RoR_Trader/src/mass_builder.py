@@ -1033,6 +1033,10 @@ def run_mass_search(
                                 if _oos_eval is not None:
                                     _res['oos_kpis'] = _oos_eval['oos_kpis']
                                     _res['oos_sigma'] = _oos_eval['sigma']
+                                    # Index into equity_curve where the OOS
+                                    # band begins (= in-sample point count).
+                                    _res['oos_boundary_index'] = len(
+                                        build_equity_curve(_is_df))
                                 results.append(_res)
 
                             # ── Level 3: Auto-search confluences ──
@@ -1117,6 +1121,10 @@ def run_mass_search(
                                                 _conf_res['oos_kpis'] = row['oos_kpis']
                                                 _conf_res['oos_sigma'] = row.get(
                                                     'oos_sigma')
+                                                _filt_is, _ = split_trades_at_boundary(
+                                                    filtered, oos_in_sample_end_dt)
+                                                _conf_res['oos_boundary_index'] = len(
+                                                    build_equity_curve(_filt_is))
                                             results.append(_conf_res)
                                 except _CancelledError:
                                     raise

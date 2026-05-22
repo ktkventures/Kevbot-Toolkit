@@ -72,6 +72,7 @@ interface MassResult {
   oosTrades?: number;
   oosSigmaStatus?: 'green' | 'amber' | 'red' | 'unknown';
   oosSigmaZ?: number | null;
+  oosBoundaryIndex?: number;  // index into equityCurve where OOS begins
   _raw?: any;  // Raw result from backend for save flow
 }
 
@@ -219,39 +220,54 @@ function generateEquityCurve(totalR: number, trades: number): number[] {
    Sub-Components
    ======================================================================== */
 
-function MiniEquityCurve({ data, height = 80 }: { data: number[]; height?: number }) {
+function MiniEquityCurve({ data, height = 80, oosBoundaryIndex }: {
+  data: number[]; height?: number; oosBoundaryIndex?: number | null;
+}) {
   if (data.length < 2) return null;
   const min = Math.min(...data);
   const max = Math.max(...data);
   const range = max - min || 1;
   const w = 200;
   const h = height;
-  const points = data.map((v, i) => {
-    const x = (i / (data.length - 1)) * w;
-    const y = h - ((v - min) / range) * (h - 8) - 4;
-    return `${x},${y}`;
-  }).join(' ');
+  const ptX = (i: number) => (i / (data.length - 1)) * w;
+  const ptY = (v: number) => h - ((v - min) / range) * (h - 8) - 4;
+  const ptStr = (i: number) => `${ptX(i)},${ptY(data[i])}`;
 
+  const zeroLine = (min < 0 && max > 0) ? (
+    <line x1="0" x2={w} y1={ptY(0)} y2={ptY(0)}
+      stroke="var(--text-muted)" strokeWidth="0.5" strokeDasharray="3,3" />
+  ) : null;
+
+  // OOS-banded: in-sample (blue) + held-out (amber), with a divider.
+  const hasBand = oosBoundaryIndex != null
+    && oosBoundaryIndex > 0 && oosBoundaryIndex < data.length;
+  if (hasBand) {
+    const b = oosBoundaryIndex as number;
+    const isPts: string[] = [];
+    for (let i = 0; i <= b; i++) isPts.push(ptStr(i));      // through the boundary
+    const oosPts: string[] = [];
+    for (let i = b; i < data.length; i++) oosPts.push(ptStr(i));  // shares the boundary point
+    return (
+      <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={height} preserveAspectRatio="none">
+        {zeroLine}
+        <polyline points={isPts.join(' ')} fill="none" stroke="#2196F3" strokeWidth="1.5" />
+        <polyline points={oosPts.join(' ')} fill="none" stroke="#FFC107" strokeWidth="1.5" />
+        <line x1={ptX(b)} x2={ptX(b)} y1={0} y2={h}
+          stroke="var(--text-muted)" strokeWidth="0.5" strokeDasharray="2,2" />
+      </svg>
+    );
+  }
+
+  // Plain: single line coloured by final P&L.
+  const points = data.map((_, i) => ptStr(i)).join(' ');
   const final = data[data.length - 1];
   const color = final >= 0 ? 'var(--green, #4CAF50)' : 'var(--red, #f44336)';
   const fillColor = final >= 0 ? 'rgba(76,175,80,0.12)' : 'rgba(244,67,54,0.12)';
-
-  // Build fill polygon
-  const fillPoints = `0,${h} ${points} ${w},${h}`;
-
   return (
     <svg viewBox={`0 0 ${w} ${h}`} width="100%" height={height} preserveAspectRatio="none">
-      <polygon points={fillPoints} fill={fillColor} />
+      <polygon points={`0,${h} ${points} ${w},${h}`} fill={fillColor} />
       <polyline points={points} fill="none" stroke={color} strokeWidth="1.5" />
-      {/* Zero line */}
-      {min < 0 && max > 0 && (
-        <line
-          x1="0" x2={w}
-          y1={h - ((0 - min) / range) * (h - 8) - 4}
-          y2={h - ((0 - min) / range) * (h - 8) - 4}
-          stroke="var(--text-muted)" strokeWidth="0.5" strokeDasharray="3,3"
-        />
-      )}
+      {zeroLine}
     </svg>
   );
 }
@@ -702,6 +718,7 @@ export default function MassBuilderPage() {
       oosTrades: r.oos_kpis?.total_trades,
       oosSigmaStatus: r.oos_sigma?.status,
       oosSigmaZ: r.oos_sigma?.z ?? null,
+      oosBoundaryIndex: r.oos_boundary_index,
       _raw: r,
     }));
     setResults(mapped);
@@ -2130,7 +2147,7 @@ export default function MassBuilderPage() {
 
                   {/* Equity curve */}
                   <div className="rounded-lg mb-2 overflow-hidden" style={{ background: 'var(--bg-input)' }}>
-                    <MiniEquityCurve data={result.equityCurve} height={chartHeight} />
+                    <MiniEquityCurve data={result.equityCurve} height={chartHeight} oosBoundaryIndex={result.oosBoundaryIndex} />
                   </div>
 
                   {/* KPIs — two rows of 4 */}
