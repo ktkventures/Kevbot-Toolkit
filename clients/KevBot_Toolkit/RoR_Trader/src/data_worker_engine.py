@@ -68,6 +68,34 @@ def _tf_seconds(timeframe: str) -> int:
         return 60
 
 
+class _UserContext:
+    """Set the admin user context for the duration of an engine call.
+
+    The engine path (`prepare_data_with_indicators` → `load_confluence_groups`
+    / general packs) loads *per-user* config — without a thread-local user
+    context it queries `user_id=None` and silently drops the strategy's
+    confluence groups. The cron sets this via `set_admin_user_context`
+    (forward_test_service.py:1353-1357); the streaming tick must too.
+    """
+
+    def __init__(self, user_id: str):
+        self.user_id = user_id
+        self._swap = False
+
+    def __enter__(self):
+        from db import set_admin_user_context, get_current_user_id
+        if get_current_user_id() != self.user_id:
+            set_admin_user_context(self.user_id)
+            self._swap = True
+        return self
+
+    def __exit__(self, *exc):
+        if self._swap:
+            from db import clear_current_user
+            clear_current_user()
+        return False
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Metrics
 # ─────────────────────────────────────────────────────────────────────
@@ -222,10 +250,8 @@ def classify_strategy(state: StrategyEngineState) -> None:
       - a secondary TF >= 1Hour — needs more warmup history than the
         90-min store window holds (services.py:556-561).
     """
-    from data_loader import (
-        get_required_tfs_from_confluence, get_tf_from_label, TIMEFRAME_SECONDS,
-    )
-    from unified_engine import compute_backtest_fingerprint
+    from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+    from unified_engine import compute_backtest_fingerprint, TIMEFRAME_SECONDS
 
     strat = state.strat
     cfg = strat.get('config') if isinstance(strat.get('config'), dict) else {}
@@ -457,8 +483,9 @@ def tick_strategy(state: StrategyEngineState, store, circuit, metrics: Streaming
 
     t0 = time.monotonic()
     try:
-        trades_df, new_b64, last_bar_ts, run_status = run_store_fed_window(
-            state, store, until_dt)
+        with _UserContext(state.user_id):
+            trades_df, new_b64, last_bar_ts, run_status = run_store_fed_window(
+                state, store, until_dt)
     except Exception as e:
         metrics.record_tick(errored=True)
         logger.warning("[stream] sid=%s engine run failed: %s",
@@ -699,12 +726,14 @@ def recompute_kpis_for_strategy(state: StrategyEngineState) -> dict:
     })
 
     # Hi-Fi Pass 2 — refine entry/exit timestamps (mirrors the cron).
+    # Needs the user context (it re-runs the per-user engine path).
     hifi = None
     if state.bt_model in HIFI_BACKTEST_MODELS:
         try:
             from api.routers.strategies import run_hifi_pass2
-            hifi = run_hifi_pass2(sid, data_source_filter='backtest_%',
-                                  user={'id': uid})
+            with _UserContext(uid):
+                hifi = run_hifi_pass2(sid, data_source_filter='backtest_%',
+                                      user={'id': uid})
         except Exception as e:
             logger.warning("[stream] sid=%s Hi-Fi pass failed: %s", sid, e)
 
