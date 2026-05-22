@@ -278,7 +278,12 @@ function Toggle({ enabled, onChange }: { enabled: boolean; onChange: () => void 
    Detail View — Parameters Tab
    ======================================================================== */
 
-function ParametersTab({ pack }: { pack: GeneralPack }) {
+function ParametersTab({ pack, onParamChange }: {
+  pack: GeneralPack;
+  // Provided only for an unsaved draft variation — when absent the
+  // inputs are display-only (a saved pack's parameters are locked).
+  onParamChange?: (key: string, value: number | string | boolean) => void;
+}) {
   const template = TEMPLATES[pack.templateKey];
   return (
     <Card>
@@ -306,13 +311,17 @@ function ParametersTab({ pack }: { pack: GeneralPack }) {
             <label className="text-sm w-40 flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>{param.label}</label>
 
             {param.type === 'bool' ? (
-              <Toggle enabled={param.value as boolean} onChange={() => {}} />
+              <Toggle
+                enabled={param.value as boolean}
+                onChange={() => onParamChange?.(param.key, !(param.value as boolean))}
+              />
             ) : param.type === 'select' ? (
               <select
                 className="px-3 py-2 rounded-lg text-sm flex-1"
                 style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: pack.isSaved ? 'var(--text-muted)' : 'var(--text-primary)' }}
                 value={param.value as string}
                 disabled={pack.isSaved}
+                onChange={(e) => onParamChange?.(param.key, e.target.value)}
               >
                 {param.options?.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
@@ -324,6 +333,13 @@ function ParametersTab({ pack }: { pack: GeneralPack }) {
                 value={param.value as number}
                 disabled={pack.isSaved}
                 readOnly={pack.isSaved}
+                min={param.min}
+                max={param.max}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  if (!Number.isFinite(v)) { onParamChange?.(param.key, 0); return; }
+                  onParamChange?.(param.key, param.type === 'int' ? Math.round(v) : v);
+                }}
               />
             )}
 
@@ -757,9 +773,22 @@ export default function GeneralPacksPage() {
   const isDraft = draftPack !== null;
 
   function handleCopy(source: GeneralPack) {
-    const draft: GeneralPack = { ...source, id: `${source.templateKey}-draft-${Date.now()}`, version: '', isDefault: false, isSaved: false };
+    // Deep-copy params so editing the draft never mutates the source pack.
+    const draft: GeneralPack = {
+      ...source,
+      id: `${source.templateKey}-draft-${Date.now()}`,
+      version: '', isDefault: false, isSaved: false,
+      params: source.params.map((p) => ({ ...p })),
+    };
     setDraftPack(draft);
     setDetailPack(null);
+  }
+
+  // Edit a draft variation's parameter (unsaved packs only).
+  function handleParamChange(key: string, value: number | string | boolean) {
+    setDraftPack((prev) => prev
+      ? { ...prev, params: prev.params.map((p) => (p.key === key ? { ...p, value } : p)) }
+      : prev);
   }
 
   function handleSaveVariation() {
@@ -836,7 +865,7 @@ export default function GeneralPacksPage() {
         <TabBar tabs={['Parameters', 'Outputs & Triggers', 'Preview', 'Code', 'Danger Zone']}>
           {(tab) => (
             <div>
-              {tab === 'Parameters' && <ParametersTab pack={activePack} />}
+              {tab === 'Parameters' && <ParametersTab pack={activePack} onParamChange={isDraft ? handleParamChange : undefined} />}
               {tab === 'Outputs & Triggers' && <OutputsTriggersTab pack={activePack} />}
               {tab === 'Preview' && <PreviewTab pack={activePack} />}
               {tab === 'Code' && <CodeTab pack={activePack} />}
