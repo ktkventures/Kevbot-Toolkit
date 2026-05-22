@@ -7,6 +7,9 @@ alpaca-py>=0.21.0
 pandas>=2.0.0
 numpy>=1.24.0
 
+# Process metrics (data-worker memory instrumentation)
+psutil>=5.9.0
+
 # Technical Analysis (for indicator calculations)
 ta>=0.11.0
 
