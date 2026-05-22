@@ -1488,6 +1488,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // M8.5 B+: expand beyond 100-row cap for algo history (off by default to
   // keep the DOM light; user opts in and accepts the render cost).
   const [showAllAlgoHistory, setShowAllAlgoHistory] = useState(false);
+  // Chart & Trades history module — left pane source selector. 'algo'
+  // compares the live algo lane vs alerts (accountability); 'backtest'
+  // compares the canonical backtest lane vs alerts (fidelity-to-target).
+  const [historyLeftSource, setHistoryLeftSource] = useState<'algo' | 'backtest'>('algo');
   // Unified Trades tab state: date range filter + pagination. Default
   // 'Forward Only' so backtest rows don't drown out live reconciliation
   // signal (strategy 117 has 2,172 backtest trades we don't want counted
@@ -1820,6 +1824,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     };
   }), [algoTradesRaw]);
 
+  // Chart & Trades history module — the trade set the left pane renders
+  // and compares against alerts. Toggled by `historyLeftSource`.
+  const compareTrades = useMemo(
+    () => (historyLeftSource === 'algo' ? algoTrades : btTrades),
+    [historyLeftSource, algoTrades, btTrades],
+  );
+
   // Trade-to-Alert mapping — MUST be after btTrades declaration
   const tradeAlertMapping = useMemo(() => {
     if (recentAlerts.length === 0) return [];
@@ -1847,22 +1858,28 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     });
   }, [recentAlerts, btTrades]);
 
-  // Match sets: which algo trades have matching alerts, and vice versa.
-  // Uses shifted (display) timestamps for C-type trades so deltas reflect real slippage.
-  // Match threshold = user's alertSlippage setting (not a fixed 10 minutes).
-  // 2026-05-12: switched from `[...fwdTrades, ...btTrades]` (backtest data
-  // mislabeled as algo) to real algo-lane trades (`cache_%` from trades
-  // table). This is the data Kevin actually wants compared against alerts.
-  const { alertMatches, algoMatches } = useMemo(() => {
-    const algoAll = algoTrades;
-    const slipMs = (chartPrefs.alertSlippage || 5) * 1000;
-    // Search window: max of slippage tolerance or 2× timeframe (to find the closest match)
-    const searchWindow = Math.max(slipMs, tfMs * 2);
+  // Match sets: which compare-lane trades have matching alerts, and vice
+  // versa. Uses shifted (display) timestamps for C-type trades so deltas
+  // reflect real slippage. Match threshold = user's alertSlippage setting.
+  //
+  // `computeMatches` is source-agnostic — the same nearest-neighbour
+  // pairing works whether `compareSet` is the algo lane or the backtest
+  // lane. This lets the Chart & Trades history module toggle its left
+  // pane between the two while keeping one matcher implementation.
+  function computeMatches(
+    compareSet: any[],
+    alerts: any[],
+    slipTol: number,
+    timeframeMs: number,
+  ) {
+    const slipMs = (slipTol || 5) * 1000;
+    // Search window: max of slippage tolerance or 2× timeframe.
+    const searchWindow = Math.max(slipMs, timeframeMs * 2);
 
-    // For each alert, find closest algo trade by entry time (using shifted display time)
+    // For each alert, find closest compare-lane trade by entry time.
     const alertResults: { matched: boolean; entryDelta: number | null; exitDelta: number | null }[] = [];
-    for (let ai = 0; ai < recentAlerts.length; ai++) {
-      const a = recentAlerts[ai];
+    for (let ai = 0; ai < alerts.length; ai++) {
+      const a = alerts[ai];
       if (!a.entryTime || a.entryTime === '--') {
         alertResults.push({ matched: false, entryDelta: null, exitDelta: null });
         continue;
@@ -1870,69 +1887,80 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       const aEntryMs = safeDateMs(a.entryTime);
       let bestIdx = -1;
       let bestDist = Infinity;
-      for (let ti = 0; ti < algoAll.length; ti++) {
-        const t = algoAll[ti];
+      for (let ti = 0; ti < compareSet.length; ti++) {
+        const t = compareSet[ti];
         if (!t.entryTimeDisplay || t.entryTimeDisplay === '--') continue;
         const dist = Math.abs(safeDateMs(t.entryTimeDisplay) - aEntryMs);
         if (dist < bestDist) { bestDist = dist; bestIdx = ti; }
       }
       if (bestIdx >= 0 && bestDist <= searchWindow) {
-        const algo = algoAll[bestIdx];
-        // Delta from alert's perspective: negative = algo was earlier, positive = algo was later
-        const entryDelta = (safeDateMs(algo.entryTimeDisplay) - aEntryMs) / 1000;
+        const ct = compareSet[bestIdx];
+        // Delta from alert's perspective: negative = trade was earlier.
+        const entryDelta = (safeDateMs(ct.entryTimeDisplay) - aEntryMs) / 1000;
         let exitDelta: number | null = null;
-        if (a.exitTime && a.exitTime !== '--' && algo.exitTimeDisplay && algo.exitTimeDisplay !== '--') {
-          exitDelta = (safeDateMs(algo.exitTimeDisplay) - safeDateMs(a.exitTime)) / 1000;
+        if (a.exitTime && a.exitTime !== '--' && ct.exitTimeDisplay && ct.exitTimeDisplay !== '--') {
+          exitDelta = (safeDateMs(ct.exitTimeDisplay) - safeDateMs(a.exitTime)) / 1000;
         }
-        alertResults.push({ matched: Math.abs(entryDelta) <= chartPrefs.alertSlippage, entryDelta, exitDelta });
+        alertResults.push({ matched: Math.abs(entryDelta) <= slipTol, entryDelta, exitDelta });
       } else {
         alertResults.push({ matched: false, entryDelta: null, exitDelta: null });
       }
     }
 
-    // For each algo trade, find closest alert by entry time
-    const algoResults: { matched: boolean; entryDelta: number | null; exitDelta: number | null; alertEntryPrice?: number; alertExitPrice?: number }[] = [];
-    for (let ti = 0; ti < algoAll.length; ti++) {
-      const t = algoAll[ti];
+    // For each compare-lane trade, find closest alert by entry time.
+    const tradeResults: { matched: boolean; entryDelta: number | null; exitDelta: number | null; alertEntryPrice?: number; alertExitPrice?: number }[] = [];
+    for (let ti = 0; ti < compareSet.length; ti++) {
+      const t = compareSet[ti];
       if (!t.entryTimeDisplay || t.entryTimeDisplay === '--') {
-        algoResults.push({ matched: false, entryDelta: null, exitDelta: null });
+        tradeResults.push({ matched: false, entryDelta: null, exitDelta: null });
         continue;
       }
       const tEntryMs = safeDateMs(t.entryTimeDisplay);
       let bestIdx = -1;
       let bestDist = Infinity;
-      for (let ai = 0; ai < recentAlerts.length; ai++) {
-        const a = recentAlerts[ai];
+      for (let ai = 0; ai < alerts.length; ai++) {
+        const a = alerts[ai];
         if (!a.entryTime || a.entryTime === '--') continue;
         const dist = Math.abs(safeDateMs(a.entryTime) - tEntryMs);
         if (dist < bestDist) { bestDist = dist; bestIdx = ai; }
       }
       if (bestIdx >= 0 && bestDist <= searchWindow) {
-        const alert = recentAlerts[bestIdx];
+        const alert = alerts[bestIdx];
         const entryDelta = (safeDateMs(alert.entryTime) - tEntryMs) / 1000;
         let exitDelta: number | null = null;
         if (alert.exitTime && alert.exitTime !== '--' && t.exitTimeDisplay && t.exitTimeDisplay !== '--') {
           exitDelta = (safeDateMs(alert.exitTime) - safeDateMs(t.exitTimeDisplay)) / 1000;
         }
-        algoResults.push({
-          matched: Math.abs(entryDelta) <= chartPrefs.alertSlippage,
+        tradeResults.push({
+          matched: Math.abs(entryDelta) <= slipTol,
           entryDelta, exitDelta,
           alertEntryPrice: alert.entryPrice ?? undefined,
           alertExitPrice: alert.exitPrice ?? undefined,
         });
       } else {
-        algoResults.push({ matched: false, entryDelta: null, exitDelta: null });
+        tradeResults.push({ matched: false, entryDelta: null, exitDelta: null });
       }
     }
 
-    return { alertMatches: alertResults, algoMatches: algoResults };
-    // 2026-05-12 fix: deps must reflect what the body actually uses.
-    // Phase A (976a041) repointed `algoAll = algoTrades` inside the body
-    // but missed updating the deps array — leaving the closure stale.
-    // Symptom: Price Divergence panel showed "no matched pairs" and Algo
-    // History Δ columns rendered '--' even when matches existed, because
-    // React never recomputed the useMemo when algoTrades loaded.
+    return { alertMatches: alertResults, tradeMatches: tradeResults };
+  }
+
+  // Algo-lane matches — fixed to `algoTrades` (the Lab tab's Price
+  // Divergence panel indexes `algoMatches` against `algoTrades`, so this
+  // must NOT follow the history-module toggle).
+  const algoMatches = useMemo(() => {
+    return computeMatches(algoTrades, recentAlerts, chartPrefs.alertSlippage, tfMs).tradeMatches;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recentAlerts, algoTrades, chartPrefs.alertSlippage, tfMs]);
+
+  // History-module matches — follows the left-pane source toggle
+  // (`compareTrades` is algoTrades or btTrades). In 'algo' mode this is
+  // identical to the pair above; in 'backtest' mode the deltas measure
+  // alert-vs-backtest fidelity.
+  const historyMatches = useMemo(() => {
+    return computeMatches(compareTrades, recentAlerts, chartPrefs.alertSlippage, tfMs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recentAlerts, compareTrades, chartPrefs.alertSlippage, tfMs]);
 
   // Unified Trade Reconciliation (Trade_Timestamps_Spec Part 10, Tier 1).
   // Greedy join algo trades to alerts on fill_ts within the user's slippage
@@ -3681,12 +3709,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     if (d == null) return 'var(--text-muted)';
                     return Math.abs(d) <= slipTol ? 'var(--green)' : 'var(--red)';
                   };
-                  // 2026-05-12: real algo-lane trades (cache_% from trades
-                  // table) instead of the legacy btTrades+fwdTrades merge
-                  // (which was backtest data mislabeled as "algo"). Now the
-                  // "Algo History" label is honest — these are the trades
-                  // the live algo engine actually produced.
-                  const sortedAlgoFull = algoTrades
+                  // Left-pane trade set follows `historyLeftSource`:
+                  // 'algo'    = real algo-lane trades (cache_% from trades
+                  //             table) — what the live algo engine produced.
+                  // 'backtest'= the canonical backtest lane — the KPI
+                  //             baseline live alerts should converge toward.
+                  const histLabel = historyLeftSource === 'algo' ? 'Algo' : 'Backtest';
+                  const sortedAlgoFull = compareTrades
                     .map((t, origIdx) => ({ ...t, _origIdx: origIdx }))
                     .sort((a, b) => {
                       const aMs = a.entryTime && a.entryTime !== '--' ? safeDateMs(a.entryTime) : 0;
@@ -3702,15 +3731,37 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   const sortedAlgo = sortedAlgoFull.slice(0, ALGO_DISPLAY_CAP);
                   return (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
-                  {/* Algo History — real algo-lane trades from trades table */}
+                  {/* Left pane — algo-lane OR backtest-lane trades, user-toggled */}
                   <Card>
-                    <div className="flex items-center justify-between mb-3">
-                      <h4 className="text-sm font-medium">
-                        Algo History{' '}
-                        <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
-                          (showing {sortedAlgo.length.toLocaleString()} of {sortedAlgoFull.length.toLocaleString()})
-                        </span>
-                      </h4>
+                    <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h4 className="text-sm font-medium">
+                          {histLabel} History{' '}
+                          <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+                            (showing {sortedAlgo.length.toLocaleString()} of {sortedAlgoFull.length.toLocaleString()})
+                          </span>
+                        </h4>
+                        {/* Source toggle — left pane compares this lane vs alerts */}
+                        <div className="flex rounded overflow-hidden" style={{ border: '1px solid var(--border)' }}>
+                          {(['algo', 'backtest'] as const).map(opt => (
+                            <button
+                              key={opt}
+                              onClick={() => setHistoryLeftSource(opt)}
+                              className="text-[11px] px-2 py-0.5 font-medium"
+                              style={{
+                                background: historyLeftSource === opt ? 'var(--accent)' : 'var(--bg-input)',
+                                color: historyLeftSource === opt ? 'white' : 'var(--text-muted)',
+                                border: 'none', cursor: 'pointer',
+                              }}
+                              title={opt === 'algo'
+                                ? 'Algo lane — what the live algo engine produced (live-accountability check)'
+                                : 'Backtest lane — the canonical KPI baseline (fidelity-to-target check)'}
+                            >
+                              {opt === 'algo' ? 'Algo' : 'Backtest'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                       {sortedAlgoFull.length > 100 && (
                         <button
                           onClick={() => setShowAllAlgoHistory(v => !v)}
@@ -3742,7 +3793,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                               </td>
                             </tr>
                           ) : sortedAlgo.map((row: any, si: number) => {
-                            const m = algoMatches[row._origIdx] || { matched: false, entryDelta: null, exitDelta: null };
+                            const m = historyMatches.tradeMatches[row._origIdx] || { matched: false, entryDelta: null, exitDelta: null };
                             const execBadge = row.execType || 'C';
                             const isL = execBadge.includes('L') || execBadge.includes('HM') || execBadge.includes('HL');
                             const exitLabel = (row.exitReason || '--').replace(/_/g, ' ');
@@ -3787,7 +3838,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 
                   {/* Alert History (× on chart — actual alert executions) — RIGHT */}
                   <Card>
-                    <h4 className="text-sm font-medium mb-3">Alert History <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({recentAlerts.length})</span></h4>
+                    <h4 className="text-sm font-medium mb-3">Alert History <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({recentAlerts.length}) &middot; &Delta; vs {histLabel}</span></h4>
                     <div style={{ overflowX: 'auto', maxHeight: 400, overflowY: 'auto' }}>
                       <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                         <thead>
@@ -3805,7 +3856,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                               </td>
                             </tr>
                           ) : recentAlerts.map((row: any, i: number) => {
-                            const m = alertMatches[i] || { matched: false, entryDelta: null, exitDelta: null };
+                            const m = historyMatches.alertMatches[i] || { matched: false, entryDelta: null, exitDelta: null };
                             const exitLabel = (row.exitReason || '--').replace(/_/g, ' ');
                             // Compute alert hold time from entry/exit timestamps
                             const alertHoldMs = safeDateMs(row.exitTime) && safeDateMs(row.entryTime) ? safeDateMs(row.exitTime) - safeDateMs(row.entryTime) : 0;
