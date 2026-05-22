@@ -1884,11 +1884,16 @@ def get_forward_test_data(strategy_id: int, user=Depends(get_current_user)):
 
     stored = strat.get('stored_trades', [])
     fwd_start_dt = datetime.fromisoformat(strat['forward_test_start'])
+    # OOS: Backtest|Forward trades split at the in-sample-end divider
+    # (resolve_in_sample_end falls back to forward_test_start — behaviour-
+    # neutral pre-OOS). The `forward_test_start` field below is unchanged.
+    from strategy_periods import resolve_in_sample_end
+    _kpi_boundary = resolve_in_sample_end(strat) or fwd_start_dt
 
     if stored:
         try:
             trades_df = svc.trades_df_from_stored(stored)
-            bt, fw = svc.split_trades_at_boundary(trades_df, fwd_start_dt)
+            bt, fw = svc.split_trades_at_boundary(trades_df, _kpi_boundary)
             return {
                 "backtest_trades": _serialize_trades(bt),
                 "forward_trades": _serialize_trades(fw),

@@ -21,6 +21,8 @@ import numpy as np
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+
+from strategy_periods import resolve_in_sample_end
 from typing import Dict, Optional
 
 from data_loader import load_market_data, get_data_source, is_crypto
@@ -800,6 +802,11 @@ def prepare_forward_test_data(
     Returns (df, backtest_trades, forward_trades, forward_test_start_dt)
     """
     forward_test_start_dt = datetime.fromisoformat(strat['forward_test_start'])
+    # OOS: trades are bucketed Backtest|Forward at the in-sample-end
+    # divider (resolve_in_sample_end falls back to forward_test_start, so
+    # this is behaviour-neutral for every pre-OOS strategy). The data-load
+    # warmup window below still anchors to forward_test_start_dt.
+    _kpi_boundary = resolve_in_sample_end(strat) or forward_test_start_dt
 
     # Webhook origin: use stored trades directly
     if strat.get('strategy_origin') == 'webhook_inbound':
@@ -807,7 +814,7 @@ def prepare_forward_test_data(
         if len(trades) == 0:
             empty = pd.DataFrame()
             return pd.DataFrame(), empty, empty, forward_test_start_dt
-        backtest_trades, forward_trades = split_trades_at_boundary(trades, forward_test_start_dt)
+        backtest_trades, forward_trades = split_trades_at_boundary(trades, _kpi_boundary)
         return pd.DataFrame(), backtest_trades, forward_trades, forward_test_start_dt
 
     data_days = data_days_override if data_days_override is not None else strat.get('data_days', 30)
@@ -837,7 +844,7 @@ def prepare_forward_test_data(
 
     trades = unified_trades(df, strat)
 
-    backtest_trades, forward_trades = split_trades_at_boundary(trades, forward_test_start_dt)
+    backtest_trades, forward_trades = split_trades_at_boundary(trades, _kpi_boundary)
 
     # Trim backtest trades to pinned backtest window (exclude warmup-period trades)
     _bt_start = strat.get('backtest_start_date')
@@ -1211,7 +1218,8 @@ def compute_forward_kpis(strategy: dict, full_compute: bool = False) -> dict | N
     if not strategy.get('forward_testing') or not strategy.get('forward_test_start'):
         return None
 
-    fwd_start = datetime.fromisoformat(strategy['forward_test_start'])
+    # OOS divider — in_sample_end, falling back to forward_test_start.
+    fwd_start = resolve_in_sample_end(strategy)
     fwd_trades = None
 
     # Try stored_trades first (fast path)
@@ -1454,7 +1462,8 @@ def enrich_strategy(strategy: dict, full_compute: bool = False) -> dict:
     if stored and strategy.get('forward_test_start'):
         try:
             bt_df = trades_df_from_stored(stored)
-            fwd_start = datetime.fromisoformat(strategy['forward_test_start'])
+            # OOS divider — in_sample_end, falling back to forward_test_start.
+            fwd_start = resolve_in_sample_end(strategy)
             bt_df, fwd_df = split_trades_at_boundary(bt_df, fwd_start)
 
             # FWD sigma from cumulative R
