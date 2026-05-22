@@ -477,6 +477,21 @@ def tick_strategy(state: StrategyEngineState, store, circuit, metrics: Streaming
     if state.last_bar_ts is not None:
         import pandas as pd
         if pd.Timestamp(cov['first_ts']) > pd.Timestamp(state.last_bar_ts):
+            # Store doesn't reach back to the resume point. If the
+            # snapshot is hours stale (weekend gap, container restart,
+            # extended off-hours), the rolling store will NEVER close
+            # the gap on its own — trigger a fresh REST-fed catch-up to
+            # re-anchor the snapshot. Threshold 1h is conservative:
+            # transient blips don't trip it; weekend gaps (60h+) do.
+            snap_dt = pd.Timestamp(state.last_bar_ts).to_pydatetime()
+            gap_h = (now - snap_dt).total_seconds() / 3600
+            if gap_h > 1.0:
+                logger.info("[stream] sid=%s store_gap with %.1fh-old "
+                            "snapshot — queueing re-catchup",
+                            state.strategy_id, gap_h)
+                state.catchup_done = False
+                state.next_due_at = now + timedelta(seconds=5)
+                return {'status': 'store_gap_recatchup_queued'}
             state.next_due_at = now + timedelta(seconds=15)
             metrics.record_store_gap()
             return {'status': 'store_gap'}
