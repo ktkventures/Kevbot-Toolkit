@@ -907,15 +907,26 @@ export default function MassBuilderPage() {
       if (filterTrades > 0 && r.trades < filterTrades) return false;
       return true;
     });
-    // Sort
+    // Sort — in-sample KPIs, or the OOS-side KPIs (OOS-* options).
     const sortKeyMap: Record<string, keyof MassResult> = {
       'Daily R': 'dailyR', 'Win Rate': 'winRate', 'Profit Factor': 'pf',
       'R-Squared': 'rSquared', 'Total R': 'totalR', 'Trades': 'trades',
+      'OOS Daily R': 'oosDailyR', 'OOS Win Rate': 'oosWinRate',
+      'OOS Profit Factor': 'oosPf', 'OOS Trades': 'oosTrades',
     };
     const sk = sortKeyMap[filterSort] || 'dailyR';
-    filtered.sort((a, b) => (b[sk] as number) - (a[sk] as number));
+    // OOS fields are undefined on non-OOS results — sort those last.
+    filtered.sort((a, b) =>
+      ((b[sk] as number) ?? -Infinity) - ((a[sk] as number) ?? -Infinity));
     return filtered;
   }, [results, filterSort, filterWR, filterPF, filterTrades, showPassed]);
+
+  // Sort dropdown gains OOS-* options only when the results carry OOS data.
+  const sortOptionsAvailable = useMemo(() => (
+    results.some((r) => r.hasOos)
+      ? [...SORT_OPTIONS, 'OOS Daily R', 'OOS Win Rate', 'OOS Profit Factor', 'OOS Trades']
+      : SORT_OPTIONS
+  ), [results]);
 
   function toggleItem<T>(arr: T[], item: T, setter: (v: T[]) => void) {
     if (arr.includes(item)) {
@@ -1984,7 +1995,7 @@ export default function MassBuilderPage() {
                 className="w-full px-2 py-1.5 rounded-lg text-xs"
                 style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
               >
-                {SORT_OPTIONS.map((o) => <option key={o}>{o}</option>)}
+                {sortOptionsAvailable.map((o) => <option key={o}>{o}</option>)}
               </select>
             </div>
             <div>
