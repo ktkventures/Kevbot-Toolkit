@@ -584,12 +584,20 @@ def run_mass_search(
     end_date = date_range.get('end')
     data_seed = 42
 
-    # OOS: extend the loaded window through today so the out-of-sample
-    # band has bars. The in-sample window stays [start_date, in_sample_end].
+    # OOS: the out-of-sample band must have bars. In days-mode (the
+    # Mass Builder default — end_date is None) the loader already loads
+    # the last `data_days` days through today, so the OOS window
+    # [in_sample_end, today] is already covered. Only when an explicit
+    # end_date predates today do we extend it — never set end_date while
+    # start_date is None (that breaks the days-mode load → 0 bars).
+    if oos_enabled and end_date:
+        _today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        if str(end_date)[:10] < _today:
+            logger.info("Mass search OOS: extending end_date %s -> %s",
+                        end_date, _today)
+            end_date = _today
     if oos_enabled:
-        end_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-        logger.info("Mass search OOS: in_sample_end=%s, data extended to %s",
-                    oos_in_sample_end, end_date)
+        logger.info("Mass search OOS: in_sample_end=%s", oos_in_sample_end)
 
     logger.info("Mass search config: data_days=%d, date_range=%s, start=%s, end=%s",
                 data_days, date_range, start_date, end_date)
