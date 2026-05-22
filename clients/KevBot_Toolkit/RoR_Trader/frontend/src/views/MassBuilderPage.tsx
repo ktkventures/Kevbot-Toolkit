@@ -962,6 +962,11 @@ export default function MassBuilderPage() {
       stop_config: cfg.stop_config,
       target_config: cfg.target_config,
       time_exit_config: cfg.time_exit_config,
+      // OOS: carry the in-sample window onto the saved strategy so its
+      // chart bands + KPI split know where the held-out region begins.
+      // Without this the saved strategy has no in_sample_end → no band.
+      in_sample_start: cfg.in_sample_start,
+      in_sample_end: cfg.in_sample_end,
       kpis: raw.kpis || {},
       stored_trades: raw.stored_trades || [],
       equity_curve_data: {
