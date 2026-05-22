@@ -1,133 +1,168 @@
-# Spec — Data-Worker Service & Steady-Stream Updates
+# Spec — Data-Worker Service & Streaming Backtest/Algo Models
 
-**Status:** DRAFT 2026-05-22. Triggered by the update-job incident below.
+**Status:** DRAFT v2, 2026-05-22. Revised from v1 (alerts-gated cron) to
+the streaming-engine model after design discussion.
 
 ## 1. Why
 
-On 2026-05-22 a manual "Update New Data" run went pathological:
-- 3+ hours in, only 22 of 70 strategies done.
-- Individual strategies ran *full backtests* of 26–53 min (sid 228:
-  1,549s; sid 180: 3,166s).
-- The PACKTEST canaries each ran a full backtest then **skipped**
-  ("no baseline") — ~50+ min of pure waste.
-- It hammered Supabase into **HTTP 522 connection-timeout** failures —
-  the database stopped responding to *everything* (the job's own
-  writes, the app, even ad-hoc queries). A self-inflicted DB outage.
+On 2026-05-22 a manual "Update New Data" run went pathological: 3+ hours
+in, 22 of 70 strategies done; individual strategies running 26–53 min
+full backtests; the PACKTEST canaries each running a full backtest then
+*skipping* "no baseline"; and the whole thing hammering Supabase into
+HTTP 522 connection-timeout failures — a self-inflicted DB outage.
 
-Root causes:
-1. Recompute jobs + mass searches run as **in-memory threads inside the
-   `api` process** — they spike API memory, die on every deploy, and
-   contend with HTTP serving.
-2. The updater has **no DB rate-limiting** — it bursts `select *` trade
-   loads and writes until Supabase falls over.
-3. "Update New Data" runs **full backtests inside the incremental
-   path** for no-baseline strategies — minutes of wasted compute.
-4. It's a **big catch-up batch**, not a steady stream — the longer
-   between runs, the worse the pile-up.
+Root causes: heavy jobs run as in-memory threads inside the `api`
+process; no DB rate-limiting; full backtests inside the incremental
+path; and a big catch-up batch instead of a steady stream.
 
-## 2. Service topology — ONE new service
+**v1 of this spec proposed an alerts-gated cron. That was wrong** — see
+§4. v2 is a streaming-engine model.
 
-The live / algo / backtest "models" are **data lanes, not processes** —
-they do not each need a service. The right split is by *workload type*:
+## 2. Service topology — one new service
+
+The live / algo / backtest "models" are **data lanes, not processes**.
+The split is by workload type:
 
 | Service | Role | Status |
 |---|---|---|
 | `api` | FastAPI HTTP serving **only** | exists — heavy jobs move OUT |
-| `worker` | Ralph live engine — real-time, sub-second alerts | exists, unchanged (must stay lean — latency-critical) |
-| **`data-worker`** | **NEW** — steady incremental cron (backtest + algo lanes), full-recompute backlog, mass searches | to build |
+| `worker` | Ralph live engine — real-time sub-second alerts | exists, unchanged (latency-critical, stays lean) |
+| **`data-worker`** | **NEW** — shared bar layer + streaming backtest/algo engines + cold-start backfills + mass searches | to build |
 
-- **Live model** updates = the `worker` (already real-time; can't move).
-- **Algo + backtest model** updates = identical workload (periodic
-  engine replay → write trades) → **one** `data-worker`, not two.
-- **PACKTEST canaries** are ordinary strategies — the same cron covers
-  them.
+One new Railway service. It must be separate from `worker` — periodic
+heavy compute on the live-engine process would jeopardise sub-second
+alert latency (`feedback_sub_second_latency`).
 
-So: **one new Railway service.** The `data-worker` must be separate
-from `worker` — periodic heavy recompute on the live-engine process
-would jeopardise sub-second alert latency (`feedback_sub_second_latency`).
+## 3. The model — two layers
 
-## 3. The steady-stream cron (data-worker's core job)
+### 3.1 Shared per-symbol bar layer
 
-Replaces big manual batches with small frequent increments — the data
-is *always* near-current, so no run ever has hours to catch up.
+Today every strategy's engine loads its own bars — 10 TSLA strategies
+do 10× the data work. Instead:
 
-- **Cadence:** every ~1–2 min.
-- **Alerts-gated:** a strategy with no new exit alerts since the last
-  cycle is skipped in **milliseconds** (cheap DB count) — only
-  strategies with genuine new activity get an engine run. (The existing
-  algo-history cron already works this way; this generalises it to the
-  backtest lane too.)
-- **Incremental only:** snapshot-resume (`engine_snapshot_b64`) +
-  windowed load (`get_strategy_trades_for_window`). Small windows.
-- **Both lanes** per active strategy: `backtest_model` and `algo_model`.
-- **Sequential + paced:** one strategy at a time, small inter-strategy
-  delay — never a burst.
+- A **steady, ~per-second, per-symbol ingest** pulls fine-grained data
+  (Polygon) and extends a **canonical bar series per symbol**, at the
+  finest timeframe any strategy on that symbol needs.
+- Coarser timeframes are **resampled** from it (1s → 10s → 1Min → 5Min …
+  — matches the existing "resample from 1-minute bars" convention in
+  CLAUDE.md).
+- Every strategy/engine on that symbol **subscribes** to the shared
+  series — the bars exist **once per symbol**, not duplicated per
+  strategy.
 
-At 70 strategies, full-coverage-every-minute is not sequential-feasible
-(~5s each = ~6 min). But the alerts-gate means most strategies skip
-cheaply each cycle; only the few with new activity cost real time. A
-1–2 min gated cron is feasible and keeps everything fresh.
+This is the live engine's `SymbolHub` pattern (per-symbol bars shared
+across strategies + TFs) extended to the data-worker — a proven pattern
+in this codebase, not a new invention.
 
-## 4. DB-safety requirements (the hard lesson from today)
+**Memory:** with the shared layer, total footprint ≈ (symbols ×
+bar-history) + (strategies × light engine state). The bars — the bulk —
+are stored once per symbol. Each per-strategy engine holds only its
+indicator + position state. This is what makes ~100+ engines feasible;
+it resolves the v1 memory concern.
 
-The data-worker must be **structurally incapable** of repeating today's
-self-DDoS:
-1. **Bounded DB concurrency** — a hard cap on simultaneous Supabase
-   connections from the data-worker.
-2. **No `select *` on trades** — projected-column loads only (the
-   recompute path still does `select *`; Task #30 only fixed the append
-   KPI lane).
-3. **Bounded page sizes + row caps** on every trade query.
-4. **Inter-strategy pacing** — a deliberate small delay between
-   strategies so load is a trickle, not a spike.
-5. **Circuit breaker** — on any Supabase 5xx/522, back off exponentially
-   and stop piling on; resume when the DB is healthy.
+### 3.2 Per-strategy streaming engines
 
-## 5. No-baseline strategies — never full-backtest in the steady loop
+Each strategy runs a **persistent, in-memory engine instance** (the
+unified engine — already O(1)-incremental):
 
-The incremental cron must **never run a full backtest**. A no-baseline
-strategy (e.g. a freshly-saved Mass Builder strategy):
-- is detected with a **cheap DB check** and skipped in milliseconds
-  (today it ran a full backtest *then* skipped — sid 228 wasted 26 min);
-- is enqueued into a **separate full-recompute backlog**.
+- It holds its state across ticks (the `engine_snapshot_b64` mechanism
+  already exists for this).
+- When a bar **closes** for the strategy's timeframe, the engine
+  processes **that one bar** — O(1) — reading from the shared bar layer.
+- It writes any resulting trade to the `trades` table.
+- Cadence is **bar-close-paced**: a 10Sec strategy ticks ~every 10s
+  (+ a small grace lag), a 1Min strategy ~every 60s. Polling faster
+  than the bar cadence does nothing — bar-close *is* the steady tick.
 
-The full-recompute backlog is drained slowly, **off-peak, one at a
-time, throttled**. Full backtests are inherently expensive — they get
-their own slow lane, isolated from the steady stream.
+The steady per-second ingest (§3.1) *feeds* the bar-close engines —
+one steady stream in, many engines ticking off it at their own cadence.
 
-## 6. What changes for `api`
+### 3.3 The three lanes
 
-Recompute jobs and mass searches move to the `data-worker`. The `api`
-process becomes **HTTP-only**. Consequences:
-- API memory stays flat — no more spikes during data updates.
-- API deploys no longer kill in-flight jobs (Task #39).
-- The API stays responsive while heavy data work runs.
+| Lane | Where it runs | Bar series it reads |
+|---|---|---|
+| **live model** | the `worker` service (real-time) | WebSocket / ws_agg |
+| **backtest model** | data-worker streaming engine — **always on** | `rest_hifi` bar series |
+| **algo model** | data-worker streaming engine — **opt-in per strategy** | `cache` bar series |
 
-## 7. The "Update New Data" button
+The algo model is the **same engine code** as the backtest model —
+just subscribed to the *cache* bar series instead of the *rest_hifi*
+series. So it costs almost nothing to keep: it's a second subscription,
+not a third architecture. Decision (2026-05-22): **keep the algo
+model.** It still localises a divergence (engine bug vs data gap) —
+which matters most sub-minute, where backtest↔live alignment is not yet
+perfect (1Min is near bit-perfect; 10Sec still has tails). Default:
+backtest lane streams; algo lane is a per-strategy toggle for when a
+strategy is being actively diagnosed.
 
-With a steady cron, data is ~always fresh, so the bulk button is mostly
-obsolete. Repurpose it as a **per-strategy "refresh now"** — enqueues a
-single high-priority cycle for one strategy. No more 70-strategy
-force-bulk runs. (Also retires the `force=True` alerts-gate bypass that
-made the manual path a full-replay-per-strategy.)
+## 4. Why streaming, not a poll / alerts-gated cron
 
-## 8. Phasing
+v1 proposed gating updates on alert activity. That has a **circular
+blind spot**: you cannot detect "the alert engine *failed* to fire a
+trade" by only updating *when alerts fire*. A strategy that goes quiet
+for days — you'd have no idea whether that's "no setup" or "the alert
+engine is broken." For the actual goal — trustworthy **missed-trade**
+detection — gating on alerts is exactly backwards.
+
+A streaming engine runs **every bar, every strategy, regardless of
+alerts** — so a missed trade (backtest fired, no alert) surfaces the
+instant it would have happened. It also gives steady, predictable load
+instead of the spikes an event-driven cron produces.
+
+## 5. DB-safety
+
+The streaming model is naturally steady (trickle of small per-bar
+writes, not bursts). Still required:
+1. **Circuit breaker** — on any Supabase 5xx/522, back off exponentially;
+   resume when healthy. Today's self-DDoS must be impossible.
+2. **Projected loads, no `select *`** on trades.
+3. **Bounded ingest** — the per-symbol ingest paces itself; bounded
+   connection concurrency from the data-worker.
+
+## 6. Cold-start backfill (replaces "no-baseline full backtest")
+
+A streaming engine needs a baseline before it can stream. A new
+strategy (e.g. a freshly-saved Mass Builder strategy) gets a **one-time
+cold-start backfill** — run the engine over history once to reach
+current, then it joins the stream. This is:
+- a **separate, throttled, off-peak** operation — never in the steady
+  per-bar path;
+- the cheap-check fix for today's bug (sid 228 wasted 26 min running a
+  full backtest *then* skipping). A strategy is either *streaming* or
+  *cold-starting* — never full-backtesting inside the steady loop.
+
+## 7. What changes for `api`
+
+Recompute jobs and mass searches move to the `data-worker`. `api`
+becomes HTTP-only → memory stays flat, deploys stop killing jobs
+(Task #39), the app stays responsive during heavy data work.
+
+## 8. The "Update New Data" button
+
+With streaming engines, every lane is always current — the bulk button
+is obsolete. Repurpose as a per-strategy "refresh / cold-start now".
+Retires the `force=True` alerts-gate-bypass path entirely.
+
+## 9. Phasing
 
 | Phase | Scope |
 |---|---|
-| **1** | Stand up the `data-worker` Railway service. Move the incremental cron (algo + backtest lanes) into it. Add §4 DB-safety (concurrency cap, pacing, circuit breaker, projected loads). |
-| **2** | Move mass searches off `api` onto `data-worker`; serialise them (Task #43). |
-| **3** | No-baseline full-recompute backlog lane (§5). |
-| **4** | Repurpose the "Update New Data" UI to per-strategy refresh (§7). |
+| **1** | Stand up the `data-worker` service. Build the shared per-symbol bar layer (steady ingest + canonical series + resample), reusing the `SymbolHub` pattern. |
+| **2** | Per-strategy streaming **backtest-model** engines — bar-close tick, read shared bars, write trades. Circuit breaker + projected loads (§5). |
+| **3** | **Algo-model** lane as an opt-in per-strategy subscription (§3.3). |
+| **4** | Cold-start backfill lane (§6); move mass searches off `api` + serialise them; repurpose the "Update New Data" UI (§8). |
 
-## 9. Open decisions
+## 10. Open decisions
 
-1. **Cadence** — fixed 1 min, 2 min, or adaptive (faster during RTH,
-   slower after hours)?
-2. **Mass searches** — on the `data-worker`, or a 4th service later if
-   they prove too bursty alongside the steady cron?
-3. **Job state** — DB-backed job rows (survive restarts) vs. relying on
-   the cron being naturally self-healing (next tick re-picks-up)?
-4. **Backtest-lane cadence** — same frequency as the algo lane, or
-   slower (the backtest lane is the canonical target; the algo lane is
-   the live mirror — they may not need identical refresh rates)?
+1. **Ingest granularity** — canonical series at 1s, or at the finest TF
+   actually configured per symbol (cheaper if no strategy uses <1Min)?
+2. **Grace lag** — how long after a bar closes before the streaming
+   engine commits it (to stay aligned with the backtest model's
+   late-print handling)? Reuse the per-strategy `grace_seconds`.
+3. **Mass searches** — on the `data-worker`, or a 4th service later if
+   they prove too bursty alongside the streaming engines?
+4. **Engine-state durability** — persist each engine's snapshot
+   periodically (survive a data-worker restart) vs. cold-restart all
+   engines on deploy?
+5. **Scope** — all 70+ strategies streaming from day one, or roll out
+   per-symbol to validate memory/throughput first?
