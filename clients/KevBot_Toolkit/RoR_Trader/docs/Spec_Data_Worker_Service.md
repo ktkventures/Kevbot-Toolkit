@@ -40,9 +40,9 @@ alert latency (`feedback_sub_second_latency`).
 Today every strategy's engine loads its own bars — 10 TSLA strategies
 do 10× the data work. Instead:
 
-- A **steady, ~per-second, per-symbol ingest** pulls fine-grained data
-  (Polygon) and extends a **canonical bar series per symbol**, at the
-  finest timeframe any strategy on that symbol needs.
+- A **steady, per-second, per-symbol ingest** pulls fine-grained data
+  (Polygon) and extends a **canonical 1-second bar series per symbol**
+  (decision §10.1 — 1s always, for consistency).
 - Coarser timeframes are **resampled** from it (1s → 10s → 1Min → 5Min …
   — matches the existing "resample from 1-minute bars" convention in
   CLAUDE.md).
@@ -152,17 +152,30 @@ Retires the `force=True` alerts-gate-bypass path entirely.
 | **3** | **Algo-model** lane as an opt-in per-strategy subscription (§3.3). |
 | **4** | Cold-start backfill lane (§6); move mass searches off `api` + serialise them; repurpose the "Update New Data" UI (§8). |
 
-## 10. Open decisions
+## 10. Resolved decisions (2026-05-22)
 
-1. **Ingest granularity** — canonical series at 1s, or at the finest TF
-   actually configured per symbol (cheaper if no strategy uses <1Min)?
-2. **Grace lag** — how long after a bar closes before the streaming
-   engine commits it (to stay aligned with the backtest model's
-   late-print handling)? Reuse the per-strategy `grace_seconds`.
-3. **Mass searches** — on the `data-worker`, or a 4th service later if
-   they prove too bursty alongside the streaming engines?
-4. **Engine-state durability** — persist each engine's snapshot
-   periodically (survive a data-worker restart) vs. cold-restart all
-   engines on deploy?
-5. **Scope** — all 70+ strategies streaming from day one, or roll out
-   per-symbol to validate memory/throughput first?
+1. **Ingest granularity** — **1-second canonical series, always**, for
+   every symbol. Consistency over per-symbol optimisation; revisit only
+   if memory bites.
+2. **Grace lag / accuracy** — two-stage:
+   - **Provisional commit** ~7s after bar close — keeps the lane fresh.
+   - **REST reconciliation pass** — a background sweep re-pulls the last
+     ~15 min of bars from REST canonical; where a bar materially
+     changed (late prints), the engine **re-evaluates from that bar**.
+   So the backtest lane is fresh immediately and converges to
+   bit-identical-with-REST within ~15 min — satisfying its
+   source-of-truth role (must match a strategy-builder REST backtest).
+3. **Mass searches** — a dedicated `mass-worker` service eventually
+   (bursty profile, would starve the steady streaming engines of CPU),
+   but it's **independent of the data-worker** — built as a follow-on,
+   not entangled with Phases 1–3.
+4. **Engine-state durability** — **persist snapshots periodically.**
+   Each engine saves its `engine_snapshot_b64` to the DB every few min;
+   on restart it resumes from there (replays only the gap). Snapshot
+   resume is byte-identical (fingerprint-validated) so it does not
+   compromise REST-match accuracy. Cold-restart is rejected — with
+   ~100 engines it causes a re-warmup stampede.
+5. **Rollout scope** — **per-symbol.** Stand it up for one busy ticker
+   (TSLA) first, measure real memory/CPU/DB load, then add symbols.
+   Note: only ~5 symbols are tracked total (≈70 strategies on them), so
+   "per-symbol" rollout is short — TSLA first for a clean scaling read.
