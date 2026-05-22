@@ -104,20 +104,26 @@ export function useStrategyTrades(id: number | null, useStored = true) {
   });
 }
 
-// Algo-lane trades (data_source LIKE 'cache_%') for a strategy.
-// Distinct from useStrategyTrades which returns the backtest lane
-// (stored_trades JSONB, filtered to backtest_% post-Phase 41 hydration).
-// Used by Chart & Trades "Algo History" + "Price Divergence (Algo vs
-// Alert)" modules so they show real algo-lane data instead of backtest.
+// Lane trades from the canonical `trades` table for a strategy.
+// `dataSourceFilter` selects the lane: 'cache_%' (algo lane, default)
+// or 'backtest_%' (backtest-model lane). Both read the trades table —
+// distinct from useStrategyTrades, which returns the backtest lane from
+// the stored_trades JSONB (that blob can lag the trades table since the
+// recompute cron appends to the table, not the blob).
 //
+// Used by Chart & Trades "Algo/Backtest History" + "Price Divergence".
 // Optional `since` ISO timestamp filter for date-windowed views.
 export function useStrategyAlgoTrades(
   id: number | null,
   since?: string | null,
+  dataSourceFilter?: 'cache_%' | 'backtest_%' | null,
 ) {
-  const params = since ? `?since=${encodeURIComponent(since)}` : '';
+  const qs = new URLSearchParams();
+  if (since) qs.set('since', since);
+  if (dataSourceFilter) qs.set('data_source_filter', dataSourceFilter);
+  const params = qs.toString() ? `?${qs.toString()}` : '';
   return useQuery({
-    queryKey: ['strategy-algo-trades', id, since ?? null],
+    queryKey: ['strategy-algo-trades', id, since ?? null, dataSourceFilter ?? null],
     queryFn: () =>
       apiFetch<TradeDTO[]>(`/api/strategies/${id}/algo-trades${params}`),
     enabled: id !== null,

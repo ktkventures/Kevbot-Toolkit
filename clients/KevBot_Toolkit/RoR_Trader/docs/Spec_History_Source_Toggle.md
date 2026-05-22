@@ -1,6 +1,7 @@
 # Spec — Chart & Trades History Source Toggle
 
 **Status:** IMPLEMENTED 2026-05-21 (Strategy Detail → Chart & Trades tab).
+Revised same day — "Backtest Model" label + trades-table data source.
 
 ## 1. Why
 
@@ -28,16 +29,35 @@ pane is always Alert History; the left pane switches between:
 
 | Mode | Left pane | Δ columns measure |
 |---|---|---|
-| **Algo** (default) | live algo lane (`cache_%`) | alert ↔ algo — live-engine accountability |
-| **Backtest** | backtest lane (`backtest_%`) | alert ↔ backtest — fidelity-to-target |
+| **Algo Model** (default) | live algo lane (`cache_%`) | alert ↔ algo — live-engine accountability |
+| **Backtest Model** | backtest-model lane (`backtest_%`) | alert ↔ backtest — fidelity-to-target |
 
 Both the left table's Δ column and the right (Alert History) table's Δ
 column re-pair against whichever lane is selected. The Alert History
-header shows `Δ vs Algo` / `Δ vs Backtest` so the comparison basis is
-never ambiguous.
+header shows `Δ vs Algo Model` / `Δ vs Backtest Model` so the
+comparison basis is never ambiguous.
 
-Default is **Algo** — unchanged behaviour for anyone not touching the
-toggle.
+Default is **Algo Model** — unchanged behaviour for anyone not touching
+the toggle.
+
+### Label note — "Backtest **Model**"
+
+The button says "Backtest **Model**", not just "Backtest". Bare
+"backtest" is ambiguous: it collides with the backtest-vs-forward-test
+*time split*. "Backtest Model" makes it unambiguous — it refers to the
+`backtest_model` data lane, the sibling of `algo_model` and
+`live_model`. (Matches the Backtest/Algo Models admin page wording.)
+
+### Data source — trades table, not the JSONB blob
+
+The Backtest Model pane reads the **`trades` table** (`data_source LIKE
+'backtest_%'`), NOT the strategy's `stored_trades` JSONB. The JSONB blob
+lags: the recompute cron appends new backtest trades to the *table*,
+not the blob. Example (sid 150, 2026-05-21): `stored_trades` JSONB held
+3,374 rows ending 2026-04-29, while the trades table held 7,571
+`backtest_rest_hifi` rows current to that day. Reading the table keeps
+the pane current to today and consistent with the algo lane (which
+already reads the table).
 
 ## 3. Implementation
 
@@ -45,7 +65,12 @@ All in `frontend/src/views/StrategyDetailPage.tsx`. No API or engine
 change — both lanes were already loaded (`algoTrades`, `btTrades`).
 
 - `historyLeftSource: 'algo' | 'backtest'` — `useState`, default `algo`.
-- `compareTrades` — `useMemo` resolving to `algoTrades` or `btTrades`.
+- `backtestLaneTrades` — backtest-model lane loaded from the trades
+  table via `useStrategyAlgoTrades(id, null, 'backtest_%')`. The
+  `/algo-trades` endpoint gained a `data_source_filter` query param
+  (`cache_%` default | `backtest_%`) so one endpoint serves both lanes.
+- `compareTrades` — `useMemo` resolving to `algoTrades` or
+  `backtestLaneTrades`.
 - `computeMatches(compareSet, alerts, slipTol, timeframeMs)` — the
   nearest-neighbour entry/exit pairing, **extracted** from the old
   `algoMatches` useMemo into a source-agnostic helper. Returns

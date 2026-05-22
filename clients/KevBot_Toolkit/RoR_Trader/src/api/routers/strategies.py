@@ -1474,21 +1474,34 @@ def get_strategy_algo_trades(
     since: Optional[str] = Query(
         None,
         description="ISO timestamp; only return trades with entry_fill_ts >= this"),
+    data_source_filter: str = Query(
+        'cache_%',
+        description="Lane selector — 'cache_%' (algo lane, default) or "
+                    "'backtest_%' (backtest-model lane). Both read the "
+                    "canonical trades table."),
     user=Depends(get_current_user),
 ):
-    """Get algo-lane trades (data_source LIKE 'cache_%') for a strategy.
+    """Get lane trades from the canonical `trades` table for a strategy.
 
-    Distinct from `/trades` which returns the backtest lane (stored_trades
-    JSONB after Phase 41 hydration is filtered to `backtest_%`). This
-    endpoint reads the canonical cache-based algo trades from the trades
-    table, used by the Chart & Trades "Algo History" + "Price Divergence"
-    modules so they show what live algo actually produced rather than
-    backtest output.
+    Despite the route name this serves BOTH lanes via `data_source_filter`:
+      - 'cache_%'    — the algo lane (what live algo actually produced).
+      - 'backtest_%' — the backtest-model lane (canonical KPI baseline).
+
+    Distinct from `/trades`, which returns the backtest lane from the
+    `stored_trades` JSONB — that JSONB can lag the trades table (the
+    recompute cron appends to the table, not the blob). Reading the table
+    directly keeps both lanes current and mutually consistent, which is
+    what the Chart & Trades history module + Price Divergence rely on.
 
     Trade records are reconstructed via `_row_to_trade` which merges the
     `data` JSONB into top-level keys, so consumers see `entry_price`,
     `exit_price`, `r_multiple`, `bars_held`, `hold_time_seconds`, etc.
     """
+    if data_source_filter not in ('cache_%', 'backtest_%'):
+        raise HTTPException(
+            status_code=400,
+            detail="data_source_filter must be 'cache_%' or 'backtest_%'")
+
     strat = _get_or_404(strategy_id, user)
     user_id = strat.get('user_id') or (
         user.get('id') or user.get('sub')
@@ -1499,7 +1512,7 @@ def get_strategy_algo_trades(
     from db import load_trades_admin
     trades = load_trades_admin(
         strategy_id, str(user_id),
-        data_source_filter='cache_%') or []
+        data_source_filter=data_source_filter) or []
 
     if since:
         trades = [t for t in trades

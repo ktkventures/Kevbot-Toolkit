@@ -1114,6 +1114,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // from btTrades/fwdTrades which come from stored_trades (backtest lane
   // post-Phase 41 hydration).
   const { data: algoTradesRaw } = useStrategyAlgoTrades(strategyId);
+  // Backtest-model lane straight from the trades table (data_source
+  // LIKE 'backtest_%'). Used by the Chart & Trades history toggle —
+  // distinct from btTrades, which derives from the stored_trades JSONB
+  // and can lag the trades table by weeks (the recompute cron appends
+  // to the table, not the blob). This keeps the toggle's Backtest pane
+  // current to today rather than frozen at the saved-backtest window.
+  const { data: backtestLaneTradesRaw } = useStrategyAlgoTrades(strategyId, null, 'backtest_%');
   const { data: cacheCoverage } = useStrategyCacheCoverage(strategyId);
   // M8.5 B+: always fetch the forward/backtest split. The endpoint is cheap
   // (just splits stored_trades at forward_test_start — no Polygon round-trip).
@@ -1824,11 +1831,38 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     };
   }), [algoTradesRaw]);
 
+  // Backtest-model lane — same row shape as algoTrades, sourced from the
+  // trades table (`backtest_%`) so it stays current to today. Distinct
+  // from btTrades (stored_trades JSONB, can be weeks stale).
+  const backtestLaneTrades = useMemo(() => (backtestLaneTradesRaw || []).map((t: any, i: number) => {
+    const rawExec = t.exec_type || t.execType?.replace(/[\[\]]/g, '') || 'C';
+    const exitReason = t.exit_reason || t.exitReason || '--';
+    const exitExec = exitExecTypeOf(exitReason);
+    const entryFillTs = t.entry_fill_ts || t.entryFillTs;
+    const exitFillTs = t.exit_fill_ts || t.exitFillTs;
+    return {
+      id: t.id ?? i + 1,
+      entryTime: entryFillTs || '--',
+      exitTime: exitFillTs || '--',
+      entryTimeDisplay: entryFillTs || '--',
+      exitTimeDisplay: exitFillTs || '--',
+      entryPrice: t.entry_price ?? t.entryPrice ?? 0,
+      exitPrice: t.exit_price ?? t.exitPrice ?? 0,
+      pnlR: t.r_multiple ?? t.pnlR ?? 0,
+      execType: rawExec,
+      exitExecType: exitExec,
+      exitReason,
+      holdTime: formatHoldTime(t.hold_time_seconds ?? t.holdTimeSeconds, t.bars_held ?? t.barsHeld),
+      isFwd: false,
+      isAlgo: false,
+    };
+  }), [backtestLaneTradesRaw]);
+
   // Chart & Trades history module — the trade set the left pane renders
   // and compares against alerts. Toggled by `historyLeftSource`.
   const compareTrades = useMemo(
-    () => (historyLeftSource === 'algo' ? algoTrades : btTrades),
-    [historyLeftSource, algoTrades, btTrades],
+    () => (historyLeftSource === 'algo' ? algoTrades : backtestLaneTrades),
+    [historyLeftSource, algoTrades, backtestLaneTrades],
   );
 
   // Trade-to-Alert mapping — MUST be after btTrades declaration
@@ -3714,7 +3748,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                   //             table) — what the live algo engine produced.
                   // 'backtest'= the canonical backtest lane — the KPI
                   //             baseline live alerts should converge toward.
-                  const histLabel = historyLeftSource === 'algo' ? 'Algo' : 'Backtest';
+                  const histLabel = historyLeftSource === 'algo' ? 'Algo Model' : 'Backtest Model';
                   const sortedAlgoFull = compareTrades
                     .map((t, origIdx) => ({ ...t, _origIdx: origIdx }))
                     .sort((a, b) => {
@@ -3754,10 +3788,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                 border: 'none', cursor: 'pointer',
                               }}
                               title={opt === 'algo'
-                                ? 'Algo lane — what the live algo engine produced (live-accountability check)'
-                                : 'Backtest lane — the canonical KPI baseline (fidelity-to-target check)'}
+                                ? 'Algo Model lane — what the live algo engine produced (live-accountability check)'
+                                : 'Backtest Model lane — the canonical KPI baseline, current to today (fidelity-to-target check)'}
                             >
-                              {opt === 'algo' ? 'Algo' : 'Backtest'}
+                              {opt === 'algo' ? 'Algo Model' : 'Backtest Model'}
                             </button>
                           ))}
                         </div>
