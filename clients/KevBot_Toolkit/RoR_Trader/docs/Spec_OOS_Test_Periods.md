@@ -1,7 +1,9 @@
 # Spec — Out-of-Sample Test Periods & Mass Builder OOS Gate
 
-**Status:** DRAFT 2026-05-21 — awaiting Kevin review before implementation.
-**Backup branch:** `dev-backup-2026-05-21-pre-oos` (`ff9644f`).
+**Status:** ✅ ALL 3 PHASES SHIPPED 2026-05-21 — pending browser QA.
+**Backup branches:** `dev-backup-2026-05-21-pre-oos` (`ff9644f`),
+`-oos-spec` (`d314fa4`), `-pre-oos-p3` (`bbf4776`), `-pre-oos-p2`
+(`669b9f5`).
 
 ## 1. Why
 
@@ -258,11 +260,32 @@ band only ever appears on strategies built through the new flow.
 
 ## 11. Phasing
 
-| Phase | Scope | Risk |
+| Phase | Scope | Status |
 |---|---|---|
-| **1** | Data model (`in_sample_start/end` + resolver §4.1) + 3-band chart coloring (§6). Purely additive — zero-width band for all existing strategies. | Low — safe to ship tonight. |
-| **2** | Boundary audit + repoint (§5); My Strategies / Strategy Detail KPI modes (§7–8); robustness readout. | Medium — the audit is the risk; resolver default makes it behavior-neutral. |
-| **3** | Mass Builder OOS gate (§9) — windows, two-sided gate, both gate types, results columns. | Medium — additive to a working page. |
+| **1** | Data model (`in_sample_start/end` + resolver §4.1) + 3-band chart coloring (§6). | ✅ SHIPPED 2026-05-21 (`bbf4776`) |
+| **3** | Mass Builder OOS gate (§9) — windows, two-sided gate (raw + sigma), results columns + robustness chip. | ✅ SHIPPED 2026-05-21 (`669b9f5`) |
+| **2** | Boundary repoint (§5) — KPI Backtest\|Forward divider → `resolve_in_sample_end`. | ✅ SHIPPED 2026-05-21 (`6d2e0a7`) |
+
+Built 1 → 3 → 2 (Phase 3 is self-contained; Phase 2 is the riskiest so
+landed last). All three behaviour-neutral for pre-OOS strategies.
+
+### Done in Phase 2 — and deferred
+
+Repointed the **trade-bucketing** KPI splits (`prepare_forward_test_data`,
+the forward-KPI + sigma splits, the `/forward-test` fast-split). Left
+intentionally: the equity-curve `boundary_index` chart marker, divergence
+windowing, alert-tracking anchors (other roles of `forward_test_start`).
+
+**Deferred — behaviour-neutral, safe to leave:**
+- `portfolios.py` portfolio-level KPI rollups — still split at
+  `forward_test_start`. Portfolio KPIs aggregate per-strategy KPIs (now
+  repointed), so this only matters for an OOS strategy's contribution to
+  a portfolio rollup. Audit when portfolios meet OOS strategies.
+- Legacy `app.py` (Streamlit) — not the product surface; not repointed.
+- Strategy Detail "Performance vs Plan" client-side `pvpBtTrades`
+  slice still uses the `forward_test_start` index, not `in_sample_end`.
+- Optional §8 robustness readout on Strategy Detail — not built (the
+  Mass Builder results already carry the robustness chip).
 
 ## 12. Out of scope
 
