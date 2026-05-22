@@ -274,12 +274,12 @@ def classify_strategy(state: StrategyEngineState) -> None:
         state.ineligible_reason = f"non-REST backtest_model={state.bt_model}"
         return
 
-    hour_seconds = 3600
-    for stf in state.sec_tfs:
-        if int(TIMEFRAME_SECONDS.get(stf, 60)) >= hour_seconds:
-            state.streaming_eligible = False
-            state.ineligible_reason = f"long-cycle secondary TF {stf}"
-            return
+    # Phase 2.5: the Tier-2 coarse-bar store (~150-day 1Min) covers
+    # secondary TFs up through 1Day with full warmup. No length-based
+    # ineligibility — TIMEFRAME_SECONDS isn't even used here anymore.
+    # (Pre-2.5 we marked >=1Hour ineligible because Tier-1's 90-min 1s
+    # store couldn't warm them; Tier-2 makes that block obsolete.)
+    _ = TIMEFRAME_SECONDS  # imported for any future per-TF guards
 
 
 # ─────────────────────────────────────────────────────────────────────

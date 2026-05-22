@@ -174,7 +174,74 @@ def test_streaming_metrics():
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 5. Parity check — the cutover gate (manual, needs Polygon + a strategy)
+# 5. Phase 2.5 — CoarseBarStore upsert + trim
+# ─────────────────────────────────────────────────────────────────────
+
+def test_coarse_bar_store_upsert_trim():
+    print("test_coarse_bar_store_upsert_trim")
+    from coarse_bar_store import CoarseBarStore
+
+    store = CoarseBarStore('TSLA', window_days=150)
+    # 200 day-bars (1 per day) — enough to exercise the rolling trim
+    # without inflating the test with 100k 1Min rows.
+    end = datetime(2026, 5, 22, 20, 0, 0, tzinfo=timezone.utc)
+    idx = pd.date_range(end=end, periods=200, freq='D', tz='UTC',
+                        name='timestamp')
+    price = pd.Series(range(200), dtype=float) + 100.0
+    df = pd.DataFrame({
+        'open': price, 'high': price + 0.5, 'low': price - 0.5,
+        'close': price + 0.1, 'volume': [10.0] * 200,
+        'vwap': price, 'trade_count': [3] * 200,
+    }, index=idx)
+    store.upsert_bars(df)
+    cov = store.coverage()
+    _check("upsert 200 days", cov['count'] > 0)
+    span = (cov['last_ts'] - cov['first_ts']).total_seconds() / 86400
+    _check("trimmed to <=150 days", span <= 150,
+           f"span={span:.1f}d count={cov['count']}")
+    _check("count <= 150 + 1", cov['count'] <= 151,
+           f"count={cov['count']}")
+    # Overlap upsert with a changed close → revised counter.
+    overlap = df.iloc[-3:].copy()
+    overlap['close'] = overlap['close'] + 1.0
+    res = store.upsert_bars(overlap)
+    _check("revised detected on overlap", res['revised'] == 3,
+           f"revised={res['revised']}")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 6. Phase 2.5 — BarStoreFacade routing
+# ─────────────────────────────────────────────────────────────────────
+
+class _StubStore:
+    """Minimal stub for facade routing tests — returns a sentinel string."""
+    def __init__(self, name):
+        self.name = name
+        self.symbol = 'TSLA'
+    def get_timeframe(self, tf):
+        return self.name
+    def coverage(self):
+        return {'first_ts': None, 'last_ts': None, 'count': 0}
+
+
+def test_facade_routing():
+    print("test_facade_routing")
+    from bar_store_facade import BarStoreFacade
+
+    facade = BarStoreFacade(_StubStore('T1'), _StubStore('T2'))
+    for tf in ('5Sec', '10Sec', '15Sec', '30Sec', '1Min'):
+        _check(f"{tf} -> Tier-1", facade.get_timeframe(tf) == 'T1',
+               f"got {facade.get_timeframe(tf)}")
+    for tf in ('2Min', '5Min', '15Min', '1Hour', '1Day'):
+        _check(f"{tf} -> Tier-2", facade.get_timeframe(tf) == 'T2',
+               f"got {facade.get_timeframe(tf)}")
+    _check("coverage delegates to Tier-1",
+           facade.coverage() == {'first_ts': None, 'last_ts': None,
+                                  'count': 0})
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 7. Parity check — the cutover gate (manual, needs Polygon + a strategy)
 # ─────────────────────────────────────────────────────────────────────
 
 def parity_check(strategy_id: int, user_id: str):
@@ -258,6 +325,8 @@ def main():
     test_new_trade_filter()
     test_build_injected_frames()
     test_streaming_metrics()
+    test_coarse_bar_store_upsert_trim()
+    test_facade_routing()
     print("-" * 60)
     print(f"  {_PASS} passed, {_FAIL} failed")
     print("  (run with `<strategy_id> <user_id>` for the parity gate)")

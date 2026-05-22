@@ -47,9 +47,12 @@ logger.info("pack_registry loaded %d user pack(s)", len(_loaded_packs))
 from datetime import datetime, timezone  # noqa: E402
 
 from bar_store import SymbolBarStore  # noqa: E402
+from coarse_bar_store import CoarseBarStore  # noqa: E402
+from bar_store_facade import BarStoreFacade  # noqa: E402
 from data_worker_ingest import (  # noqa: E402
     IngestMetrics, run_ingest_cycle, run_recon_cycle,
     is_market_window, prime_store,
+    prime_coarse_store, run_coarse_ingest_cycle,
 )
 from data_worker_circuit import DBCircuitBreaker  # noqa: E402
 from data_worker_engine import (  # noqa: E402
@@ -79,6 +82,12 @@ STRATEGY_RELOAD_INTERVAL = int(
 CATCHUP_STAGGER_SECONDS = int(
     os.getenv("DATA_WORKER_CATCHUP_STAGGER_SECONDS", "5"))
 
+# --- Phase 2.5 Tier-2 coarse-bar config ---
+COARSE_WINDOW_DAYS = int(
+    os.getenv("DATA_WORKER_COARSE_WINDOW_DAYS", "150"))
+COARSE_INGEST_INTERVAL = int(
+    os.getenv("DATA_WORKER_COARSE_INGEST_INTERVAL_SECONDS", "30"))
+
 try:
     import psutil
     _PROC = psutil.Process()
@@ -95,9 +104,16 @@ class DataWorkerManager:
         self._metrics = IngestMetrics()
         self._stores = {s: SymbolBarStore(s, window_minutes=BAR_WINDOW_MIN)
                         for s in SYMBOLS}
+        # Tier-2 coarse (1Min, ~150-day) + facades that route per-TF.
+        self._coarse_stores = {s: CoarseBarStore(s, window_days=COARSE_WINDOW_DAYS)
+                               for s in SYMBOLS}
+        self._facades = {s: BarStoreFacade(self._stores[s], self._coarse_stores[s])
+                         for s in SYMBOLS}
+        self._coarse_primed = {s: False for s in SYMBOLS}
         self._ingest_stop = threading.Event()
         self._recon_stop = threading.Event()
         self._metrics_stop = threading.Event()
+        self._coarse_stop = threading.Event()
 
         # --- Phase 2 streaming ---
         self._streaming_metrics = StreamingMetrics()
@@ -120,6 +136,7 @@ class DataWorkerManager:
             self._ingest_stop.set()
             self._recon_stop.set()
             self._metrics_stop.set()
+            self._coarse_stop.set()
             self._stream_stop.set()
             self._flush_stop.set()
             self._kpi_stop.set()
@@ -129,6 +146,7 @@ class DataWorkerManager:
         self._start_ingest_loop()
         self._start_recon_loop()
         self._start_metrics_loop()
+        self._start_coarse_ingest_loop()
         self._start_streaming_loop()
         self._start_snapshot_flush_loop()
         self._start_kpi_recompute_loop()
@@ -195,6 +213,28 @@ class DataWorkerManager:
         self._recon_thread = threading.Thread(
             target=loop, daemon=True, name="data-worker-recon")
         self._recon_thread.start()
+
+    def _start_coarse_ingest_loop(self):
+        """Phase 2.5 — refresh the Tier-2 1Min coarse store every
+        COARSE_INGEST_INTERVAL during the market window. Cheap (1-3 new
+        bars per cycle); the heavy work is the one-shot prime in
+        _streaming_pass."""
+        def loop():
+            self._coarse_stop.wait(45)  # stagger past Tier-1 ingest+recon
+            logger.info("[data-worker] coarse-ingest loop started "
+                        "(interval=%ss)", COARSE_INGEST_INTERVAL)
+            while not self._coarse_stop.is_set():
+                if is_market_window():
+                    for coarse in self._coarse_stores.values():
+                        try:
+                            run_coarse_ingest_cycle(coarse, self._metrics)
+                        except Exception as e:
+                            logger.error("coarse ingest cycle crashed: %s",
+                                         e, exc_info=True)
+                self._coarse_stop.wait(COARSE_INGEST_INTERVAL)
+        self._coarse_thread = threading.Thread(
+            target=loop, daemon=True, name="data-worker-coarse-ingest")
+        self._coarse_thread.start()
 
     def _start_metrics_loop(self):
         """The Phase 1 measurement gate — structured metrics every ~60s."""
@@ -301,14 +341,23 @@ class DataWorkerManager:
             return
         now_mono = time.monotonic()
 
-        # Prime the stores once, on first entry into the market window,
-        # so the resume windows are covered immediately.
+        # Prime Tier-1 (1s) and Tier-2 (1Min) on first entry into the
+        # market window — Tier-2's prime is the heavy one (one ~150-day
+        # 1Min REST pull per symbol, ~1-4s, ~5MB resident).
         if not self._primed:
-            for store in self._stores.values():
+            for sym, store in self._stores.items():
                 try:
                     prime_store(store, BAR_WINDOW_MIN)
                 except Exception as e:
                     logger.warning("[stream] prime_store failed: %s", e)
+                if not self._coarse_primed.get(sym):
+                    try:
+                        prime_coarse_store(self._coarse_stores[sym],
+                                           COARSE_WINDOW_DAYS)
+                        self._coarse_primed[sym] = True
+                    except Exception as e:
+                        logger.warning("[stream] prime_coarse_store %s "
+                                        "failed: %s", sym, e)
             self._primed = True
 
         # Periodic strategy reload.
@@ -331,14 +380,16 @@ class DataWorkerManager:
             break
 
         # Ticks — cadence-gated inside tick_strategy; most return fast.
+        # Pass the FACADE so primary→Tier-1 / secondaries→Tier-2 routing
+        # is invisible to the engine path.
         for eng in engines:
             if not eng.streaming_eligible or not eng.catchup_done:
                 continue
-            store = self._stores.get(eng.symbol)
-            if store is None:
+            facade = self._facades.get(eng.symbol)
+            if facade is None:
                 continue
             try:
-                tick_strategy(eng, store, self._circuit,
+                tick_strategy(eng, facade, self._circuit,
                               self._streaming_metrics)
             except Exception as e:
                 logger.error("[stream] sid=%s tick crashed: %s",
@@ -428,6 +479,18 @@ class DataWorkerManager:
                 m['cycle_dur_p95_s'], m['ingest_cycles'], m['recon_cycles'],
                 m['recon_revised_total'], m['provisional_appended_total'],
                 m['fetch_errors'])
+
+        # --- Phase 2.5 Tier-2 coarse metrics ---
+        for sym, coarse in self._coarse_stores.items():
+            cs = coarse.stats()
+            cmb = round(cs['mem_bytes'] / (1024 * 1024), 3)
+            logger.info(
+                "[metrics] coarse %s: bars=%d span=%sd mem=%sMB | "
+                "primed=%s | cycles=%d appended=%d revised=%d errors=%d",
+                sym, cs['bar_count'], cs.get('span_days'), cmb,
+                self._coarse_primed.get(sym, False),
+                m['coarse_cycles'], m['coarse_appended_total'],
+                m['coarse_revised_total'], m['coarse_fetch_errors'])
 
         # --- Phase 2 streaming metrics ---
         sm = self._streaming_metrics.snapshot()
