@@ -64,6 +64,14 @@ interface MassResult {
   targetDesc: string;
   dateRange: string;
   status: 'active' | 'saved' | 'passed';
+  // Out-of-Sample gate results — present only when the search ran with OOS on.
+  hasOos?: boolean;
+  oosWinRate?: number;
+  oosPf?: number;
+  oosDailyR?: number;
+  oosTrades?: number;
+  oosSigmaStatus?: 'green' | 'amber' | 'red' | 'unknown';
+  oosSigmaZ?: number | null;
   _raw?: any;  // Raw result from backend for save flow
 }
 
@@ -96,6 +104,42 @@ const SORT_OPTIONS = ['Daily R', 'Win Rate', 'Profit Factor', 'R-Squared', 'Tota
 const EXEC_TYPES = ['[C]', '[L]', '[LC]', '[CC]'] as const;
 const EXEC_BADGE_COLOR = '#2196F3';
 const FIDELITY_BADGE_COLOR = '#26C6DA';
+
+// OOS robustness chip — how the held-out window compares to the
+// in-sample projection (docs/Spec_OOS_Test_Periods.md §9.4).
+function oosSigmaChip(status?: string): { label: string; bg: string; color: string } {
+  switch (status) {
+    case 'green':
+      return { label: 'OOS holding', bg: 'rgba(76,175,80,0.18)', color: '#7fd081' };
+    case 'amber':
+      return { label: 'OOS soft', bg: 'rgba(255,193,7,0.18)', color: '#ffc107' };
+    case 'red':
+      return { label: 'OOS degraded', bg: 'rgba(244,67,54,0.18)', color: '#ef5350' };
+    default:
+      return { label: 'OOS n/a', bg: 'rgba(120,120,120,0.18)', color: 'var(--text-muted)' };
+  }
+}
+
+// Out-of-sample result strip on a Mass Builder result card.
+function OosStrip({ result }: { result: MassResult }) {
+  const chip = oosSigmaChip(result.oosSigmaStatus);
+  const dr = result.oosDailyR ?? 0;
+  return (
+    <div className="flex items-center gap-2 mb-2 px-2 py-1.5 rounded flex-wrap" style={{ background: 'var(--bg-input)' }}>
+      <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded" style={{ background: chip.bg, color: chip.color }}>
+        {chip.label}
+      </span>
+      <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+        Out-of-sample:&nbsp;
+        WR {(result.oosWinRate ?? 0).toFixed(1)}% &middot;{' '}
+        PF {(result.oosPf ?? 0).toFixed(2)} &middot;{' '}
+        Daily R {dr >= 0 ? '+' : ''}{dr.toFixed(2)} &middot;{' '}
+        {result.oosTrades ?? 0} trades
+        {result.oosSigmaZ != null && <> &middot; z {result.oosSigmaZ.toFixed(2)}</>}
+      </span>
+    </div>
+  );
+}
 
 interface TriggerDef {
   id: string;   // confluence trigger ID from backend (e.g. "swing_123_default_bull_c2")
@@ -471,6 +515,19 @@ export default function MassBuilderPage() {
   const [minPF, setMinPF] = useState(0);
   const [minDailyR, setMinDailyR] = useState(0);
   const [maxResults, setMaxResults] = useState(500);
+
+  // Out-of-Sample gate (docs/Spec_OOS_Test_Periods.md §9). When enabled,
+  // every combo is also backtested through today and split at
+  // `oosInSampleEnd`: ranked on the in-sample window, gated on the OOS
+  // window (raw thresholds + optional sigma band).
+  const [oosEnabled, setOosEnabled] = useState(false);
+  const [oosInSampleEnd, setOosInSampleEnd] = useState('');  // YYYY-MM-DD
+  const [oosMinTrades, setOosMinTrades] = useState(0);
+  const [oosMinWR, setOosMinWR] = useState(0);
+  const [oosMinPF, setOosMinPF] = useState(0);
+  const [oosMinDailyR, setOosMinDailyR] = useState(0);
+  const [oosSigmaEnabled, setOosSigmaEnabled] = useState(true);
+  const [oosSigmaN, setOosSigmaN] = useState(2);
   const [activeSearchId, setActiveSearchId] = useState<string | number | null>(null);
 
   // Model selection (algo_model split — 2026-05-08). Spawned strategies
@@ -638,6 +695,13 @@ export default function MassBuilderPage() {
       rSquared: r.kpis?.r_squared ?? 0,
       equityCurve: r.equity_curve || [],
       status: (r.status || 'active') as 'active' | 'saved' | 'passed',
+      hasOos: !!r.oos_kpis,
+      oosWinRate: r.oos_kpis?.win_rate,
+      oosPf: r.oos_kpis?.profit_factor,
+      oosDailyR: r.oos_kpis?.daily_r,
+      oosTrades: r.oos_kpis?.total_trades,
+      oosSigmaStatus: r.oos_sigma?.status,
+      oosSigmaZ: r.oos_sigma?.z ?? null,
       _raw: r,
     }));
     setResults(mapped);
@@ -801,6 +865,18 @@ export default function MassBuilderPage() {
         min_profit_factor: minPF > 0 ? minPF : undefined,
         min_daily_r: minDailyR > 0 ? minDailyR : undefined,
       },
+      // Out-of-Sample gate (docs/Spec_OOS_Test_Periods.md §9).
+      oos: (oosEnabled && oosInSampleEnd) ? {
+        enabled: true,
+        in_sample_end: oosInSampleEnd,
+        required_performance: {
+          min_trades: oosMinTrades > 0 ? oosMinTrades : undefined,
+          min_win_rate: oosMinWR > 0 ? oosMinWR : undefined,
+          min_profit_factor: oosMinPF > 0 ? oosMinPF : undefined,
+          min_daily_r: oosMinDailyR > 0 ? oosMinDailyR : undefined,
+        },
+        sigma: { enabled: oosSigmaEnabled, n: oosSigmaN },
+      } : undefined,
       max_results: maxResults,
       // Model fields (algo_model split — 2026-05-08). Spawned strategies
       // inherit these via mass_builder.py:build_strategy_config.
@@ -1754,6 +1830,85 @@ export default function MassBuilderPage() {
         </Card>
       </div>
 
+      {/* ====== Out-of-Sample Validation (OOS gate) ====== */}
+      <Card className="mb-5">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <p className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Out-of-Sample Validation</p>
+            <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-input)', color: 'var(--text-muted)' }}>overfit gate</span>
+          </div>
+          <label className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+            <input type="checkbox" checked={oosEnabled} onChange={(e) => setOosEnabled(e.target.checked)} />
+            Enabled
+          </label>
+        </div>
+        {!oosEnabled ? (
+          <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+            Off — combos are ranked and gated on the full window only. Enable to hold out a
+            recent slice the optimizer never sees, then gate every combo on how it performs there.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            <div className="grid grid-cols-4 gap-x-3 gap-y-2">
+              <div>
+                <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>In-Sample Ends</label>
+                <input type="date" value={oosInSampleEnd} onChange={(e) => setOosInSampleEnd(e.target.value)}
+                  className="w-full px-2 py-1 rounded text-xs" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
+              </div>
+              <div className="col-span-3 flex items-end">
+                <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                  {oosInSampleEnd
+                    ? `Ranked on the in-sample window (lookback start → ${oosInSampleEnd}). Gated on the out-of-sample window (${oosInSampleEnd} → today) — held out, never optimized on.`
+                    : 'Pick the date the in-sample window ends. Everything after it, through today, becomes the held-out OOS window.'}
+                </p>
+              </div>
+            </div>
+            <div>
+              <p className="text-[10px] font-medium mb-1" style={{ color: 'var(--text-muted)' }}>
+                OOS Required Performance — a combo must clear these on the held-out window too (0 = no constraint)
+              </p>
+              <div className="grid grid-cols-4 gap-x-3 gap-y-2">
+                <div>
+                  <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>OOS Min Trades</label>
+                  <input type="number" min={0} max={500} value={oosMinTrades} onChange={(e) => setOosMinTrades(parseInt(e.target.value, 10) || 0)}
+                    className="w-full px-2 py-1 rounded text-xs" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
+                </div>
+                <div>
+                  <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>OOS Min WR %</label>
+                  <input type="number" min={0} max={100} step={5} value={oosMinWR} onChange={(e) => setOosMinWR(parseFloat(e.target.value) || 0)}
+                    className="w-full px-2 py-1 rounded text-xs" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
+                </div>
+                <div>
+                  <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>OOS Min PF</label>
+                  <input type="number" min={0} max={20} step={0.25} value={oosMinPF} onChange={(e) => setOosMinPF(parseFloat(e.target.value) || 0)}
+                    className="w-full px-2 py-1 rounded text-xs" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
+                </div>
+                <div>
+                  <label className="text-[10px] block mb-0.5" style={{ color: 'var(--text-muted)' }}>OOS Min Daily R</label>
+                  <input type="number" min={0} max={10} step={0.1} value={oosMinDailyR} onChange={(e) => setOosMinDailyR(parseFloat(e.target.value) || 0)}
+                    className="w-full px-2 py-1 rounded text-xs" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-4 flex-wrap">
+              <label className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
+                <input type="checkbox" checked={oosSigmaEnabled} onChange={(e) => setOosSigmaEnabled(e.target.checked)} />
+                Sigma-band gate
+              </label>
+              <div className="flex items-center gap-1.5">
+                <label className="text-[10px]" style={{ color: 'var(--text-muted)' }}>N&sigma;</label>
+                <input type="number" min={1} max={3} step={0.5} value={oosSigmaN} disabled={!oosSigmaEnabled}
+                  onChange={(e) => setOosSigmaN(parseFloat(e.target.value) || 2)}
+                  className="w-16 px-2 py-1 rounded text-xs disabled:opacity-40" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }} />
+              </div>
+              <p className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                Rejects combos whose OOS cumulative R falls more than N&sigma; below the in-sample projection.
+              </p>
+            </div>
+          </div>
+        )}
+      </Card>
+
       {/* ====== Progress Bar ====== */}
       {(isAnalyzing || progress > 0) && (
         <Card className="mb-5">
@@ -1980,6 +2135,9 @@ export default function MassBuilderPage() {
                       </div>
                     ))}
                   </div>
+
+                  {/* OOS strip — held-out window result + robustness chip */}
+                  {result.hasOos && <OosStrip result={result} />}
 
                   {/* Strategy variables — pack-aware display */}
                   <div className="space-y-1 mb-2">

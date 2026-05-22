@@ -153,6 +153,91 @@ def meets_required_performance(kpis: dict, required: dict) -> bool:
     return True
 
 
+# =============================================================================
+# OUT-OF-SAMPLE GATE  (docs/Spec_OOS_Test_Periods.md §9)
+# =============================================================================
+# A combo is kept only if it clears the in-sample Required-Performance AND
+# the out-of-sample gate. The OOS gate has two combinable parts:
+#   - raw thresholds  — plain minimums on OOS KPIs (meets_required_performance)
+#   - sigma band      — the OOS cumulative R must stay within N sigma of the
+#                       projection from the in-sample per-trade R stats.
+
+def _r_series(trades_df):
+    """Closed-trade r_multiple values as a clean float Series."""
+    import pandas as pd
+    if trades_df is None or len(trades_df) == 0 \
+            or 'r_multiple' not in trades_df.columns:
+        return pd.Series(dtype=float)
+    return pd.to_numeric(trades_df['r_multiple'], errors='coerce').dropna()
+
+
+def oos_sigma_status(is_trades_df, oos_trades_df) -> dict:
+    """Compare OOS cumulative R to the in-sample projection.
+
+    From the in-sample per-trade R stats (mean mu, std sigma) the expected
+    OOS cumulative R over n_oos trades is n_oos*mu, with a 1-sigma spread
+    of sigma*sqrt(n_oos). Reports how many sigma the actual OOS result
+    sits from that expectation.
+
+    status: 'green' z >= -1, 'amber' z >= -2, 'red' z < -2. z is None
+    when not computable (too few trades or zero in-sample variance).
+    """
+    import math
+    is_r = _r_series(is_trades_df)
+    oos_r = _r_series(oos_trades_df)
+    n_oos = len(oos_r)
+    actual = round(float(oos_r.sum()), 3) if n_oos else 0.0
+    out = {'z': None, 'status': 'unknown', 'expected_r': None,
+           'actual_r': actual, 'n_oos': n_oos,
+           'lower_1s': None, 'lower_2s': None}
+    if len(is_r) < 2 or n_oos < 1:
+        return out
+    mu = float(is_r.mean())
+    sigma = float(is_r.std(ddof=1))
+    expected = n_oos * mu
+    out['expected_r'] = round(expected, 3)
+    if sigma <= 0:
+        out['status'] = 'green' if actual >= expected else 'red'
+        return out
+    std_k = sigma * math.sqrt(n_oos)
+    z = (actual - expected) / std_k
+    out['z'] = round(z, 2)
+    out['lower_1s'] = round(expected - std_k, 3)
+    out['lower_2s'] = round(expected - 2 * std_k, 3)
+    out['status'] = 'green' if z >= -1 else ('amber' if z >= -2 else 'red')
+    return out
+
+
+def evaluate_oos(is_trades_df, oos_trades_df, oos_required, oos_sigma_cfg,
+                 starting_balance=10000, risk_per_trade=100,
+                 oos_trading_days=None) -> dict:
+    """Compute OOS KPIs + sigma status and decide the out-of-sample gate.
+
+    Gate = raw OOS Required-Performance thresholds AND, when the sigma
+    band is enabled, z >= -N. Either side may be left empty.
+    Returns {oos_kpis, sigma, passed}.
+    """
+    from services import calculate_kpis
+    oos_kpis = calculate_kpis(
+        oos_trades_df, starting_balance=starting_balance,
+        risk_per_trade=risk_per_trade, total_trading_days=oos_trading_days)
+    sigma = oos_sigma_status(is_trades_df, oos_trades_df)
+
+    raw_ok = meets_required_performance(oos_kpis, oos_required or {})
+    sigma_ok = True
+    if oos_sigma_cfg and oos_sigma_cfg.get('enabled'):
+        n_sigma = float(oos_sigma_cfg.get('n', 2.0) or 2.0)
+        if sigma['z'] is not None:
+            sigma_ok = sigma['z'] >= -n_sigma
+        elif sigma['status'] == 'red':
+            sigma_ok = False
+    return {
+        'oos_kpis': oos_kpis,
+        'sigma': sigma,
+        'passed': bool(raw_ok and sigma_ok),
+    }
+
+
 def build_strategy_config(
     symbol: str,
     timeframe: str,
@@ -177,6 +262,8 @@ def build_strategy_config(
     backtest_model: Optional[str] = None,
     algo_model: Optional[str] = None,
     live_model: Optional[str] = None,
+    in_sample_start: Optional[str] = None,
+    in_sample_end: Optional[str] = None,
 ) -> dict:
     """Build a strategy config dict compatible with _unified_trades() and save flow.
 
@@ -225,6 +312,12 @@ def build_strategy_config(
         cfg['algo_model'] = algo_model
     if live_model:
         cfg['live_model'] = live_model
+    # OOS: stamp the in-sample window so the strategy's charts/KPIs know
+    # where the held-out band begins (docs/Spec_OOS_Test_Periods.md §4).
+    if in_sample_start:
+        cfg['in_sample_start'] = in_sample_start
+    if in_sample_end:
+        cfg['in_sample_end'] = in_sample_end
     return cfg
 
 
@@ -329,6 +422,7 @@ def run_mass_search(
     from services import (
         prepare_data_with_indicators, get_secondary_tf_map,
         calculate_kpis, count_trading_days, find_best_combinations,
+        split_trades_at_boundary,
     )
     from alerts import _get_base_trigger_id as get_base_trigger_id
     from data_loader import get_data_source
@@ -360,6 +454,25 @@ def run_mass_search(
     gen_conf_depth = search_config.get('general_confluence_depth', 1)
     tf_conf_ids = search_config.get('tf_confluences', []) or []
     gen_conf_ids = search_config.get('general_confluences', []) or []
+
+    # ── Out-of-Sample gate config (docs/Spec_OOS_Test_Periods.md §9) ──
+    # When enabled, every combo is backtested through today and split at
+    # `in_sample_end`: ranked on the in-sample window, gated additionally
+    # on the OOS window. Disabled (or no in_sample_end) → behaves as before.
+    oos_cfg = search_config.get('oos', {}) or {}
+    oos_in_sample_end = oos_cfg.get('in_sample_end')
+    oos_enabled = bool(oos_cfg.get('enabled')) and bool(oos_in_sample_end)
+    oos_required = oos_cfg.get('required_performance', {}) or {}
+    oos_sigma_cfg = oos_cfg.get('sigma', {}) or {}
+    oos_in_sample_end_dt = None
+    if oos_enabled:
+        try:
+            oos_in_sample_end_dt = datetime.fromisoformat(
+                str(oos_in_sample_end).replace('Z', '+00:00'))
+        except (ValueError, TypeError):
+            logger.warning("Mass search: bad oos.in_sample_end=%r — OOS off",
+                            oos_in_sample_end)
+            oos_enabled = False
 
     # Resolve synthetic confluence IDs into allowed label suffixes for Layer 2
     # filtering. TF IDs have format "_TF_-{GROUP_ID}-{BULL|BEAR}-{fidelity}";
@@ -470,6 +583,14 @@ def run_mass_search(
     start_date = date_range.get('start')
     end_date = date_range.get('end')
     data_seed = 42
+
+    # OOS: extend the loaded window through today so the out-of-sample
+    # band has bars. The in-sample window stays [start_date, in_sample_end].
+    if oos_enabled:
+        end_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+        logger.info("Mass search OOS: in_sample_end=%s, data extended to %s",
+                    oos_in_sample_end, end_date)
+
     logger.info("Mass search config: data_days=%d, date_range=%s, start=%s, end=%s",
                 data_days, date_range, start_date, end_date)
 
@@ -674,6 +795,20 @@ def run_mass_search(
                         symbol, tf, len(df), _bt_start_iso[:10],
                         _bt_end_iso[:10])
 
+            # OOS: split trading-day counts at the in-sample boundary so
+            # each side's daily-R uses the right denominator.
+            is_trading_days = period_trading_days
+            oos_trading_days = None
+            if oos_enabled:
+                _b = pd.Timestamp(oos_in_sample_end_dt)
+                _itz = getattr(df.index, 'tz', None)
+                if _itz is not None and _b.tzinfo is None:
+                    _b = _b.tz_localize(_itz)
+                elif _itz is None and _b.tzinfo is not None:
+                    _b = _b.tz_localize(None)
+                is_trading_days = count_trading_days(df[df.index < _b])
+                oos_trading_days = count_trading_days(df[df.index >= _b])
+
             for direction in directions:
                 for entry_cid in entry_cids:
                     entry_tdef = all_trigger_defs.get(entry_cid)
@@ -757,6 +892,11 @@ def run_mass_search(
                                 backtest_model=search_config.get('backtest_model'),
                                 algo_model=search_config.get('algo_model'),
                                 live_model=search_config.get('live_model'),
+                                # OOS: stamp the in-sample window onto the
+                                # spawned strategy so its chart bands + KPI
+                                # split know where the held-out region is.
+                                in_sample_start=(start_date if oos_enabled else None),
+                                in_sample_end=(oos_in_sample_end if oos_enabled else None),
                             )
 
                             # ── Level 2: Run full backtest ──
@@ -844,23 +984,48 @@ def run_mass_search(
                                     progress_callback(step, total_steps, label)
                                 continue
 
-                            # KPIs on base trades (no confluence filter)
-                            base_kpis = calculate_kpis(
-                                trades_df,
-                                starting_balance=config.get('starting_balance', 10000),
-                                risk_per_trade=config.get('risk_per_trade', 100),
-                                total_trading_days=period_trading_days)
+                            # KPIs on base trades (no confluence filter).
+                            # OOS on: rank on the in-sample window, gate
+                            # additionally on the out-of-sample window.
+                            _start_bal = config.get('starting_balance', 10000)
+                            _rpt = config.get('risk_per_trade', 100)
+                            if oos_enabled:
+                                _is_df, _oos_df = split_trades_at_boundary(
+                                    trades_df, oos_in_sample_end_dt)
+                                base_kpis = calculate_kpis(
+                                    _is_df, starting_balance=_start_bal,
+                                    risk_per_trade=_rpt,
+                                    total_trading_days=is_trading_days)
+                                _oos_eval = evaluate_oos(
+                                    _is_df, _oos_df, oos_required, oos_sigma_cfg,
+                                    starting_balance=_start_bal, risk_per_trade=_rpt,
+                                    oos_trading_days=oos_trading_days)
+                                _gate_ok = (meets_required_performance(
+                                    base_kpis, required_perf)
+                                    and _oos_eval['passed'])
+                            else:
+                                base_kpis = calculate_kpis(
+                                    trades_df, starting_balance=_start_bal,
+                                    risk_per_trade=_rpt,
+                                    total_trading_days=period_trading_days)
+                                _oos_eval = None
+                                _gate_ok = meets_required_performance(
+                                    base_kpis, required_perf)
 
                             _diag['combos_passed_perf'] += 1
-                            if meets_required_performance(base_kpis, required_perf):
-                                results.append({
+                            if _gate_ok:
+                                _res = {
                                     'config': dict(config),
                                     'kpis': base_kpis,
                                     'equity_curve': build_equity_curve(trades_df),
                                     'stored_trades': _serialize_trades(trades_df),
                                     'status': 'active',
                                     'confluence_str': 'None',
-                                })
+                                }
+                                if _oos_eval is not None:
+                                    _res['oos_kpis'] = _oos_eval['oos_kpis']
+                                    _res['oos_sigma'] = _oos_eval['sigma']
+                                results.append(_res)
 
                             # ── Level 3: Auto-search confluences ──
                             # Skip entirely when user selected no TF/General labels.
@@ -894,9 +1059,14 @@ def run_mass_search(
                                             'starting_balance', 10000),
                                         risk_per_trade=config.get(
                                             'risk_per_trade', 100),
-                                        total_trading_days=period_trading_days,
+                                        total_trading_days=is_trading_days,
                                         allowed_labels=allowed_labels,
                                         progress_callback=_conf_progress,
+                                        oos_boundary=(oos_in_sample_end_dt
+                                                      if oos_enabled else None),
+                                        oos_required=oos_required,
+                                        oos_sigma_cfg=oos_sigma_cfg,
+                                        oos_trading_days=oos_trading_days,
                                     )
                                     _diag['conf_search_total_sec'] += _time.monotonic() - _conf_t0
                                     _diag['conf_combos_total'] += _combos_seen['n']
@@ -921,7 +1091,7 @@ def run_mass_search(
                                                 lambda r: isinstance(r, set)
                                                 and combo_set.issubset(r))
                                             filtered = trades_df[mask]
-                                            results.append({
+                                            _conf_res = {
                                                 'config': conf_config,
                                                 'kpis': combo_kpis,
                                                 'equity_curve': build_equity_curve(
@@ -931,7 +1101,15 @@ def run_mass_search(
                                                 'status': 'active',
                                                 'confluence_str': row.get(
                                                     'combo_str', ''),
-                                            })
+                                            }
+                                            # OOS gate fields (find_best_
+                                            # combinations stamps these when
+                                            # oos_boundary was supplied).
+                                            if 'oos_kpis' in row:
+                                                _conf_res['oos_kpis'] = row['oos_kpis']
+                                                _conf_res['oos_sigma'] = row.get(
+                                                    'oos_sigma')
+                                            results.append(_conf_res)
                                 except _CancelledError:
                                     raise
                                 except Exception as exc:

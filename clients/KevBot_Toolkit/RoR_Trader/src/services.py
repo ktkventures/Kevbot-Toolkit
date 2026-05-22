@@ -1621,6 +1621,10 @@ def find_best_combinations(
     include_prefix: str = None,
     allowed_labels: set = None,
     progress_callback=None,
+    oos_boundary=None,
+    oos_required: dict = None,
+    oos_sigma_cfg: dict = None,
+    oos_trading_days: int = None,
 ) -> list[dict]:
     """Find the best confluence combinations automatically.
 
@@ -1632,6 +1636,13 @@ def find_best_combinations(
         records like "{tf}-{INTERP}-{STATE}" — any TF prefix is accepted if
         "{INTERP}-{STATE}" is in the set).
     progress_callback(idx, total): called during the combination loop.
+
+    OOS gate (docs/Spec_OOS_Test_Periods.md §9): when `oos_boundary` (a
+    datetime) is given, each combo's filtered trades are split at that
+    boundary — the row KPIs are computed on the in-sample side, and the
+    combo is dropped unless its out-of-sample side clears the OOS gate
+    (`oos_required` thresholds + optional `oos_sigma_cfg` band). Rows then
+    carry `oos_kpis` / `oos_sigma`. When None, behaves exactly as before.
 
     Returns: List of dicts with combination KPIs, sorted by profit_factor desc.
     """
@@ -1698,9 +1709,31 @@ def find_best_combinations(
         count = int(combined.sum())
         if count >= min_trades:
             subset = trades_df[combined]
-            kpis = calculate_kpis(subset, starting_balance=starting_balance,
-                                  risk_per_trade=risk_per_trade, total_trading_days=total_trading_days)
-            results.append({
+            oos_eval = None
+            if oos_boundary is not None:
+                # Rank on the in-sample side; gate on the OOS side.
+                is_subset, oos_subset = split_trades_at_boundary(
+                    subset, oos_boundary)
+                if len(is_subset) < min_trades:
+                    continue
+                kpis = calculate_kpis(
+                    is_subset, starting_balance=starting_balance,
+                    risk_per_trade=risk_per_trade,
+                    total_trading_days=total_trading_days)
+                from mass_builder import evaluate_oos
+                oos_eval = evaluate_oos(
+                    is_subset, oos_subset, oos_required, oos_sigma_cfg,
+                    starting_balance=starting_balance,
+                    risk_per_trade=risk_per_trade,
+                    oos_trading_days=oos_trading_days)
+                if not oos_eval['passed']:
+                    continue
+            else:
+                kpis = calculate_kpis(
+                    subset, starting_balance=starting_balance,
+                    risk_per_trade=risk_per_trade,
+                    total_trading_days=total_trading_days)
+            row = {
                 'combination': list(sorted(combo)),
                 'combo_str': ' + '.join(sorted(combo)),
                 'depth': len(combo),
@@ -1710,7 +1743,11 @@ def find_best_combinations(
                 'avg_r': round(_safe_float(kpis.get('avg_r', 0)), 3),
                 'daily_r': round(_safe_float(kpis.get('daily_r', 0)), 3),
                 'r_squared': round(_safe_float(kpis.get('r_squared', 0)), 3),
-            })
+            }
+            if oos_eval is not None:
+                row['oos_kpis'] = oos_eval['oos_kpis']
+                row['oos_sigma'] = oos_eval['sigma']
+            results.append(row)
 
     if progress_callback:
         progress_callback(total, total)
