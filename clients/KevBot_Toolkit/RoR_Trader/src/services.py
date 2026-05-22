@@ -476,13 +476,24 @@ def trades_df_from_stored(stored_trades: list) -> pd.DataFrame:
 def split_trades_at_boundary(trades_df: pd.DataFrame, boundary_dt: datetime):
     """Split trades into backtest (before boundary) and forward (at/after boundary).
 
-    Extracted from app.py:1587.
+    Resolves the entry-time column flexibly: stored-trades DataFrames
+    carry a datetime `entry_time`; raw unified-engine output carries an
+    ISO-string `entry_fill_ts`. The column is coerced to datetime so the
+    comparison is valid in either case. A DataFrame with neither column
+    is returned whole as the backtest side (cannot split).
     """
     if len(trades_df) == 0:
         return pd.DataFrame(), pd.DataFrame()
 
+    col = ('entry_time' if 'entry_time' in trades_df.columns
+           else 'entry_fill_ts' if 'entry_fill_ts' in trades_df.columns
+           else None)
+    if col is None:
+        return trades_df.copy(), trades_df.iloc[0:0].copy()
+
+    entry = pd.to_datetime(trades_df[col], errors='coerce')
     boundary_ts = pd.Timestamp(boundary_dt)
-    col_tz = getattr(trades_df['entry_time'].dtype, 'tz', None)
+    col_tz = getattr(entry.dtype, 'tz', None)
 
     if col_tz is not None and boundary_ts.tzinfo is None:
         boundary_ts = boundary_ts.tz_localize(col_tz)
@@ -491,8 +502,8 @@ def split_trades_at_boundary(trades_df: pd.DataFrame, boundary_dt: datetime):
     elif col_tz is None and boundary_ts.tzinfo is not None:
         boundary_ts = boundary_ts.tz_localize(None)
 
-    backtest = trades_df[trades_df['entry_time'] < boundary_ts].copy()
-    forward = trades_df[trades_df['entry_time'] >= boundary_ts].copy()
+    backtest = trades_df[entry < boundary_ts].copy()
+    forward = trades_df[entry >= boundary_ts].copy()
     return backtest, forward
 
 
