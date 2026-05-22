@@ -146,6 +146,32 @@ def run_ingest_cycle(store, metrics: IngestMetrics) -> None:
     metrics.record_ingest(latency, _time.monotonic() - t0, result)
 
 
+def prime_store(store, window_minutes: int) -> dict:
+    """One-time cold-start backfill of the full rolling window.
+
+    The provisional loop only fetches the trailing ~25s, so the store
+    would otherwise fill *forward* over `window_minutes` before it can
+    serve a Phase 2 streaming engine's resume window. Priming pulls the
+    whole window in one REST call so streaming can start immediately.
+    Idempotent — last-write-wins; safe to call again.
+    """
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(minutes=window_minutes)
+    end = now - timedelta(seconds=INGEST_COMMIT_LAG_SECONDS)
+    try:
+        df = _polygon_1s(store.symbol, start, end)
+    except Exception as e:
+        logger.warning("[data-worker] prime_store fetch failed %s: %s",
+                        store.symbol, e)
+        return {'appended': 0, 'total_bars': 0}
+    result = store.upsert_bars(df)
+    logger.info("[data-worker] prime_store %s: backfilled %d bars "
+                "(total=%d span covers ~%dmin)", store.symbol,
+                result.get('appended', 0), result.get('total_bars', 0),
+                window_minutes)
+    return result
+
+
 def run_recon_cycle(store, metrics: IngestMetrics, window_minutes: int) -> None:
     """One reconciliation cycle — re-pull the trailing window, upsert.
 

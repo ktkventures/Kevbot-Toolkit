@@ -125,6 +125,22 @@ class SymbolBarStore:
         from data_loader import resample_to_timeframe
         return resample_to_timeframe(bars, tf)
 
+    def coverage(self) -> dict:
+        """Cheap {first_ts, last_ts, count} — no memory_usage scan.
+
+        The Phase 2 streaming tick calls this every cycle to confirm the
+        store spans the strategy's resume window before running the
+        engine; `stats()` is too heavy for that (it does a deep
+        memory_usage scan). first_ts / last_ts are tz-aware Timestamps
+        (or None when empty).
+        """
+        with self._lock:
+            n = len(self._bars)
+            if n == 0:
+                return {'first_ts': None, 'last_ts': None, 'count': 0}
+            return {'first_ts': self._bars.index[0],
+                    'last_ts': self._bars.index[-1], 'count': n}
+
     def _trim(self) -> None:
         """Drop bars older than the rolling window. Caller must hold _lock."""
         if len(self._bars) == 0:
