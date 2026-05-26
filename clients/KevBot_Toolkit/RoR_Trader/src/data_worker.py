@@ -350,7 +350,10 @@ class DataWorkerManager:
                                 uid, e)
                 continue
             for strat in strategies:
-                if strat.get('symbol') not in SYMBOLS:
+                # Dynamic-symbol mode: accept every streaming-eligible
+                # strategy regardless of symbol — _ensure_symbol_stores
+                # provisions the bar layer for whatever shows up.
+                if not strat.get('symbol'):
                     continue
                 if 'entry_trigger_confluence_id' not in strat:
                     continue
