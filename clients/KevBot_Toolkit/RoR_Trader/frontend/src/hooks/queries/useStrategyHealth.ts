@@ -20,7 +20,9 @@ export type StrategyHealthFlag =
   | 'data_refresh_stale'
   | 'no_recent_trades'
   | 'parity_fail'
-  | 'has_discrepancies';
+  | 'has_discrepancies'
+  | 'phantom_alerts'
+  | 'missed_alerts';
 
 export interface StrategyHealthRow {
   strategy_id: number;
@@ -56,6 +58,13 @@ export interface StrategyHealthRow {
   parity_status: Record<string, unknown> | null;
   parity_verdict: string | null;
   discrepancies_count: number;
+  /** Alerts in the last 24h with no matching backtest trade edge
+   *  (entry or exit) within ±60s. Kevin's "phantom" — alert fired
+   *  without a corresponding backtest trade. */
+  phantom_count_24h: number;
+  /** Backtest trade edges in the last 24h with no matching alert
+   *  within ±60s. Kevin's "missed" — backtest fired but algo didn't. */
+  missed_count_24h: number;
 
   red_flags: StrategyHealthFlag[];
 

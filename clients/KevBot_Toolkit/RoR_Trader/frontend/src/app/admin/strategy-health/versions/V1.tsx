@@ -72,6 +72,8 @@ const FLAG_LABEL: Record<StrategyHealthFlag, string> = {
   no_recent_trades: 'no recent trades',
   parity_fail: 'parity fail',
   has_discrepancies: 'discrepancies',
+  phantom_alerts: 'phantom',
+  missed_alerts: 'missed',
 };
 
 /** Most flags are amber; only a few are hard-red. */
@@ -86,6 +88,8 @@ const FLAG_TONE: Record<StrategyHealthFlag, 'red' | 'amber' | 'gray'> = {
   no_recent_trades: 'amber',
   parity_fail: 'red',
   has_discrepancies: 'amber',
+  phantom_alerts: 'amber',   // alert without backtest — investigate
+  missed_alerts: 'red',      // backtest fired, algo didn't — bigger deal
 };
 
 function flagChipStyle(tone: 'red' | 'amber' | 'gray'): React.CSSProperties {
@@ -106,7 +110,8 @@ function flagChipStyle(tone: 'red' | 'amber' | 'gray'): React.CSSProperties {
 
 type SortKey =
   | 'flags' | 'name' | 'symbol' | 'timeframe'
-  | 'snapshot' | 'kpis' | 'lastTrade' | 'trades';
+  | 'snapshot' | 'kpis' | 'lastTrade' | 'trades'
+  | 'phantom' | 'missed';
 
 function rowSortValue(r: StrategyHealthRow, key: SortKey): number | string {
   switch (key) {
@@ -118,6 +123,8 @@ function rowSortValue(r: StrategyHealthRow, key: SortKey): number | string {
     case 'kpis':      return r.kpis_age_sec ?? Number.POSITIVE_INFINITY;
     case 'lastTrade': return r.last_entry_age_sec ?? Number.POSITIVE_INFINITY;
     case 'trades':    return -r.trade_count_backtest;
+    case 'phantom':   return -r.phantom_count_24h;
+    case 'missed':    return -r.missed_count_24h;
   }
 }
 
@@ -296,6 +303,8 @@ export default function StrategyHealthV1() {
                 <Th onClick={() => toggleSort('kpis')}      label={`KPIs${arrow('kpis')}`} />
                 <Th onClick={() => toggleSort('lastTrade')} label={`Last trade${arrow('lastTrade')}`} />
                 <Th onClick={() => toggleSort('trades')}    label={`#${arrow('trades')}`} align="right" />
+                <Th onClick={() => toggleSort('phantom')}   label={`Phantom 24h${arrow('phantom')}`} align="right" />
+                <Th onClick={() => toggleSort('missed')}    label={`Missed 24h${arrow('missed')}`} align="right" />
                 <Th onClick={() => toggleSort('flags')}     label={`Flags${arrow('flags')}`} />
               </tr>
             </thead>
@@ -337,6 +346,16 @@ export default function StrategyHealthV1() {
                                  ? 'var(--text-muted)' : 'var(--text-primary)' }}>
                     {r.trade_count_backtest}
                   </td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right',
+                               fontVariantNumeric: 'tabular-nums',
+                               color: r.phantom_count_24h > 0 ? '#ffc107' : 'var(--text-muted)' }}>
+                    {r.phantom_count_24h || '—'}
+                  </td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right',
+                               fontVariantNumeric: 'tabular-nums',
+                               color: r.missed_count_24h > 0 ? '#ef5350' : 'var(--text-muted)' }}>
+                    {r.missed_count_24h || '—'}
+                  </td>
                   <td style={{ padding: '6px 8px' }}>
                     {r.red_flags.length === 0 ? (
                       <span style={flagChipStyle('gray')}>ok</span>
@@ -352,7 +371,7 @@ export default function StrategyHealthV1() {
               ))}
               {filteredRows.length === 0 && (
                 <tr>
-                  <td colSpan={8} style={{ padding: 16, textAlign: 'center',
+                  <td colSpan={10} style={{ padding: 16, textAlign: 'center',
                                             color: 'var(--text-muted)' }}>
                     No strategies match the current filter.
                   </td>

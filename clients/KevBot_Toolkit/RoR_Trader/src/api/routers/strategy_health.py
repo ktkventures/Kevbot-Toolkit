@@ -47,6 +47,15 @@ _STALE_DATA_REFRESH_SEC = 24 * 60 * 60
 _NO_RECENT_TRADE_SEC = 7 * 24 * 60 * 60  # 7 days without an entry while
                                          # forward-testing = suspicious
 
+# Backtest ↔ Alert divergence window + matching tolerance.
+# Kevin's defs: phantom = alert-only, missed = backtest-trade-only.
+# Match purely by (strategy_id, fill_ts) ±tolerance so we don't get
+# tangled in the mixed event_type schema (legacy 'entry_signal' vs
+# Phase 39 'fill'/'entry'). A trade edge (entry_fill_ts OR exit_fill_ts)
+# within tolerance of an alert.fill_ts counts as paired.
+_DIVERGENCE_WINDOW_SEC = 24 * 60 * 60       # 24h
+_DIVERGENCE_TOLERANCE_SEC = 60.0            # ±60s
+
 
 @router.get("")
 def get_strategy_health(user=Depends(get_current_user)):
@@ -103,20 +112,84 @@ def get_strategy_health(user=Depends(get_current_user)):
     ).like("data_source", "backtest_%").execute()
     trades: List[Dict[str, Any]] = trade_resp.data or []
 
-    # Reduce: per-strategy { count, latest_entry, latest_exit }.
+    # Reduce: per-strategy { count, latest_entry, latest_exit,
+    #                       recent_edges } where recent_edges are the
+    # entry+exit timestamps within the divergence window, used below
+    # for phantom/missed matching against alerts.
+    window_cutoff_iso = (
+        now - timedelta(seconds=_DIVERGENCE_WINDOW_SEC)
+    ).isoformat()
     per_sid: Dict[int, Dict[str, Any]] = {}
     for t in trades:
         sid = t.get("strategy_id")
         if sid is None:
             continue
         agg = per_sid.setdefault(sid, {"count": 0, "latest_entry": None,
-                                      "latest_exit": None})
+                                      "latest_exit": None,
+                                      "recent_edges": []})
         agg["count"] += 1
         ek, xk = t.get("entry_fill_ts"), t.get("exit_fill_ts")
         if ek and (agg["latest_entry"] is None or ek > agg["latest_entry"]):
             agg["latest_entry"] = ek
         if xk and (agg["latest_exit"] is None or xk > agg["latest_exit"]):
             agg["latest_exit"] = xk
+        # Collect every trade edge that falls inside the divergence
+        # window — entries AND exits, since alerts can correspond to
+        # either side of a trade.
+        if ek and ek >= window_cutoff_iso:
+            agg["recent_edges"].append(ek)
+        if xk and xk >= window_cutoff_iso:
+            agg["recent_edges"].append(xk)
+
+    # Recent alerts (24h) per strategy. Keep the projection tight.
+    alert_resp = c.table("alerts").select(
+        "strategy_id,fill_ts,trigger_ts,event_type"
+    ).gte("timestamp", window_cutoff_iso).execute()
+    alerts: List[Dict[str, Any]] = alert_resp.data or []
+    alerts_per_sid: Dict[int, List[float]] = {}
+    for a in alerts:
+        sid = a.get("strategy_id")
+        if sid is None:
+            continue
+        # Prefer fill_ts; fall back to trigger_ts. Both are ISO strings.
+        ts_iso = a.get("fill_ts") or a.get("trigger_ts")
+        dt = _parse_iso(ts_iso)
+        if dt is None:
+            continue
+        alerts_per_sid.setdefault(sid, []).append(dt.timestamp())
+
+    def _pair_phantom_missed(edge_isos: List[str], alert_unix: List[float]):
+        """Greedy pairing within ±tolerance. Returns (phantom, missed).
+
+        phantom = unpaired alerts (alert-only — Kevin's 'phantom').
+        missed  = unpaired trade edges (backtest-only — Kevin's 'missed').
+        """
+        # Convert edges → unix once, sort both lists.
+        edges: List[float] = []
+        for s in edge_isos:
+            dt = _parse_iso(s)
+            if dt is not None:
+                edges.append(dt.timestamp())
+        edges.sort()
+        alerts_sorted = sorted(alert_unix)
+        # Two-pointer greedy pair: walk both lists, pair when |diff| ≤ tol.
+        i = j = 0
+        paired_edges = 0
+        paired_alerts = 0
+        while i < len(edges) and j < len(alerts_sorted):
+            diff = alerts_sorted[j] - edges[i]
+            if abs(diff) <= _DIVERGENCE_TOLERANCE_SEC:
+                paired_edges += 1
+                paired_alerts += 1
+                i += 1
+                j += 1
+            elif diff < 0:
+                j += 1   # alert too early — it's a phantom, skip ahead
+            else:
+                i += 1   # edge too early — it's missed, skip ahead
+        phantom = len(alerts_sorted) - paired_alerts
+        missed = len(edges) - paired_edges
+        return phantom, missed
 
     out_rows: List[Dict[str, Any]] = []
     for s in strats:
@@ -131,7 +204,7 @@ def get_strategy_health(user=Depends(get_current_user)):
         data_refreshed_at = _parse_iso(s.get("data_refreshed_at"))
 
         agg = per_sid.get(sid, {"count": 0, "latest_entry": None,
-                                "latest_exit": None})
+                                "latest_exit": None, "recent_edges": []})
         last_entry_dt = _parse_iso(agg["latest_entry"])
         last_exit_dt = _parse_iso(agg["latest_exit"])
 
@@ -146,6 +219,12 @@ def get_strategy_health(user=Depends(get_current_user)):
         parity = s.get("parity_status") or None
         parity_verdict = (parity.get("verdict")
                           if isinstance(parity, dict) else None)
+
+        # Phantom (alert-only) and missed (backtest-trade-only) counts in
+        # the last 24h. Symmetric matching: each trade has two edges
+        # (entry + exit) that can each be paired against an alert.
+        phantom_count, missed_count = _pair_phantom_missed(
+            agg["recent_edges"], alerts_per_sid.get(sid, []))
 
         forward_testing = bool(s.get("forward_testing"))
         is_streaming_eligible = ("entry_trigger_confluence_id" in cfg)
@@ -187,6 +266,10 @@ def get_strategy_health(user=Depends(get_current_user)):
             red_flags.append("parity_fail")
         if active_discrepancies > 0:
             red_flags.append("has_discrepancies")
+        if phantom_count > 0:
+            red_flags.append("phantom_alerts")
+        if missed_count > 0:
+            red_flags.append("missed_alerts")
 
         out_rows.append({
             "strategy_id": sid,
@@ -221,6 +304,8 @@ def get_strategy_health(user=Depends(get_current_user)):
             "parity_status": parity if isinstance(parity, dict) else None,
             "parity_verdict": parity_verdict,
             "discrepancies_count": active_discrepancies,
+            "phantom_count_24h": phantom_count,
+            "missed_count_24h": missed_count,
             "red_flags": red_flags,
             "updated_at": s.get("updated_at"),
             "created_at": s.get("created_at"),

@@ -62,8 +62,12 @@ from data_worker_engine import (  # noqa: E402
 )
 
 # --- config (env-overridable; sane code defaults) ---
-SYMBOLS = [s.strip().upper() for s in
-           os.getenv("DATA_WORKER_SYMBOLS", "TSLA").split(",") if s.strip()]
+# DATA_WORKER_SYMBOLS is now an OPTIONAL pinned list — symbols here are
+# always tracked regardless of strategy state. The default fleet is
+# discovered dynamically from streaming-eligible strategies on each
+# reload. Unset = pure dynamic.
+PINNED_SYMBOLS = [s.strip().upper() for s in
+                  os.getenv("DATA_WORKER_SYMBOLS", "").split(",") if s.strip()]
 INGEST_INTERVAL = int(os.getenv("DATA_WORKER_INGEST_INTERVAL_SECONDS", "1"))
 RECON_INTERVAL = int(os.getenv("DATA_WORKER_RECON_INTERVAL_SECONDS", "60"))
 RECON_WINDOW_MIN = int(os.getenv("DATA_WORKER_RECON_WINDOW_MINUTES", "15"))
@@ -102,14 +106,20 @@ class DataWorkerManager:
     def __init__(self):
         self._running = True
         self._metrics = IngestMetrics()
-        self._stores = {s: SymbolBarStore(s, window_minutes=BAR_WINDOW_MIN)
-                        for s in SYMBOLS}
-        # Tier-2 coarse (1Min, ~150-day) + facades that route per-TF.
-        self._coarse_stores = {s: CoarseBarStore(s, window_days=COARSE_WINDOW_DAYS)
-                               for s in SYMBOLS}
-        self._facades = {s: BarStoreFacade(self._stores[s], self._coarse_stores[s])
-                         for s in SYMBOLS}
-        self._coarse_primed = {s: False for s in SYMBOLS}
+        # Stores keyed by symbol — dynamically (de)allocated by
+        # _ensure_symbol_stores (called from the streaming loop on each
+        # strategy reload). Pinned symbols (DATA_WORKER_SYMBOLS env var)
+        # are always retained; the rest come and go based on what
+        # streaming-eligible strategies are using.
+        self._stores: dict = {}
+        self._coarse_stores: dict = {}
+        self._facades: dict = {}
+        self._coarse_primed: dict = {}
+        # Guards mutations to _stores / _coarse_stores / _facades /
+        # _coarse_primed. Readers (ingest, recon, coarse-ingest, metrics)
+        # snapshot via list(...) at iteration time so they don't need
+        # to hold the lock.
+        self._symbols_lock = threading.Lock()
         self._ingest_stop = threading.Event()
         self._recon_stop = threading.Event()
         self._metrics_stop = threading.Event()
@@ -123,12 +133,12 @@ class DataWorkerManager:
         self._stream_stop = threading.Event()
         self._flush_stop = threading.Event()
         self._kpi_stop = threading.Event()
-        self._primed = False
         self._last_catchup_at = 0.0
         self._last_reload_at = 0.0
 
     def run(self):
-        logger.info("Data-worker starting — symbols=%s", SYMBOLS)
+        logger.info("Data-worker starting — pinned_symbols=%s "
+                    "(dynamic discovery for the rest)", PINNED_SYMBOLS)
 
         def handle_signal(signum, frame):
             logger.info("Received signal %d — shutting down", signum)
@@ -179,7 +189,7 @@ class DataWorkerManager:
             backoff = INGEST_INTERVAL
             while not self._ingest_stop.is_set():
                 if is_market_window():
-                    for store in self._stores.values():
+                    for store in list(self._stores.values()):
                         try:
                             run_ingest_cycle(store, self._metrics)
                         except Exception as e:
@@ -202,7 +212,7 @@ class DataWorkerManager:
                         RECON_INTERVAL, RECON_WINDOW_MIN)
             while not self._recon_stop.is_set():
                 if is_market_window():
-                    for store in self._stores.values():
+                    for store in list(self._stores.values()):
                         try:
                             run_recon_cycle(store, self._metrics,
                                             RECON_WINDOW_MIN)
@@ -225,7 +235,7 @@ class DataWorkerManager:
                         "(interval=%ss)", COARSE_INGEST_INTERVAL)
             while not self._coarse_stop.is_set():
                 if is_market_window():
-                    for coarse in self._coarse_stores.values():
+                    for coarse in list(self._coarse_stores.values()):
                         try:
                             run_coarse_ingest_cycle(coarse, self._metrics)
                         except Exception as e:
@@ -252,6 +262,68 @@ class DataWorkerManager:
         self._metrics_thread.start()
 
     # ─── Phase 2 — streaming engines ──────────────────────────────────
+
+    def _ensure_symbol_stores(self, wanted_symbols: set) -> None:
+        """Reconcile the per-symbol store fleet against `wanted_symbols`.
+
+        - Adds (and synchronously primes) stores for symbols in
+          `wanted_symbols` or PINNED_SYMBOLS that aren't yet allocated.
+        - Removes stores for symbols not in either set.
+
+        Synchronous priming hits Polygon REST and can take ~1-4s per
+        symbol — acceptable because this runs on the streaming daemon
+        (5-min reload cadence), not the request path.
+
+        Pinned symbols (DATA_WORKER_SYMBOLS env var) are always retained
+        regardless of strategy state — useful for warm-starting before
+        the first reload, or pinning a symbol you want monitored even
+        with no strategies on it yet.
+        """
+        target = set(wanted_symbols) | set(PINNED_SYMBOLS)
+        target = {s for s in target if isinstance(s, str) and s.strip()}
+
+        with self._symbols_lock:
+            current = set(self._stores.keys())
+        to_add = target - current
+        to_remove = current - target
+
+        # Adds — do priming OUTSIDE the lock (REST I/O).
+        for sym in sorted(to_add):
+            logger.info("[stream] provisioning symbol %s "
+                        "(Tier-1 + Tier-2 prime)…", sym)
+            tier1 = SymbolBarStore(sym, window_minutes=BAR_WINDOW_MIN)
+            try:
+                prime_store(tier1, BAR_WINDOW_MIN)
+            except Exception as e:
+                logger.warning("[stream] prime_store %s failed: %s", sym, e)
+            coarse = CoarseBarStore(sym, window_days=COARSE_WINDOW_DAYS)
+            coarse_primed = False
+            try:
+                prime_coarse_store(coarse, COARSE_WINDOW_DAYS)
+                coarse_primed = True
+            except Exception as e:
+                logger.warning("[stream] prime_coarse_store %s failed: %s",
+                               sym, e)
+            facade = BarStoreFacade(tier1, coarse)
+            with self._symbols_lock:
+                self._stores[sym] = tier1
+                self._coarse_stores[sym] = coarse
+                self._facades[sym] = facade
+                self._coarse_primed[sym] = coarse_primed
+            logger.info("[stream] symbol %s provisioned (coarse_primed=%s)",
+                        sym, coarse_primed)
+
+        # Removes — under the lock; readers snapshot via list(...) so
+        # they won't crash mid-iteration.
+        if to_remove:
+            with self._symbols_lock:
+                for sym in to_remove:
+                    logger.info("[stream] deprovisioning symbol %s — "
+                                "no eligible strategies + not pinned", sym)
+                    self._stores.pop(sym, None)
+                    self._coarse_stores.pop(sym, None)
+                    self._facades.pop(sym, None)
+                    self._coarse_primed.pop(sym, None)
 
     def _load_streaming_strategies(self):
         """Discover + (re)classify the TSLA strategies to stream.
@@ -313,8 +385,14 @@ class DataWorkerManager:
             total = len(self._engines)
             elig = sum(1 for e in self._engines.values()
                        if e.streaming_eligible)
+            wanted_symbols = {e.symbol for e in self._engines.values()
+                              if e.streaming_eligible and e.symbol}
         logger.info("[stream] tracking %d strategies — %d streaming-eligible, "
-                    "%d ineligible", total, elig, total - elig)
+                    "%d ineligible · symbols wanted=%s",
+                    total, elig, total - elig, sorted(wanted_symbols))
+        # Provision / deprovision per-symbol stores to match the active
+        # strategy fleet (pinned symbols are always retained).
+        self._ensure_symbol_stores(wanted_symbols)
 
     def _start_streaming_loop(self):
         """Phase 2 — per-strategy streaming engine ticks."""
@@ -341,24 +419,9 @@ class DataWorkerManager:
             return
         now_mono = time.monotonic()
 
-        # Prime Tier-1 (1s) and Tier-2 (1Min) on first entry into the
-        # market window — Tier-2's prime is the heavy one (one ~150-day
-        # 1Min REST pull per symbol, ~1-4s, ~5MB resident).
-        if not self._primed:
-            for sym, store in self._stores.items():
-                try:
-                    prime_store(store, BAR_WINDOW_MIN)
-                except Exception as e:
-                    logger.warning("[stream] prime_store failed: %s", e)
-                if not self._coarse_primed.get(sym):
-                    try:
-                        prime_coarse_store(self._coarse_stores[sym],
-                                           COARSE_WINDOW_DAYS)
-                        self._coarse_primed[sym] = True
-                    except Exception as e:
-                        logger.warning("[stream] prime_coarse_store %s "
-                                        "failed: %s", sym, e)
-            self._primed = True
+        # Per-symbol store provisioning + Tier-1/Tier-2 priming is owned
+        # by _ensure_symbol_stores, invoked from _load_streaming_strategies
+        # on every reload (initial + every 5 min). Nothing to do here.
 
         # Periodic strategy reload.
         if now_mono - self._last_reload_at >= STRATEGY_RELOAD_INTERVAL:
@@ -466,7 +529,7 @@ class DataWorkerManager:
                 rss_mb = round(_PROC.memory_info().rss / (1024 * 1024), 1)
             except Exception:
                 rss_mb = None
-        for store in self._stores.values():
+        for store in list(self._stores.values()):
             st = store.stats()
             bar_mb = round(st['mem_bytes'] / (1024 * 1024), 3)
             logger.info(
@@ -481,7 +544,7 @@ class DataWorkerManager:
                 m['fetch_errors'])
 
         # --- Phase 2.5 Tier-2 coarse metrics ---
-        for sym, coarse in self._coarse_stores.items():
+        for sym, coarse in list(self._coarse_stores.items()):
             cs = coarse.stats()
             cmb = round(cs['mem_bytes'] / (1024 * 1024), 3)
             logger.info(
