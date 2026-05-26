@@ -41,6 +41,18 @@ interface MassConfig {
     minRSquared: number | null;
   };
   maxResults: number;
+  /** §8.5: 'HighFidelity' replays the engine per confluence combo with
+   *  inline gating (bit-matches Update All Data). 'Rapid' uses the
+   *  current post-hoc mask (faster but structurally divergent). */
+  searchFidelity?: 'Rapid' | 'HighFidelity';
+  /** When HighFidelity is selected: skip the sub-second Hi-Fi Pass 2
+   *  timestamp refinement on top results. Faster, but L-type entry/
+   *  exit timestamps stay bar-aligned. */
+  skipHifi?: boolean;
+  /** When HighFidelity is selected: how wide a buffer to Hi-Fi before
+   *  final ranking (top hifiBufferMultiplier × maxResults). Higher =
+   *  safer ranking, slower. Clamped server-side to [1, 10]. */
+  hifiBufferMultiplier?: number;
 }
 
 interface MassResult {
@@ -553,6 +565,13 @@ export default function MassBuilderPage() {
   const [algoModel, setAlgoModel] = useState<string>('cache_locked');
   const [liveModel, setLiveModel] = useState<string>('ws_agg_locked');
 
+  // Search Mode (Mass Builder §8.5 fidelity fix).
+  // Default 'Rapid' until Kevin verifies HighFidelity parity vs Update
+  // All Data on real strategies (plan: piped-wondering-tower.md).
+  const [searchFidelity, setSearchFidelity] = useState<'Rapid' | 'HighFidelity'>('Rapid');
+  const [skipHifi, setSkipHifi] = useState<boolean>(false);
+  const [hifiBufferMultiplier, setHifiBufferMultiplier] = useState<number>(3);
+
   // Layout & display state
   const [resultColumns, setResultColumns] = useState(2);
   const [eqShowHWM, setEqShowHWM] = useState(false);
@@ -900,6 +919,12 @@ export default function MassBuilderPage() {
       backtest_model: backtestModel,
       algo_model: algoModel,
       live_model: liveModel,
+      // Search Mode (§8.5). HighFidelity replays the engine per
+      // confluence combo with inline gating; Rapid keeps the legacy
+      // post-hoc mask. Both Hi-Fi knobs are no-ops when Rapid.
+      search_fidelity: searchFidelity,
+      skip_hifi: skipHifi,
+      hifi_buffer_multiplier: hifiBufferMultiplier,
     };
 
     runMassSearch.mutate(config, {
@@ -1350,6 +1375,86 @@ export default function MassBuilderPage() {
                     options={modelsResp?.live_models || {}}
                     onChange={setLiveModel}
                   />
+                </div>
+
+                {/* Search Mode — Mass Builder §8.5 fidelity toggle */}
+                <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Search Mode</p>
+                    <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
+                      Controls how confluence candidates are evaluated
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    {(['Rapid', 'HighFidelity'] as const).map(mode => (
+                      <button
+                        key={mode}
+                        onClick={() => setSearchFidelity(mode)}
+                        className="px-3 py-1.5 rounded text-xs transition-colors"
+                        style={{
+                          background: searchFidelity === mode ? 'var(--accent)' : 'var(--bg-input)',
+                          color: searchFidelity === mode ? 'white' : 'var(--text-muted)',
+                          border: searchFidelity === mode ? 'none' : '1px solid var(--border)',
+                          cursor: 'pointer',
+                          minWidth: 180,
+                          textAlign: 'left',
+                        }}
+                      >
+                        <div style={{ fontWeight: 600 }}>
+                          {mode === 'HighFidelity' ? 'High-Fidelity' : 'Rapid'}
+                        </div>
+                        <div className="text-[10px] mt-0.5" style={{ opacity: 0.8 }}>
+                          {mode === 'HighFidelity'
+                            ? 'Bit-matches Update All Data. 5–20× slower.'
+                            : 'Fast preview, KPIs may differ from saved (current).'}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-4 text-xs"
+                       style={{ color: 'var(--text-muted)',
+                                opacity: searchFidelity === 'HighFidelity' ? 1 : 0.4 }}>
+                    <label style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 4,
+                      cursor: searchFidelity === 'HighFidelity' ? 'pointer' : 'not-allowed',
+                    }}>
+                      <input
+                        type="checkbox"
+                        checked={skipHifi}
+                        disabled={searchFidelity !== 'HighFidelity'}
+                        onChange={e => setSkipHifi(e.target.checked)}
+                      />
+                      <span>Skip Hi-Fi refinement</span>
+                    </label>
+                    <label style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                    }}>
+                      <span>Hi-Fi buffer ×</span>
+                      <input
+                        type="number"
+                        value={hifiBufferMultiplier}
+                        min={1}
+                        max={10}
+                        step={1}
+                        disabled={searchFidelity !== 'HighFidelity'}
+                        onChange={e => setHifiBufferMultiplier(
+                          Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
+                        style={{
+                          width: 50,
+                          padding: '2px 6px',
+                          background: 'var(--bg-input)',
+                          border: '1px solid var(--border)',
+                          borderRadius: 3,
+                          color: 'var(--text-primary)',
+                          fontSize: 12,
+                        }}
+                      />
+                    </label>
+                    <span className="text-[10px]"
+                          style={{ opacity: searchFidelity === 'HighFidelity' ? 0.7 : 0.4 }}>
+                      Hi-Fi top-K refinement currently plumbed but inactive (follow-up PR).
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>

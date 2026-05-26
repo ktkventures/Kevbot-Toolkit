@@ -424,7 +424,41 @@ def run_mass_search(
         calculate_kpis, count_trading_days, find_best_combinations,
         split_trades_at_boundary,
     )
+    from unified_engine import precompute_bar_cache, run_trades_from_cache
     from alerts import _get_base_trigger_id as get_base_trigger_id
+
+    # ── Search fidelity mode (Mass Builder §8.5) ──────────────────────
+    # Rapid (default, current behavior): one engine run per
+    #   (entry × exit × stop × target) combo, then post-hoc mask
+    #   confluence candidates against that run's trades. Fast but
+    #   structurally divergent from "Update All Data".
+    # HighFidelity: build a per-(symbol, tf) cache once, replay the
+    #   state machine per candidate with confluence inline. Each
+    #   confluence combo gets its own engine-gated trades_df, bit-
+    #   identical to a full `run_unified_backtest` with that
+    #   confluence set. See plan: piped-wondering-tower.md.
+    _search_fidelity = str(search_config.get('searchFidelity')
+                            or search_config.get('search_fidelity')
+                            or 'Rapid').strip()
+    _hifi_mode = _search_fidelity == 'HighFidelity'
+    # Hi-Fi Pass 2 timestamp refinement on top results. Plumbed through
+    # now; the per-search top-K refinement is deferred to a follow-up
+    # (see plan: piped-wondering-tower.md → "Hi-Fi Pass 2 — default
+    # on, top-K only"). The structural fidelity win in this PR is the
+    # cache-replay branch above; Hi-Fi only refines sub-second
+    # L-type timestamps on top of that.
+    _skip_hifi = bool(search_config.get('skipHifi', False))
+    _hifi_buffer_mult = max(1, min(10, int(
+        search_config.get('hifiBufferMultiplier', 3))))
+    if _hifi_mode:
+        logger.info("Mass search: HighFidelity mode (cache+replay per "
+                    "confluence combo); skipHifi=%s hifi_buffer×=%d "
+                    "(Hi-Fi top-K refinement: follow-up)",
+                    _skip_hifi, _hifi_buffer_mult)
+    # Per-(symbol, tf) cache holder. Lazily populated on first
+    # HighFidelity request inside the group; freed when the group
+    # ends.
+    _group_cache_holder: dict = {}
     from data_loader import get_data_source
     from confluence_groups import (
         get_enabled_groups, get_all_triggers, load_confluence_groups,
@@ -803,6 +837,11 @@ def run_mass_search(
                         symbol, tf, len(df), _bt_start_iso[:10],
                         _bt_end_iso[:10])
 
+            # HighFidelity: clear the per-group cache from the previous
+            # (symbol, tf) group so the next group gets a fresh build.
+            # The cache itself is built lazily on first use below.
+            _group_cache_holder.clear()
+
             # OOS: split trading-day counts at the in-sample boundary so
             # each side's daily-R uses the right denominator.
             is_trading_days = period_trading_days
@@ -922,11 +961,53 @@ def run_mass_search(
                                                       inner_step=bar_n,
                                                       inner_total=total_bars)
                             try:
-                                trades_df, _ = run_unified_backtest(
-                                    df, config,
-                                    general_packs=enabled_gen,
-                                    secondary_tf_map=sec_tf_map if sec_tf_map else None,
-                                    progress_cb=_bar_progress)
+                                if _hifi_mode:
+                                    # HighFidelity §8.5: build per-group
+                                    # cache once (superset of all triggers
+                                    # used by any candidate in the group),
+                                    # then run_trades_from_cache for this
+                                    # specific candidate config. Indicator
+                                    # work happens once, not N times.
+                                    if 'cache' not in _group_cache_holder:
+                                        _superset = dict(config)
+                                        _all_entry_bases = sorted({
+                                            all_entry_bases[cid]
+                                            for cid in entry_cids
+                                            if all_entry_bases.get(cid)
+                                        })
+                                        _all_exit_bases = sorted({
+                                            all_exit_bases[ecid]
+                                            for _combo in exit_combos
+                                            for ecid in _combo
+                                            if all_exit_bases.get(ecid)
+                                        })
+                                        # Cover every entry + every exit
+                                        # by stuffing them into the
+                                        # superset's exit_triggers — that
+                                        # field drives the trigger
+                                        # evaluator's required_triggers set
+                                        # (resolve_strategy_requirements).
+                                        _superset['exit_triggers'] = sorted(
+                                            set(_all_entry_bases) |
+                                            set(_all_exit_bases))
+                                        _superset['confluence'] = []
+                                        _superset['general_confluences'] = []
+                                        _cache, _meta = precompute_bar_cache(
+                                            df, _superset,
+                                            general_packs=enabled_gen,
+                                            secondary_tf_map=sec_tf_map if sec_tf_map else None)
+                                        _group_cache_holder['cache'] = _cache
+                                        _group_cache_holder['meta'] = _meta
+                                    trades_df = run_trades_from_cache(
+                                        _group_cache_holder['cache'],
+                                        config,
+                                        _group_cache_holder['meta'])
+                                else:
+                                    trades_df, _ = run_unified_backtest(
+                                        df, config,
+                                        general_packs=enabled_gen,
+                                        secondary_tf_map=sec_tf_map if sec_tf_map else None,
+                                        progress_cb=_bar_progress)
                                 _diag['trigger_bt_total_sec'] += _time.monotonic() - _bt_t0
                             except _CancelledError:
                                 # Cancellation must propagate — the outer handler
@@ -1099,10 +1180,36 @@ def run_mass_search(
                                                          if c.startswith('GEN-')]
                                             conf_config['confluence'] = tf_confs
                                             conf_config['general_confluences'] = gen_confs
-                                            mask = trades_df['confluence_records'].apply(
-                                                lambda r: isinstance(r, set)
-                                                and combo_set.issubset(r))
-                                            filtered = trades_df[mask]
+                                            if _hifi_mode and 'cache' in _group_cache_holder:
+                                                # HighFidelity §8.5: replay
+                                                # the state machine with the
+                                                # candidate's confluence set
+                                                # gating entry inline. Trades
+                                                # are bit-identical to what
+                                                # a full backtest with this
+                                                # combo's confluence would
+                                                # produce — no post-hoc
+                                                # mask drift.
+                                                # NO fallback to mask: per
+                                                # feedback_no_silent_defaults
+                                                # — a silent downgrade to
+                                                # the rapid path would mask
+                                                # the very fidelity bug
+                                                # we're fixing. Let the
+                                                # exception propagate to
+                                                # the outer combo handler
+                                                # where it's logged as
+                                                # "confluence search failed"
+                                                # — surface, don't hide.
+                                                filtered = run_trades_from_cache(
+                                                    _group_cache_holder['cache'],
+                                                    conf_config,
+                                                    _group_cache_holder['meta'])
+                                            else:
+                                                mask = trades_df['confluence_records'].apply(
+                                                    lambda r: isinstance(r, set)
+                                                    and combo_set.issubset(r))
+                                                filtered = trades_df[mask]
                                             _conf_res = {
                                                 'config': conf_config,
                                                 'kpis': combo_kpis,

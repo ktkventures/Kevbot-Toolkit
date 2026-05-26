@@ -3593,6 +3593,33 @@ def precompute_bar_cache(
     strat = UnifiedStrategy(strategy, general_packs)
     cache: List[CachedBarState] = []
 
+    # User-pack column derivation — mirrors run_unified_backtest:3355-3387 so
+    # batch-only user packs (no incremental_class) flow into the cache the
+    # same way they flow into a full backtest. Without this, a Mass Builder
+    # search that includes such a pack would silently lose those interpreter
+    # states / trigger booleans / indicator levels.
+    _BUILTIN_INTERPS = {
+        'EMA_STACK', 'EMA_PRICE_POSITION', 'EMA_PRICE_POSITION_V2',
+        'MACD_LINE', 'MACD_HISTOGRAM', 'VWAP', 'RVOL', 'UTBOT', 'UTBOT_V2',
+    }
+    _user_interp_cols = [
+        ik for ik in strat.trigger_eval.required_interpreters
+        if ik not in _BUILTIN_INTERPS and ik in df.columns
+    ]
+    _required_trig_set = {f'trig_{t}' for t in strat.trigger_eval.required_triggers}
+    _user_trig_cols = [col for col in df.columns
+                       if col in _required_trig_set and col.startswith('trig_')]
+    _user_indicator_cols = set()
+    for base_trigger in strat.trigger_eval.required_triggers:
+        for suffix in ('_ib', '_lc', '_cc', '_hm', '_hl'):
+            if base_trigger.endswith(suffix):
+                base = base_trigger[:-len(suffix)]
+                if base in INTRABAR_LEVEL_MAP:
+                    level_col = INTRABAR_LEVEL_MAP[base].get('column', '')
+                    if level_col and level_col in df.columns:
+                        _user_indicator_cols.add(level_col)
+                break
+
     for i in range(len(df)):
         row = df.iloc[i]
         bar = {
@@ -3610,9 +3637,49 @@ def precompute_bar_cache(
         current = strat.indicators.update_bar(bar)
         prev = strat.indicators.get_prev_values()
 
+        # 1a. Read pre-computed user-pack values from the df row (parallels
+        # run_unified_backtest:3438-3458).
+        user_pack_data = None
+        if _user_interp_cols or _user_trig_cols or _user_indicator_cols:
+            up_interps = {}
+            up_triggers = {}
+            up_indicators = {}
+            for col in _user_interp_cols:
+                val = row.get(col)
+                if val is not None and pd.notna(val):
+                    up_interps[col] = str(val)
+            for col in _user_trig_cols:
+                val = row.get(col)
+                trig_key = col[5:]  # strip 'trig_'
+                up_triggers[trig_key] = bool(val) if pd.notna(val) else False
+            for col in _user_indicator_cols:
+                val = row.get(col)
+                if val is not None and pd.notna(val):
+                    up_indicators[col] = float(val)
+            if up_interps or up_triggers or up_indicators:
+                user_pack_data = {'interps': up_interps,
+                                  'triggers': up_triggers,
+                                  'indicators': up_indicators}
+
+        # 1b. Merge user-pack indicator values into current so cached level
+        # checks for L-type user-pack triggers work in replay (mirrors
+        # process_bar:3014-3015).
+        if user_pack_data and user_pack_data.get('indicators'):
+            current.update(user_pack_data['indicators'])
+
         # 2. Evaluate triggers
         interps, c_triggers, l_fills = strat.trigger_eval.evaluate_bar_for_backtest(
             current, prev, strat.indicators.state.prev2_macd_hist)
+
+        # 2b. Merge pre-computed user-pack interpreter states + trigger
+        # booleans (mirrors process_bar:3027-3033). Don't override built-in.
+        if user_pack_data:
+            for ik, state_val in user_pack_data.get('interps', {}).items():
+                if ik not in interps:
+                    interps[ik] = state_val
+            for tk, fired in user_pack_data.get('triggers', {}).items():
+                if tk not in c_triggers:
+                    c_triggers[tk] = fired
 
         # 3. Build confluence records
         confluence_records = set()
