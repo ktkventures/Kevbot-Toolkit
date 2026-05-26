@@ -2099,11 +2099,41 @@ export default function MassBuilderPage() {
             </div>
           )}
           {results.length > 0 && progress >= 1 && (
-            <div className="flex gap-4 mt-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+            <div className="flex flex-wrap gap-4 mt-2 text-xs" style={{ color: 'var(--text-muted)' }}>
               <span>{results.length} strategies found</span>
               <span>Best WR: {Math.max(...results.map((r) => r.winRate)).toFixed(1)}%</span>
               <span>Best PF: {Math.max(...results.map((r) => r.pf)).toFixed(2)}</span>
               <span>Best Daily R: {Math.max(...results.map((r) => r.dailyR)).toFixed(2)}</span>
+              {(() => {
+                // wall_total_sec + per-unit timings come from the search's
+                // saved diagnostics (mass_builder.py:1272). Pulled from
+                // the API response — no separate fetch.
+                const diag = (searchResult as any)?.summary?.diagnostics
+                           ?? (progressData as any)?.summary?.diagnostics;
+                if (!diag) return null;
+                const wall = Number(diag.wall_total_sec);
+                const bts = Number(diag.backtests_run);
+                const btAvg = Number(diag.trigger_bt_avg_ms);
+                const combos = Number(diag.conf_combos_total);
+                const combAvg = Number(diag.conf_bt_avg_ms);
+                const fmt = (s: number) =>
+                  s < 60 ? `${s.toFixed(1)}s` :
+                  s < 3600 ? `${Math.floor(s / 60)}m ${Math.round(s % 60)}s` :
+                  `${(s / 3600).toFixed(2)}h`;
+                return (
+                  <>
+                    <span style={{ color: 'var(--text-primary)' }}>
+                      Ran in {Number.isFinite(wall) ? fmt(wall) : '—'}
+                    </span>
+                    {Number.isFinite(bts) && bts > 0 && (
+                      <span>{bts.toLocaleString()} base BTs · avg {btAvg.toFixed(1)}ms</span>
+                    )}
+                    {Number.isFinite(combos) && combos > 0 && (
+                      <span>{combos.toLocaleString()} confluence combos · avg {combAvg.toFixed(2)}ms</span>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           )}
         </Card>

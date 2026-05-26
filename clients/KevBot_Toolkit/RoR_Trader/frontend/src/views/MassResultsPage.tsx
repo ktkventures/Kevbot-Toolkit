@@ -43,6 +43,9 @@ interface SavedSearch {
   // Checkpoint (if orphaned + resumable)
   checkpointGroupCount: number;
   plannedGroupCount: number;
+  // Diagnostics — populated on completion
+  wallTotalSec: number | null;
+  searchFidelity: string;
 }
 
 /* ========================================================================= */
@@ -105,6 +108,10 @@ function mapApiSearch(raw: any): SavedSearch {
     elapsed: raw.elapsed ?? null,
     eta: raw.eta ?? null,
     currentStep: raw.current_step ?? null,
+    // Total wall-clock from the search's diagnostics (mass_builder.py:1272).
+    // Falls back to null for in-progress or pre-diagnostics searches.
+    wallTotalSec: (summary?.diagnostics?.wall_total_sec ?? null) as number | null,
+    searchFidelity: (cfg.search_fidelity ?? cfg.searchFidelity ?? 'Rapid') as string,
     // Checkpoint for resume UX — count completed (symbol, tf) groups and
     // compare against the planned total. 'checkpoint' surfaces at top
     // level because get_mass_search merges config_data with the row.
@@ -306,6 +313,26 @@ export default function MassResultsPage() {
                       {badgeLabel}
                     </span>
                     <span className="text-xs font-mono" style={{ color: 'var(--text-muted)' }}>{search.date}</span>
+                    {/* Search Mode chip — visible when HighFidelity to signal
+                        that this search used the new bit-matched path. */}
+                    {search.searchFidelity === 'HighFidelity' && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                            style={{ background: 'var(--accent)' + '20',
+                                     color: 'var(--accent)' }}>
+                        Hi-Fi
+                      </span>
+                    )}
+                    {/* Wall-clock duration — populated on completion. */}
+                    {search.wallTotalSec != null && (
+                      <span className="text-xs font-mono"
+                            style={{ color: 'var(--text-muted)' }}>
+                        ⏱ {search.wallTotalSec < 60
+                            ? `${search.wallTotalSec.toFixed(1)}s`
+                            : search.wallTotalSec < 3600
+                              ? `${Math.floor(search.wallTotalSec / 60)}m ${Math.round(search.wallTotalSec % 60)}s`
+                              : `${(search.wallTotalSec / 3600).toFixed(2)}h`}
+                      </span>
+                    )}
                   </div>
 
                   {/* Interrupted: explain + point to Resume (or Edit fallback) */}
