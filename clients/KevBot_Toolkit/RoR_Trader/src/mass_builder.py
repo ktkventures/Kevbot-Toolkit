@@ -321,17 +321,33 @@ def build_strategy_config(
     return cfg
 
 
-def _serialize_trades(trades_df) -> list:
-    """Serialize trades DataFrame to list of dicts for storage (same format as backtest API)."""
+def _serialize_trades(trades_df, *, backtest_model: str = 'rest_hifi') -> list:
+    """Serialize trades DataFrame to list of dicts for storage.
+
+    Stamps `data_source = 'backtest_<backtest_model>'` on every record so
+    that the trades-table insert path (Phase 40) tags rows correctly.
+    Without this stamp, saved trades land with `data_source=NULL` and
+    the `data_source LIKE 'backtest_%'` filter used by chart loaders +
+    Update All Data wouldn't see them — leading to invisible trades and
+    duplicate inserts on the next recompute.
+    """
     import pandas as pd
     if trades_df is None or not isinstance(trades_df, pd.DataFrame) or len(trades_df) == 0:
         return []
+    ds_tag = f'backtest_{backtest_model or "rest_hifi"}'
     cols = ['entry_time', 'exit_time', 'direction', 'entry_price', 'exit_price',
             'stop_price', 'target_price', 'r_multiple', 'win', 'exit_reason',
-            'exec_type', 'bars_held', 'hold_time_seconds', 'entry_trigger']
+            'exec_type', 'bars_held', 'hold_time_seconds', 'entry_trigger',
+            # Canonical Trade_Timestamps_Spec fields. _trade_to_row already
+            # back-fills entry_fill_ts from entry_time aliases, but emit
+            # both so callers that read stored_trades JSONB see canonical
+            # field names directly.
+            'entry_trigger_ts', 'entry_fill_ts',
+            'exit_trigger_ts', 'exit_fill_ts',
+            'hold_duration_s', 'behavior']
     records = []
     for _, row in trades_df.iterrows():
-        d = {}
+        d: dict = {'data_source': ds_tag}
         for c in cols:
             val = row.get(c)
             if val is not None and pd.notna(val):
@@ -1107,7 +1123,9 @@ def run_mass_search(
                                     'config': dict(config),
                                     'kpis': base_kpis,
                                     'equity_curve': build_equity_curve(trades_df),
-                                    'stored_trades': _serialize_trades(trades_df),
+                                    'stored_trades': _serialize_trades(
+                                        trades_df,
+                                        backtest_model=config.get('backtest_model') or 'rest_hifi'),
                                     'status': 'active',
                                     'confluence_str': 'None',
                                 }
@@ -1216,7 +1234,8 @@ def run_mass_search(
                                                 'equity_curve': build_equity_curve(
                                                     filtered),
                                                 'stored_trades': _serialize_trades(
-                                                    filtered),
+                                                    filtered,
+                                                    backtest_model=conf_config.get('backtest_model') or 'rest_hifi'),
                                                 'status': 'active',
                                                 'confluence_str': row.get(
                                                     'combo_str', ''),
