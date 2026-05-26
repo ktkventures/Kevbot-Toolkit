@@ -123,15 +123,35 @@ function rowSortValue(r: StrategyHealthRow, key: SortKey): number | string {
     case 'kpis':      return r.kpis_age_sec ?? Number.POSITIVE_INFINITY;
     case 'lastTrade': return r.last_entry_age_sec ?? Number.POSITIVE_INFINITY;
     case 'trades':    return -r.trade_count_backtest;
-    case 'phantom':   return -r.phantom_count_24h;
-    case 'missed':    return -r.missed_count_24h;
+    case 'phantom':   return -r.phantom_count;
+    case 'missed':    return -r.missed_count;
   }
 }
 
 // ── Component ─────────────────────────────────────────────────────────
 
+const WINDOW_OPTIONS: { hours: number; label: string }[] = [
+  { hours: 1,   label: '1h' },
+  { hours: 3,   label: '3h' },
+  { hours: 6,   label: '6h' },
+  { hours: 12,  label: '12h' },
+  { hours: 24,  label: '24h' },
+  { hours: 48,  label: '48h' },
+  { hours: 72,  label: '72h' },
+  { hours: 168, label: '7d' },
+];
+
+function windowLabel(hours: number): string {
+  const m = WINDOW_OPTIONS.find(o => o.hours === hours);
+  if (m) return m.label;
+  if (hours >= 24) return `${Math.round(hours / 24)}d`;
+  return `${hours}h`;
+}
+
 export default function StrategyHealthV1() {
-  const { data, isLoading, error, dataUpdatedAt, refetch } = useStrategyHealth();
+  const [windowHours, setWindowHours] = useState<number>(24);
+  const { data, isLoading, error, dataUpdatedAt, refetch } =
+    useStrategyHealth({ windowHours });
 
   const [sortKey, setSortKey] = useState<SortKey>('flags');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
@@ -234,7 +254,24 @@ export default function StrategyHealthV1() {
             </span>
           </div>
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
-            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}>
+            <span>Window:</span>
+            {WINDOW_OPTIONS.map(o => (
+              <button
+                key={o.hours}
+                onClick={() => setWindowHours(o.hours)}
+                className="px-2 py-0.5 rounded transition-colors"
+                style={{
+                  background: windowHours === o.hours ? 'var(--accent)' : 'var(--bg-input)',
+                  color: windowHours === o.hours ? 'white' : 'var(--text-muted)',
+                  border: windowHours === o.hours ? 'none' : '1px solid var(--border)',
+                  cursor: 'pointer',
+                  fontSize: 11,
+                }}
+              >
+                {o.label}
+              </button>
+            ))}
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', marginLeft: 8 }}>
               <input
                 type="checkbox"
                 checked={includeLegacy}
@@ -303,8 +340,8 @@ export default function StrategyHealthV1() {
                 <Th onClick={() => toggleSort('kpis')}      label={`KPIs${arrow('kpis')}`} />
                 <Th onClick={() => toggleSort('lastTrade')} label={`Last trade${arrow('lastTrade')}`} />
                 <Th onClick={() => toggleSort('trades')}    label={`#${arrow('trades')}`} align="right" />
-                <Th onClick={() => toggleSort('phantom')}   label={`Phantom 24h${arrow('phantom')}`} align="right" />
-                <Th onClick={() => toggleSort('missed')}    label={`Missed 24h${arrow('missed')}`} align="right" />
+                <Th onClick={() => toggleSort('phantom')}   label={`Phantom ${windowLabel(windowHours)}${arrow('phantom')}`} align="right" />
+                <Th onClick={() => toggleSort('missed')}    label={`Missed ${windowLabel(windowHours)}${arrow('missed')}`} align="right" />
                 <Th onClick={() => toggleSort('flags')}     label={`Flags${arrow('flags')}`} />
               </tr>
             </thead>
@@ -348,13 +385,13 @@ export default function StrategyHealthV1() {
                   </td>
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',
-                               color: r.phantom_count_24h > 0 ? '#ffc107' : 'var(--text-muted)' }}>
-                    {r.phantom_count_24h || '—'}
+                               color: r.phantom_count > 0 ? '#ffc107' : 'var(--text-muted)' }}>
+                    {r.phantom_count || '—'}
                   </td>
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',
-                               color: r.missed_count_24h > 0 ? '#ef5350' : 'var(--text-muted)' }}>
-                    {r.missed_count_24h || '—'}
+                               color: r.missed_count > 0 ? '#ef5350' : 'var(--text-muted)' }}>
+                    {r.missed_count || '—'}
                   </td>
                   <td style={{ padding: '6px 8px' }}>
                     {r.red_flags.length === 0 ? (

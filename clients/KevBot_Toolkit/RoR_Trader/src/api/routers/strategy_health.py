@@ -15,7 +15,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from api.deps import get_current_user
 
@@ -47,23 +47,36 @@ _STALE_DATA_REFRESH_SEC = 24 * 60 * 60
 _NO_RECENT_TRADE_SEC = 7 * 24 * 60 * 60  # 7 days without an entry while
                                          # forward-testing = suspicious
 
-# Backtest ↔ Alert divergence window + matching tolerance.
+# Backtest ↔ Alert divergence matching tolerance.
 # Kevin's defs: phantom = alert-only, missed = backtest-trade-only.
 # Match purely by (strategy_id, fill_ts) ±tolerance so we don't get
 # tangled in the mixed event_type schema (legacy 'entry_signal' vs
 # Phase 39 'fill'/'entry'). A trade edge (entry_fill_ts OR exit_fill_ts)
-# within tolerance of an alert.fill_ts counts as paired.
-_DIVERGENCE_WINDOW_SEC = 24 * 60 * 60       # 24h
+# within tolerance of an alert.fill_ts counts as paired. The window
+# itself is caller-supplied (window_hours query param, default 24h).
 _DIVERGENCE_TOLERANCE_SEC = 60.0            # ±60s
+_WINDOW_HOURS_DEFAULT = 24
+_WINDOW_HOURS_MIN = 1
+_WINDOW_HOURS_MAX = 168                     # 7 days max
 
 
 @router.get("")
-def get_strategy_health(user=Depends(get_current_user)):
+def get_strategy_health(
+    user=Depends(get_current_user),
+    window_hours: int = Query(
+        _WINDOW_HOURS_DEFAULT,
+        ge=_WINDOW_HOURS_MIN,
+        le=_WINDOW_HOURS_MAX,
+        description="Divergence window in hours for phantom/missed counts. "
+                    "Clamped to [1, 168]; default 24.",
+    ),
+):
     """One row per strategy with all the health signals + red flags.
 
     Response:
         {
           "now": "...",
+          "window_hours": N,           # echoes the query param
           "rows": [{
             "strategy_id": 137, "user_id": "...",
             "name": "...", "symbol": "TSLA", "timeframe": "5Min",
@@ -117,7 +130,7 @@ def get_strategy_health(user=Depends(get_current_user)):
     # entry+exit timestamps within the divergence window, used below
     # for phantom/missed matching against alerts.
     window_cutoff_iso = (
-        now - timedelta(seconds=_DIVERGENCE_WINDOW_SEC)
+        now - timedelta(hours=window_hours)
     ).isoformat()
     per_sid: Dict[int, Dict[str, Any]] = {}
     for t in trades:
@@ -304,8 +317,8 @@ def get_strategy_health(user=Depends(get_current_user)):
             "parity_status": parity if isinstance(parity, dict) else None,
             "parity_verdict": parity_verdict,
             "discrepancies_count": active_discrepancies,
-            "phantom_count_24h": phantom_count,
-            "missed_count_24h": missed_count,
+            "phantom_count": phantom_count,
+            "missed_count": missed_count,
             "red_flags": red_flags,
             "updated_at": s.get("updated_at"),
             "created_at": s.get("created_at"),
@@ -320,5 +333,6 @@ def get_strategy_health(user=Depends(get_current_user)):
 
     return {
         "now": now.isoformat(),
+        "window_hours": window_hours,
         "rows": out_rows,
     }

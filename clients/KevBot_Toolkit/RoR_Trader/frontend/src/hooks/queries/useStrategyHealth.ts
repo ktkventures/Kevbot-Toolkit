@@ -58,13 +58,14 @@ export interface StrategyHealthRow {
   parity_status: Record<string, unknown> | null;
   parity_verdict: string | null;
   discrepancies_count: number;
-  /** Alerts in the last 24h with no matching backtest trade edge
-   *  (entry or exit) within ±60s. Kevin's "phantom" — alert fired
-   *  without a corresponding backtest trade. */
-  phantom_count_24h: number;
-  /** Backtest trade edges in the last 24h with no matching alert
-   *  within ±60s. Kevin's "missed" — backtest fired but algo didn't. */
-  missed_count_24h: number;
+  /** Alerts in the configurable lookback window with no matching
+   *  backtest trade edge (entry or exit) within ±60s. Kevin's
+   *  "phantom" — alert fired without a corresponding backtest trade. */
+  phantom_count: number;
+  /** Backtest trade edges in the configurable lookback window with no
+   *  matching alert within ±60s. Kevin's "missed" — backtest fired but
+   *  algo didn't. */
+  missed_count: number;
 
   red_flags: StrategyHealthFlag[];
 
@@ -74,13 +75,25 @@ export interface StrategyHealthRow {
 
 export interface StrategyHealthResponse {
   now: string;
+  /** Echoed back from the server so the UI can display "Phantom Nh"
+   *  consistent with what was actually computed. */
+  window_hours: number;
   rows: StrategyHealthRow[];
 }
 
-export function useStrategyHealth() {
+export interface StrategyHealthQueryArgs {
+  /** Divergence lookback window in hours. Backend clamps to [1, 168].
+   *  Default 24. */
+  windowHours?: number;
+}
+
+export function useStrategyHealth(args: StrategyHealthQueryArgs = {}) {
+  const windowHours = args.windowHours ?? 24;
+  const qs = `?window_hours=${windowHours}`;
   return useQuery<StrategyHealthResponse>({
-    queryKey: ['admin', 'strategy-health'],
-    queryFn: () => apiFetch<StrategyHealthResponse>('/api/admin/strategy-health'),
+    queryKey: ['admin', 'strategy-health', windowHours],
+    queryFn: () =>
+      apiFetch<StrategyHealthResponse>(`/api/admin/strategy-health${qs}`),
     staleTime: 25_000,
     refetchInterval: 30_000,
   });
