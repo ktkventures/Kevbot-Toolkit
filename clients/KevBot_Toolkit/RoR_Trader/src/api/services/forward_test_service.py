@@ -280,7 +280,7 @@ def _do_recompute(
     bt_model = (strat.get('config') or {}).get('backtest_model') \
         if isinstance(strat.get('config'), dict) else None
     if bt_model is None:
-        bt_model = strat.get('backtest_model')
+        bt_model = strat.get('backtest_model') or 'rest_hifi'
     HIFI_BACKTEST_MODELS = {'rest_hifi', 'cache_locked', 'cache_corrected'}
     hifi_summary = None
     if bt_model in HIFI_BACKTEST_MODELS and len(stored) > 0:
@@ -1315,7 +1315,11 @@ def append_new_backtest_trades_for_strategy(
     _raw_resp_bt = _raw_client_bt.table('strategies').select('config') \
         .eq('id', strategy_id).eq('user_id', user_id).single().execute()
     cfg = dict(_raw_resp_bt.data.get('config') or {}) if _raw_resp_bt.data else {}
-    bt_model = cfg.get('backtest_model') or strat.get('backtest_model')
+    # System default is `rest_hifi` — must match data_worker_engine.classify_strategy
+    # so saved snapshot model_id agrees with the streaming engine's expectation.
+    bt_model = (cfg.get('backtest_model')
+                or strat.get('backtest_model')
+                or 'rest_hifi')
     now_dt = datetime.now(timezone.utc)
     now_iso = now_dt.isoformat()
     cutoff = now_dt - timedelta(minutes=_ALGO_HISTORY_LAG_MINUTES)
