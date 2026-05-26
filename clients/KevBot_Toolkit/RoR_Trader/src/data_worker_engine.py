@@ -258,8 +258,12 @@ def classify_strategy(state: StrategyEngineState) -> None:
     state.symbol = strat.get('symbol')
     state.timeframe = strat.get('timeframe', '1Min')
     state.tf_seconds = _tf_seconds(state.timeframe)
-    state.bt_model = (strat.get('backtest_model')
-                      or cfg.get('backtest_model') or 'rest_hifi')
+    # Must mirror append_new_backtest_trades_for_strategy
+    # (forward_test_service.py:1318) — divergent defaults mean the
+    # saved snapshot's `model_id` won't match on resume and the tick
+    # snapshot_invalids → re-catchups forever.
+    state.bt_model = (cfg.get('backtest_model')
+                      or strat.get('backtest_model'))
     state.data_source = f"backtest_{state.bt_model}"
     state.fingerprint = compute_backtest_fingerprint(strat)
     req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
