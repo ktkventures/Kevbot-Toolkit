@@ -103,6 +103,7 @@ const navItems: NavItem[] = [
       { href: '/admin', label: 'Platform Overview' },
       { href: '/admin/users', label: 'Users' },
       { href: '/admin/curation', label: 'Curation' },
+      { href: '/admin/strategy-health', label: 'Strategy Health' },
       { href: '/admin/data-health', label: 'Data Health' },
       { href: '/admin/divergence', label: 'Divergence Summary' },
       { href: '/admin/parity', label: 'Parity Comparison' },
