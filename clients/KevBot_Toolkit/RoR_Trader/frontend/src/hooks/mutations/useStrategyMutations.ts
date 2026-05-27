@@ -98,6 +98,29 @@ export function useBulkDeleteStrategies() {
  * want stored_trades + equity_curve_data regenerated against the new
  * boundary.
  */
+/**
+ * Toggle whether the data-worker maintains an auto-snapshot for this
+ * strategy. Setting `enabled=false` parks the strategy in the snapshot
+ * lane — useful for known-broken strategies (no baseline trades,
+ * persistent errors) that were bogging the worker down. Live alerts
+ * are unaffected; only the snapshot lane is gated. 2026-05-27.
+ */
+export function useSetSnapshotSubscription() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) =>
+      apiFetch(`/api/strategies/${id}/snapshot-subscription`, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled }),
+      }),
+    onSuccess: (_data, { id }) => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'strategy-health'] });
+      queryClient.invalidateQueries({ queryKey: ['strategy', id] });
+    },
+  });
+}
+
+
 export function useSetForwardTestStart() {
   const queryClient = useQueryClient();
   return useMutation({

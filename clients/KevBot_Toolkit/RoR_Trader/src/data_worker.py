@@ -359,6 +359,17 @@ class DataWorkerManager:
                     continue
                 if strat.get('strategy_origin') == 'webhook_inbound':
                     continue
+                # 2026-05-27: per-strategy opt-out for the auto-snapshot
+                # lane. Set via PATCH /strategies/{id}/snapshot-subscription
+                # so the user can park known-broken strategies (no
+                # baseline trades, persistent errors) without removing
+                # them entirely. Defaults to True so existing strategies
+                # behave as before.
+                strat_cfg = strat.get('config') or {}
+                if not isinstance(strat_cfg, dict):
+                    strat_cfg = {}
+                if strat_cfg.get('snapshot_subscribe_enabled', True) is False:
+                    continue
                 sid = strat.get('id')
                 if sid is None:
                     continue

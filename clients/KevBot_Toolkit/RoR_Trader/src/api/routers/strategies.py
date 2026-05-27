@@ -1470,6 +1470,69 @@ def set_forward_test_start(
     }
 
 
+@router.patch("/{strategy_id}/snapshot-subscription")
+def set_snapshot_subscription(
+    strategy_id: int,
+    body: dict = Body(...),
+    user=Depends(get_current_user),
+):
+    """Toggle a strategy's auto-snapshot subscription on or off.
+
+    When subscribed (default), the data-worker maintains an incremental
+    backtest snapshot for this strategy on each 5-min cron tick + tries
+    to keep KPIs/Hi-Fi current.
+
+    When unsubscribed, the data-worker SKIPS this strategy entirely
+    (catch-up + KPI recompute + Hi-Fi pass + snapshot flush — all
+    bypassed). Useful for parking known-broken strategies like sids 174
+    + 184 that have no baseline trades and were bogging the worker down.
+    Alerts (the live Ralph engine) are unaffected — only the
+    backtest-snapshot lane stops.
+
+    Stored in `config.snapshot_subscribe_enabled` (bool). Defaults to
+    True when unset, so existing strategies behave as before. Added
+    2026-05-27.
+
+    Body: ``{"enabled": true}`` or ``{"enabled": false}``.
+    """
+    from db import USE_DB
+    if not USE_DB:
+        raise HTTPException(status_code=501, detail="DB mode required")
+
+    enabled = body.get('enabled')
+    if not isinstance(enabled, bool):
+        raise HTTPException(
+            status_code=400,
+            detail="body must include 'enabled' (bool true/false)",
+        )
+
+    from db import get_strategy_by_id_db, get_admin_client
+    from api.services.forward_test_service import _stamp_config
+    existing = get_strategy_by_id_db(strategy_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Strategy not found")
+    user_id = existing.get('user_id') or (
+        user.get('id') or user.get('sub') if isinstance(user, dict) else None)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="No user context")
+
+    # Read-merge-write the config JSONB so we don't wipe other keys
+    # ([[feedback_jsonb_partial_updates]]). _stamp_config is the safe
+    # path with shrink-guard built in.
+    client = get_admin_client()
+    cur_resp = client.table('strategies').select('config').eq(
+        'id', strategy_id).eq('user_id', str(user_id)).single().execute()
+    cur_cfg = dict((cur_resp.data or {}).get('config') or {})
+    cur_cfg['snapshot_subscribe_enabled'] = enabled
+    _stamp_config(strategy_id, str(user_id), cur_cfg)
+
+    return {
+        "status": "updated",
+        "strategy_id": strategy_id,
+        "snapshot_subscribe_enabled": enabled,
+    }
+
+
 # =============================================================================
 # TRADE DATA
 # =============================================================================

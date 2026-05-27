@@ -429,6 +429,11 @@ def get_strategy_health(
             "last_alert_age_sec": last_alert_age,
             "timestamps_upside_down": timestamps_upside_down,
             "upside_down_delta_sec": upside_down_delta_sec,
+            # 2026-05-27 — per-strategy auto-snapshot opt-out flag.
+            # True = data-worker maintains snapshot; False = data-worker
+            # skips this strategy entirely. Default True.
+            "snapshot_subscribe_enabled": bool(
+                cfg.get("snapshot_subscribe_enabled", True)),
             "trade_count_backtest": agg["count"],
             "parity_status": parity if isinstance(parity, dict) else None,
             "parity_verdict": parity_verdict,

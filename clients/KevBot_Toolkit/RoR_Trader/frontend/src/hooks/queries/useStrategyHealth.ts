@@ -67,6 +67,11 @@ export interface StrategyHealthRow {
    *  this state — one source is stale relative to the other. */
   timestamps_upside_down: boolean;
   upside_down_delta_sec: number | null;
+  /** Whether the data-worker should maintain a backtest snapshot for
+   *  this strategy. False = parked (worker skips entirely). Toggle via
+   *  PATCH /strategies/{id}/snapshot-subscription. Defaults to true.
+   *  Live alerts are unaffected — only the snapshot lane is gated. */
+  snapshot_subscribe_enabled: boolean;
   trade_count_backtest: number;
 
   parity_status: Record<string, unknown> | null;

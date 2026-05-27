@@ -22,6 +22,7 @@ import {
   type StrategyHealthFlag,
   type StrategyHealthRow,
 } from '@/hooks/queries/useStrategyHealth';
+import { useSetSnapshotSubscription } from '@/hooks/mutations/useStrategyMutations';
 
 // ── Formatting helpers ────────────────────────────────────────────────
 
@@ -249,6 +250,8 @@ export default function StrategyHealthV1() {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
     else { setSortKey(key); setSortDir('asc'); }
   };
+
+  const setSnapshotSub = useSetSnapshotSubscription();
 
   if (isLoading && !data) {
     return (
@@ -480,6 +483,10 @@ export default function StrategyHealthV1() {
                 <Th onClick={() => toggleSort('paired')}    label={`Paired ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('paired')}`} align="right" />
                 <Th onClick={() => toggleSort('phantom')}   label={`Phantom ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('phantom')}`} align="right" />
                 <Th onClick={() => toggleSort('missed')}    label={`Missed ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('missed')}`} align="right" />
+                <th style={{ padding: '6px 8px', fontWeight: 500 }}
+                    title="Snapshot subscription. ON = data-worker maintains a backtest snapshot. OFF = strategy is parked in the snapshot lane (alerts unaffected).">
+                  Sub
+                </th>
                 <Th onClick={() => toggleSort('flags')}     label={`Flags${arrow('flags')}`} />
               </tr>
             </thead>
@@ -560,6 +567,29 @@ export default function StrategyHealthV1() {
                                fontVariantNumeric: 'tabular-nums',
                                color: r.missed_count > 0 ? '#ef5350' : 'var(--text-muted)' }}>
                     {r.missed_count || '—'}
+                  </td>
+                  <td style={{ padding: '6px 8px' }}>
+                    <button
+                      onClick={() => setSnapshotSub.mutate({
+                        id: r.strategy_id,
+                        enabled: !r.snapshot_subscribe_enabled,
+                      })}
+                      disabled={setSnapshotSub.isPending}
+                      title={r.snapshot_subscribe_enabled
+                        ? 'Subscribed — click to park (data-worker will skip this strategy)'
+                        : 'Parked — click to resubscribe'}
+                      style={{
+                        background: 'transparent',
+                        border: '1px solid var(--border)',
+                        borderRadius: 3,
+                        padding: '1px 6px',
+                        fontSize: 11,
+                        cursor: setSnapshotSub.isPending ? 'wait' : 'pointer',
+                        color: r.snapshot_subscribe_enabled ? '#7fd081' : 'var(--text-muted)',
+                      }}
+                    >
+                      {r.snapshot_subscribe_enabled ? 'ON' : 'OFF'}
+                    </button>
                   </td>
                   <td style={{ padding: '6px 8px' }}>
                     {r.red_flags.length === 0 ? (
