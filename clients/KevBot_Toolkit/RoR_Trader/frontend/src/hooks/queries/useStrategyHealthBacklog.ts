@@ -41,7 +41,13 @@ export interface DivergenceBacklogResponse {
   window_start: string;
   window_end: string;
   mode: 'rolling' | 'custom';
+  apples_to_apples: boolean;
+  /** Number of rows ACTUALLY returned (post-cap). */
   row_count: number;
+  /** Number of rows that WOULD have been returned without max_rows cap. */
+  total_count: number;
+  truncated: boolean;
+  max_rows: number;
   rows: DivergenceBacklogRow[];
 }
 
@@ -50,11 +56,15 @@ export interface BacklogQueryArgs {
   start?: string | null;
   end?: string | null;
   onlyNeedsInvestigation?: boolean;
+  applesToApples?: boolean;
+  maxRows?: number;
 }
 
 export function useStrategyHealthBacklog(args: BacklogQueryArgs = {}) {
   const { start, end, onlyNeedsInvestigation } = args;
+  const applesToApples = args.applesToApples ?? true;
   const windowHours = args.windowHours ?? 24;
+  const maxRows = args.maxRows ?? 500;
   const isCustom = !!(start && end);
   const params = new URLSearchParams();
   if (isCustom) {
@@ -66,11 +76,14 @@ export function useStrategyHealthBacklog(args: BacklogQueryArgs = {}) {
   if (onlyNeedsInvestigation) {
     params.set('only_needs_investigation', 'true');
   }
+  params.set('apples_to_apples', applesToApples ? 'true' : 'false');
+  params.set('max_rows', String(maxRows));
   return useQuery<DivergenceBacklogResponse>({
     queryKey: ['admin', 'strategy-health-backlog',
                isCustom ? 'custom' : windowHours,
                start ?? null, end ?? null,
-               !!onlyNeedsInvestigation],
+               !!onlyNeedsInvestigation,
+               applesToApples, maxRows],
     queryFn: () => apiFetch<DivergenceBacklogResponse>(
       `/api/admin/strategy-health/backlog?${params.toString()}`),
     staleTime: 25_000,

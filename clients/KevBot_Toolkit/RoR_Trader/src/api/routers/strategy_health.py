@@ -547,6 +547,18 @@ def get_strategy_health_backlog(
         description="If True, return ONLY events classified as "
                     "'needs_investigation' — the mysteries worth chasing. "
                     "Default False returns all events with classifications."),
+    apples_to_apples: bool = Query(
+        True,
+        description="If True (default), drop events newer than "
+                    "min(last_alert_at, last_backtest_created_at) per "
+                    "strategy. Matches the V1 'apples-to-apples' filter — "
+                    "excludes events that haven't had a chance to be "
+                    "matched yet (tail-lag false positives)."),
+    max_rows: int = Query(
+        500, ge=10, le=5000,
+        description="Hard cap on returned rows. Backlog runs heavy when "
+                    "every strategy has hundreds of unpaired events. UI "
+                    "warns when truncation kicks in. 2026-05-27."),
 ):
     """Per-event divergence backlog.
 
@@ -591,12 +603,56 @@ def get_strategy_health_backlog(
     for s in (strat_resp.data or []):
         strats_by_id[s.get("id")] = s
 
+    # Per-strategy "last backtest created" + "last alert" for the apples-
+    # to-apples cap. Cheap: 2 queries (sorted desc, take first per sid).
+    last_bt_per_sid: Dict[int, datetime] = {}
+    if apples_to_apples:
+        try:
+            bt_resp = c.table("trades").select(
+                "strategy_id,created_at"
+            ).like("data_source", "backtest_%").order(
+                "created_at", desc=True).execute()
+            for t in (bt_resp.data or []):
+                sid_t = t.get("strategy_id")
+                ts_t = t.get("created_at")
+                if sid_t is None or not ts_t:
+                    continue
+                if sid_t not in last_bt_per_sid:
+                    dt = _parse_iso(ts_t)
+                    if dt is not None:
+                        last_bt_per_sid[sid_t] = dt
+        except Exception as e:
+            logger.warning("[backlog] last_bt_per_sid load failed: %s", e)
+
+    last_alert_per_sid: Dict[int, datetime] = {}
+    if apples_to_apples:
+        try:
+            thirty_d_ago = (now - timedelta(days=30)).isoformat()
+            la_resp = c.table("alerts").select(
+                "strategy_id,timestamp"
+            ).gte("timestamp", thirty_d_ago).order(
+                "timestamp", desc=True).execute()
+            for a in (la_resp.data or []):
+                sid_a = a.get("strategy_id")
+                ts_a = a.get("timestamp")
+                if sid_a is None or not ts_a:
+                    continue
+                if sid_a not in last_alert_per_sid:
+                    dt = _parse_iso(ts_a)
+                    if dt is not None:
+                        last_alert_per_sid[sid_a] = dt
+        except Exception as e:
+            logger.warning("[backlog] last_alert_per_sid load failed: %s", e)
+
     # Pull trades within window for the missed-edge side. Window-scoped
     # here for efficiency — the overview pulls all backtest trades but
     # the backlog only needs edges in the divergence window.
+    # NOTE: `exit_trigger` is NOT a top-level column on the trades table
+    # — it lives inside the `data` JSONB. _classify_missed reads it
+    # from data when needed.
     trade_resp = c.table("trades").select(
         "id,strategy_id,entry_fill_ts,exit_fill_ts,exit_reason,"
-        "exit_trigger,data,data_source"
+        "data,data_source"
     ).like("data_source", "backtest_%").gte(
         "entry_fill_ts", window_start_iso).execute()
     trades_in_window: List[Dict[str, Any]] = trade_resp.data or []
@@ -662,7 +718,21 @@ def get_strategy_health_backlog(
             f"Backtest {edge} edge with no matching alert within ±60s")
 
     out_rows: List[Dict[str, Any]] = []
+    truncated = False
     for sid, strat in strats_by_id.items():
+        # Apples-to-apples cap: drop events newer than min(last_alert,
+        # last_backtest_created). Mirrors V1 honest-counts logic.
+        fair_cutoff_unix: Optional[float] = None
+        if apples_to_apples:
+            lb = last_bt_per_sid.get(sid)
+            la = last_alert_per_sid.get(sid)
+            if lb is not None and la is not None:
+                fair_cutoff_unix = min(lb, la).timestamp()
+            elif lb is not None:
+                fair_cutoff_unix = lb.timestamp()
+            elif la is not None:
+                fair_cutoff_unix = la.timestamp()
+
         # Build edge list: each trade contributes (entry_ts, 'entry', trade)
         # and (exit_ts, 'exit', trade). Sort by ts.
         edges: List[tuple[float, str, Dict[str, Any]]] = []
@@ -674,6 +744,8 @@ def get_strategy_health_backlog(
                 dt = _parse_iso(ek)
                 if dt is None:
                     continue
+                if fair_cutoff_unix is not None and dt.timestamp() > fair_cutoff_unix:
+                    continue   # apples-to-apples: drop lag-tail
                 edges.append((dt.timestamp(), edge, t))
         edges.sort(key=lambda x: x[0])
 
@@ -684,7 +756,9 @@ def get_strategy_health_backlog(
             key=lambda x: x[0].timestamp() if x[0] is not None else 0,
         )
         alerts_sorted = [(dt.timestamp(), a) for dt, a in alerts_sorted
-                          if dt is not None]
+                          if dt is not None and (
+                              fair_cutoff_unix is None
+                              or dt.timestamp() <= fair_cutoff_unix)]
 
         # 2-pointer pair.
         i = j = 0
@@ -758,12 +832,21 @@ def get_strategy_health_backlog(
           if _parse_iso(r["timestamp"]) else 0),
     ))
 
+    total_before_truncation = len(out_rows)
+    if total_before_truncation > max_rows:
+        out_rows = out_rows[:max_rows]
+        truncated = True
+
     return {
         "now": now.isoformat(),
         "window_hours": window_hours,
         "window_start": window_start_iso,
         "window_end": window_end_iso,
         "mode": "custom" if is_custom else "rolling",
+        "apples_to_apples": apples_to_apples,
         "row_count": len(out_rows),
+        "total_count": total_before_truncation,
+        "truncated": truncated,
+        "max_rows": max_rows,
         "rows": out_rows,
     }

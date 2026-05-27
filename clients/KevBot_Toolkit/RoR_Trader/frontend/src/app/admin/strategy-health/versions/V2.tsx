@@ -58,9 +58,12 @@ function fmtDate(iso: string): string {
 export default function StrategyHealthV2() {
   const [windowHours, setWindowHours] = useState<number>(24);
   const [onlyNeedsInvestigation, setOnlyNeedsInvestigation] = useState<boolean>(true);
+  const [applesToApples, setApplesToApples] = useState<boolean>(true);
 
   const { data, isLoading, error, dataUpdatedAt, refetch } =
-    useStrategyHealthBacklog({ windowHours, onlyNeedsInvestigation });
+    useStrategyHealthBacklog({
+      windowHours, onlyNeedsInvestigation, applesToApples,
+    });
 
   const rowsByClass = useMemo(() => {
     const counts: Partial<Record<DivergenceClassification, number>> = {};
@@ -114,7 +117,18 @@ export default function StrategyHealthV2() {
               {o.label}
             </button>
           ))}
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 12, cursor: 'pointer' }}>
+          <label
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 12, cursor: 'pointer' }}
+            title="Apples-to-apples — drop events newer than min(last alert, last backtest update). Removes the lag-tail false positives so the backlog shows only events that BOTH sides had a chance to capture."
+          >
+            <input
+              type="checkbox"
+              checked={applesToApples}
+              onChange={e => setApplesToApples(e.target.checked)}
+            />
+            <span>apples-to-apples</span>
+          </label>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 8, cursor: 'pointer' }}>
             <input
               type="checkbox"
               checked={onlyNeedsInvestigation}
@@ -140,6 +154,25 @@ export default function StrategyHealthV2() {
             Updated {lastUpdated}
           </span>
         </div>
+
+        {/* Truncation banner */}
+        {data?.truncated && (
+          <div
+            style={{
+              fontSize: 11,
+              padding: '6px 8px',
+              marginBottom: 8,
+              background: 'rgba(255,193,7,0.10)',
+              border: '1px solid rgba(255,193,7,0.30)',
+              borderRadius: 4,
+              color: '#d4a017',
+            }}
+          >
+            Showing {data.row_count} of {data.total_count} events
+            (capped at max_rows={data.max_rows}). Narrow the window or
+            tighten the filters to see all rows.
+          </div>
+        )}
 
         {/* Classification chips */}
         <div className="flex flex-wrap gap-2 mb-3" style={{ fontSize: 11 }}>
