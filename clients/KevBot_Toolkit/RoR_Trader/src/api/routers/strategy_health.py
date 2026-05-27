@@ -461,3 +461,258 @@ def get_strategy_health(
         "mode": "custom" if is_custom else "rolling",
         "rows": out_rows,
     }
+
+
+# =============================================================================
+# Backlog endpoint — trade-level divergence with auto-classification
+# =============================================================================
+
+# Auto-classification reasons. The frontend's "needs investigation" filter
+# hides rows whose reason is anything other than `needs_investigation`.
+# Add new reasons here as we identify new bug-classes.
+_CLASS_NEEDS_INVESTIGATION = "needs_investigation"
+_CLASS_TIMESTAMPS_OUT_OF_SYNC = "timestamps_out_of_sync"
+_CLASS_PHASE2_SIGNAL_EXIT = "phase2_signal_exit"
+_CLASS_NON_FILL_EVENT = "non_fill_event"
+_CLASS_LEGACY_STRATEGY = "legacy_strategy"
+
+
+@router.get("/backlog")
+def get_strategy_health_backlog(
+    user=Depends(get_current_user),
+    window_hours: int = Query(
+        _WINDOW_HOURS_DEFAULT,
+        ge=_WINDOW_HOURS_MIN,
+        le=_WINDOW_HOURS_MAX,
+        description="Divergence lookback in hours. Ignored when both "
+                    "`start` and `end` are provided.",
+    ),
+    start: str | None = Query(
+        None, description="Custom window start (ISO 8601 or Unix-sec)."),
+    end: str | None = Query(
+        None, description="Custom window end (ISO 8601 or Unix-sec)."),
+    only_needs_investigation: bool = Query(
+        False,
+        description="If True, return ONLY events classified as "
+                    "'needs_investigation' — the mysteries worth chasing. "
+                    "Default False returns all events with classifications."),
+):
+    """Per-event divergence backlog.
+
+    Same window logic as `GET /api/admin/strategy-health` but returns one
+    row per UNPAIRED event (phantom alert or missed backtest edge) instead
+    of one row per strategy. Each row carries an auto-classification so
+    the UI can show known-cause divergence muted and surface the real
+    mysteries.
+
+    The pairing is the same 2-way (alerts vs backtest) used in the
+    overview endpoint. Algo lane stays out per the 2026-05-27 product
+    decision — the goal is "live alerts match backtest", and algo is a
+    diagnostic detour for that.
+
+    Response: ``{rows: [{strategy_id, name, ..., event_type, classification,
+    classification_reason, ...}]}``. UI sorts/filters client-side.
+    """
+    from db import get_admin_client
+    c = get_admin_client()
+    now = datetime.now(timezone.utc)
+
+    # Resolve window — duplicates the overview endpoint's logic on purpose.
+    # When we share more later we'll factor out a helper.
+    custom_start = _parse_iso_or_unix(start)
+    custom_end = _parse_iso_or_unix(end)
+    is_custom = (custom_start is not None and custom_end is not None
+                 and custom_start < custom_end)
+    if is_custom:
+        window_start_dt = custom_start
+        window_end_dt = custom_end
+    else:
+        window_start_dt = now - timedelta(hours=window_hours)
+        window_end_dt = now
+    window_start_iso = window_start_dt.isoformat()
+    window_end_iso = window_end_dt.isoformat()
+
+    # Pull strategies once for name/symbol/tf metadata + config.
+    strat_resp = c.table("strategies").select(
+        "id,name,symbol,timeframe,direction,config,data_refreshed_at"
+    ).execute()
+    strats_by_id: Dict[int, Dict[str, Any]] = {}
+    for s in (strat_resp.data or []):
+        strats_by_id[s.get("id")] = s
+
+    # Pull trades within window for the missed-edge side. Window-scoped
+    # here for efficiency — the overview pulls all backtest trades but
+    # the backlog only needs edges in the divergence window.
+    trade_resp = c.table("trades").select(
+        "id,strategy_id,entry_fill_ts,exit_fill_ts,exit_reason,"
+        "exit_trigger,data,data_source"
+    ).like("data_source", "backtest_%").gte(
+        "entry_fill_ts", window_start_iso).execute()
+    trades_in_window: List[Dict[str, Any]] = trade_resp.data or []
+
+    # Pull alerts within window.
+    alert_resp = c.table("alerts").select(
+        "id,strategy_id,fill_ts,trigger_ts,event_type"
+    ).gte("timestamp", window_start_iso).lte(
+        "timestamp", window_end_iso).execute()
+    alerts_in_window: List[Dict[str, Any]] = alert_resp.data or []
+
+    # Group by strategy.
+    trades_per_sid: Dict[int, List[Dict[str, Any]]] = {}
+    for t in trades_in_window:
+        sid = t.get("strategy_id")
+        if sid is None:
+            continue
+        trades_per_sid.setdefault(sid, []).append(t)
+
+    alerts_per_sid: Dict[int, List[Dict[str, Any]]] = {}
+    for a in alerts_in_window:
+        sid = a.get("strategy_id")
+        if sid is None:
+            continue
+        alerts_per_sid.setdefault(sid, []).append(a)
+
+    # Build per-event backlog rows by replicating the 2-pointer pairing
+    # logic from `_pair_phantom_missed` but preserving identities. Each
+    # unpaired edge/alert becomes a row.
+    def _classify_phantom(alert: Dict[str, Any], strat: Dict[str, Any]) -> tuple[str, str]:
+        """Return (classification, human-readable reason)."""
+        cfg_ = strat.get("config") or {}
+        if not isinstance(cfg_, dict):
+            cfg_ = {}
+        if "entry_trigger_confluence_id" not in cfg_:
+            return _CLASS_LEGACY_STRATEGY, "Strategy pre-dates confluence-ID schema"
+        ev = (alert.get("event_type") or "").lower()
+        if ev and ev not in ("entry", "exit", "fill",
+                              "entry_signal", "exit_signal"):
+            return _CLASS_NON_FILL_EVENT, f"event_type={ev!r} (not a fill)"
+        return _CLASS_NEEDS_INVESTIGATION, "Alert fired but no matching backtest edge"
+
+    def _classify_missed(trade: Dict[str, Any], edge: str,
+                         strat: Dict[str, Any]) -> tuple[str, str]:
+        """Classify a missed entry or exit edge."""
+        cfg_ = strat.get("config") or {}
+        if not isinstance(cfg_, dict):
+            cfg_ = {}
+        if "entry_trigger_confluence_id" not in cfg_:
+            return _CLASS_LEGACY_STRATEGY, "Strategy pre-dates confluence-ID schema"
+        # Signal-exit triggers without _ib suffix have no L-type walker
+        # (Phase 2 gap — indicator-vs-indicator crosses). Common case for
+        # macd_line_v2 cross_bear / cross_bull.
+        exit_trigger = (trade.get("exit_trigger")
+                        or (trade.get("data") or {}).get("exit_trigger") or "")
+        if edge == "exit" and isinstance(exit_trigger, str) and exit_trigger:
+            if not exit_trigger.endswith("_ib") and trade.get("exit_reason") not in (
+                    "stop_loss", "stop", "target"):
+                return _CLASS_PHASE2_SIGNAL_EXIT, (
+                    f"exit_trigger={exit_trigger!r} has no L-type spec — "
+                    "Phase 2 indicator-vs-indicator gap")
+        return _CLASS_NEEDS_INVESTIGATION, (
+            f"Backtest {edge} edge with no matching alert within ±60s")
+
+    out_rows: List[Dict[str, Any]] = []
+    for sid, strat in strats_by_id.items():
+        # Build edge list: each trade contributes (entry_ts, 'entry', trade)
+        # and (exit_ts, 'exit', trade). Sort by ts.
+        edges: List[tuple[float, str, Dict[str, Any]]] = []
+        for t in trades_per_sid.get(sid, []):
+            for col, edge in (("entry_fill_ts", "entry"), ("exit_fill_ts", "exit")):
+                ek = t.get(col)
+                if not ek:
+                    continue
+                dt = _parse_iso(ek)
+                if dt is None:
+                    continue
+                edges.append((dt.timestamp(), edge, t))
+        edges.sort(key=lambda x: x[0])
+
+        alerts_sorted = sorted(
+            ((_parse_iso(a.get("fill_ts") or a.get("trigger_ts")), a)
+             for a in alerts_per_sid.get(sid, [])
+             if (a.get("fill_ts") or a.get("trigger_ts"))),
+            key=lambda x: x[0].timestamp() if x[0] is not None else 0,
+        )
+        alerts_sorted = [(dt.timestamp(), a) for dt, a in alerts_sorted
+                          if dt is not None]
+
+        # 2-pointer pair.
+        i = j = 0
+        paired_edge_idx = set()
+        paired_alert_idx = set()
+        while i < len(edges) and j < len(alerts_sorted):
+            diff = alerts_sorted[j][0] - edges[i][0]
+            if abs(diff) <= _DIVERGENCE_TOLERANCE_SEC:
+                paired_edge_idx.add(i)
+                paired_alert_idx.add(j)
+                i += 1
+                j += 1
+            elif diff < 0:
+                j += 1
+            else:
+                i += 1
+
+        # Emit unpaired events.
+        for idx, (ts, edge, trade) in enumerate(edges):
+            if idx in paired_edge_idx:
+                continue
+            cls, reason = _classify_missed(trade, edge, strat)
+            if only_needs_investigation and cls != _CLASS_NEEDS_INVESTIGATION:
+                continue
+            out_rows.append({
+                "event_type": "missed",
+                "strategy_id": sid,
+                "strategy_name": strat.get("name"),
+                "symbol": strat.get("symbol"),
+                "timeframe": strat.get("timeframe"),
+                "direction": strat.get("direction"),
+                "edge": edge,
+                "timestamp": datetime.fromtimestamp(
+                    ts, tz=timezone.utc).isoformat(),
+                "trade_id": trade.get("id"),
+                "alert_id": None,
+                "exit_reason": trade.get("exit_reason"),
+                "exit_trigger": (trade.get("exit_trigger")
+                                 or (trade.get("data") or {}).get("exit_trigger")),
+                "classification": cls,
+                "classification_reason": reason,
+            })
+        for idx, (ts, alert) in enumerate(alerts_sorted):
+            if idx in paired_alert_idx:
+                continue
+            cls, reason = _classify_phantom(alert, strat)
+            if only_needs_investigation and cls != _CLASS_NEEDS_INVESTIGATION:
+                continue
+            out_rows.append({
+                "event_type": "phantom",
+                "strategy_id": sid,
+                "strategy_name": strat.get("name"),
+                "symbol": strat.get("symbol"),
+                "timeframe": strat.get("timeframe"),
+                "direction": strat.get("direction"),
+                "edge": None,
+                "timestamp": datetime.fromtimestamp(
+                    ts, tz=timezone.utc).isoformat(),
+                "trade_id": None,
+                "alert_id": alert.get("id"),
+                "exit_reason": None,
+                "exit_trigger": None,
+                "classification": cls,
+                "classification_reason": reason,
+            })
+
+    # Sort: needs_investigation first (action item), then by timestamp desc.
+    out_rows.sort(key=lambda r: (
+        0 if r["classification"] == _CLASS_NEEDS_INVESTIGATION else 1,
+        -(_parse_iso(r["timestamp"]).timestamp()
+          if _parse_iso(r["timestamp"]) else 0),
+    ))
+
+    return {
+        "now": now.isoformat(),
+        "window_hours": window_hours,
+        "window_start": window_start_iso,
+        "window_end": window_end_iso,
+        "mode": "custom" if is_custom else "rolling",
+        "row_count": len(out_rows),
+        "rows": out_rows,
+    }
