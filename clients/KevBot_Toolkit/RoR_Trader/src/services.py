@@ -744,8 +744,10 @@ def _has_long_cycle_secondary_tf(strat: dict) -> bool:
 def get_strategy_trades(strat: dict, data_feed: str = "sip", model_override: str | None = None) -> pd.DataFrame:
     """Get trades for any modern strategy (backtest-only or forward-testing).
 
-    Extracted from app.py:892. The data_feed parameter replaces the
-    Streamlit session-state lookup (_get_data_feed).
+    Routes through `strategy_data.load_strategy_data` so the visible
+    window + warmup is consistent with prepare_forward_test_data,
+    Mass Builder, and Update All Data. See
+    docs/Audit_Warmup_Window_Alignment.md for why this matters.
 
     `model_override` (2026-05-07): forces the engine to dispatch on a
     specific backtest_model value instead of strategy.config.backtest_model.
@@ -759,42 +761,32 @@ def get_strategy_trades(strat: dict, data_feed: str = "sip", model_override: str
     if 'entry_trigger_confluence_id' not in strat:
         return pd.DataFrame()
 
+    # Forward-testing strategies need the bt/fw split — defer to
+    # prepare_forward_test_data, which also routes through the helper.
     if strat.get('forward_testing') and strat.get('forward_test_start'):
         df_full, bt, fw, _ = prepare_forward_test_data(
             strat, data_feed=data_feed, model_override=model_override)
         trades = pd.concat([bt, fw], ignore_index=True)
-        # Attach trading_days from the source bars so callers can compute
-        # daily_r against the full period (matches Mass Builder semantics).
-        # count_trading_days returns 1 for trades-only DFs (integer index),
-        # which would otherwise inflate refresh KPIs ~180× for a 180-day
-        # window. The df has a DatetimeIndex so normalize().nunique() works.
+        # daily_r denominator: count trading days in the VISIBLE window
+        # (the helper-trimmed df), not the warmup-extended one.
         trades.attrs['trading_days'] = count_trading_days(df_full) if len(df_full) else 1
         return trades
-    else:
-        data_days = strat.get('data_days', 30)
-        data_seed = strat.get('data_seed', 42)
-        gst_start = None
-        gst_end = None
-        if strat.get('lookback_mode') == 'Date Range' and strat.get('lookback_start_date'):
-            gst_start = datetime.fromisoformat(strat['lookback_start_date'])
-            gst_end = datetime.fromisoformat(strat['lookback_end_date'])
-        from data_loader import get_required_tfs_from_confluence, get_tf_from_label
-        req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
-        sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
-        df = prepare_data_with_indicators(
-            strat['symbol'], data_days, data_seed,
-            start_date=gst_start, end_date=gst_end,
-            timeframe=strat.get('timeframe', '1Min'),
-            data_feed=data_feed,
-            session=strat.get('trading_session', 'RTH'),
-            secondary_tfs=sec_tfs,
-            strat=strat)  # Phase E preview: enables cache_locked dispatch
-        if len(df) == 0:
-            return pd.DataFrame()
-        trades = unified_trades(df, strat)
-        # See note in the forward-test branch above.
-        trades.attrs['trading_days'] = count_trading_days(df)
-        return trades
+
+    # Non-forward-testing branch: backtest-only / lookback-range strategies.
+    from strategy_data import (
+        load_strategy_data, trim_trades_to_visible, trim_df_to_visible,
+    )
+    bundle = load_strategy_data(
+        strat, data_feed=data_feed, model_override=model_override)
+    if len(bundle.df) == 0:
+        return pd.DataFrame()
+    trades = unified_trades(bundle.df, strat)
+    trades = trim_trades_to_visible(trades, bundle.visible_start)
+    # daily_r denominator: trading days in visible window only.
+    visible_df = trim_df_to_visible(bundle.df, bundle.visible_start)
+    trades.attrs['trading_days'] = (
+        count_trading_days(visible_df) if len(visible_df) else 1)
+    return trades
 
 
 def prepare_forward_test_data(
@@ -815,8 +807,7 @@ def prepare_forward_test_data(
     forward_test_start_dt = datetime.fromisoformat(strat['forward_test_start'])
     # OOS: trades are bucketed Backtest|Forward at the in-sample-end
     # divider (resolve_in_sample_end falls back to forward_test_start, so
-    # this is behaviour-neutral for every pre-OOS strategy). The data-load
-    # warmup window below still anchors to forward_test_start_dt.
+    # this is behaviour-neutral for every pre-OOS strategy).
     _kpi_boundary = resolve_in_sample_end(strat) or forward_test_start_dt
 
     # Webhook origin: use stored trades directly
@@ -828,44 +819,44 @@ def prepare_forward_test_data(
         backtest_trades, forward_trades = split_trades_at_boundary(trades, _kpi_boundary)
         return pd.DataFrame(), backtest_trades, forward_trades, forward_test_start_dt
 
-    data_days = data_days_override if data_days_override is not None else strat.get('data_days', 30)
-    data_seed = strat.get('data_seed', 42)
-
-    start_date = forward_test_start_dt - timedelta(days=data_days * 2)
-    end_date = datetime.now(timezone.utc).replace(hour=23, minute=59, second=0, microsecond=0)
-
-    strat_timeframe = strat.get('timeframe', '1Min')
-    from data_loader import get_required_tfs_from_confluence, get_tf_from_label
-    required_tf_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
-    sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in required_tf_labels))
-
-    df = prepare_data_with_indicators(
-        strat['symbol'], seed=data_seed,
-        start_date=start_date, end_date=end_date,
-        timeframe=strat_timeframe, data_feed=data_feed,
-        session=strat.get('trading_session', 'RTH'),
-        secondary_tfs=sec_tfs,
-        strat=strat,  # Phase E preview: enables cache_locked dispatch
-        model_override=model_override,  # algo_model split (2026-05-07)
+    # Route through the unified helper so visible window + warmup match
+    # every other read path. The helper:
+    #   - Resolves visible_start from backtest_start_date (or fallback)
+    #   - Computes warmup = visible_days * WARMUP_MULTIPLIER (still `*2`)
+    #   - Loads bars [warmup_start, now]
+    # See docs/Audit_Warmup_Window_Alignment.md.
+    from strategy_data import (
+        load_strategy_data, trim_trades_to_visible, trim_df_to_visible,
     )
+    # Honor data_days_override by injecting it into the synth strat the
+    # helper sees — callers passing override expect the override to drive
+    # the visible window.
+    strat_for_load = dict(strat)
+    if data_days_override is not None:
+        strat_for_load['data_days'] = data_days_override
+        # If overriding, force the helper away from backtest_start_date
+        # so the override actually takes effect (override semantics
+        # preserve the legacy callers' intent).
+        strat_for_load.pop('backtest_start_date', None)
+    bundle = load_strategy_data(
+        strat_for_load, data_feed=data_feed, model_override=model_override)
 
-    if len(df) == 0:
+    if len(bundle.df) == 0:
         empty = pd.DataFrame()
-        return df, empty, empty, forward_test_start_dt
+        return bundle.df, empty, empty, forward_test_start_dt
 
-    trades = unified_trades(df, strat)
+    trades = unified_trades(bundle.df, strat)
 
+    # Trim ALL trades to the visible window before splitting at the OOS
+    # boundary. The helper's `visible_start` is the canonical anchor;
+    # everything before it is warmup that must not surface to the user.
+    trades = trim_trades_to_visible(trades, bundle.visible_start)
     backtest_trades, forward_trades = split_trades_at_boundary(trades, _kpi_boundary)
 
-    # Trim backtest trades to pinned backtest window (exclude warmup-period trades)
-    _bt_start = strat.get('backtest_start_date')
-    if _bt_start and len(backtest_trades) > 0:
-        _bt_start_ts = pd.Timestamp(_bt_start)
-        if _bt_start_ts.tz is None and backtest_trades['entry_time'].dt.tz is not None:
-            _bt_start_ts = _bt_start_ts.tz_localize('UTC')
-        backtest_trades = backtest_trades[backtest_trades['entry_time'] >= _bt_start_ts]
-
-    return df, backtest_trades, forward_trades, forward_test_start_dt
+    # Return the trimmed df so downstream count_trading_days uses the
+    # visible window (not the warmup-extended one).
+    df_visible = trim_df_to_visible(bundle.df, bundle.visible_start)
+    return df_visible, backtest_trades, forward_trades, forward_test_start_dt
 
 
 # =============================================================================

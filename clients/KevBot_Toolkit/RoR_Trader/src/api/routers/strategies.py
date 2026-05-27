@@ -386,6 +386,19 @@ def create_strategy(strategy: dict = Body(...), user=Depends(get_current_user)):
     strategy['forward_testing'] = True
     strategy['forward_test_start'] = datetime.now(timezone.utc).isoformat()
 
+    # Stamp backtest_start_date if the caller didn't (Mass Builder
+    # already provides one via build_strategy_config; Streamlit save
+    # path also stamps it). The unified strategy-data helper resolves
+    # this as the visible-window anchor (see strategy_data.py +
+    # docs/Audit_Warmup_Window_Alignment.md). Stamping it here
+    # prevents new strategies from falling back to the legacy
+    # `forward_test_start − 90 days` heuristic at read time.
+    if not strategy.get('backtest_start_date'):
+        _bdays = int(strategy.get('data_days') or 90)
+        strategy['backtest_start_date'] = (
+            datetime.now(timezone.utc) - timedelta(days=_bdays)
+        ).isoformat()
+
     # Strategy Health Badge: stamp data_source if the caller didn't already
     # (e.g. Mass Builder paths set 'rapid' explicitly). Frontends that ran
     # a Hi-Fi backtest before saving should send `data_source='hifi'` in

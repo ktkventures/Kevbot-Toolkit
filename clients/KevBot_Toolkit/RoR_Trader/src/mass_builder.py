@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # Streamlit's @st.cache_data for the API context.
 # ═══════════════════════════════════════════════════════════════════════════
 
-_data_cache: Dict[tuple, tuple] = {}   # key → (df, sec_tf_map, trading_days)
+_data_cache: Dict[tuple, tuple] = {}   # key → (df, sec_tf_map, trading_days, visible_start)
 _DATA_CACHE_MAX = 20                    # max entries (LRU eviction)
 
 
@@ -34,11 +34,12 @@ def _cache_key(symbol, tf, days, session, start_date, end_date) -> tuple:
     return (symbol, tf, days, session, str(start_date), str(end_date))
 
 
-def _cache_put(key: tuple, df, sec_tf_map, trading_days):
+def _cache_put(key: tuple, df, sec_tf_map, trading_days,
+                visible_start=None):
     if len(_data_cache) >= _DATA_CACHE_MAX:
         # evict oldest entry
         _data_cache.pop(next(iter(_data_cache)))
-    _data_cache[key] = (df, sec_tf_map, trading_days)
+    _data_cache[key] = (df, sec_tf_map, trading_days, visible_start)
 
 
 def clear_data_cache():
@@ -781,7 +782,16 @@ def run_mass_search(
                             start_date, end_date)
             cached = _data_cache.get(ck)
             if cached:
-                df, sec_tf_map, period_trading_days = cached
+                # Cache tuple was extended to (df, sec_tf_map,
+                # period_trading_days, visible_start). Old 3-tuples
+                # gracefully fall back to df.index[0].
+                if len(cached) == 4:
+                    df, sec_tf_map, period_trading_days, _search_visible_start = cached
+                else:
+                    df, sec_tf_map, period_trading_days = cached
+                    _search_visible_start = (df.index[0]
+                                              if len(df) > 0
+                                              else None)
                 logger.info("Mass search: %s/%s — cache hit (%d bars)",
                             symbol, tf, len(df))
                 if progress_callback:
@@ -800,13 +810,53 @@ def run_mass_search(
                 try:
                     from db import load_settings_db
                     from data_loader import SUB_MINUTE_TIMEFRAMES
+                    from strategy_data import load_strategy_data
+                    import pandas as _pd
                     _enabled_tfs = set(load_settings_db().get("enabled_timeframes", ["1Min"]))
                     sec_tfs = tuple(sorted(_enabled_tfs - {tf} - SUB_MINUTE_TIMEFRAMES))
-                    df = prepare_data_with_indicators(
-                        symbol, data_days, data_seed,
-                        start_date=start_date, end_date=end_date,
-                        timeframe=tf, data_feed=data_feed,
-                        session=sym_session, secondary_tfs=sec_tfs)
+                    # Route through the unified helper so Mass Builder's
+                    # visible window + warmup match Update All Data /
+                    # Strategy Detail by construction. The synth strat
+                    # encodes the search's intended window so the helper
+                    # resolves it as the canonical anchor — saved
+                    # strategies will inherit this same window via
+                    # `backtest_start_date` (stamped by
+                    # build_strategy_config), so search KPIs == saved KPIs.
+                    _synth_strat = {
+                        'id': f'_search_{symbol}_{tf}',
+                        'symbol': symbol, 'timeframe': tf,
+                        'trading_session': sym_session,
+                        'data_seed': data_seed,
+                    }
+                    if start_date and end_date:
+                        _synth_strat['lookback_mode'] = 'Date Range'
+                        _synth_strat['lookback_start_date'] = (
+                            start_date.isoformat()
+                            if hasattr(start_date, 'isoformat')
+                            else str(start_date))
+                        _synth_strat['lookback_end_date'] = (
+                            end_date.isoformat()
+                            if hasattr(end_date, 'isoformat')
+                            else str(end_date))
+                    else:
+                        # Days-mode: synth's `backtest_start_date` =
+                        # `now - data_days` so the helper resolves to
+                        # the same window saved strategies use.
+                        _synth_strat['backtest_start_date'] = (
+                            _pd.Timestamp.now(tz='UTC')
+                            - _pd.Timedelta(days=data_days)).isoformat()
+                    _bundle = load_strategy_data(
+                        _synth_strat,
+                        data_feed=data_feed,
+                        secondary_tfs_override=sec_tfs,
+                    )
+                    df = _bundle.df
+                    # Stash visible_start for downstream trim — every
+                    # trade emitted by this search must be trimmed to
+                    # this anchor so search KPIs match the saved
+                    # strategy's KPIs (which use the same anchor via
+                    # backtest_start_date).
+                    _search_visible_start = _bundle.visible_start
                 except Exception as exc:
                     _diag['data_failures'] += 1
                     logger.warning("Mass search: data load failed %s/%s: %s",
@@ -834,8 +884,15 @@ def run_mass_search(
                     continue
 
                 sec_tf_map = get_secondary_tf_map(df)
-                period_trading_days = count_trading_days(df)
-                _cache_put(ck, df, sec_tf_map, period_trading_days)
+                # period_trading_days counts trading days in the VISIBLE
+                # window only (excludes warmup). The full df spans
+                # [warmup_start, visible_end] but the daily_r denominator
+                # should reflect only the user-visible window.
+                from strategy_data import trim_df_to_visible
+                _visible_df = trim_df_to_visible(df, _search_visible_start)
+                period_trading_days = count_trading_days(_visible_df)
+                _cache_put(ck, df, sec_tf_map, period_trading_days,
+                            _search_visible_start)
 
             # Count data load as a progress step
             step += 1
@@ -1044,6 +1101,17 @@ def run_mass_search(
 
                             if not isinstance(trades_df, pd.DataFrame):
                                 trades_df = pd.DataFrame()
+                            # Trim base trades to the visible window so
+                            # (a) find_best_combinations only enumerates
+                            # confluence records from visible-window
+                            # bars, and (b) KPIs/equity downstream reflect
+                            # only the user-visible window. The cache
+                            # itself spans warmup+visible so indicators
+                            # are properly warm.
+                            if _search_visible_start is not None and len(trades_df) > 0:
+                                from strategy_data import trim_trades_to_visible
+                                trades_df = trim_trades_to_visible(
+                                    trades_df, _search_visible_start)
 
                             n_trades = len(trades_df)
 
@@ -1223,11 +1291,24 @@ def run_mass_search(
                                                     _group_cache_holder['cache'],
                                                     conf_config,
                                                     _group_cache_holder['meta'])
+                                                # HighFidelity replay covers warmup+visible
+                                                # bars; trim to visible.
+                                                if _search_visible_start is not None and len(filtered) > 0:
+                                                    from strategy_data import trim_trades_to_visible
+                                                    filtered = trim_trades_to_visible(
+                                                        filtered, _search_visible_start)
                                             else:
                                                 mask = trades_df['confluence_records'].apply(
                                                     lambda r: isinstance(r, set)
                                                     and combo_set.issubset(r))
                                                 filtered = trades_df[mask]
+                                                # trades_df was already trimmed above; the
+                                                # mask preserves that. Explicit trim is a
+                                                # no-op safety net.
+                                                if _search_visible_start is not None and len(filtered) > 0:
+                                                    from strategy_data import trim_trades_to_visible
+                                                    filtered = trim_trades_to_visible(
+                                                        filtered, _search_visible_start)
                                             _conf_res = {
                                                 'config': conf_config,
                                                 'kpis': combo_kpis,
