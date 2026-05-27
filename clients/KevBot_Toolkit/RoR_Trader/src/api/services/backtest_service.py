@@ -863,6 +863,20 @@ def _hifi_resolve_trades(
                     if entry_dt and exit_dt_resolved:
                         trades_df.at[idx, 'hold_time_seconds'] = (exit_dt_resolved - entry_dt).total_seconds()
 
+                # Persist the sub-second exit timestamp. Parallels the
+                # entry walker at line 685 + the signal-exit walker at
+                # line 774. Prior to this (bug discovered 2026-05-26
+                # on sid 246), only hold_time_seconds was sub-second-
+                # accurate; exit_fill_ts stayed bar-aligned, so every
+                # stop/target exit displayed the bar boundary instead
+                # of the actual fill moment. See test_hifi_exit_timestamp.py.
+                exit_iso = (new_time.isoformat()
+                            if hasattr(new_time, 'isoformat')
+                            else str(new_time))
+                trades_df.at[idx, 'exit_fill_ts'] = exit_iso
+                if 'exit_time' in trades_df.columns:
+                    trades_df.at[idx, 'exit_time'] = exit_iso
+
         except Exception as e:
             logger.warning("[HIFI] Error resolving trade %s: %s", idx, e)
 
