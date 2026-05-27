@@ -8,8 +8,8 @@
  * without tailing Railway logs.
  *
  * Columns:
- *   strategy | timeframe | snapshot age | KPI age | last trade age |
- *   trades | parity | red flags
+ *   strategy | symbol | timeframe | snapshot age | KPI age |
+ *   last trade age | trades | paired | phantom | missed | flags
  *
  * Sort: default by red-flag count desc (most-broken first), click any
  * header to re-sort. Filter chips at the top scope to a single flag.
@@ -111,7 +111,7 @@ function flagChipStyle(tone: 'red' | 'amber' | 'gray'): React.CSSProperties {
 type SortKey =
   | 'flags' | 'name' | 'symbol' | 'timeframe'
   | 'snapshot' | 'kpis' | 'lastTrade' | 'trades'
-  | 'phantom' | 'missed';
+  | 'paired' | 'phantom' | 'missed';
 
 function rowSortValue(r: StrategyHealthRow, key: SortKey): number | string {
   switch (key) {
@@ -123,6 +123,7 @@ function rowSortValue(r: StrategyHealthRow, key: SortKey): number | string {
     case 'kpis':      return r.kpis_age_sec ?? Number.POSITIVE_INFINITY;
     case 'lastTrade': return r.last_entry_age_sec ?? Number.POSITIVE_INFINITY;
     case 'trades':    return -r.trade_count_backtest;
+    case 'paired':    return -r.paired_count;
     case 'phantom':   return -r.phantom_count;
     case 'missed':    return -r.missed_count;
   }
@@ -451,7 +452,8 @@ export default function StrategyHealthV1() {
                 <Th onClick={() => toggleSort('snapshot')}  label={`Snapshot${arrow('snapshot')}`} />
                 <Th onClick={() => toggleSort('kpis')}      label={`KPIs${arrow('kpis')}`} />
                 <Th onClick={() => toggleSort('lastTrade')} label={`Last trade${arrow('lastTrade')}`} />
-                <Th onClick={() => toggleSort('trades')}    label={`#${arrow('trades')}`} align="right" />
+                <Th onClick={() => toggleSort('trades')}    label={`Trades${arrow('trades')}`} align="right" />
+                <Th onClick={() => toggleSort('paired')}    label={`Paired ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('paired')}`} align="right" />
                 <Th onClick={() => toggleSort('phantom')}   label={`Phantom ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('phantom')}`} align="right" />
                 <Th onClick={() => toggleSort('missed')}    label={`Missed ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('missed')}`} align="right" />
                 <Th onClick={() => toggleSort('flags')}     label={`Flags${arrow('flags')}`} />
@@ -494,6 +496,11 @@ export default function StrategyHealthV1() {
                                color: r.trade_count_backtest === 0
                                  ? 'var(--text-muted)' : 'var(--text-primary)' }}>
                     {r.trade_count_backtest}
+                  </td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right',
+                               fontVariantNumeric: 'tabular-nums',
+                               color: r.paired_count > 0 ? '#7fd081' : 'var(--text-muted)' }}>
+                    {r.paired_count || '—'}
                   </td>
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',

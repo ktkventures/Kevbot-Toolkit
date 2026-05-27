@@ -217,10 +217,12 @@ def get_strategy_health(
         alerts_per_sid.setdefault(sid, []).append(dt.timestamp())
 
     def _pair_phantom_missed(edge_isos: List[str], alert_unix: List[float]):
-        """Greedy pairing within ±tolerance. Returns (phantom, missed).
+        """Greedy pairing within ±tolerance. Returns (phantom, missed, paired).
 
         phantom = unpaired alerts (alert-only — Kevin's 'phantom').
         missed  = unpaired trade edges (backtest-only — Kevin's 'missed').
+        paired  = successful (alert, edge) matches within ±tolerance.
+                  paired_alerts == paired_edges by construction (1:1 pairing).
         """
         # Convert edges → unix once, sort both lists.
         edges: List[float] = []
@@ -247,7 +249,7 @@ def get_strategy_health(
                 i += 1   # edge too early — it's missed, skip ahead
         phantom = len(alerts_sorted) - paired_alerts
         missed = len(edges) - paired_edges
-        return phantom, missed
+        return phantom, missed, paired_alerts
 
     out_rows: List[Dict[str, Any]] = []
     for s in strats:
@@ -278,10 +280,12 @@ def get_strategy_health(
         parity_verdict = (parity.get("verdict")
                           if isinstance(parity, dict) else None)
 
-        # Phantom (alert-only) and missed (backtest-trade-only) counts in
-        # the last 24h. Symmetric matching: each trade has two edges
-        # (entry + exit) that can each be paired against an alert.
-        phantom_count, missed_count = _pair_phantom_missed(
+        # Phantom (alert-only), missed (backtest-trade-only), and paired
+        # (successful match) counts in the window. Symmetric matching:
+        # each trade has two edges (entry + exit) that can each be paired
+        # against an alert, so paired_count is in edges-per-window, not
+        # trades-per-window (could be up to ~2× trade_count_backtest).
+        phantom_count, missed_count, paired_count = _pair_phantom_missed(
             agg["recent_edges"], alerts_per_sid.get(sid, []))
 
         forward_testing = bool(s.get("forward_testing"))
@@ -364,6 +368,7 @@ def get_strategy_health(
             "discrepancies_count": active_discrepancies,
             "phantom_count": phantom_count,
             "missed_count": missed_count,
+            "paired_count": paired_count,
             "red_flags": red_flags,
             "updated_at": s.get("updated_at"),
             "created_at": s.get("created_at"),

@@ -66,6 +66,10 @@ export interface StrategyHealthRow {
    *  matching alert within ±60s. Kevin's "missed" — backtest fired but
    *  algo didn't. */
   missed_count: number;
+  /** Successful (alert, edge) matches within ±60s. Counted in edges
+   *  (each trade has up to two: entry + exit), so this can be up to
+   *  ~2× trade_count_backtest. */
+  paired_count: number;
 
   red_flags: StrategyHealthFlag[];
 
