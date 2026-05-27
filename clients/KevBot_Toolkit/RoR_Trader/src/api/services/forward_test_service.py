@@ -1535,9 +1535,13 @@ def append_new_backtest_trades_for_strategy(
         if bt_model in HIFI_BACKTEST_MODELS:
             try:
                 from api.routers.strategies import run_hifi_pass2
+                # Incremental mode (2026-05-27): only walks trades created
+                # since the last pass on this scope. New trades from this
+                # forward-append are by definition newer than last_hifi_pass.
                 hifi_summary = run_hifi_pass2(
                     strategy_id,
                     data_source_filter='backtest_%',
+                    incremental=True,
                     user={'id': user_id},
                 )
                 logger.info(
@@ -1698,9 +1702,13 @@ def recompute_and_persist_algo_trades(
         if inserted > 0 and algo_model in HIFI_BACKTEST_MODELS:
             try:
                 from api.routers.strategies import run_hifi_pass2
+                # Incremental mode (2026-05-27): same reasoning as
+                # backtest-append above — new algo trades are by definition
+                # newer than the last pass.
                 hifi_summary = run_hifi_pass2(
                     strategy_id,
                     data_source_filter='cache_%',
+                    incremental=True,
                     user={'id': user_id},
                 )
                 logger.info(

@@ -752,7 +752,12 @@ def recompute_kpis_for_strategy(state: StrategyEngineState) -> dict:
         try:
             from api.routers.strategies import run_hifi_pass2
             with _UserContext(uid):
+                # Incremental mode (2026-05-27): cron path only walks
+                # trades created since the last pass on this scope. Avoids
+                # the per-strategy O(N) walk that was making the 5-min cron
+                # cycle into a 20-40 min cycle on fleets of 40 strategies.
                 hifi = run_hifi_pass2(sid, data_source_filter='backtest_%',
+                                      incremental=True,
                                       user={'id': uid})
         except Exception as e:
             logger.warning("[stream] sid=%s Hi-Fi pass failed: %s", sid, e)

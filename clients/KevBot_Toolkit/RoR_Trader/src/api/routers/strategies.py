@@ -101,6 +101,48 @@ def _trade_before(trade: dict, cutoff: datetime) -> bool:
 
 
 # =============================================================================
+# Helpers — Hi-Fi incremental pass tracking
+# =============================================================================
+
+def _bump_last_hifi_pass_at(
+    strategy_id: int,
+    user_id: str,
+    scope_key: str,
+    client=None,
+) -> None:
+    """Record the completion time of a Hi-Fi pass on the strategy's config.
+
+    Reads config, merges {scope_key: now()} into config.last_hifi_pass_at,
+    and writes back via `_stamp_config` (the same shrink-guarded path used
+    by every other config update). 2026-05-27.
+
+    `client` is unused — kept for callsite ergonomics where the caller
+    already has an admin client handy. We use the shared helper inside.
+    """
+    try:
+        from db import get_admin_client
+        from api.services.forward_test_service import _stamp_config
+        _client = get_admin_client()
+        cur_resp = _client.table('strategies').select('config') \
+            .eq('id', strategy_id).eq('user_id', user_id) \
+            .single().execute()
+        cur_cfg = dict((cur_resp.data or {}).get('config') or {})
+        last_pass_map = cur_cfg.get('last_hifi_pass_at')
+        if not isinstance(last_pass_map, dict):
+            last_pass_map = {}
+        last_pass_map[scope_key] = datetime.now(timezone.utc).isoformat()
+        cur_cfg['last_hifi_pass_at'] = last_pass_map
+        _stamp_config(strategy_id, user_id, cur_cfg)
+    except Exception as e:
+        # Don't break the Hi-Fi pass on a stamp failure — the pass itself
+        # succeeded, the worst case is we re-walk the same trades next
+        # pass.
+        logger.warning(
+            "[HIFI-PASS2] Failed to bump last_hifi_pass_at for sid=%s "
+            "scope=%s: %s", strategy_id, scope_key, e)
+
+
+# =============================================================================
 # CRUD
 # =============================================================================
 
@@ -636,6 +678,15 @@ def run_hifi_pass2(
                     "defensive scoping — see docs/Parity_Investigation_2026-"
                     "05-14_Phase_D.md.",
     ),
+    incremental: bool = Query(
+        False,
+        description="If True, skip trades whose created_at is older than "
+                    "the last successful pass for this scope (stored in "
+                    "config.last_hifi_pass_at). Used by the cron + "
+                    "Update-New-Data paths so they don't re-walk thousands "
+                    "of already-seen trades each pass. Manual UI calls leave "
+                    "it False to force a full reprocess. Added 2026-05-27.",
+    ),
     user=Depends(get_current_user),
 ):
     """Run Hi-Fi Pass 2 on a strategy's existing trades — refines entry +
@@ -661,6 +712,12 @@ def run_hifi_pass2(
     Defensive — Phase D investigation confirmed cross-pollination is
     NOT a current bug, but this prevents a future bug from silently
     affecting both lanes via one call site.
+
+    2026-05-27: added `incremental` mode. When True, drops trades created
+    before the last successful pass for the same scope (one pass-completion
+    timestamp per scope key, stored in config.last_hifi_pass_at). Cheap O(1)
+    per-strategy state vs the O(N) per-trade `hifi_resolved=False` writes
+    that were tried + reverted earlier in the day.
     """
     from db import USE_DB
     if not USE_DB:
@@ -693,6 +750,72 @@ def run_hifi_pass2(
             "trades_count": 0,
             "message": "Strategy has no trades to refine",
         }
+
+    # 2026-05-27: incremental filter. Drop trades that were already walked
+    # by a prior pass and didn't refine — they won't refine this pass either
+    # (data hasn't changed). Big throughput win: cron passes only walk the
+    # genuinely-new trades since the last completed pass for this scope.
+    # `last_hifi_pass_at` is a dict keyed by data_source_filter; falls back
+    # to 'all' when no filter is provided.
+    scope_key = data_source_filter or 'all'
+    skipped_by_incremental = 0
+    if incremental:
+        strat_cfg_raw = strat.get('config') or {}
+        last_pass_map = strat_cfg_raw.get('last_hifi_pass_at')
+        if not isinstance(last_pass_map, dict):
+            last_pass_map = {}
+        last_pass_iso = last_pass_map.get(scope_key)
+        last_pass_dt = None
+        if last_pass_iso:
+            try:
+                last_pass_dt = datetime.fromisoformat(
+                    last_pass_iso.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                last_pass_dt = None
+        if last_pass_dt is not None:
+            kept = []
+            for t in trades_list:
+                # Always keep already-refined trades — the existing
+                # idempotency check in _hifi_resolve_trades skips them in
+                # the walker loop, so they cost nothing.
+                trade_data = t.get('data') or {}
+                if trade_data.get('hifi_resolved') is True:
+                    kept.append(t)
+                    continue
+                created_iso = t.get('created_at')
+                if not created_iso:
+                    # Defensive: missing created_at — include for walk.
+                    kept.append(t)
+                    continue
+                try:
+                    created_dt = datetime.fromisoformat(
+                        created_iso.replace('Z', '+00:00'))
+                except (ValueError, AttributeError):
+                    kept.append(t)
+                    continue
+                if created_dt >= last_pass_dt:
+                    kept.append(t)
+                # else: drop — last pass already saw + couldn't refine.
+            skipped_by_incremental = len(trades_list) - len(kept)
+            if skipped_by_incremental > 0:
+                logger.info(
+                    "[HIFI-PASS2] strategy=%s scope=%s incremental skip: "
+                    "%d trades older than last pass %s (kept %d)",
+                    strategy_id, scope_key, skipped_by_incremental,
+                    last_pass_iso, len(kept))
+            trades_list = kept
+            if not trades_list:
+                # Nothing new to walk — still bump last_hifi_pass_at so we
+                # don't redo the (empty) filter computation on every tick.
+                _bump_last_hifi_pass_at(
+                    strategy_id, str(user_id), scope_key, client=None)
+                return {
+                    "status": "ok",
+                    "strategy_id": strategy_id,
+                    "trades_count": 0,
+                    "incremental_skipped": skipped_by_incremental,
+                    "message": "All trades already processed in prior pass",
+                }
 
     import pandas as pd
     trades_df = pd.DataFrame(trades_list)
@@ -879,6 +1002,13 @@ def run_hifi_pass2(
             logger.warning(
                 "[HIFI-PASS2] Failed to update strategy data_source: %s", e)
 
+    # 2026-05-27: stamp pass completion in config.last_hifi_pass_at so the
+    # next incremental pass can skip the trades we just walked. Always
+    # bumped on completion — even when no refinements happened, the walker
+    # DID see these trades and won't find anything new for them next time.
+    # Skipped only on early returns above (errors / no trades).
+    _bump_last_hifi_pass_at(strategy_id, str(user_id), scope_key)
+
     return {
         "status": "ok",
         "strategy_id": strategy_id,
@@ -887,6 +1017,7 @@ def run_hifi_pass2(
         "exits_refined": exits_changed,
         "flag_only_updates": flag_changes,
         "persisted": persisted,
+        "incremental_skipped": skipped_by_incremental,
         "data_source": 'hifi' if entries_changed + exits_changed + flag_changes > 0
                        else strat.get('data_source'),
     }
