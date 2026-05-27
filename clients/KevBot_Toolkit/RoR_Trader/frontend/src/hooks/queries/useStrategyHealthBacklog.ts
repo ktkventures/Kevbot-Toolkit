@@ -58,10 +58,12 @@ export interface BacklogQueryArgs {
   onlyNeedsInvestigation?: boolean;
   applesToApples?: boolean;
   maxRows?: number;
+  /** Filter to a single strategy id. Null = all strategies. */
+  strategyId?: number | null;
 }
 
 export function useStrategyHealthBacklog(args: BacklogQueryArgs = {}) {
-  const { start, end, onlyNeedsInvestigation } = args;
+  const { start, end, onlyNeedsInvestigation, strategyId } = args;
   const applesToApples = args.applesToApples ?? true;
   const windowHours = args.windowHours ?? 24;
   const maxRows = args.maxRows ?? 500;
@@ -78,12 +80,16 @@ export function useStrategyHealthBacklog(args: BacklogQueryArgs = {}) {
   }
   params.set('apples_to_apples', applesToApples ? 'true' : 'false');
   params.set('max_rows', String(maxRows));
+  if (strategyId != null) {
+    params.set('strategy_id', String(strategyId));
+  }
   return useQuery<DivergenceBacklogResponse>({
     queryKey: ['admin', 'strategy-health-backlog',
                isCustom ? 'custom' : windowHours,
                start ?? null, end ?? null,
                !!onlyNeedsInvestigation,
-               applesToApples, maxRows],
+               applesToApples, maxRows,
+               strategyId ?? null],
     queryFn: () => apiFetch<DivergenceBacklogResponse>(
       `/api/admin/strategy-health/backlog?${params.toString()}`),
     staleTime: 25_000,

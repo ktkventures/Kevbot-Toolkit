@@ -59,10 +59,18 @@ export default function StrategyHealthV2() {
   const [windowHours, setWindowHours] = useState<number>(24);
   const [onlyNeedsInvestigation, setOnlyNeedsInvestigation] = useState<boolean>(true);
   const [applesToApples, setApplesToApples] = useState<boolean>(true);
+  const [strategyIdInput, setStrategyIdInput] = useState<string>('');
+
+  // Parse the input — empty/invalid means "all strategies".
+  const strategyIdFilter = (() => {
+    const n = parseInt(strategyIdInput, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  })();
 
   const { data, isLoading, error, dataUpdatedAt, refetch } =
     useStrategyHealthBacklog({
       windowHours, onlyNeedsInvestigation, applesToApples,
+      strategyId: strategyIdFilter,
     });
 
   const rowsByClass = useMemo(() => {
@@ -127,6 +135,41 @@ export default function StrategyHealthV2() {
               onChange={e => setApplesToApples(e.target.checked)}
             />
             <span>apples-to-apples</span>
+          </label>
+          <label
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 8 }}
+            title="Filter to a single strategy ID. Leave blank for all."
+          >
+            <span style={{ color: 'var(--text-muted)' }}>sid:</span>
+            <input
+              type="number"
+              value={strategyIdInput}
+              onChange={e => setStrategyIdInput(e.target.value)}
+              placeholder="all"
+              min={1}
+              style={{
+                width: 70,
+                padding: '2px 6px',
+                background: 'var(--bg-input)',
+                border: '1px solid var(--border)',
+                color: 'var(--text-primary)',
+                borderRadius: 3,
+                fontSize: 11,
+              }}
+            />
+            {strategyIdFilter !== null && (
+              <button
+                onClick={() => setStrategyIdInput('')}
+                style={{
+                  background: 'transparent', border: 'none',
+                  color: 'var(--text-muted)', cursor: 'pointer',
+                  fontSize: 11, padding: '0 4px',
+                }}
+                title="Clear filter"
+              >
+                ×
+              </button>
+            )}
           </label>
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 8, cursor: 'pointer' }}>
             <input

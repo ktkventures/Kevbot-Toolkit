@@ -559,6 +559,11 @@ def get_strategy_health_backlog(
         description="Hard cap on returned rows. Backlog runs heavy when "
                     "every strategy has hundreds of unpaired events. UI "
                     "warns when truncation kicks in. 2026-05-27."),
+    strategy_id: Optional[int] = Query(
+        None,
+        description="If set, only include events for this strategy ID. "
+                    "Lets the UI (and an investigation script) drill into "
+                    "one sid at a time. 2026-05-27."),
 ):
     """Per-event divergence backlog.
 
@@ -596,9 +601,14 @@ def get_strategy_health_backlog(
     window_end_iso = window_end_dt.isoformat()
 
     # Pull strategies once for name/symbol/tf metadata + config.
-    strat_resp = c.table("strategies").select(
+    # When strategy_id filter is set, scope to just that strategy — saves
+    # work on the trade/alert pulls below.
+    strat_query = c.table("strategies").select(
         "id,name,symbol,timeframe,direction,config,data_refreshed_at"
-    ).execute()
+    )
+    if strategy_id is not None:
+        strat_query = strat_query.eq("id", strategy_id)
+    strat_resp = strat_query.execute()
     strats_by_id: Dict[int, Dict[str, Any]] = {}
     for s in (strat_resp.data or []):
         strats_by_id[s.get("id")] = s
@@ -650,18 +660,24 @@ def get_strategy_health_backlog(
     # NOTE: `exit_trigger` is NOT a top-level column on the trades table
     # — it lives inside the `data` JSONB. _classify_missed reads it
     # from data when needed.
-    trade_resp = c.table("trades").select(
+    trade_query = c.table("trades").select(
         "id,strategy_id,entry_fill_ts,exit_fill_ts,exit_reason,"
         "data,data_source"
     ).like("data_source", "backtest_%").gte(
-        "entry_fill_ts", window_start_iso).execute()
+        "entry_fill_ts", window_start_iso)
+    if strategy_id is not None:
+        trade_query = trade_query.eq("strategy_id", strategy_id)
+    trade_resp = trade_query.execute()
     trades_in_window: List[Dict[str, Any]] = trade_resp.data or []
 
     # Pull alerts within window.
-    alert_resp = c.table("alerts").select(
+    alert_query = c.table("alerts").select(
         "id,strategy_id,fill_ts,trigger_ts,event_type"
     ).gte("timestamp", window_start_iso).lte(
-        "timestamp", window_end_iso).execute()
+        "timestamp", window_end_iso)
+    if strategy_id is not None:
+        alert_query = alert_query.eq("strategy_id", strategy_id)
+    alert_resp = alert_query.execute()
     alerts_in_window: List[Dict[str, Any]] = alert_resp.data or []
 
     # Group by strategy.
