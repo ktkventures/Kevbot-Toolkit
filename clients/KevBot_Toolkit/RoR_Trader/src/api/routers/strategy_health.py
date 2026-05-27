@@ -60,6 +60,22 @@ _WINDOW_HOURS_MIN = 1
 _WINDOW_HOURS_MAX = 168                     # 7 days max
 
 
+def _parse_iso_or_unix(s) -> datetime | None:
+    """Accept ISO 8601 ('2026-05-26T22:00:00Z') or Unix-sec string.
+    Mirrors data_health.py:48."""
+    if not s:
+        return None
+    s = str(s).strip()
+    try:
+        return datetime.fromtimestamp(int(s), tz=timezone.utc)
+    except (ValueError, TypeError):
+        pass
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 @router.get("")
 def get_strategy_health(
     user=Depends(get_current_user),
@@ -68,7 +84,18 @@ def get_strategy_health(
         ge=_WINDOW_HOURS_MIN,
         le=_WINDOW_HOURS_MAX,
         description="Divergence window in hours for phantom/missed counts. "
-                    "Clamped to [1, 168]; default 24.",
+                    "Clamped to [1, 168]; default 24. Ignored when both "
+                    "`start` and `end` are provided.",
+    ),
+    start: str | None = Query(
+        None,
+        description="Custom window start (ISO 8601 or Unix sec). When set "
+                    "with `end`, replaces window_hours with a fixed range. "
+                    "Mirrors /admin/data-health's custom mode.",
+    ),
+    end: str | None = Query(
+        None,
+        description="Custom window end (ISO 8601 or Unix sec).",
     ),
 ):
     """One row per strategy with all the health signals + red flags.
@@ -125,13 +152,28 @@ def get_strategy_health(
     ).like("data_source", "backtest_%").execute()
     trades: List[Dict[str, Any]] = trade_resp.data or []
 
+    # Resolve the divergence window. Custom mode (both `start` and `end`
+    # provided) overrides `window_hours` with an explicit fixed range
+    # (mirrors /admin/data-health). When start/end are partial or
+    # invalid, fall back to the rolling window_hours mode.
+    custom_start = _parse_iso_or_unix(start)
+    custom_end = _parse_iso_or_unix(end)
+    is_custom = (custom_start is not None and custom_end is not None
+                 and custom_start < custom_end)
+
+    if is_custom:
+        window_start_dt = custom_start
+        window_end_dt = custom_end
+    else:
+        window_start_dt = now - timedelta(hours=window_hours)
+        window_end_dt = now
+
     # Reduce: per-strategy { count, latest_entry, latest_exit,
     #                       recent_edges } where recent_edges are the
     # entry+exit timestamps within the divergence window, used below
     # for phantom/missed matching against alerts.
-    window_cutoff_iso = (
-        now - timedelta(hours=window_hours)
-    ).isoformat()
+    window_cutoff_iso = window_start_dt.isoformat()
+    window_end_iso = window_end_dt.isoformat()
     per_sid: Dict[int, Dict[str, Any]] = {}
     for t in trades:
         sid = t.get("strategy_id")
@@ -148,16 +190,19 @@ def get_strategy_health(
             agg["latest_exit"] = xk
         # Collect every trade edge that falls inside the divergence
         # window — entries AND exits, since alerts can correspond to
-        # either side of a trade.
-        if ek and ek >= window_cutoff_iso:
+        # either side of a trade. In custom mode, also bound by end.
+        if ek and window_cutoff_iso <= ek <= window_end_iso:
             agg["recent_edges"].append(ek)
-        if xk and xk >= window_cutoff_iso:
+        if xk and window_cutoff_iso <= xk <= window_end_iso:
             agg["recent_edges"].append(xk)
 
-    # Recent alerts (24h) per strategy. Keep the projection tight.
+    # Recent alerts per strategy. Keep the projection tight. Bound by
+    # [window_start, window_end] — for custom mode end < now, otherwise
+    # end == now and the upper bound is a no-op.
     alert_resp = c.table("alerts").select(
         "strategy_id,fill_ts,trigger_ts,event_type"
-    ).gte("timestamp", window_cutoff_iso).execute()
+    ).gte("timestamp", window_cutoff_iso).lte(
+        "timestamp", window_end_iso).execute()
     alerts: List[Dict[str, Any]] = alert_resp.data or []
     alerts_per_sid: Dict[int, List[float]] = {}
     for a in alerts:
@@ -333,6 +378,9 @@ def get_strategy_health(
 
     return {
         "now": now.isoformat(),
-        "window_hours": window_hours,
+        "window_hours": window_hours,   # echo request, for UI bookkeeping
+        "window_start": window_cutoff_iso,
+        "window_end": window_end_iso,
+        "mode": "custom" if is_custom else "rolling",
         "rows": out_rows,
     }

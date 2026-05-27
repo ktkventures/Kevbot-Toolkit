@@ -78,23 +78,41 @@ export interface StrategyHealthResponse {
   /** Echoed back from the server so the UI can display "Phantom Nh"
    *  consistent with what was actually computed. */
   window_hours: number;
+  /** Resolved window bounds — present in BOTH rolling + custom modes.
+   *  In rolling mode, window_end == now; in custom mode, frozen. */
+  window_start?: string;
+  window_end?: string;
+  mode?: 'rolling' | 'custom';
   rows: StrategyHealthRow[];
 }
 
 export interface StrategyHealthQueryArgs {
-  /** Divergence lookback window in hours. Backend clamps to [1, 168].
-   *  Default 24. */
+  /** Rolling-mode lookback in hours. Backend clamps to [1, 168].
+   *  Default 24. Ignored when both `start` and `end` are provided. */
   windowHours?: number;
+  /** Custom mode: ISO 8601 or Unix-sec start. When set together with
+   *  `end`, overrides windowHours. */
+  start?: string | null;
+  /** Custom mode end. Stays frozen — no auto-tick to "now". */
+  end?: string | null;
 }
 
 export function useStrategyHealth(args: StrategyHealthQueryArgs = {}) {
+  const { start, end } = args;
   const windowHours = args.windowHours ?? 24;
-  const qs = `?window_hours=${windowHours}`;
+  const isCustom = !!(start && end);
+  const qs = isCustom
+    ? `?start=${encodeURIComponent(start!)}&end=${encodeURIComponent(end!)}`
+    : `?window_hours=${windowHours}`;
   return useQuery<StrategyHealthResponse>({
-    queryKey: ['admin', 'strategy-health', windowHours],
+    queryKey: ['admin', 'strategy-health',
+                isCustom ? 'custom' : windowHours,
+                start ?? null, end ?? null],
     queryFn: () =>
       apiFetch<StrategyHealthResponse>(`/api/admin/strategy-health${qs}`),
     staleTime: 25_000,
-    refetchInterval: 30_000,
+    // Custom mode = frozen end → no auto-refetch. Rolling mode polls
+    // every 30s for live updates.
+    refetchInterval: isCustom ? false : 30_000,
   });
 }

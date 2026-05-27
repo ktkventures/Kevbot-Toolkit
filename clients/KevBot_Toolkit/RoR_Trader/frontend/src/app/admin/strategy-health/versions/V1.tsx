@@ -148,10 +148,47 @@ function windowLabel(hours: number): string {
   return `${hours}h`;
 }
 
+// Format an ISO timestamp into a datetime-local input value
+// (YYYY-MM-DDTHH:MM in the browser's local TZ).
+function isoToLocalInput(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// Parse a datetime-local input value (browser local TZ) into an ISO
+// 8601 string with UTC offset.
+function localInputToIso(s: string): string {
+  if (!s) return '';
+  const d = new Date(s);  // Date constructor interprets as local TZ
+  if (isNaN(d.getTime())) return '';
+  return d.toISOString();
+}
+
 export default function StrategyHealthV1() {
+  // Mode = 'rolling' uses windowHours chips. 'custom' uses fixed
+  // start/end timestamps (frozen — no auto-refetch).
+  const [mode, setMode] = useState<'rolling' | 'custom'>('rolling');
   const [windowHours, setWindowHours] = useState<number>(24);
+  // Custom-mode inputs (as datetime-local strings, browser TZ).
+  // Default start = 24h ago; default end = now. Backend converts both
+  // to UTC.
+  const [customStartInput, setCustomStartInput] = useState<string>(
+    () => isoToLocalInput(new Date(Date.now() - 24 * 3600 * 1000).toISOString()));
+  const [customEndInput, setCustomEndInput] = useState<string>(
+    () => isoToLocalInput(new Date().toISOString()));
+
+  const customStartIso = mode === 'custom' ? localInputToIso(customStartInput) : null;
+  const customEndIso = mode === 'custom' ? localInputToIso(customEndInput) : null;
+
   const { data, isLoading, error, dataUpdatedAt, refetch } =
-    useStrategyHealth({ windowHours });
+    useStrategyHealth({
+      windowHours,
+      start: mode === 'custom' ? customStartIso : null,
+      end: mode === 'custom' ? customEndIso : null,
+    });
 
   const [sortKey, setSortKey] = useState<SortKey>('flags');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
@@ -253,17 +290,20 @@ export default function StrategyHealthV1() {
               {summary.healthy} healthy
             </span>
           </div>
-          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span>Window:</span>
             {WINDOW_OPTIONS.map(o => (
               <button
                 key={o.hours}
-                onClick={() => setWindowHours(o.hours)}
+                onClick={() => { setMode('rolling'); setWindowHours(o.hours); }}
                 className="px-2 py-0.5 rounded transition-colors"
                 style={{
-                  background: windowHours === o.hours ? 'var(--accent)' : 'var(--bg-input)',
-                  color: windowHours === o.hours ? 'white' : 'var(--text-muted)',
-                  border: windowHours === o.hours ? 'none' : '1px solid var(--border)',
+                  background: (mode === 'rolling' && windowHours === o.hours)
+                    ? 'var(--accent)' : 'var(--bg-input)',
+                  color: (mode === 'rolling' && windowHours === o.hours)
+                    ? 'white' : 'var(--text-muted)',
+                  border: (mode === 'rolling' && windowHours === o.hours)
+                    ? 'none' : '1px solid var(--border)',
                   cursor: 'pointer',
                   fontSize: 11,
                 }}
@@ -271,6 +311,21 @@ export default function StrategyHealthV1() {
                 {o.label}
               </button>
             ))}
+            <button
+              key="custom"
+              onClick={() => setMode('custom')}
+              className="px-2 py-0.5 rounded transition-colors"
+              style={{
+                background: mode === 'custom' ? 'var(--accent)' : 'var(--bg-input)',
+                color: mode === 'custom' ? 'white' : 'var(--text-muted)',
+                border: mode === 'custom' ? 'none' : '1px solid var(--border)',
+                cursor: 'pointer',
+                fontSize: 11,
+              }}
+              title="Pin a fixed [start, end] window. Useful for overnight-into-morning analysis: set start tonight, then update end tomorrow."
+            >
+              Custom
+            </button>
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', marginLeft: 8 }}>
               <input
                 type="checkbox"
@@ -293,6 +348,63 @@ export default function StrategyHealthV1() {
             </button>
           </div>
         </div>
+
+        {/* Custom-mode datetime inputs — only visible when Custom is selected */}
+        {mode === 'custom' && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs"
+               style={{ color: 'var(--text-muted)' }}>
+            <span>Range:</span>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <span>Start</span>
+              <input
+                type="datetime-local"
+                value={customStartInput}
+                onChange={e => setCustomStartInput(e.target.value)}
+                style={{
+                  padding: '2px 6px',
+                  background: 'var(--bg-input)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 3,
+                  color: 'var(--text-primary)',
+                  fontSize: 11,
+                }}
+              />
+            </label>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <span>End</span>
+              <input
+                type="datetime-local"
+                value={customEndInput}
+                onChange={e => setCustomEndInput(e.target.value)}
+                style={{
+                  padding: '2px 6px',
+                  background: 'var(--bg-input)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 3,
+                  color: 'var(--text-primary)',
+                  fontSize: 11,
+                }}
+              />
+            </label>
+            <button
+              onClick={() => setCustomEndInput(isoToLocalInput(new Date().toISOString()))}
+              className="px-2 py-0.5 rounded"
+              style={{
+                background: 'var(--bg-input)',
+                border: '1px solid var(--border)',
+                color: 'var(--text-muted)',
+                cursor: 'pointer',
+                fontSize: 11,
+              }}
+              title="Set End to current time"
+            >
+              End → Now
+            </button>
+            <span style={{ opacity: 0.7 }}>
+              (frozen — no auto-refresh in custom mode)
+            </span>
+          </div>
+        )}
 
         {/* Filter chips */}
         {flagChips.length > 0 && (
@@ -340,8 +452,8 @@ export default function StrategyHealthV1() {
                 <Th onClick={() => toggleSort('kpis')}      label={`KPIs${arrow('kpis')}`} />
                 <Th onClick={() => toggleSort('lastTrade')} label={`Last trade${arrow('lastTrade')}`} />
                 <Th onClick={() => toggleSort('trades')}    label={`#${arrow('trades')}`} align="right" />
-                <Th onClick={() => toggleSort('phantom')}   label={`Phantom ${windowLabel(windowHours)}${arrow('phantom')}`} align="right" />
-                <Th onClick={() => toggleSort('missed')}    label={`Missed ${windowLabel(windowHours)}${arrow('missed')}`} align="right" />
+                <Th onClick={() => toggleSort('phantom')}   label={`Phantom ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('phantom')}`} align="right" />
+                <Th onClick={() => toggleSort('missed')}    label={`Missed ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('missed')}`} align="right" />
                 <Th onClick={() => toggleSort('flags')}     label={`Flags${arrow('flags')}`} />
               </tr>
             </thead>
