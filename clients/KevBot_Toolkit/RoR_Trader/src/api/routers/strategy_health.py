@@ -346,20 +346,26 @@ def get_strategy_health(
         phantom_count, missed_count, paired_count = _pair_phantom_missed(
             edge_isos, alert_unix_list)
 
-        # 2026-05-27: apples-to-apples counts. Cap event timestamps to
-        # min(last_alert_at, last_backtest_created_at). Events newer than
-        # this cap haven't had a chance to be matched on the slower side,
-        # so excluding them removes the lag-tail false positives Kevin
-        # described: "phantom says 291 but the last 20 were fired in the
-        # last 5 min and the backtest data is 10 min stale — so 271 is
-        # the honest count."
-        # When one source is missing entirely, fair_cutoff is None and
-        # fair counts mirror raw counts (nothing to cap against).
+        # 2026-05-27 (revised): apples-to-apples cutoff = "the latest bar
+        # both sources have actually processed". Use MAX(entry_fill_ts,
+        # exit_fill_ts) for backtest — that's the latest bar the backtest
+        # has produced output for. Do NOT use created_at: the data-worker
+        # writes trades for OLD bars in real-time (15-min LAG_MINUTES
+        # convention), so created_at can be fresh-now while the strategy's
+        # processed-through point is 15+ min old. Used the wrong field on
+        # first cut → fair filter didn't actually filter anything.
+        last_bt_processed: Optional[datetime] = None
+        for candidate in (last_entry_dt, last_exit_dt):
+            if candidate is not None and (
+                    last_bt_processed is None
+                    or candidate > last_bt_processed):
+                last_bt_processed = candidate
+
         fair_cutoff_dt: Optional[datetime] = None
-        if last_bt_created is not None and last_alert_at is not None:
-            fair_cutoff_dt = min(last_bt_created, last_alert_at)
-        elif last_bt_created is not None:
-            fair_cutoff_dt = last_bt_created
+        if last_bt_processed is not None and last_alert_at is not None:
+            fair_cutoff_dt = min(last_bt_processed, last_alert_at)
+        elif last_bt_processed is not None:
+            fair_cutoff_dt = last_bt_processed
         elif last_alert_at is not None:
             fair_cutoff_dt = last_alert_at
         if fair_cutoff_dt is not None:
@@ -613,23 +619,30 @@ def get_strategy_health_backlog(
     for s in (strat_resp.data or []):
         strats_by_id[s.get("id")] = s
 
-    # Per-strategy "last backtest created" + "last alert" for the apples-
-    # to-apples cap. Cheap: 2 queries (sorted desc, take first per sid).
+    # Per-strategy "latest bar backtest has processed" — MAX(entry/exit
+    # fill_ts) — and "last alert" for the apples-to-apples cap. NOT
+    # created_at: the data-worker writes lagged trades in real-time, so
+    # created_at is misleadingly fresh. See the matching fix in the
+    # overview endpoint above for full context.
     last_bt_per_sid: Dict[int, datetime] = {}
     if apples_to_apples:
         try:
             bt_resp = c.table("trades").select(
-                "strategy_id,created_at"
-            ).like("data_source", "backtest_%").order(
-                "created_at", desc=True).execute()
+                "strategy_id,entry_fill_ts,exit_fill_ts"
+            ).like("data_source", "backtest_%").execute()
             for t in (bt_resp.data or []):
                 sid_t = t.get("strategy_id")
-                ts_t = t.get("created_at")
-                if sid_t is None or not ts_t:
+                if sid_t is None:
                     continue
-                if sid_t not in last_bt_per_sid:
+                for col in ("entry_fill_ts", "exit_fill_ts"):
+                    ts_t = t.get(col)
+                    if not ts_t:
+                        continue
                     dt = _parse_iso(ts_t)
-                    if dt is not None:
+                    if dt is None:
+                        continue
+                    cur = last_bt_per_sid.get(sid_t)
+                    if cur is None or dt > cur:
                         last_bt_per_sid[sid_t] = dt
         except Exception as e:
             logger.warning("[backlog] last_bt_per_sid load failed: %s", e)
