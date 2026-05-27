@@ -125,9 +125,106 @@ def test_exit_fill_ts_persisted_sub_second():
           f"(:{parsed.second:02d})")
 
 
+def test_mass_builder_hifi_refine_result_shape():
+    """Mass Builder _hifi_refine_result helper integration: given a
+    result dict in the Mass Builder shape, it should re-run Pass 2,
+    refresh kpis/equity_curve/stored_trades, and stamp a `hifi`
+    summary. Smoke-tests the wire-up at the top-K refinement step.
+
+    Verifies:
+      - Refined result has the same shape (config, kpis, equity_curve,
+        stored_trades) it had on input
+      - New field `hifi` present with int counts
+      - stored_trades' exit_fill_ts is now sub-second
+    """
+    from mass_builder import _hifi_refine_result
+
+    entry_ts = pd.Timestamp("2026-05-04T15:35:00+00:00")
+    exit_bar_start = pd.Timestamp("2026-05-04T15:40:00+00:00")
+    stop_level = 432.50
+    hit_at_second = 31
+
+    # Synthesize a Mass Builder result dict
+    result = {
+        "config": {
+            "symbol": "TEST", "timeframe": "5Min", "direction": "LONG",
+            "backtest_model": "rest_hifi", "starting_balance": 10000,
+            "risk_per_trade": 100,
+        },
+        "kpis": {"total_trades": 1, "win_rate": 0.0, "total_r": -1.0,
+                  "profit_factor": 0.0, "daily_r": -0.01},
+        "equity_curve": [-1.0],
+        "stored_trades": [{
+            # mass_builder._serialize_trades shape
+            "data_source": "backtest_rest_hifi",
+            "entry_time": entry_ts.isoformat(),
+            "exit_time": exit_bar_start.isoformat(),
+            "entry_fill_ts": entry_ts.isoformat(),
+            "exit_fill_ts": exit_bar_start.isoformat(),
+            "direction": "LONG",
+            "entry_price": 433.50,
+            "exit_price": stop_level,
+            "stop_price": stop_level,
+            "target_price": 440.00,
+            "exit_reason": "stop_loss",
+            "exec_type": "C",
+            "r_multiple": -1.0,
+            "win": False,
+        }],
+        "status": "active",
+        "confluence_str": "None",
+    }
+
+    mock_bars = _mock_1s_bars(exit_bar_start, stop_level, hit_at_second)
+
+    with patch(
+        "data_loader.fetch_1s_bars_for_window",
+        return_value=mock_bars,
+    ):
+        refined = _hifi_refine_result(
+            result,
+            bar_df=None,  # no signal-exit refinement needed for stop_loss
+            visible_start=entry_ts - pd.Timedelta(days=90),
+            trading_days=90,
+        )
+
+    print("--- mass-builder integration ---")
+    print(f"refined['hifi']: {refined.get('hifi')}")
+    print(f"refined['kpis']: {refined.get('kpis')}")
+    print(f"refined['stored_trades'][0]['exit_fill_ts']: "
+          f"{refined['stored_trades'][0].get('exit_fill_ts')}")
+
+    # Assertions
+    assert "hifi" in refined, "Expected 'hifi' field on refined result"
+    hifi = refined["hifi"]
+    assert isinstance(hifi.get("entries_refined"), int)
+    assert isinstance(hifi.get("exits_refined"), int)
+    assert isinstance(hifi.get("signal_exits_refined"), int)
+    assert isinstance(hifi.get("total_refined"), int)
+    assert hifi["exits_refined"] >= 1, (
+        f"Expected >=1 exits_refined (stop should have moved), "
+        f"got {hifi}")
+    assert hifi["total_refined"] >= 1
+
+    new_exit_ts = refined["stored_trades"][0].get("exit_fill_ts")
+    parsed = pd.Timestamp(new_exit_ts)
+    assert parsed.second == hit_at_second, (
+        f"Expected stored_trades[0]['exit_fill_ts'] seconds to be "
+        f"{hit_at_second}, got {parsed.second} ({new_exit_ts})")
+
+    # KPIs should be present and reasonable (calculate_kpis output)
+    new_kpis = refined.get("kpis", {})
+    assert "total_trades" in new_kpis
+    assert "total_r" in new_kpis
+    assert "win_rate" in new_kpis
+    print(f"PASS: mass-builder integration — exits_refined={hifi['exits_refined']} "
+          f"exit_fill_ts=:{parsed.second:02d}")
+
+
 if __name__ == "__main__":
     try:
         test_exit_fill_ts_persisted_sub_second()
+        test_mass_builder_hifi_refine_result_shape()
     except AssertionError as e:
         print(f"\nREGRESSION TEST FAILED:\n  {e}")
         sys.exit(1)

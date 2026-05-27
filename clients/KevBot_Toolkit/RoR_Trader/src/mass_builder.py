@@ -379,6 +379,101 @@ def build_equity_curve(trades_df) -> list:
     return [round(v, 3) for v in cumulative]
 
 
+def _hifi_refine_result(result: dict, *, bar_df, visible_start,
+                         trading_days: int) -> dict:
+    """Mass Builder §8.5 final step: re-run Hi-Fi Pass 2 on a search
+    result's serialized trades, refresh KPIs + equity curve, and stamp
+    a `hifi` summary so the UI can badge cards where Hi-Fi moved trades.
+
+    Mutates `result` in place and returns it. On failure (logged
+    warning), returns the result unchanged. Per-candidate try/except
+    keeps a single bad refinement from killing the whole search.
+
+    `bar_df` is the (symbol, tf) group's prepared df with indicator
+    columns — needed for signal-exit refinement (Phase 1 of Hi-Fi,
+    `_hifi_resolve_trades` line 740). For stop/target-only refinement
+    `bar_df=None` would work, but most strategies don't know that in
+    advance — always pass it.
+    """
+    import pandas as pd
+    if result is None:
+        return result
+    cfg = result.get('config') or {}
+    stored = result.get('stored_trades') or []
+    if not stored:
+        return result
+    symbol = cfg.get('symbol')
+    timeframe = cfg.get('timeframe', '1Min')
+    try:
+        trades_df = pd.DataFrame(stored)
+
+        # Snapshot original timestamps for delta counting
+        def _col(name):
+            if name in trades_df.columns:
+                return trades_df[name].astype(str).copy()
+            return pd.Series([''] * len(trades_df))
+        orig_entry = _col('entry_fill_ts')
+        orig_exit = _col('exit_fill_ts')
+
+        # Pass 2
+        from api.services.backtest_service import _hifi_resolve_trades
+        refined = _hifi_resolve_trades(
+            trades_df, symbol, timeframe, bar_df=bar_df)
+
+        # Trim to visible window — Pass 2 doesn't change the window but
+        # the canonical post-refinement step trims for safety.
+        if visible_start is not None:
+            from strategy_data import trim_trades_to_visible
+            refined = trim_trades_to_visible(refined, visible_start)
+
+        # Count refinement deltas (compare strings, since timestamps
+        # round-trip through ISO strings in stored_trades).
+        entries_refined = 0
+        exits_refined = 0
+        signal_exits_refined = 0
+        for i in range(min(len(refined), len(orig_entry))):
+            row = refined.iloc[i]
+            new_entry = str(row.get('entry_fill_ts') or '')
+            new_exit = str(row.get('exit_fill_ts') or '')
+            new_reason = str(row.get('exit_reason') or '')
+            if new_entry and new_entry != orig_entry.iloc[i]:
+                entries_refined += 1
+            if new_exit and new_exit != orig_exit.iloc[i]:
+                if new_reason in ('stop_loss', 'stop', 'target'):
+                    exits_refined += 1
+                else:
+                    signal_exits_refined += 1
+        total_refined = entries_refined + exits_refined + signal_exits_refined
+
+        # Recompute KPIs from refined trades, using the visible-window
+        # trading_days denominator (passed in by caller).
+        from services import calculate_kpis
+        new_kpis = calculate_kpis(
+            refined,
+            starting_balance=cfg.get('starting_balance', 10000),
+            risk_per_trade=cfg.get('risk_per_trade', 100),
+            total_trading_days=trading_days)
+
+        bt_model = cfg.get('backtest_model') or 'rest_hifi'
+        new_stored = _serialize_trades(refined, backtest_model=bt_model)
+        new_eq = build_equity_curve(refined)
+
+        result['kpis'] = new_kpis
+        result['stored_trades'] = new_stored
+        result['equity_curve'] = new_eq
+        result['hifi'] = {
+            'entries_refined': entries_refined,
+            'exits_refined': exits_refined,
+            'signal_exits_refined': signal_exits_refined,
+            'total_refined': total_refined,
+        }
+    except Exception as e:
+        logger.warning(
+            "[MASS-HIFI] refinement failed for symbol=%s tf=%s: %s",
+            symbol, timeframe, e, exc_info=True)
+    return result
+
+
 def format_time_estimate(seconds: float) -> str:
     """Format seconds into a human-readable time estimate."""
     if seconds < 60:
@@ -476,6 +571,11 @@ def run_mass_search(
     # HighFidelity request inside the group; freed when the group
     # ends.
     _group_cache_holder: dict = {}
+    # Hi-Fi top-K context (Mass Builder §8.5). Populated alongside
+    # _data_cache; read at the end of the search by _hifi_refine_result.
+    # Tuple: (bar_df, visible_df, visible_start, trading_days). Keyed
+    # by (symbol, tf).
+    _hifi_group_ctx: dict = {}
     from data_loader import get_data_source
     from confluence_groups import (
         get_enabled_groups, get_all_triggers, load_confluence_groups,
@@ -792,6 +892,17 @@ def run_mass_search(
                     _search_visible_start = (df.index[0]
                                               if len(df) > 0
                                               else None)
+                # Also stash on the Hi-Fi context map for end-of-search
+                # refinement. Recompute the visible df since cached
+                # tuple doesn't carry it (avoids a memory dup; cheap).
+                from strategy_data import trim_df_to_visible as _trim_vis
+                _hifi_visible_df = (_trim_vis(df, _search_visible_start)
+                                     if _search_visible_start is not None
+                                     else df)
+                _hifi_group_ctx[(symbol, tf)] = (
+                    df, _hifi_visible_df, _search_visible_start,
+                    period_trading_days,
+                )
                 logger.info("Mass search: %s/%s — cache hit (%d bars)",
                             symbol, tf, len(df))
                 if progress_callback:
@@ -893,6 +1004,11 @@ def run_mass_search(
                 period_trading_days = count_trading_days(_visible_df)
                 _cache_put(ck, df, sec_tf_map, period_trading_days,
                             _search_visible_start)
+                # Stash for Hi-Fi top-K refinement at end-of-search.
+                _hifi_group_ctx[(symbol, tf)] = (
+                    df, _visible_df, _search_visible_start,
+                    period_trading_days,
+                )
 
             # Count data load as a progress step
             step += 1
@@ -1366,6 +1482,57 @@ def run_mass_search(
     _sort_metric = required_perf.get('sort_by', 'daily_r')
     results.sort(key=lambda r: r.get('kpis', {}).get(_sort_metric, -999),
                  reverse=True)
+
+    # ── Hi-Fi top-K refinement (Mass Builder §8.5 final step) ──────────
+    # When in HighFidelity mode and skipHifi=False, run Hi-Fi Pass 2
+    # on the top (hifi_buffer_mult × max_results) candidates. Refines
+    # stop/target/signal-exit timestamps to sub-second via 1-sec
+    # Polygon bars. Re-sort after refinement so any KPI shifts
+    # propagate into the displayed top-N.
+    if _hifi_mode and not _skip_hifi and results:
+        _buffer_n = min(len(results), _hifi_buffer_mult * max_results)
+        _hifi_start = _time.monotonic()
+        _hifi_refined_count = 0
+        _hifi_entries_total = 0
+        _hifi_exits_total = 0
+        _hifi_signal_exits_total = 0
+        for r in results[:_buffer_n]:
+            _cfg = r.get('config') or {}
+            _sym = _cfg.get('symbol')
+            _tf = _cfg.get('timeframe')
+            _ctx = _hifi_group_ctx.get((_sym, _tf))
+            if _ctx is None:
+                continue
+            _bar_df, _visible_df, _visible_start, _trading_days = _ctx
+            _hifi_refine_result(
+                r,
+                bar_df=_bar_df,
+                visible_start=_visible_start,
+                trading_days=_trading_days,
+            )
+            _h = r.get('hifi') or {}
+            if _h.get('total_refined', 0) > 0:
+                _hifi_refined_count += 1
+                _hifi_entries_total += _h.get('entries_refined', 0)
+                _hifi_exits_total += _h.get('exits_refined', 0)
+                _hifi_signal_exits_total += _h.get('signal_exits_refined', 0)
+        _hifi_wall = round(_time.monotonic() - _hifi_start, 2)
+        _diag['hifi_topk_total_sec'] = _hifi_wall
+        _diag['hifi_topk_candidates'] = _buffer_n
+        _diag['hifi_topk_with_changes'] = _hifi_refined_count
+        _diag['hifi_topk_entries_refined'] = _hifi_entries_total
+        _diag['hifi_topk_exits_refined'] = _hifi_exits_total
+        _diag['hifi_topk_signal_exits_refined'] = _hifi_signal_exits_total
+        print(
+            f"[MASS-HIFI] top-K refined: {_hifi_refined_count}/{_buffer_n} "
+            f"candidates had changes (entries={_hifi_entries_total} "
+            f"exits={_hifi_exits_total} signals={_hifi_signal_exits_total}) "
+            f"wall={_hifi_wall}s",
+            flush=True)
+        # Re-sort post-Hi-Fi — KPI shifts may re-rank.
+        results.sort(
+            key=lambda r: r.get('kpis', {}).get(_sort_metric, -999),
+            reverse=True)
 
     _diag['total_results_before_trim'] = len(results)
     # Compute per-unit timings for preview calibration.

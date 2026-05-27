@@ -85,6 +85,14 @@ interface MassResult {
   oosSigmaStatus?: 'green' | 'amber' | 'red' | 'unknown';
   oosSigmaZ?: number | null;
   oosBoundaryIndex?: number;  // index into equityCurve where OOS begins
+  // Hi-Fi Pass 2 refinement summary (Mass Builder §8.5 top-K pass).
+  // Present only when HighFidelity mode actually moved trade timestamps.
+  hifi?: {
+    entriesRefined: number;
+    exitsRefined: number;       // stop/target sub-second refinements
+    signalExitsRefined: number;
+    totalRefined: number;
+  };
   _raw?: any;  // Raw result from backend for save flow
 }
 
@@ -738,6 +746,15 @@ export default function MassBuilderPage() {
       oosSigmaStatus: r.oos_sigma?.status,
       oosSigmaZ: r.oos_sigma?.z ?? null,
       oosBoundaryIndex: r.oos_boundary_index,
+      // Hi-Fi top-K summary — only present when HighFidelity actually
+      // moved trade timestamps. Backend stamps r.hifi in mass_builder
+      // _hifi_refine_result. Mapped snake → camel here.
+      hifi: r.hifi ? {
+        entriesRefined: r.hifi.entries_refined ?? 0,
+        exitsRefined: r.hifi.exits_refined ?? 0,
+        signalExitsRefined: r.hifi.signal_exits_refined ?? 0,
+        totalRefined: r.hifi.total_refined ?? 0,
+      } : undefined,
       _raw: r,
     }));
     setResults(mapped);
@@ -2271,6 +2288,23 @@ export default function MassBuilderPage() {
                       #{result.rank}
                     </span>
                     <h3 className="font-semibold text-sm">{searchName} — {result.ticker} {result.direction}</h3>
+                    {result.hifi && result.hifi.totalRefined > 0 && (
+                      <span
+                        className="text-[10px] font-medium px-1.5 py-0.5 rounded"
+                        style={{
+                          background: 'rgba(255, 152, 0, 0.15)',
+                          color: 'var(--orange)',
+                          border: '1px solid rgba(255, 152, 0, 0.3)',
+                        }}
+                        title={`Hi-Fi Pass 2 refined ${result.hifi.totalRefined} trades: ` +
+                          `${result.hifi.entriesRefined} entries, ` +
+                          `${result.hifi.exitsRefined} stops/targets, ` +
+                          `${result.hifi.signalExitsRefined} signal exits. ` +
+                          `Sub-second timing applied via 1-sec Polygon data.`}
+                      >
+                        Hi-Fi · {result.hifi.totalRefined}
+                      </span>
+                    )}
                     <span className="flex-1" />
                     <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>{result.tf}</span>
                   </div>
