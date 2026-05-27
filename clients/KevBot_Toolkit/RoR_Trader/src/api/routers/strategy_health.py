@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
 
@@ -143,14 +143,42 @@ def get_strategy_health(
     strats: List[Dict[str, Any]] = strat_resp.data or []
 
     # Aggregate trade-recency in a single pass: pull entry_fill_ts +
-    # exit_fill_ts for every backtest_% trade, group by strategy_id.
-    # For ~30 strategies × thousands of trades this is ~MB of data — keep
-    # the projection tight (3 fields) so we don't OOM. If it ever becomes
-    # hot, move to a Postgres aggregate function.
+    # exit_fill_ts + created_at for every backtest_% trade, group by
+    # strategy_id. For ~30 strategies × thousands of trades this is ~MB
+    # of data — keep the projection tight so we don't OOM. If it ever
+    # becomes hot, move to a Postgres aggregate function.
+    # `created_at` is the freshness signal Kevin asked for 2026-05-27 —
+    # "when was the latest backtest trade written" vs entry_fill_ts which
+    # is "when did the trade execute" (could be days ago for backfills).
     trade_resp = c.table("trades").select(
-        "strategy_id,entry_fill_ts,exit_fill_ts,data_source"
+        "strategy_id,entry_fill_ts,exit_fill_ts,data_source,created_at"
     ).like("data_source", "backtest_%").execute()
     trades: List[Dict[str, Any]] = trade_resp.data or []
+
+    # Fetch the most-recent alert per strategy (for the "last alert
+    # received" column and the upside-down-timestamps filter). Bound by
+    # last 30 days so we don't OOM on stale strategies — anything older
+    # is effectively "never" for our purposes. Note this is UN-windowed
+    # vs the recent-alerts pull below (which uses [window_start, window_end]
+    # for phantom/missed pairing). 2026-05-27.
+    last_alert_per_sid: Dict[int, str] = {}
+    try:
+        thirty_d_ago = (now - timedelta(days=30)).isoformat()
+        last_alert_resp = c.table("alerts").select(
+            "strategy_id,timestamp"
+        ).gte("timestamp", thirty_d_ago).order(
+            "timestamp", desc=True).execute()
+        for a in (last_alert_resp.data or []):
+            sid_a = a.get("strategy_id")
+            ts_a = a.get("timestamp")
+            if sid_a is None or not ts_a:
+                continue
+            # First occurrence per sid wins because list is sorted desc.
+            if sid_a not in last_alert_per_sid:
+                last_alert_per_sid[sid_a] = ts_a
+    except Exception as e:
+        logger.warning(
+            "[health] last-alert-per-sid load failed: %s — column will be null", e)
 
     # Resolve the divergence window. Custom mode (both `start` and `end`
     # provided) overrides `window_hours` with an explicit fixed range
@@ -181,13 +209,17 @@ def get_strategy_health(
             continue
         agg = per_sid.setdefault(sid, {"count": 0, "latest_entry": None,
                                       "latest_exit": None,
+                                      "latest_created": None,
                                       "recent_edges": []})
         agg["count"] += 1
         ek, xk = t.get("entry_fill_ts"), t.get("exit_fill_ts")
+        ca = t.get("created_at")
         if ek and (agg["latest_entry"] is None or ek > agg["latest_entry"]):
             agg["latest_entry"] = ek
         if xk and (agg["latest_exit"] is None or xk > agg["latest_exit"]):
             agg["latest_exit"] = xk
+        if ca and (agg["latest_created"] is None or ca > agg["latest_created"]):
+            agg["latest_created"] = ca
         # Collect every trade edge that falls inside the divergence
         # window — entries AND exits, since alerts can correspond to
         # either side of a trade. In custom mode, also bound by end.
@@ -297,6 +329,32 @@ def get_strategy_health(
         last_entry_age = _age_sec(last_entry_dt, now)
         last_exit_age = _age_sec(last_exit_dt, now)
 
+        # 2026-05-27: freshness signals Kevin asked for.
+        # `last_backtest_created_at` = the most-recent created_at across all
+        # backtest_% trade rows (i.e., when the trades table last got a
+        # new backtest entry). Distinct from `last_entry_ts` which is the
+        # latest entry_fill_ts (could be days old for backfills).
+        # `last_alert_at` = the most-recent alert across the whole alerts
+        # table (un-windowed, capped to last 30d).
+        last_bt_created = _parse_iso(agg.get("latest_created"))
+        last_bt_created_age = _age_sec(last_bt_created, now)
+        last_alert_at = _parse_iso(last_alert_per_sid.get(sid))
+        last_alert_age = _age_sec(last_alert_at, now)
+
+        # Upside-down filter signal: when last alert and last backtest are
+        # both present but materially out of sync (>1h apart in either
+        # direction), phantom/missed numbers aren't meaningful — one source
+        # is stale relative to the other. Surfaces as a top-level boolean
+        # so the UI filter can hide these rows in one expression. The
+        # threshold mirrors `_STALE_SNAPSHOT_SEC` for consistency.
+        timestamps_upside_down = False
+        upside_down_delta_sec: Optional[int] = None
+        if last_bt_created is not None and last_alert_at is not None:
+            delta_sec = abs((last_alert_at - last_bt_created).total_seconds())
+            upside_down_delta_sec = int(delta_sec)
+            if delta_sec > _STALE_SNAPSHOT_SEC:
+                timestamps_upside_down = True
+
         # ── Red flags — only ones that mean *action needed*.
         red_flags: List[str] = []
         if not is_streaming_eligible:
@@ -362,6 +420,15 @@ def get_strategy_health(
             "last_entry_age_sec": last_entry_age,
             "last_exit_ts": last_exit_dt.isoformat() if last_exit_dt else None,
             "last_exit_age_sec": last_exit_age,
+            # 2026-05-27 — freshness signals + upside-down filter source.
+            "last_backtest_created_at": (last_bt_created.isoformat()
+                                         if last_bt_created else None),
+            "last_backtest_created_age_sec": last_bt_created_age,
+            "last_alert_at": (last_alert_at.isoformat()
+                              if last_alert_at else None),
+            "last_alert_age_sec": last_alert_age,
+            "timestamps_upside_down": timestamps_upside_down,
+            "upside_down_delta_sec": upside_down_delta_sec,
             "trade_count_backtest": agg["count"],
             "parity_status": parity if isinstance(parity, dict) else None,
             "parity_verdict": parity_verdict,

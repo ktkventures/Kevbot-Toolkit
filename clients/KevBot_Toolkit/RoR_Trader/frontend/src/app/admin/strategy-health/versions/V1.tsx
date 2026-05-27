@@ -111,6 +111,7 @@ function flagChipStyle(tone: 'red' | 'amber' | 'gray'): React.CSSProperties {
 type SortKey =
   | 'flags' | 'name' | 'symbol' | 'timeframe'
   | 'snapshot' | 'kpis' | 'lastTrade' | 'trades'
+  | 'lastBt' | 'lastAlert'
   | 'paired' | 'phantom' | 'missed';
 
 function rowSortValue(r: StrategyHealthRow, key: SortKey): number | string {
@@ -122,6 +123,8 @@ function rowSortValue(r: StrategyHealthRow, key: SortKey): number | string {
     case 'snapshot':  return r.snapshot_age_sec ?? Number.POSITIVE_INFINITY;
     case 'kpis':      return r.kpis_age_sec ?? Number.POSITIVE_INFINITY;
     case 'lastTrade': return r.last_entry_age_sec ?? Number.POSITIVE_INFINITY;
+    case 'lastBt':    return r.last_backtest_created_age_sec ?? Number.POSITIVE_INFINITY;
+    case 'lastAlert': return r.last_alert_age_sec ?? Number.POSITIVE_INFINITY;
     case 'trades':    return -r.trade_count_backtest;
     case 'paired':    return -r.paired_count;
     case 'phantom':   return -r.phantom_count;
@@ -195,12 +198,20 @@ export default function StrategyHealthV1() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [activeFlag, setActiveFlag] = useState<StrategyHealthFlag | null>(null);
   const [includeLegacy, setIncludeLegacy] = useState(false);
+  // 2026-05-27: filter out rows where last alert and last backtest are
+  // materially out of sync — phantom/missed numbers aren't meaningful
+  // when one source is days stale relative to the other. Default ON so
+  // the page shows only divergence worth investigating.
+  const [hideUpsideDown, setHideUpsideDown] = useState(true);
 
   const filteredRows = useMemo(() => {
     if (!data?.rows) return [];
     let rows = data.rows;
     if (!includeLegacy) {
       rows = rows.filter(r => !r.red_flags.includes('legacy_no_confluence_id'));
+    }
+    if (hideUpsideDown) {
+      rows = rows.filter(r => !r.timestamps_upside_down);
     }
     if (activeFlag) {
       rows = rows.filter(r => r.red_flags.includes(activeFlag));
@@ -214,7 +225,7 @@ export default function StrategyHealthV1() {
       return sortDir === 'asc' ? cmp : -cmp;
     });
     return sorted;
-  }, [data, sortKey, sortDir, activeFlag, includeLegacy]);
+  }, [data, sortKey, sortDir, activeFlag, includeLegacy, hideUpsideDown]);
 
   // Summary: counts by flag, scoped to non-legacy strategies.
   const summary = useMemo(() => {
@@ -335,6 +346,17 @@ export default function StrategyHealthV1() {
               />
               <span>include legacy</span>
             </label>
+            <label
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', marginLeft: 8 }}
+              title="Hide strategies where last alert and last backtest trade are >1h apart. Phantom/missed counts aren't meaningful when one source is stale relative to the other."
+            >
+              <input
+                type="checkbox"
+                checked={hideUpsideDown}
+                onChange={e => setHideUpsideDown(e.target.checked)}
+              />
+              <span>hide upside-down timestamps</span>
+            </label>
             <button
               onClick={() => refetch()}
               className="px-3 py-0.5 rounded"
@@ -452,6 +474,8 @@ export default function StrategyHealthV1() {
                 <Th onClick={() => toggleSort('snapshot')}  label={`Snapshot${arrow('snapshot')}`} />
                 <Th onClick={() => toggleSort('kpis')}      label={`KPIs${arrow('kpis')}`} />
                 <Th onClick={() => toggleSort('lastTrade')} label={`Last trade${arrow('lastTrade')}`} />
+                <Th onClick={() => toggleSort('lastBt')}    label={`Last BT${arrow('lastBt')}`} />
+                <Th onClick={() => toggleSort('lastAlert')} label={`Last alert${arrow('lastAlert')}`} />
                 <Th onClick={() => toggleSort('trades')}    label={`Trades${arrow('trades')}`} align="right" />
                 <Th onClick={() => toggleSort('paired')}    label={`Paired ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('paired')}`} align="right" />
                 <Th onClick={() => toggleSort('phantom')}   label={`Phantom ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('phantom')}`} align="right" />
@@ -490,6 +514,31 @@ export default function StrategyHealthV1() {
                     <span style={ageStyle(r.last_entry_age_sec, { green: 86400, yellow: 7 * 86400 })}>
                       {fmtAge(r.last_entry_age_sec)}
                     </span>
+                  </td>
+                  <td style={{ padding: '6px 8px' }}
+                      title={r.last_backtest_created_at ?? 'no backtest trades on file'}>
+                    <span style={ageStyle(r.last_backtest_created_age_sec, { green: 3600, yellow: 86400 })}>
+                      {fmtAge(r.last_backtest_created_age_sec)}
+                    </span>
+                  </td>
+                  <td style={{ padding: '6px 8px' }}
+                      title={r.last_alert_at
+                        ? r.last_alert_at
+                        + (r.timestamps_upside_down && r.upside_down_delta_sec
+                            ? ` (Δ ${Math.round((r.upside_down_delta_sec ?? 0) / 60)}m vs last BT — upside-down)`
+                            : '')
+                        : 'no alerts in last 30d'}>
+                    <span style={ageStyle(r.last_alert_age_sec, { green: 3600, yellow: 86400 })}>
+                      {fmtAge(r.last_alert_age_sec)}
+                    </span>
+                    {r.timestamps_upside_down && (
+                      <span
+                        style={{ marginLeft: 4, color: '#ffc107', fontSize: 10 }}
+                        title="upside-down: alert and backtest timestamps >1h apart"
+                      >
+                        ⇅
+                      </span>
+                    )}
                   </td>
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',

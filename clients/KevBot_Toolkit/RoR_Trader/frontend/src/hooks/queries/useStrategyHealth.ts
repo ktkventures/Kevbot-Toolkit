@@ -53,6 +53,20 @@ export interface StrategyHealthRow {
   last_entry_age_sec: number | null;
   last_exit_ts: string | null;
   last_exit_age_sec: number | null;
+  /** When the most-recent backtest_% trade row was inserted into the
+   *  trades table (vs last_entry_ts which is its execution time).
+   *  Better freshness signal for "is the backtest history current". */
+  last_backtest_created_at: string | null;
+  last_backtest_created_age_sec: number | null;
+  /** When the most-recent alert was received for this strategy
+   *  (un-windowed, capped to last 30 days). Null = no alerts in 30d. */
+  last_alert_at: string | null;
+  last_alert_age_sec: number | null;
+  /** True when both last_backtest_created_at and last_alert_at exist
+   *  but are >1h apart. Phantom/missed counts aren't trustworthy in
+   *  this state — one source is stale relative to the other. */
+  timestamps_upside_down: boolean;
+  upside_down_delta_sec: number | null;
   trade_count_backtest: number;
 
   parity_status: Record<string, unknown> | null;
