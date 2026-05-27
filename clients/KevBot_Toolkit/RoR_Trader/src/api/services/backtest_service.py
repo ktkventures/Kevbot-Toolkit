@@ -106,13 +106,10 @@ def run_backtest(req: BacktestRequest) -> BacktestResponse:
     trades_df = svc.unified_trades(df, strategy)
     print(f"[BACKTEST] Unified engine returned {len(trades_df)} trades")
 
-    # 5b. Hi-Fi Pass 2: Resolve every entry/exit with 1-second data.
-    # Default to None (not False) so the new idempotency skip in
-    # _hifi_resolve_trades treats these fresh trades as never-walked.
-    # 2026-05-27.
+    # 5b. Hi-Fi Pass 2: Resolve every entry/exit with 1-second data
     if req.hifi_mode and len(trades_df) > 0:
         if 'hifi_resolved' not in trades_df.columns:
-            trades_df['hifi_resolved'] = None
+            trades_df['hifi_resolved'] = False
         trades_df = _hifi_resolve_trades(trades_df, req.symbol, req.timeframe)
 
     # 5c. CB Fidelity Pass 3: Recompute secondary-TF confluence at trigger moment
@@ -626,8 +623,7 @@ def _hifi_resolve_trades(
     total_resolved = 0
     entries_refined = 0
     signal_exits_refined = 0  # Phase 1 (2026-05-07)
-    skipped_idempotent = 0   # 2026-05-27: trades already True/False
-    marked_false = 0         # 2026-05-27: walker reached but didn't refine
+    skipped_idempotent = 0   # 2026-05-27: trades already True
 
     # Get timeframe duration in seconds for window calculation
     tf_seconds = _tf_to_seconds(timeframe)
@@ -635,21 +631,21 @@ def _hifi_resolve_trades(
     for idx in trades_df.index:
         trade = trades_df.loc[idx]
 
-        # Idempotency: skip trades already processed by a prior pass.
-        # `True` = walker refined; `False` = walker tried but didn't refine
-        # (e.g., C-type exit not a candidate, no per-second bars, no cross).
-        # Only `None`/NaN trades get re-walked, making the cron O(new)
-        # instead of O(all). 2026-05-27.
+        # Idempotency: skip trades already refined (hifi_resolved=True).
+        # The walker only writes True on a successful refinement, so any
+        # row with True doesn't need re-walking. This makes the cron's
+        # cost O(new + unrefinable) instead of O(all). 2026-05-27.
+        #
+        # NOT skipping on False, because the persistence path doesn't
+        # currently write False (False marker would require per-row PATCH
+        # writes for thousands of trades, creating an unacceptable storm
+        # during the first cycle after migration). Future work: persist
+        # False via a single per-strategy `last_hifi_pass_at` timestamp
+        # so we can skip "tried-and-bailed" trades without N HTTP calls.
         prev_hifi = trade.get('hifi_resolved')
-        if prev_hifi is True or prev_hifi is False:
+        if prev_hifi is True:
             skipped_idempotent += 1
             continue
-
-        # Mark as "walker reached this trade" — overridden to True
-        # downstream if any refinement succeeds. Distinguishes "never seen"
-        # (None) from "seen, can't refine" (False) for diagnostics. 2026-05-27.
-        trades_df.at[idx, 'hifi_resolved'] = False
-        marked_false += 1
 
         entry_time_str = trade.get('entry_time') or trade.get('entry_fill_ts')
         exit_time_str = trade.get('exit_time') or trade.get('exit_fill_ts')
@@ -905,9 +901,9 @@ def _hifi_resolve_trades(
     logger.info(
         "[HIFI] Resolved %d trades (exit), %d outcomes changed, "
         "%d entry timestamps refined, %d signal-exit timestamps refined "
-        "(idempotent-skip %d, marked-false %d)",
+        "(idempotent-skip %d)",
         total_resolved, outcomes_changed, entries_refined,
-        signal_exits_refined, skipped_idempotent, marked_false)
+        signal_exits_refined, skipped_idempotent)
     return trades_df
 
 

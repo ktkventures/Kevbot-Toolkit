@@ -779,7 +779,7 @@ def run_hifi_pass2(
     # Detect what changed
     entries_changed = 0
     exits_changed = 0
-    flag_changes = 0  # rows that got hifi_resolved=True/False without other changes
+    flag_changes = 0  # rows that got hifi_resolved=True without other changes
     if 'entry_fill_ts' in refined_df.columns:
         for i, row in refined_df.iterrows():
             orig = trades_list[i] if i < len(trades_list) else {}
@@ -792,11 +792,9 @@ def run_hifi_pass2(
                 exits_changed += 1
                 had_change = True
             # Even if no timestamp/price change, count flag-only changes so
-            # persistence iterates and writes them. Includes False (2026-05-27
-            # diagnostic: walker reached this trade but couldn't refine).
+            # persistence iterates and writes them.
             if not had_change and (
-                ('hifi_resolved' in row.index
-                 and row.get('hifi_resolved') in (True, False))
+                ('hifi_resolved' in row.index and row.get('hifi_resolved') is True)
                 or ('behavior' in row.index and row.get('behavior') == 'HIFI')
             ):
                 flag_changes += 1
@@ -836,7 +834,7 @@ def run_hifi_pass2(
                         else None)
             row_behavior = (row.get('behavior') if 'behavior' in row.index
                             else None)
-            if row_hifi in (True, False) or row_behavior == 'HIFI':
+            if row_hifi is True or row_behavior == 'HIFI':
                 # 2026-05-12 fix: `orig` came from `_row_to_trade` which
                 # SPREADS the data JSONB into top-level keys. So
                 # `orig.get('data')` was returning None, the merged dict
@@ -846,11 +844,6 @@ def run_hifi_pass2(
                 # non-column field on the orig dict — those are exactly the
                 # fields that were originally in the `data` JSONB before
                 # _row_to_trade unpacked them.
-                # 2026-05-27: also persist `hifi_resolved=False` so we can
-                # distinguish "walker never ran" (None) from "walker tried
-                # and couldn't refine" (False). Combined with the idempotency
-                # skip in _hifi_resolve_trades, this lets the cron iterate
-                # only over genuinely-new trades.
                 from db import TRADE_COLUMN_FIELDS as _COL_FIELDS
                 _LEGACY_ALIASES = {'entry_time', 'exit_time', 'data'}
                 orig_data = {
@@ -860,8 +853,6 @@ def run_hifi_pass2(
                 merged = dict(orig_data)
                 if row_hifi is True:
                     merged['hifi_resolved'] = True
-                elif row_hifi is False:
-                    merged['hifi_resolved'] = False
                 if row_behavior == 'HIFI':
                     merged['behavior'] = 'HIFI'
                 if merged != orig_data:
