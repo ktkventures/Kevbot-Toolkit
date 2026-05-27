@@ -89,6 +89,17 @@ export interface StrategyHealthRow {
    *  (each trade has up to two: entry + exit), so this can be up to
    *  ~2× trade_count_backtest. */
   paired_count: number;
+  /** Apples-to-apples variants. Same pairing as above but events newer
+   *  than min(last_alert_at, last_backtest_created_at) are excluded.
+   *  Strips the lag-tail false positives — a phantom that's actually
+   *  just "alert fired, backtest catching up" is dropped. Use these
+   *  when "Apples-to-apples" mode is on in the UI. 2026-05-27. */
+  phantom_count_fair: number;
+  missed_count_fair: number;
+  paired_count_fair: number;
+  /** The upper bound (ISO timestamp) used to compute the _fair counts.
+   *  Null when one or both source timestamps are unknown. */
+  fair_cutoff_ts: string | null;
 
   red_flags: StrategyHealthFlag[];
 

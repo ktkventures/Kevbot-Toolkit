@@ -115,7 +115,11 @@ type SortKey =
   | 'lastBt' | 'lastAlert'
   | 'paired' | 'phantom' | 'missed';
 
-function rowSortValue(r: StrategyHealthRow, key: SortKey): number | string {
+function rowSortValue(
+  r: StrategyHealthRow,
+  key: SortKey,
+  applesToApples: boolean,
+): number | string {
   switch (key) {
     case 'flags':     return -r.red_flags.length; // most flags first by default asc
     case 'name':      return r.name ?? '';
@@ -127,9 +131,9 @@ function rowSortValue(r: StrategyHealthRow, key: SortKey): number | string {
     case 'lastBt':    return r.last_backtest_created_age_sec ?? Number.POSITIVE_INFINITY;
     case 'lastAlert': return r.last_alert_age_sec ?? Number.POSITIVE_INFINITY;
     case 'trades':    return -r.trade_count_backtest;
-    case 'paired':    return -r.paired_count;
-    case 'phantom':   return -r.phantom_count;
-    case 'missed':    return -r.missed_count;
+    case 'paired':    return -(applesToApples ? r.paired_count_fair : r.paired_count);
+    case 'phantom':   return -(applesToApples ? r.phantom_count_fair : r.phantom_count);
+    case 'missed':    return -(applesToApples ? r.missed_count_fair : r.missed_count);
   }
 }
 
@@ -199,11 +203,12 @@ export default function StrategyHealthV1() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [activeFlag, setActiveFlag] = useState<StrategyHealthFlag | null>(null);
   const [includeLegacy, setIncludeLegacy] = useState(false);
-  // 2026-05-27: filter out rows where last alert and last backtest are
-  // materially out of sync — phantom/missed numbers aren't meaningful
-  // when one source is days stale relative to the other. Default ON so
-  // the page shows only divergence worth investigating.
-  const [hideUpsideDown, setHideUpsideDown] = useState(true);
+  // 2026-05-27 — "Apples-to-apples" mode: when ON (default), the
+  // phantom/missed/paired columns show the lag-tail-excluded counts.
+  // The raw counts (full window) inflate when one source hasn't caught
+  // up to the other; the fair counts only pair events that BOTH sides
+  // had a chance to capture. Default ON so the page shows honest numbers.
+  const [applesToApples, setApplesToApples] = useState(true);
 
   const filteredRows = useMemo(() => {
     if (!data?.rows) return [];
@@ -211,22 +216,19 @@ export default function StrategyHealthV1() {
     if (!includeLegacy) {
       rows = rows.filter(r => !r.red_flags.includes('legacy_no_confluence_id'));
     }
-    if (hideUpsideDown) {
-      rows = rows.filter(r => !r.timestamps_upside_down);
-    }
     if (activeFlag) {
       rows = rows.filter(r => r.red_flags.includes(activeFlag));
     }
     const sorted = [...rows].sort((a, b) => {
-      const av = rowSortValue(a, sortKey);
-      const bv = rowSortValue(b, sortKey);
+      const av = rowSortValue(a, sortKey, applesToApples);
+      const bv = rowSortValue(b, sortKey, applesToApples);
       const cmp = typeof av === 'number' && typeof bv === 'number'
         ? av - bv
         : String(av).localeCompare(String(bv));
       return sortDir === 'asc' ? cmp : -cmp;
     });
     return sorted;
-  }, [data, sortKey, sortDir, activeFlag, includeLegacy, hideUpsideDown]);
+  }, [data, sortKey, sortDir, activeFlag, includeLegacy, applesToApples]);
 
   // Summary: counts by flag, scoped to non-legacy strategies.
   const summary = useMemo(() => {
@@ -351,14 +353,14 @@ export default function StrategyHealthV1() {
             </label>
             <label
               style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', marginLeft: 8 }}
-              title="Hide strategies where last alert and last backtest trade are >1h apart. Phantom/missed counts aren't meaningful when one source is stale relative to the other."
+              title="Apples-to-apples counts. When ON, Paired/Phantom/Missed only include events older than min(last alert, last backtest update) — events on the lag-tail (alert fired but backtest hasn't caught up yet) are excluded. Without this, the trailing lag inflates phantom counts with false positives."
             >
               <input
                 type="checkbox"
-                checked={hideUpsideDown}
-                onChange={e => setHideUpsideDown(e.target.checked)}
+                checked={applesToApples}
+                onChange={e => setApplesToApples(e.target.checked)}
               />
-              <span>hide upside-down timestamps</span>
+              <span>apples-to-apples counts</span>
             </label>
             <button
               onClick={() => refetch()}
@@ -555,18 +557,30 @@ export default function StrategyHealthV1() {
                   </td>
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',
-                               color: r.paired_count > 0 ? '#7fd081' : 'var(--text-muted)' }}>
-                    {r.paired_count || '—'}
+                               color: (applesToApples ? r.paired_count_fair : r.paired_count) > 0
+                                 ? '#7fd081' : 'var(--text-muted)' }}
+                      title={applesToApples
+                        ? `raw: ${r.paired_count} · fair: ${r.paired_count_fair}`
+                        : `raw: ${r.paired_count} · fair (apples-to-apples): ${r.paired_count_fair}`}>
+                    {(applesToApples ? r.paired_count_fair : r.paired_count) || '—'}
                   </td>
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',
-                               color: r.phantom_count > 0 ? '#ffc107' : 'var(--text-muted)' }}>
-                    {r.phantom_count || '—'}
+                               color: (applesToApples ? r.phantom_count_fair : r.phantom_count) > 0
+                                 ? '#ffc107' : 'var(--text-muted)' }}
+                      title={applesToApples
+                        ? `raw: ${r.phantom_count} · fair: ${r.phantom_count_fair}`
+                        : `raw: ${r.phantom_count} · fair (apples-to-apples): ${r.phantom_count_fair}`}>
+                    {(applesToApples ? r.phantom_count_fair : r.phantom_count) || '—'}
                   </td>
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',
-                               color: r.missed_count > 0 ? '#ef5350' : 'var(--text-muted)' }}>
-                    {r.missed_count || '—'}
+                               color: (applesToApples ? r.missed_count_fair : r.missed_count) > 0
+                                 ? '#ef5350' : 'var(--text-muted)' }}
+                      title={applesToApples
+                        ? `raw: ${r.missed_count} · fair: ${r.missed_count_fair}`
+                        : `raw: ${r.missed_count} · fair (apples-to-apples): ${r.missed_count_fair}`}>
+                    {(applesToApples ? r.missed_count_fair : r.missed_count) || '—'}
                   </td>
                   <td style={{ padding: '6px 8px' }}>
                     <button

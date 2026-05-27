@@ -248,13 +248,23 @@ def get_strategy_health(
             continue
         alerts_per_sid.setdefault(sid, []).append(dt.timestamp())
 
-    def _pair_phantom_missed(edge_isos: List[str], alert_unix: List[float]):
+    def _pair_phantom_missed(edge_isos: List[str], alert_unix: List[float],
+                              upper_bound_unix: Optional[float] = None):
         """Greedy pairing within ±tolerance. Returns (phantom, missed, paired).
 
         phantom = unpaired alerts (alert-only — Kevin's 'phantom').
         missed  = unpaired trade edges (backtest-only — Kevin's 'missed').
         paired  = successful (alert, edge) matches within ±tolerance.
                   paired_alerts == paired_edges by construction (1:1 pairing).
+
+        2026-05-27: `upper_bound_unix` is an optional cap. Events newer
+        than this timestamp are dropped before pairing. Used to compute
+        an "apples-to-apples" count that excludes the lag-tail — alerts
+        and trade edges that don't yet have a corresponding entry on the
+        OTHER source because that source hasn't caught up. Without this,
+        the trailing lag inflates phantom (alerts fired but backtest
+        not yet recorded) and missed (backtest recorded but alert not
+        yet captured by a finished query) counts.
         """
         # Convert edges → unix once, sort both lists.
         edges: List[float] = []
@@ -264,6 +274,9 @@ def get_strategy_health(
                 edges.append(dt.timestamp())
         edges.sort()
         alerts_sorted = sorted(alert_unix)
+        if upper_bound_unix is not None:
+            edges = [e for e in edges if e <= upper_bound_unix]
+            alerts_sorted = [a for a in alerts_sorted if a <= upper_bound_unix]
         # Two-pointer greedy pair: walk both lists, pair when |diff| ≤ tol.
         i = j = 0
         paired_edges = 0
@@ -312,13 +325,52 @@ def get_strategy_health(
         parity_verdict = (parity.get("verdict")
                           if isinstance(parity, dict) else None)
 
+        # 2026-05-27: freshness signals Kevin asked for. Computed BEFORE
+        # the pairing so we can derive fair_cutoff from them.
+        # `last_backtest_created_at` = the most-recent created_at across all
+        # backtest_% trade rows (i.e., when the trades table last got a
+        # new backtest entry). Distinct from `last_entry_ts` which is the
+        # latest entry_fill_ts (could be days old for backfills).
+        # `last_alert_at` = the most-recent alert across the whole alerts
+        # table (un-windowed, capped to last 30d).
+        last_bt_created = _parse_iso(agg.get("latest_created"))
+        last_alert_at = _parse_iso(last_alert_per_sid.get(sid))
+
         # Phantom (alert-only), missed (backtest-trade-only), and paired
         # (successful match) counts in the window. Symmetric matching:
         # each trade has two edges (entry + exit) that can each be paired
         # against an alert, so paired_count is in edges-per-window, not
         # trades-per-window (could be up to ~2× trade_count_backtest).
+        edge_isos = agg["recent_edges"]
+        alert_unix_list = alerts_per_sid.get(sid, [])
         phantom_count, missed_count, paired_count = _pair_phantom_missed(
-            agg["recent_edges"], alerts_per_sid.get(sid, []))
+            edge_isos, alert_unix_list)
+
+        # 2026-05-27: apples-to-apples counts. Cap event timestamps to
+        # min(last_alert_at, last_backtest_created_at). Events newer than
+        # this cap haven't had a chance to be matched on the slower side,
+        # so excluding them removes the lag-tail false positives Kevin
+        # described: "phantom says 291 but the last 20 were fired in the
+        # last 5 min and the backtest data is 10 min stale — so 271 is
+        # the honest count."
+        # When one source is missing entirely, fair_cutoff is None and
+        # fair counts mirror raw counts (nothing to cap against).
+        fair_cutoff_dt: Optional[datetime] = None
+        if last_bt_created is not None and last_alert_at is not None:
+            fair_cutoff_dt = min(last_bt_created, last_alert_at)
+        elif last_bt_created is not None:
+            fair_cutoff_dt = last_bt_created
+        elif last_alert_at is not None:
+            fair_cutoff_dt = last_alert_at
+        if fair_cutoff_dt is not None:
+            phantom_count_fair, missed_count_fair, paired_count_fair = (
+                _pair_phantom_missed(
+                    edge_isos, alert_unix_list,
+                    upper_bound_unix=fair_cutoff_dt.timestamp()))
+        else:
+            phantom_count_fair = phantom_count
+            missed_count_fair = missed_count
+            paired_count_fair = paired_count
 
         forward_testing = bool(s.get("forward_testing"))
         is_streaming_eligible = ("entry_trigger_confluence_id" in cfg)
@@ -328,17 +380,7 @@ def get_strategy_health(
         data_refresh_age = _age_sec(data_refreshed_at, now)
         last_entry_age = _age_sec(last_entry_dt, now)
         last_exit_age = _age_sec(last_exit_dt, now)
-
-        # 2026-05-27: freshness signals Kevin asked for.
-        # `last_backtest_created_at` = the most-recent created_at across all
-        # backtest_% trade rows (i.e., when the trades table last got a
-        # new backtest entry). Distinct from `last_entry_ts` which is the
-        # latest entry_fill_ts (could be days old for backfills).
-        # `last_alert_at` = the most-recent alert across the whole alerts
-        # table (un-windowed, capped to last 30d).
-        last_bt_created = _parse_iso(agg.get("latest_created"))
         last_bt_created_age = _age_sec(last_bt_created, now)
-        last_alert_at = _parse_iso(last_alert_per_sid.get(sid))
         last_alert_age = _age_sec(last_alert_at, now)
 
         # Upside-down filter signal: when last alert and last backtest are
@@ -441,6 +483,15 @@ def get_strategy_health(
             "phantom_count": phantom_count,
             "missed_count": missed_count,
             "paired_count": paired_count,
+            # 2026-05-27 — apples-to-apples counts (lag-tail excluded).
+            # Same pairing, but skips events newer than min(last_alert,
+            # last_backtest_created) so the trailing lag doesn't inflate
+            # counts. Use these when "apples-to-apples" mode is on.
+            "phantom_count_fair": phantom_count_fair,
+            "missed_count_fair": missed_count_fair,
+            "paired_count_fair": paired_count_fair,
+            "fair_cutoff_ts": (fair_cutoff_dt.isoformat()
+                               if fair_cutoff_dt else None),
             "red_flags": red_flags,
             "updated_at": s.get("updated_at"),
             "created_at": s.get("created_at"),
