@@ -86,6 +86,29 @@ here until either (a) shipped + verified, or (b) explicitly deprecated.
 
 ---
 
+### Ralph WS pipeline drops SPY sub-minute bars during active hours
+- **Status:** WONTFIX (migrating away)
+- **Discovered:** 2026-05-27 during REST-vs-WS investigation
+- **Severity:** High while WS is the source; defanged after `rest_polled` rolls out
+- **Location:** Ralph's WebSocket bar aggregation pipeline
+  (`ralph_engine.py` BarBuilder / on_second_bar)
+- **Symptom:** During the 18:00-19:30 UTC window today, 26% of SPY
+  10Sec bars (140/541) were missing from `live_bars`. The missing bars
+  had real volume (7K-40K each), so not quiet-period artifacts.
+  Confirmed not deploy-related: during the largest gap (18:06:00-18:22:10,
+  16 minutes), Ralph was actively writing 22 other symbol/TF combos
+  (TSLA, TSLL, SPY 120s/180s, etc).
+- **Hypothesis:** Polygon per-ticker WS subscription stuck after a
+  reconnect, OR race condition in BarBuilder for SPY's high tick rate,
+  OR Polygon A-channel throttling on SPY specifically.
+- **Why WONTFIX:** Rolling out `rest_polled` live model
+  (`docs/Plan_REST_Polled_Live_Model.md`) eliminates the WS path for
+  affected strategies. Investigating the root cause is lower priority
+  than shipping the REST migration. If we keep ws_agg_locked
+  strategies running long-term, revisit.
+
+---
+
 ## Closed
 
 (none yet)

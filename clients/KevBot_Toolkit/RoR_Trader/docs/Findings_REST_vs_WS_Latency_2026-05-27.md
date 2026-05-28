@@ -171,6 +171,41 @@ behavior.
 Pure B1 wins on COVERAGE + parity. Hybrid trades a 26% miss-rate for
 2-3 sec speed gain. Not worth it for current strategies.
 
+### Coverage gap is structural, not deploy-related (added late 2026-05-27)
+
+Kevin asked: are the missing bars due to our many deploys today, or
+real WS pipeline issues?
+
+Investigated 18:00-19:30 UTC SPY 10Sec gap runs:
+
+```
+  18:06:00 → 18:22:10  gap=970s (96 bars missing)  ← 16 min!
+  18:22:10 → 18:23:00  gap=50s (4 bars)
+  19:10:30 → 19:11:30  gap=60s (5 bars)
+  19:11:30 → 19:12:10  gap=40s (3 bars)
+  19:13:00 → 19:15:00  gap=120s (11 bars)
+  19:16:00 → 19:17:10  gap=70s (6 bars)
+  19:17:10 → 19:18:10  gap=60s (5 bars)
+  19:20:00 → 19:21:10  gap=70s (6 bars)
+  19:21:10 → 19:22:00  gap=50s (4 bars)
+```
+
+**Cross-check: during the 16-min 18:06 gap, Ralph wrote bars for 22
+OTHER symbol/TF combos** (TSLA 5s/10s/15s/30s/60s, TSLL, SPY 120s/180s,
+etc). So Ralph was alive. The gap is specific to SPY 10Sec.
+
+Conclusion: **the 26% bar-drop is a structural bug in Ralph's WS
+pipeline for SPY sub-minute, not a deploy/restart artifact.** It will
+persist even when we stop deploying. This is more evidence for pure
+B1.
+
+The bug pattern is interesting: SPY sub-minute drops bars for minutes
+at a time while TSLA/other tickers continue normally. Possible
+causes: Polygon's per-ticker WS subscription stuck after a reconnect;
+race condition in BarBuilder for SPY's high tick rate; Polygon
+A-channel throttling on SPY specifically. **File as a known bug; not
+attempting to fix it since we're migrating away.**
+
 ## Open data point still to collect
 
 - **RTH measurement.** Tomorrow during 13:30-20:00 UTC, repeat the
