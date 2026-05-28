@@ -115,12 +115,72 @@ REST → no Supabase round-trip → 2-3 sec actual latency to in-RAM bar.
    bar-receive latency on every alert so we can see if 3s grace is
    too tight on real bars.
 
+## Hybrid simulation results (added 2026-05-27 evening)
+
+Question: would a hybrid "REST for past, WS for last 4-5 sec" model
+work as well as pure REST? Simulated by comparing Ralph's historical
+`live_bars` (WS captures) against REST resamples in two windows.
+
+### Active period (18:00-19:30 UTC, post-RTH but volume present)
+
+| Metric | Value |
+|---|---|
+| WS bars captured | 401 |
+| REST 10s bars (resampled from 1s) | 541 |
+| Bars in BOTH | 401 |
+| **WS-only (REST resample empty)** | **0** |
+| **REST-only (WS DROPPED them)** | **140 = 25.9%** ← gap |
+| Close match where both exist (`first_close` vs REST) | 399/401 = **99.5%** |
+| Close match (settled close vs REST) | 399/401 = **99.5%** |
+
+The 140 REST-only bars had real volume (7K-40K each). These aren't
+quiet-period artifacts — they're active bars Ralph's WS aggregator
+dropped.
+
+### Quiet period (recent ~4h, extended-hours wind-down)
+
+| Metric | Value |
+|---|---|
+| WS bars captured | 1,438 |
+| REST 10s bars (resampled) | 227 |
+| WS-only (REST resample empty) | 1,211 |
+| REST-only (WS missed) | 0 |
+| Close match where both exist | 227/227 = **100%** |
+
+In quiet hours, WS emits gap-fill bars (zero volume, last close
+repeated). REST resampling produces no row when no trades occurred
+in the window. So WS-only ≠ "WS lies" here — it's WS's gap-fill
+behavior.
+
+### What this tells us about hybrid feasibility
+
+- **WS value accuracy when WS captures the bar:** 99.5%-100%. Excellent.
+- **WS coverage:** 74% during active periods, 100%+ during quiet.
+- **The hybrid (WS-tip + REST-verify) would inherit WS's 26% coverage
+  gap during active hours.** REST already has those bars; the
+  hybrid would still need REST to fill them. So the hybrid's
+  latency advantage at +0s only applies to 74% of active bars; for
+  the other 26%, the hybrid still has to wait for REST anyway.
+
+- **Pure REST gets us 100% coverage at +2-3s latency.** Trade-off:
+  ~3 sec slower on the bars where WS would've worked (74% of active),
+  but no coverage gap.
+
+### Recommendation reinforced
+
+Pure B1 wins on COVERAGE + parity. Hybrid trades a 26% miss-rate for
+2-3 sec speed gain. Not worth it for current strategies.
+
 ## Open data point still to collect
 
 - **RTH measurement.** Tomorrow during 13:30-20:00 UTC, repeat the
   probe. Higher trade volume should mean less Polygon aggregation
   delay and fewer outliers. Confirms (or refutes) the 1Min p95
   outlier.
+- **Active-hour WS coverage during RTH.** Does Ralph still drop 26%
+  of active SPY 10Sec bars during real market hours, or was the
+  18:00-19:30 window an after-close anomaly? Critical to know
+  whether to ship B1 with confidence.
 
 ---
 
