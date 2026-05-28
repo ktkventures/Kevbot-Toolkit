@@ -217,7 +217,14 @@ def _verify_sync(
                         symbol, bar_start.isoformat(), e,
                     )
 
-        status = "corrected" if correction_applied else "verified"
+        # Distinct status when drift exceeded threshold but correction
+        # didn't land: either no callback was wired, the callback raised,
+        # or the bar was no longer the latest in BarBuilder.history (a
+        # newer bar arrived before REST settled — common on sub-minute
+        # TFs). Marking these "verified" would conflate them with true
+        # small-drift verifications. Treat as their own bucket so the
+        # canary dashboard can surface the staleness rate honestly.
+        status = "corrected" if correction_applied else "drift_uncorrected"
         _update_alerts(alert_ids, {
             "verification_status": status,
             "verification_close_delta": delta,
@@ -231,8 +238,9 @@ def _verify_sync(
             )
         else:
             logger.info(
-                "rest_verifier: sym=%s bar=%s drift detected (no correction) "
-                "ws_close=%s rest_close=%s Δ=%+.4f",
+                "rest_verifier: sym=%s bar=%s DRIFT_UNCORRECTED "
+                "ws_close=%s rest_close=%s Δ=%+.4f "
+                "(callback returned False — likely stale bar)",
                 symbol, bar_start.isoformat(), ws_close, rest_close, delta,
             )
     except Exception as e:

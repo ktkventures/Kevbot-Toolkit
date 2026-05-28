@@ -25,6 +25,14 @@ import pandas as pd
 
 logger = logging.getLogger("unified_engine")
 
+# Dedupe key for the snapshot_state "not picklable" warning. Each
+# user-pack slug only needs to log this once per process lifetime —
+# subsequent snapshot attempts will produce the same failure, and
+# emitting the warning every forming bar drowns out everything else
+# in the worker logs (was blocking [rest_verifier] observability
+# during M7 canary 2026-05-28).
+_warned_unpicklable_slugs: set[str] = set()
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -847,11 +855,14 @@ class IncrementalIndicatorEngine:
                 _pickle.dumps(deep)
                 packs_out[slug] = deep
             except Exception as e:
-                logger.warning(
-                    "snapshot_state: user-pack engine %r dropped from "
-                    "snapshot — not picklable (%s). On resume this "
-                    "indicator will warmup from scratch on the new data "
-                    "window.", slug, e)
+                if slug not in _warned_unpicklable_slugs:
+                    _warned_unpicklable_slugs.add(slug)
+                    logger.warning(
+                        "snapshot_state: user-pack engine %r dropped from "
+                        "snapshot — not picklable (%s). On resume this "
+                        "indicator will warmup from scratch on the new "
+                        "data window. (further occurrences silenced for "
+                        "this slug)", slug, e)
                 # skip
         return (
             copy.deepcopy(self.state),

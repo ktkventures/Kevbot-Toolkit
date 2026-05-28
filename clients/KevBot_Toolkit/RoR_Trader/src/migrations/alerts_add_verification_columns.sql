@@ -6,7 +6,8 @@
 -- `ws_rest_spliced` live model:
 --
 --   verification_status        — NULL | 'pending' | 'verified' |
---                                'corrected' | 'rest_unavailable'
+--                                'corrected' | 'drift_uncorrected' |
+--                                'rest_unavailable'
 --   verification_close_delta   — WS close minus REST close (NUMERIC)
 --   verification_completed_at  — when the REST verifier finished
 --
