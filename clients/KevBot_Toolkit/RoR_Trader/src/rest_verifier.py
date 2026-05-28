@@ -414,7 +414,16 @@ def queue_verify_for_alert(
         # overridable via config.
         correction_threshold = float(
             cfg.get("correction_threshold_dollars") or 0.01)
-        max_wait = float(cfg.get("rest_max_wait_seconds") or 60.0)
+        # 2026-05-28 canary on sid 151 observed ~40% rest_unavailable
+        # rate at max_wait=60s — Polygon 1-sec aggregate cache has a
+        # long settle tail. Direct REST probes 5 min after a "timed
+        # out" verifier attempt routinely return clean data, so the
+        # bars settle eventually; 60s just isn't long enough to catch
+        # the tail. Bumped to 120s here for the initial polling window;
+        # the sweeper (sweep_rest_unavailable below) handles anything
+        # still stuck after that, covering the documented Polygon
+        # worst-case of ~15 min REST delivery delay.
+        max_wait = float(cfg.get("rest_max_wait_seconds") or 120.0)
 
         queue_verify(
             symbol=strategy.get("symbol") or "?",
@@ -444,3 +453,127 @@ def shutdown(wait: bool = True) -> None:
     except Exception as e:
         logger.warning("rest_verifier: shutdown error: %s", e)
     _executor = None
+
+
+# ---------------------------------------------------------------------------
+# rest_unavailable re-sweep
+#
+# Polygon's documented worst-case REST delivery delay is ~15 min (rare,
+# but real). Even max_wait=120s on the initial verifier pass misses
+# bars that fall into the long tail. The sweeper is a periodic
+# background pass that picks up alerts stamped 'rest_unavailable' a
+# few minutes ago and re-queues a verification task for each — most
+# will settle on the second attempt because Polygon has had more time.
+#
+# Strict scoping to keep this safe:
+#   - Only revisits 'rest_unavailable' alerts (never re-stamps
+#     verified / corrected / drift_uncorrected).
+#   - Looks back a bounded window (default 30 min from fill_ts) so we
+#     don't replay history forever — a bar that hasn't settled in
+#     30 min is genuinely lost.
+#   - Caps per-cycle batch size so a backlog doesn't blow REST quota.
+#   - Uses bar_time from the alert row (post-541d78c canonical bar
+#     identity) so even pre-fix mis-stamped alerts get the right bar.
+# ---------------------------------------------------------------------------
+
+_sweeper_thread: Optional[threading.Thread] = None
+_sweeper_stop = threading.Event()
+
+
+def sweep_rest_unavailable(
+    lookback_minutes: int = 30,
+    max_alerts: int = 50,
+) -> int:
+    """Re-queue verification for recent alerts stamped 'rest_unavailable'.
+
+    Returns the number of alerts re-queued. Safe to call from any thread.
+    No-op when REST_VERIFY_ENABLED is unset.
+    """
+    if not is_enabled():
+        return 0
+    try:
+        from db import get_admin_client
+        from unified_engine import TIMEFRAME_SECONDS
+        client = get_admin_client()
+        cutoff_dt = datetime.now(timezone.utc) - timedelta(
+            minutes=lookback_minutes)
+        cutoff_iso = cutoff_dt.isoformat()
+        rows = (client.table("alerts")
+                .select("id,symbol,timeframe,bar_time,price")
+                .eq("verification_status", "rest_unavailable")
+                .gte("fill_ts", cutoff_iso)
+                .limit(max_alerts)
+                .execute()).data or []
+        n_queued = 0
+        for a in rows:
+            try:
+                tf_s = TIMEFRAME_SECONDS.get(a.get("timeframe"))
+                bar_time_iso = a.get("bar_time")
+                if not tf_s or not bar_time_iso:
+                    continue
+                bt = datetime.fromisoformat(
+                    str(bar_time_iso).replace("Z", "+00:00"))
+                if bt.tzinfo is None:
+                    bt = bt.replace(tzinfo=timezone.utc)
+                queue_verify(
+                    symbol=a.get("symbol") or "?",
+                    tf_seconds=int(tf_s),
+                    bar_start=bt,
+                    ws_close=float(a.get("price") or 0),
+                    alert_ids=[int(a["id"])],
+                    # grace=0 — we're already past the original grace
+                    # window, no point sleeping again. Re-poll
+                    # immediately and use a longer max_wait for the
+                    # second attempt.
+                    grace_seconds=0.0,
+                    max_wait_seconds=180.0,
+                )
+                n_queued += 1
+            except Exception as e:
+                logger.warning(
+                    "sweep_rest_unavailable: skip id=%s: %s",
+                    a.get("id"), e)
+        if n_queued > 0:
+            logger.info(
+                "sweep_rest_unavailable: re-queued %d alert(s) "
+                "(cutoff=%s, lookback=%dmin)",
+                n_queued, cutoff_iso[:19], lookback_minutes)
+        return n_queued
+    except Exception as e:
+        logger.warning("sweep_rest_unavailable failed: %s", e)
+        return 0
+
+
+def start_sweeper(interval_seconds: int = 300) -> None:
+    """Launch a background thread that runs sweep_rest_unavailable on a
+    cadence. Safe to call once at worker startup. Subsequent calls are
+    no-ops while a sweeper is already running.
+    """
+    global _sweeper_thread
+    if _sweeper_thread is not None and _sweeper_thread.is_alive():
+        return
+
+    def _run():
+        # Stagger first sweep so it doesn't fire concurrently with the
+        # worker's own warmup load.
+        if _sweeper_stop.wait(interval_seconds):
+            return
+        while not _sweeper_stop.is_set():
+            try:
+                sweep_rest_unavailable()
+            except Exception as e:
+                logger.warning("sweeper loop iter raised: %s", e)
+            if _sweeper_stop.wait(interval_seconds):
+                return
+
+    _sweeper_stop.clear()
+    _sweeper_thread = threading.Thread(
+        target=_run, name="rest_verifier_sweeper", daemon=True)
+    _sweeper_thread.start()
+    logger.info(
+        "rest_verifier: sweeper started (interval=%ds)", interval_seconds)
+
+
+def stop_sweeper() -> None:
+    """Signal the sweeper to exit on its next wake. Idempotent."""
+    _sweeper_stop.set()

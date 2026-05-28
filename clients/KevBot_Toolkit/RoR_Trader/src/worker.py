@@ -746,8 +746,14 @@ class DBRalphEngine:
             import rest_verifier
             rest_verifier.configure(
                 correction_callback=engine.rest_correction_callback)
+            # 2026-05-28: launch the rest_unavailable sweeper so alerts
+            # that fall into Polygon's REST settle tail (up to ~15 min
+            # delivery delay per Polygon docs) get a second chance to
+            # verify a few minutes later. No-op when REST_VERIFY_ENABLED
+            # is unset.
+            rest_verifier.start_sweeper(interval_seconds=300)
         except Exception as e:
-            logger.warning("rest_verifier.configure failed: %s", e)
+            logger.warning("rest_verifier setup failed: %s", e)
 
         # Bar-close recompute hook is OFF. stored_trades is now appended
         # atomically by DBAlertDispatcher.dispatch on exit signals (see
