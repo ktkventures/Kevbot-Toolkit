@@ -118,6 +118,30 @@ here until either (a) shipped + verified, or (b) explicitly deprecated.
 
 ---
 
+### Sub-minute drift_uncorrected_cascade: live engine entirely misses multi-trade clusters
+- **Status:** Known, partial mitigation in place via `ws_rest_spliced`; structural fix pending (per-second splice)
+- **Discovered:** 2026-05-28 during M8 fleet observation + divergence backlog walkthrough
+- **Severity:** High on sub-minute (10Sec) strategies — drives 34-56% phantom rate per strategy
+- **Location:** Interaction between `unified_engine` indicator state (cumulative) + `apply_rest_correction` (latest-bar only)
+- **Symptom:** When a sub-minute bar's WS close differs from REST close by ≥$0.01 and the bar correction is rejected (`drift_uncorrected` — common on 10Sec because REST settles 6-15s after bar close, by which time 1-2 newer bars are in history), the indicator state on that strategy is offset from REST-canonical. Subsequent trigger evaluations diverge between live and backtest for many bars after, EVEN ON BARS WHERE THE LIVE ALERT VERIFIES AT Δ=0.0. The cumulative state — not just the bar value — is what's offset.
+- **Concrete example (sid 170, 2026-05-28 20:14-20:19Z):** backtest produced 5 trades in 5 minutes with 1-13 bar holds; live fired ONE entry alert in the same window. All 5 backtest trades show up as `missed` in the divergence backlog. Bar verification on the 1 live alert was Δ=0.0.
+- **Why it's not a regression:** Pre-`ws_rest_spliced` (running `ws_agg_reconciled`), the same phantom pattern existed — there was no verifier surfacing the drift events, so the cascade was silent. `ws_rest_spliced` makes the cause visible (the `drift_uncorrected` stamps) but the engine still can't catch up to backtest.
+- **Why current mitigation is partial:** `apply_rest_correction` only accepts splices on the LATEST bar in BarBuilder history. On 10Sec TF this almost never lands because REST settles after 1-2 newer bars have arrived.
+- **Structural fix path:** Per-second REST splice — retain per-second bar history, splice REST 1-sec values when they settle (anywhere from 2s to 15min), re-aggregate the bar from corrected per-second data, replay indicator state forward from that bar. See `project_per_second_splice_idea` memory. Replay-from-N indicator path is the largest engineering lift; estimated 1-2 focused sessions.
+- **Workaround pre-fix:** Either accept the cascade rate on sub-minute strategies, OR migrate sub-minute strategies to 1Min+ TFs where REST settle (~10s) is well within bar duration (60s+).
+
+---
+
+### Supabase 522 timeout 2026-05-28 ~21:26Z — origin connection
+- **Status:** Resolved by Supabase project restart (~21:32Z)
+- **Discovered:** 2026-05-28 during divergence investigation
+- **Severity:** Medium — blocked all DB writes for ~6 min; alerts queued and eventually drained
+- **Symptom:** Cloudflare returned 522 ("Connection timed out") for all Supabase REST calls. Worker writes failed; investigation queries failed.
+- **Suspected cause:** Unknown. Possible candidates: (a) Supabase project-level issue (Cloudflare layer between client and Postgres), (b) Postgres overload, (c) coincidence. The bulk strategy config UPDATE I ran at M8 rollout (~18:40Z, 39 strategies) was 3 hours earlier so unlikely contributor.
+- **What to watch for next time:** Worker log error patterns during the outage window (correlate with alert dispatch failures), Supabase project health dashboard.
+
+---
+
 ## Closed
 
 (none yet)

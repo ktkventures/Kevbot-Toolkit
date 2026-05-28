@@ -75,6 +75,46 @@ Phantom rate of 34-56% is **much higher than acceptable**. Before today's M8 rol
 
 ## Open questions
 
-1. **Why don't sids 170/171/172 fire intra-bar stop_loss alerts?** sid 151/153 do (we saw it in clusters 8/9). Check stop_config differences between these strategies.
-2. **The 45-56% phantom rate** — is this normal background (i.e., this rate has been here all along) or did the M8 rollout introduce more? Without a clean baseline we can't tell, but if it's been "normal" then `ws_rest_spliced` isn't *worse* — it's just exposing what was always there.
-3. **Should we accelerate the per-second splice idea?** Cluster 8/9 are the strongest argument: structural drift_uncorrected cascades are a real cost that bar-level correction can't fix on sub-minute TFs.
+1. ~~Why don't sids 170/171/172 fire intra-bar stop_loss alerts?~~ **ANSWERED 2026-05-28 ~21:35Z:** they DO fire intra-bar stops (8 each in the 3h window post-M8). My earlier read in clusters 3-6 was wrong. Stop_config is identical across all 7 strategies (`swing/padding=0.05/lookback=5/exec_type=L`).
+2. **The 45-56% phantom rate** — is this normal background or did M8 introduce more? Without a clean before/after baseline we can't isolate. But Kevin's recall is "yesterday looked bad too" — so this is chronic, not M8-induced. `ws_rest_spliced` isn't worse, just surfacing what was already there.
+3. **Should we accelerate the per-second splice idea?** **YES.** Cluster 8/9 + the sid 170 multi-trade window analysis below is the strongest argument.
+
+## Deeper analysis — sid 170 5-minute window (20:14-20:19)
+
+The backlog clusters 3-6 (sids 170/171/172 missing entries via stop_loss at 20:15:20+) initially looked like "live engine isn't firing intra-bar stops." After checking the alerts table directly:
+
+| sid 170 backtest trades (5 in 5 min) | hold | exit reason |
+|---|---|---|
+| 418229: entry 20:15:00 → exit 20:15:10 | 1 bar | mlv2_cross_bear |
+| 418230: entry 20:15:20 → exit 20:15:30 | 1 bar | stop_loss |
+| 418231: entry 20:16:10 → exit 20:16:40 | 3 bars | stop_loss |
+| 418261: entry 20:18:00 → exit 20:18:30 | 3 bars | mlv2_cross_bear |
+| 418262: entry 20:19:00 → exit 20:21:10 | 13 bars | mlv2_cross_bear |
+
+**sid 170 alerts in same window: ONE entry at 20:15:00.** That's it.
+
+The recompute batch — running on REST-canonical data — sees a much richer signal stream than the live engine running on WS-aggregated data. Different trigger evaluations happen on the same bars because:
+- Close prices differ when WS/REST drift exists
+- Indicator state is cumulative; a single `drift_uncorrected` poisons subsequent bars' EMA/MACD/RSI values
+- Once divergence sets in, triggers fire on different bars between the two pipelines
+- This compounds for tens of minutes after the original drift event
+
+This is `drift_uncorrected_cascade` but stronger than initially described — not "downstream alerts lose pairings" but "**the live engine can entirely miss multi-trade clusters that backtest sees**, even when bar verification on the live alerts that DO fire looks clean (Δ=0.0)."
+
+## Refined classification proposal
+
+The `live_intrabar_stop_missed` bucket from my first-pass walkthrough was **wrong** — live DOES fire intra-bar stops. The right buckets:
+
+- `drift_uncorrected_cascade` — phantom or missed event downstream of a drift_uncorrected on the same strategy; indicator state offset propagates. Structural to sub-minute bar-level correction.
+- `extra_backtest_trades` — backtest sees multi-trade clusters the live engine never fired because live's WS-aggregated bars produced different trigger evaluations. Same root cause (cumulative indicator drift) as cascade, surfaced differently.
+- `cluster_duplicate` — N strategies sharing one trigger get N copies of the same root event.
+
+## Next session: per-second splice
+
+The clear path forward per this analysis. See `project_per_second_splice_idea` memory file. Architecture sketch:
+- Retain per-second bar history in each BarBuilder (currently discarded after bar close)
+- When REST 1-sec data settles (anywhere from 2s to 15min after bar close), splice the corrected per-second values into history
+- Re-aggregate the bar from corrected per-second data
+- Replay indicators forward from that bar
+
+The replay-from-N path is the largest engineering lift. Will likely take 1-2 focused sessions. Worth it given the 34-56% phantom rate is a structural ceiling on sub-minute live model behavior.
