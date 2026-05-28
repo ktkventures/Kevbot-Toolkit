@@ -174,10 +174,10 @@ LIVE_MODELS = {
     'ws_agg_reconciled': {
         'label': 'A-aggregated (reconciled, TF-aware)',
         'available': True,   # Phase 4 flip 2026-05-20 — canary sid 151 verified
-        'default': True,     # promoted 2026-05-20 EOD — Tier 3 §8.3 caught 7 real positions
-                              # at restart cleanly; canaries sid 151/154/etc. firing without
-                              # incident; cache=100% at 1Min+ means no behavior change for
-                              # the majority of strategies (sub-minute is where the win is)
+        'default': False,    # demoted 2026-05-28 in favor of ws_rest_spliced
+                              # (M8 promotion — verifies WS bars against REST and
+                              # splices REST values into indicator history when drift
+                              # is caught; verify-only path is the floor of behavior)
         'description': (
             'Timeframe-aware single forward model. At 1Min+ this is '
             'identical to `ws_agg_locked` (lock at close, no '
@@ -213,7 +213,13 @@ LIVE_MODELS = {
     'ws_rest_spliced': {
         'label': 'WS-tip, REST-spliced (backtest-aligned)',
         'available': True,   # M1 registered 2026-05-28
-        'default': False,    # opt-in; canary gated on Kevin sign-off per plan
+        'default': True,     # promoted 2026-05-28 EOD (M8) — canary sid 151 (SPY
+                              # 10Sec) + sid 174 (TSLA 1Min) verified end-to-end:
+                              # first production CORRECTED event landed on TSLA
+                              # with Δ=-$0.02, sid 151 fresh alerts verifying Δ=0.0
+                              # consistently. drift_uncorrected stamps honestly
+                              # surface sub-minute correction-rejection cases. See
+                              # [[project_ws_rest_spliced_canary]].
         'description': (
             'WS-aggregated bars drive the live engine and alert dispatch '
             '(sub-second latency, same as `ws_agg_reconciled`). After '
