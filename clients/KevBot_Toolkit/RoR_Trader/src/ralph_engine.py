@@ -2791,6 +2791,69 @@ class SymbolHub:
         # ws_agg minute-close path in on_second_bar.
         self._fanout_to_secondary_builders(bar_dict, source_label='ws')
 
+    def apply_rest_correction(self, tf_seconds: int,
+                              rest_bar_dict: dict) -> bool:
+        # ws_rest_spliced (2026-05-28): replace the most recent WS bar
+        # with REST OHLCV, then recompute indicator state for every
+        # monitor on this TF via the existing rebroadcast pipeline.
+        # Returns True if applied, False on stale (a newer bar has
+        # already arrived and accept_bar would gap-fill instead of
+        # replace — never silently). Invoked off-thread by
+        # rest_verifier; per-symbol mutex is held by the verifier.
+        builder = self.builders.get(tf_seconds)
+        if builder is None or len(builder.history) == 0:
+            return False
+        rest_ts = pd.Timestamp(rest_bar_dict['timestamp'])
+        if rest_ts.tzinfo is None:
+            rest_ts = rest_ts.tz_localize('UTC')
+        last_ts = builder.history.index[-1]
+        if last_ts.tzinfo is None:
+            last_ts = last_ts.tz_localize('UTC')
+        if last_ts != rest_ts:
+            logger.info(
+                "apply_rest_correction: stale sym=%s tf=%ss "
+                "rest_bar=%s latest_history=%s — skipping",
+                self.symbol, tf_seconds, rest_ts, last_ts,
+            )
+            return False
+        builder.accept_bar(rest_bar_dict)
+        if not builder.last_was_duplicate:
+            return False
+        if builder.last_was_correction:
+            for monitor in self.monitors.values():
+                if monitor.tf_seconds != tf_seconds:
+                    continue
+                try:
+                    monitor.indicators.recompute_from_history(builder.history)
+                except Exception as e:
+                    logger.warning(
+                        "REST correction recompute failed sym=%s "
+                        "strat=%s tf=%ss: %s",
+                        self.symbol, monitor.strat_id, tf_seconds, e,
+                    )
+            shadow_self = self._shadow_engines.get(tf_seconds)
+            if shadow_self is not None:
+                try:
+                    shadow_self.indicators.recompute_from_history(builder.history)
+                except Exception as e:
+                    logger.warning(
+                        "REST correction shadow recompute failed "
+                        "sym=%s tf=%ss: %s",
+                        self.symbol, tf_seconds, e,
+                    )
+            try:
+                from live_bars_writer import write_bar as _live_bars_write
+                _live_bars_write(self.symbol, tf_seconds, rest_bar_dict,
+                                 source='rest_correction')
+            except Exception:
+                pass
+            logger.info(
+                "REST correction applied: sym=%s tf=%ss bar=%s — "
+                "indicators recomputed, no alerts re-fired",
+                self.symbol, tf_seconds, rest_bar_dict.get('timestamp'),
+            )
+        return True
+
     @_prof_fn('s_on_second_bar')
     def on_second_bar(self, bar_dict: dict,
                        alert_callback: Callable = None,
@@ -3284,6 +3347,18 @@ class RalphEngine:
             self._a_lag_max = 0.0
             self._a_lag_hist = [0, 0, 0, 0, 0, 0, 0]
             _prof_dump_and_reset()
+
+    def rest_correction_callback(self, symbol: str, tf_seconds: int,
+                                  rest_bar_dict: dict) -> bool:
+        # ws_rest_spliced (2026-05-28): module-level callback registered
+        # with rest_verifier at worker startup. Routes the correction to
+        # the SymbolHub that owns BarBuilders for this symbol. Returns
+        # False (silent no-op) when the symbol has no live hub (e.g. a
+        # strategy was deleted while a verifier task was still queued).
+        hub = self.hubs.get(symbol)
+        if hub is None:
+            return False
+        return hub.apply_rest_correction(tf_seconds, rest_bar_dict)
 
     def start(self, strategies: list, config: dict):
         """Start the engine (blocking — runs the async event loop)."""

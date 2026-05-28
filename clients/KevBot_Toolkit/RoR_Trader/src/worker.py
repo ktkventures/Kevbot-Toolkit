@@ -738,6 +738,17 @@ class DBRalphEngine:
             append_position_carryovers_admin(carryovers, _uid)
         engine._carryover_persister = _persist_carryovers
 
+        # ws_rest_spliced (2026-05-28, M6): register the engine's
+        # correction callback with rest_verifier. The verifier is a
+        # no-op until REST_VERIFY_ENABLED=true, so this configure call
+        # is harmless even when the feature flag is off.
+        try:
+            import rest_verifier
+            rest_verifier.configure(
+                correction_callback=engine.rest_correction_callback)
+        except Exception as e:
+            logger.warning("rest_verifier.configure failed: %s", e)
+
         # Bar-close recompute hook is OFF. stored_trades is now appended
         # atomically by DBAlertDispatcher.dispatch on exit signals (see
         # docs/Alert_Recovery_Plan_2026-04-17.md, Phase 1). The
