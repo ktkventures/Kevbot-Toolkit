@@ -1574,6 +1574,20 @@ class AlertDispatcher:
                      signal['type'], strategy.get('name'), strategy.get('symbol'),
                      signal.get('trigger'), signal.get('price', 0))
 
+        # ws_rest_spliced verifier hook (2026-05-28): mirror of the
+        # DBAlertDispatcher hook in worker.py. Two dispatcher paths exist
+        # (dev/local AlertDispatcher here; production DBAlertDispatcher
+        # in worker.py) — both call save_alert and both fire webhooks,
+        # so both need the verifier hook for symmetric coverage. No-op
+        # when REST_VERIFY_ENABLED unset or alert not on ws_rest_spliced.
+        try:
+            from rest_verifier import queue_verify_for_alert
+            queue_verify_for_alert(alert, signal, strategy)
+        except Exception as e:
+            logger.warning(
+                "rest_verifier hook failed (sid=%s): %s",
+                strategy.get('id'), e)
+
         # Webhook delivery — offloaded to thread pool (non-blocking)
         if self._deliver_alert_fn:
             self._schedule_webhook(alert, config)

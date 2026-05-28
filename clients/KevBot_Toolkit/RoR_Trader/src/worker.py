@@ -388,6 +388,18 @@ class DBAlertDispatcher:
                      strategy.get('symbol'), signal_data.get('trigger'),
                      signal_data.get('price', 0))
 
+        # ws_rest_spliced verifier hook (2026-05-28): when the strategy is
+        # on the new model, queue an async REST verification for this bar.
+        # No-op when REST_VERIFY_ENABLED env var is unset OR when alert is
+        # on any other live_model. Never raises (catches internally).
+        try:
+            from rest_verifier import queue_verify_for_alert
+            queue_verify_for_alert(alert, signal_data, strategy)
+        except Exception as e:
+            logger.warning(
+                "rest_verifier hook failed (sid=%s): %s",
+                strategy.get('id'), e)
+
         # Update deployed-capital tracker so the NEXT entry's BP calc
         # reflects this trade. Entry: add executed_qty * price per
         # subscribed portfolio. Exit: release whatever was tracked for

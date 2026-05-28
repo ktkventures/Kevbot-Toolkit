@@ -313,6 +313,101 @@ def _update_alerts(alert_ids: list[int], updates: dict) -> None:
         )
 
 
+def queue_verify_for_alert(
+    alert: dict, signal_data: dict, strategy: dict
+) -> None:
+    """Convenience wrapper called from alert dispatchers right after
+    save_alert succeeds.
+
+    Extracts bar identity (symbol, tf_seconds, bar_start) and ws_close
+    from the saved alert + signal + strategy. Gates on live_model ==
+    'ws_rest_spliced' and a non-null alert id. Silent no-op on any
+    error (logs at WARNING).
+
+    The dispatcher caller doesn't need to know any of the verifier's
+    internals — just call this and move on.
+    """
+    if alert.get("live_model") != "ws_rest_spliced":
+        return
+    if not alert.get("id"):
+        return
+    try:
+        from unified_engine import TIMEFRAME_SECONDS
+        from datetime import datetime, timedelta, timezone
+
+        tf_label = strategy.get("timeframe", "1Min")
+        tf_seconds = TIMEFRAME_SECONDS.get(tf_label)
+        if tf_seconds is None:
+            logger.warning(
+                "rest_verifier: unknown timeframe %r on sid=%s — skip queue",
+                tf_label, strategy.get("id"))
+            return
+
+        # bar_start = bar_close_time - tf_seconds. For C-type triggers
+        # firing at bar close, fill_ts == bar_close_time. Prefer
+        # side-agnostic fill_ts; fall back to side-specific then to bar_time.
+        fill_ts_iso = (
+            signal_data.get("fill_ts")
+            or signal_data.get("entry_fill_ts")
+            or signal_data.get("exit_fill_ts")
+            or signal_data.get("bar_time")
+        )
+        if not fill_ts_iso:
+            return
+        bar_close_dt = datetime.fromisoformat(
+            str(fill_ts_iso).replace("Z", "+00:00"))
+        if bar_close_dt.tzinfo is None:
+            bar_close_dt = bar_close_dt.replace(tzinfo=timezone.utc)
+        bar_start = bar_close_dt - timedelta(seconds=tf_seconds)
+
+        # ws_close = engine's view of bar close. The indicator_snapshot
+        # carries this verbatim from the WS-aggregated bar Ralph processed.
+        # Fall back to signal price for L-type triggers where the
+        # snapshot might be absent.
+        snap = signal_data.get("indicator_snapshot") or {}
+        ws_close = snap.get("close") if isinstance(snap, dict) else None
+        if ws_close is None:
+            ws_close = signal_data.get("price")
+        if ws_close is None:
+            return
+
+        # Per-TF grace defaults. Per-strategy override via
+        # config.grace_seconds.
+        cfg = strategy.get("config") or {}
+        grace = cfg.get("grace_seconds")
+        if grace is None:
+            if tf_seconds >= 60:
+                grace = 2.0
+            elif tf_seconds >= 30:
+                grace = 3.0
+            elif tf_seconds >= 10:
+                grace = 4.0
+            else:
+                grace = 5.0
+
+        # Correction threshold + max_wait — defaults from the plan,
+        # overridable via config.
+        correction_threshold = float(
+            cfg.get("correction_threshold_dollars") or 0.01)
+        max_wait = float(cfg.get("rest_max_wait_seconds") or 60.0)
+
+        queue_verify(
+            symbol=strategy.get("symbol") or "?",
+            tf_seconds=int(tf_seconds),
+            bar_start=bar_start,
+            ws_close=float(ws_close),
+            alert_ids=[int(alert["id"])],
+            grace_seconds=float(grace),
+            max_wait_seconds=max_wait,
+            correction_threshold=correction_threshold,
+        )
+    except Exception as e:
+        logger.warning(
+            "rest_verifier: queue_verify_for_alert failed alert=%s sid=%s: %s",
+            alert.get("id"), strategy.get("id"), e,
+        )
+
+
 def shutdown(wait: bool = True) -> None:
     """Drain the pool on worker shutdown so in-flight verifications
     finish writing to the DB."""
