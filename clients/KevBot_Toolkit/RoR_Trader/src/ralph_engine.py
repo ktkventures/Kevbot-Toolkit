@@ -2859,6 +2859,18 @@ class SymbolHub:
         rest_ts = pd.Timestamp(rest_bar_dict['timestamp'])
         if rest_ts.tzinfo is None:
             rest_ts = rest_ts.tz_localize('UTC')
+        # 2026-05-28: defense-in-depth alignment. The verifier should
+        # already pass a bar-boundary timestamp, but L-type intra-bar
+        # alerts have historically stamped bar_time = fill_ts (intra-bar
+        # second). Align down to the bar boundary so the history lookup
+        # succeeds for those.
+        try:
+            _aligned = builder._align_to_period(rest_ts.to_pydatetime())
+            rest_ts = pd.Timestamp(_aligned)
+            if rest_ts.tzinfo is None:
+                rest_ts = rest_ts.tz_localize('UTC')
+        except Exception:
+            pass
         # Locate the target bar in history.
         idx_loc = None
         for i in range(len(builder.history) - 1, -1, -1):

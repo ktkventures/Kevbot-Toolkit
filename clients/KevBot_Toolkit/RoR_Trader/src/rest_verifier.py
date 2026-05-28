@@ -430,7 +430,17 @@ def queue_verify_for_alert(
                 str(bar_time_iso).replace("Z", "+00:00"))
             if bar_start_dt.tzinfo is None:
                 bar_start_dt = bar_start_dt.replace(tzinfo=timezone.utc)
-            bar_start = bar_start_dt
+            # 2026-05-28: align to tf_seconds bar boundary. For L-type
+            # intra-bar alerts (stop_loss, target firing on per-second
+            # price action), Ralph stamps bar_time = fill_ts (the trigger
+            # second), which is NOT a bar boundary. The verifier must
+            # look up the CONTAINING bar, not the intra-bar second. For
+            # C-type bar-close alerts, bar_time is already at the
+            # boundary so the alignment is a no-op.
+            _epoch = int(bar_start_dt.timestamp())
+            _aligned_epoch = (_epoch // tf_seconds) * tf_seconds
+            bar_start = datetime.fromtimestamp(
+                _aligned_epoch, tz=timezone.utc)
         else:
             # Fallback for callers that don't supply bar_time. Use
             # fill_ts arithmetic; correct for C-type bar-close triggers
