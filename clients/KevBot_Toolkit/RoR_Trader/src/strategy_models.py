@@ -195,27 +195,51 @@ LIVE_MODELS = {
         ),
     },
     'rest_polled': {
-        'label': 'REST polled (backtest-aligned)',
-        'available': True,   # registered 2026-05-27 — M1 of Plan_REST_Polled_Live_Model.md
-        'default': False,    # opt-in only; M4 cutover gated on Kevin sign-off
+        'label': 'REST polled (backtest-aligned) — SUPERSEDED',
+        'available': False,  # superseded 2026-05-28 — see ws_rest_spliced
+        'default': False,
         'description': (
-            'Engine consumes bars built from Polygon REST per-second '
-            'aggregates instead of WS A.<symbol> events. Same source '
-            'as the backtest pipeline (REST 1-sec) — zero structural '
-            'drift expected between live and backtest. Trades a small '
-            'latency tax (per_sec REST settles ~2-3s after the second '
-            'closes, per 2026-05-27 probe) for parity with backtest. '
-            'Sidesteps the WS coverage bug documented in '
-            '`docs/Known_Bugs.md` (Ralph dropping 26% of SPY 10Sec '
-            'bars during active hours). Default grace per TF: 1Min+ '
-            '3s, 30Sec 3s, 10Sec 4s, sub-5Sec 5s. Per-strategy '
-            'override via `config.grace_seconds`. Registered tonight '
-            'as M1 — REST poller code (M2) and engine wire-up (M3) '
-            'still pending. Selecting this on a strategy before M3 '
-            'ships will NOT change behavior; strategy will continue '
-            'to use ws_agg_reconciled until the engine routes via '
-            'the new poller. See `docs/Spec_Live_Bar_Source_Options.md` '
-            'and `docs/Plan_REST_Polled_Live_Model.md`.'
+            'SUPERSEDED 2026-05-28 by `ws_rest_spliced`. Pure-REST '
+            'polling was registered 2026-05-27 but RTH probe data '
+            'on 2026-05-28 showed REST latency too high (p90 8-23s) '
+            'to drive sub-minute alerts. The chosen direction is the '
+            'hybrid `ws_rest_spliced` — WS for speed, REST for '
+            'indicator-state correction after grace. See '
+            '`docs/breezy-dreaming-umbrella` plan and '
+            '`docs/Findings_REST_vs_WS_Latency_2026-05-27.md`. '
+            'Do not select.'
+        ),
+    },
+    'ws_rest_spliced': {
+        'label': 'WS-tip, REST-spliced (backtest-aligned)',
+        'available': True,   # M1 registered 2026-05-28
+        'default': False,    # opt-in; canary gated on Kevin sign-off per plan
+        'description': (
+            'WS-aggregated bars drive the live engine and alert dispatch '
+            '(sub-second latency, same as `ws_agg_reconciled`). After '
+            'each completed bar fires alerts, the REST verifier '
+            'asynchronously fetches Polygon REST 1-sec aggregates for '
+            'the same bar window. When REST data is available (typically '
+            '2-10s after bar close, configurable via `grace_seconds`), '
+            'the bar values in BarBuilder.history are REPLACED with the '
+            'REST values, and the incremental indicator state is rewound '
+            'and re-applied via the existing `apply_last_bar_correction` '
+            'O(1) path. Net result: indicator state at any moment is ~99% '
+            'REST-based, matching backtest by construction. Alerts that '
+            'already fired on WS values are NOT retracted, but each gets '
+            'stamped with `verification_status` ("verified" / "corrected" '
+            '/ "rest_unavailable") and `verification_close_delta` for '
+            'audit. Default grace per TF: 1Min+ 2s, 30Sec 3s, 10Sec 4s, '
+            'sub-5Sec 5s; correction threshold 1 tick ($0.01); max wait '
+            '60s. Per-strategy override via `config.grace_seconds`, '
+            '`config.correction_threshold_dollars`, '
+            '`config.rest_max_wait_seconds`. Implements what the '
+            '`ws_agg_reconciled` spec described but never built — '
+            'REST-side reconciliation in addition to the WS-rebroadcast '
+            'side. Feature-flagged via `REST_VERIFY_ENABLED` env var '
+            '(default OFF) so the new model is inert until explicitly '
+            'enabled on the Railway worker. See `docs/breezy-dreaming-'
+            'umbrella` plan.'
         ),
     },
 }
