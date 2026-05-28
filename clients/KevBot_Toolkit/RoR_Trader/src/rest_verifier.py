@@ -258,20 +258,48 @@ def _fetch_rest_bar(
     them to a single OHLCV bar dict matching BarBuilder's accept_bar
     shape.
 
+    Bypasses data_loader.fetch_1s_bars_for_window's day-level cache.
+    That cache is the right design for Hi-Fi backtest (one fetch per
+    ticker-day, reused across many backtest queries) but the WRONG
+    design for live verification: it captures whatever Polygon returned
+    at first-fetch time and never refreshes, so a long-lived verifier
+    thread keeps re-reading the stale snapshot. Direct probes from a
+    fresh Python process work because they populate a fresh cache.
+    Caught 2026-05-28 canary on sid 151 — 100% rest_unavailable rate
+    on alerts after the day cache was populated, even though REST data
+    settled normally and was visible to direct probes minutes later.
+
+    Calls _polygon_fetch_bars directly with millisecond-timestamp
+    endpoints to scope the fetch to the exact bar window. No caching;
+    each verifier call hits Polygon fresh.
+
     Returns None if no REST data is available yet for this window
     (verifier will retry).
     """
     try:
-        from data_loader import fetch_1s_bars_for_window
+        from data_loader import (
+            _polygon_fetch_bars, _polygon_bars_to_df, _to_polygon_ticker)
+        import pandas as pd
         bar_end = bar_start + timedelta(seconds=tf_seconds)
-        # padding_seconds=2 covers the ~2s Polygon per-sec settle floor
-        bars_1s = fetch_1s_bars_for_window(
-            symbol, bar_start, bar_end, padding_seconds=2)
+        # ±2s padding covers Polygon's per-second settle floor.
+        padded_start = bar_start - timedelta(seconds=2)
+        padded_end = bar_end + timedelta(seconds=2)
+        # Polygon /v2/aggs accepts `from` and `to` as either YYYY-MM-DD
+        # OR unix-ms timestamps. Use ms so the fetch is scoped to the
+        # narrow window — avoids transferring the entire trading day
+        # for what's effectively a 10-15 second query.
+        from_ms = str(int(padded_start.timestamp() * 1000))
+        to_ms = str(int(padded_end.timestamp() * 1000))
+        poly_ticker = _to_polygon_ticker(symbol)
+        results = _polygon_fetch_bars(
+            poly_ticker, 1, "second", from_ms, to_ms)
+        if not results:
+            return None
+        bars_1s = _polygon_bars_to_df(results)
         if bars_1s is None or len(bars_1s) == 0:
             return None
         # Filter to bars strictly inside [bar_start, bar_end) — the
         # padding above could have pulled in adjacent seconds.
-        import pandas as pd
         bar_start_ts = pd.Timestamp(bar_start).tz_convert("UTC")
         bar_end_ts = pd.Timestamp(bar_end).tz_convert("UTC")
         in_window = bars_1s[
