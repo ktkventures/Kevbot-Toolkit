@@ -351,22 +351,39 @@ def queue_verify_for_alert(
                 tf_label, strategy.get("id"))
             return
 
-        # bar_start = bar_close_time - tf_seconds. For C-type triggers
-        # firing at bar close, fill_ts == bar_close_time. Prefer
-        # side-agnostic fill_ts; fall back to side-specific then to bar_time.
-        fill_ts_iso = (
-            signal_data.get("fill_ts")
-            or signal_data.get("entry_fill_ts")
-            or signal_data.get("exit_fill_ts")
-            or signal_data.get("bar_time")
-        )
-        if not fill_ts_iso:
-            return
-        bar_close_dt = datetime.fromisoformat(
-            str(fill_ts_iso).replace("Z", "+00:00"))
-        if bar_close_dt.tzinfo is None:
-            bar_close_dt = bar_close_dt.replace(tzinfo=timezone.utc)
-        bar_start = bar_close_dt - timedelta(seconds=tf_seconds)
+        # bar_start = the bar_start timestamp of the bar whose CLOSE
+        # produced the price we want REST to verify. Prefer signal_data
+        # 'bar_time' directly — Ralph stamps it from the closed bar's
+        # bar_start unconditionally. Deriving from fill_ts is unsafe:
+        # for non-C-type triggers (max_hold_bars, time-based exits) the
+        # signal_data fill_ts can carry the ENTRY fill_ts even though
+        # the alert row's fill_ts is the exit time, which would point
+        # the verifier at the wrong bar (caught 2026-05-28 canary —
+        # alert 142414 max_hold exit verified against the entry bar
+        # 40s upstream, producing a phantom drift).
+        bar_time_iso = signal_data.get("bar_time")
+        if bar_time_iso:
+            bar_start_dt = datetime.fromisoformat(
+                str(bar_time_iso).replace("Z", "+00:00"))
+            if bar_start_dt.tzinfo is None:
+                bar_start_dt = bar_start_dt.replace(tzinfo=timezone.utc)
+            bar_start = bar_start_dt
+        else:
+            # Fallback for callers that don't supply bar_time. Use
+            # fill_ts arithmetic; correct for C-type bar-close triggers
+            # but unreliable for time-based exits.
+            fill_ts_iso = (
+                signal_data.get("fill_ts")
+                or signal_data.get("entry_fill_ts")
+                or signal_data.get("exit_fill_ts")
+            )
+            if not fill_ts_iso:
+                return
+            bar_close_dt = datetime.fromisoformat(
+                str(fill_ts_iso).replace("Z", "+00:00"))
+            if bar_close_dt.tzinfo is None:
+                bar_close_dt = bar_close_dt.replace(tzinfo=timezone.utc)
+            bar_start = bar_close_dt - timedelta(seconds=tf_seconds)
 
         # ws_close = engine's view of bar close. The indicator_snapshot
         # carries this verbatim from the WS-aggregated bar Ralph processed.
