@@ -194,6 +194,30 @@ LIVE_MODELS = {
             '`docs/Spec_Live_Execution_Fidelity.md`.'
         ),
     },
+    'rest_polled': {
+        'label': 'REST polled (backtest-aligned)',
+        'available': True,   # registered 2026-05-27 — M1 of Plan_REST_Polled_Live_Model.md
+        'default': False,    # opt-in only; M4 cutover gated on Kevin sign-off
+        'description': (
+            'Engine consumes bars built from Polygon REST per-second '
+            'aggregates instead of WS A.<symbol> events. Same source '
+            'as the backtest pipeline (REST 1-sec) — zero structural '
+            'drift expected between live and backtest. Trades a small '
+            'latency tax (per_sec REST settles ~2-3s after the second '
+            'closes, per 2026-05-27 probe) for parity with backtest. '
+            'Sidesteps the WS coverage bug documented in '
+            '`docs/Known_Bugs.md` (Ralph dropping 26% of SPY 10Sec '
+            'bars during active hours). Default grace per TF: 1Min+ '
+            '3s, 30Sec 3s, 10Sec 4s, sub-5Sec 5s. Per-strategy '
+            'override via `config.grace_seconds`. Registered tonight '
+            'as M1 — REST poller code (M2) and engine wire-up (M3) '
+            'still pending. Selecting this on a strategy before M3 '
+            'ships will NOT change behavior; strategy will continue '
+            'to use ws_agg_reconciled until the engine routes via '
+            'the new poller. See `docs/Spec_Live_Bar_Source_Options.md` '
+            'and `docs/Plan_REST_Polled_Live_Model.md`.'
+        ),
+    },
 }
 
 
