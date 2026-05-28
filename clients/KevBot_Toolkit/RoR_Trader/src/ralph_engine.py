@@ -1898,7 +1898,9 @@ class SymbolHub:
         path at builder bar-close — never a silent drop.
         """
         # Short-circuit: nothing reconciled on this hub.
-        if not any(m.live_model == 'ws_agg_reconciled'
+        # 2026-05-28: ws_rest_spliced uses the same fire-at-grace
+        # behavior — added to the gate so its monitors fire at grace too.
+        if not any(m.live_model in ('ws_agg_reconciled', 'ws_rest_spliced')
                    for m in self.monitors.values()):
             return
         partial = getattr(builder, '_partial', None)
@@ -1930,7 +1932,9 @@ class SymbolHub:
         for monitor in self.monitors.values():
             if monitor.tf_seconds != tf_seconds:
                 continue
-            if monitor.live_model != 'ws_agg_reconciled':
+            if monitor.live_model not in (
+                'ws_agg_reconciled', 'ws_rest_spliced',
+            ):
                 continue
             if monitor._fired_bucket == bucket_start_epoch:
                 continue  # already fired this bucket
@@ -2364,7 +2368,11 @@ class SymbolHub:
             # ws_agg dispatch from on_second_bar).  'subm' is sub-minute
             # only and never reaches 1Min monitors, so it's gate-irrelevant.
             if source_label == 'polygon' and monitor.live_model in (
-                'ws_agg_locked', 'ws_agg_with_rest_backfill'
+                'ws_agg_locked', 'ws_agg_with_rest_backfill',
+                # ws_rest_spliced (2026-05-28) consumes ws_agg-source
+                # bars exactly like ws_agg_reconciled does. Add to the
+                # polygon-skip list so AM events bypass this monitor.
+                'ws_rest_spliced',
             ):
                 continue
             if source_label == 'ws_agg' and monitor.live_model == 'ws_with_corrections':
@@ -2380,7 +2388,14 @@ class SymbolHub:
             # at the partial-bucket fire-time. Indicator state still
             # commits (engine.update_bar ran inside on_bar_close), which
             # is exactly what we want: official commit at builder close.
-            if monitor.live_model == 'ws_agg_reconciled' and signals:
+            #
+            # ws_rest_spliced (2026-05-28): identical suppression behavior
+            # — fires at grace, suppresses re-fire at close. The ONLY
+            # difference from ws_agg_reconciled is the rest_verifier hook
+            # on the alert-fire path (handled in dispatch, not here).
+            if monitor.live_model in (
+                'ws_agg_reconciled', 'ws_rest_spliced',
+            ) and signals:
                 try:
                     _bs_dt = pd.Timestamp(bar_dict['timestamp'])
                     if _bs_dt.tzinfo is None:
@@ -3040,11 +3055,12 @@ class SymbolHub:
             if tf_seconds < 60:
                 # Sub-minute: per-second is the canonical source. Aggregate.
                 completed = b.accept_second_bar(bar_dict, close_on_boundary=True)
-                # LEF Phase 2b (2026-05-20): for any ws_agg_reconciled monitor
-                # on this (symbol, TF) whose strategy-grace deadline just
-                # elapsed on the *current partial bucket*, fire on the
-                # forming bar via fire_on_partial_bucket. Cheap no-op when
-                # no monitor uses ws_agg_reconciled.
+                # LEF Phase 2b (2026-05-20): for any ws_agg_reconciled or
+                # ws_rest_spliced (2026-05-28) monitor on this (symbol, TF)
+                # whose strategy-grace deadline just elapsed on the *current
+                # partial bucket*, fire on the forming bar via
+                # fire_on_partial_bucket. Cheap no-op when no monitor uses
+                # either model.
                 self._check_strategy_grace_fires(
                     tf_seconds, b, alert_callback, config)
                 if completed is not None:
