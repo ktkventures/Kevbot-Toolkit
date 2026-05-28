@@ -329,6 +329,17 @@ ALERT_COLUMN_FIELDS = {
     # Stamped at fire time so Divergence tab can attribute alerts to model.
     # Legacy alerts (pre-2026-05-07) stay null and render as "unknown".
     'live_model',
+    # ws_rest_spliced model verification (2026-05-28): REST verifier
+    # populates these columns AFTER the alert fires. Status values:
+    # NULL (pre-migration / not opted in) | 'pending' (queued) |
+    # 'verified' (REST matched WS within tolerance) | 'corrected'
+    # (REST differed; indicator state updated via apply_last_bar_correction)
+    # | 'rest_unavailable' (REST never returned within max_wait). See
+    # migrations/alerts_add_verification_columns.sql + breezy-dreaming-
+    # umbrella plan.
+    'verification_status',
+    'verification_close_delta',
+    'verification_completed_at',
 }
 
 
