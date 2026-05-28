@@ -132,6 +132,22 @@ here until either (a) shipped + verified, or (b) explicitly deprecated.
 
 ---
 
+### Live ↔ backtest divergence on gap-fill bars during EH/AH
+- **Status:** Known structural mismatch, no immediate code fix shipped. Tonight (2026-05-28) added `gap_fill_unverified` distinct status to make the EH/AH signal interpretable; structural fix pending decision.
+- **Discovered:** 2026-05-28 during ws_rest_spliced Phase A+B+C extended-hours validation
+- **Severity:** High for any strategy that trades during EH/pre-market. RTH effectively unaffected because trades are dense.
+- **Location:** `ralph_engine.BarBuilder.accept_bar` (gap-fills empty windows with prev_close + volume=0) vs `data_loader.resample_to_timeframe` (drops empty periods via dropna)
+- **Symptom:** In EH/AH, sub-minute bar windows often have zero trades. Live engine gap-fills those windows with `(prev_close, prev_close, prev_close, prev_close, vol=0)` and runs indicators on them. Backtest drops them entirely. Result: indicator state evolves differently, `max_hold_bars` counts bars differently, triggers fire on bars backtest never sees, and the divergence backlog shows phantoms that have no real cause (gap-fill artifact). Confirmed via direct Polygon probe: 22:30-22:40Z windows have 0 SPY trades for many 10-sec buckets, while the live engine continued processing gap-fill bars.
+- **Why live gap-fills:** Calendar-bar semantics — `max_hold_bars=4` is intended as "4 bars (40s on 10Sec)", not "4 trades-happened bars (which could be many minutes in EH)". Removing gap-fill changes strategy meaning.
+- **Three potential fixes:**
+  1. **Backtest gap-fills too (preferred):** match live's calendar-bar semantics. Backtest behavior changes; historical backtests' numbers shift. Cleanest semantic fix.
+  2. **Live stops gap-filling:** match backtest/REST. Changes `max_hold_bars` meaning (4 bars in EH could mean minutes). Likely breaks current strategies.
+  3. **Live keeps gap-fill internally but doesn't fire triggers on gap-fill bars:** Subtle behavior change; doesn't fix indicator-state divergence.
+- **Temporary mitigation (shipped 2026-05-28):** `verification_status = 'gap_fill_unverified'` distinguishes gap-fill bars (where REST has no data because no trades) from genuine `rest_unavailable` (where REST should have data but doesn't). Doesn't fix the underlying divergence but makes the verification dashboard honest in EH.
+- **Validation note:** Verify this in RTH where gap-fills are rare. EH/AH phantom rates will stay elevated until structural fix.
+
+---
+
 ### Supabase 522 timeout 2026-05-28 ~21:26Z — origin connection
 - **Status:** Resolved by Supabase project restart (~21:32Z)
 - **Discovered:** 2026-05-28 during divergence investigation

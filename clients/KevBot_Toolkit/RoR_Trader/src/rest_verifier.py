@@ -469,6 +469,32 @@ def queue_verify_for_alert(
         if ws_close is None:
             return
 
+        # 2026-05-28: gap-fill detection. BarBuilder.accept_bar gap-fills
+        # empty 10-sec windows with prev_close and volume=0 (necessary so
+        # max_hold_bars and other calendar-bar triggers work consistently).
+        # Polygon REST has no aggregate for those windows since no trades
+        # happened — so the verifier would always stamp them
+        # `rest_unavailable`, conflating "REST is broken" with "no trades
+        # in window." Detect at queue time and stamp `gap_fill_unverified`
+        # synchronously instead so the EH/AH signal is interpretable.
+        # Background: live and backtest diverge structurally on gap-fill
+        # bars (backtest skips them entirely via dropna). Documented in
+        # Known_Bugs.md; structural fix is a separate decision.
+        ws_volume = (snap.get("volume")
+                     if isinstance(snap, dict) else None)
+        if ws_volume is not None and float(ws_volume) == 0:
+            try:
+                _update_alerts([int(alert["id"])], {
+                    "verification_status": "gap_fill_unverified",
+                    "verification_completed_at": datetime.now(
+                        timezone.utc).isoformat(),
+                })
+            except Exception as e:
+                logger.warning(
+                    "rest_verifier: gap_fill stamp failed alert=%s: %s",
+                    alert.get("id"), e)
+            return
+
         # Per-TF grace defaults. Per-strategy override via
         # config.grace_seconds.
         cfg = strategy.get("config") or {}

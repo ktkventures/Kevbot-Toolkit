@@ -7,7 +7,7 @@
 --
 --   verification_status        — NULL | 'pending' | 'verified' |
 --                                'corrected' | 'drift_uncorrected' |
---                                'rest_unavailable'
+--                                'rest_unavailable' | 'gap_fill_unverified'
 --   verification_close_delta   — WS close minus REST close (NUMERIC)
 --   verification_completed_at  — when the REST verifier finished
 --
