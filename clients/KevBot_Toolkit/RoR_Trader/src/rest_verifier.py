@@ -170,12 +170,19 @@ def _verify_sync(
             time.sleep(sleep_for)
 
         # Poll REST every 2s until data appears or max_wait elapses.
+        # Phase C (2026-05-28): keep the per-second list around for
+        # downstream splice; aggregate to a single OHLCV for the
+        # verification comparison.
         deadline = bar_close + timedelta(seconds=max_wait_seconds)
+        rest_per_second: Optional[list] = None
         rest_bar: Optional[dict] = None
         while datetime.now(timezone.utc) < deadline:
-            rest_bar = _fetch_rest_bar(symbol, bar_start, tf_seconds)
-            if rest_bar is not None:
-                break
+            rest_per_second = _fetch_rest_bar_window(
+                symbol, bar_start, tf_seconds)
+            if rest_per_second:
+                rest_bar = _aggregate_rest_bar(rest_per_second, bar_start)
+                if rest_bar is not None:
+                    break
             time.sleep(2.0)
 
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -204,12 +211,23 @@ def _verify_sync(
             return
 
         # Drift exceeds threshold — try correction if callback configured.
+        # Phase C (2026-05-28): pass per-second list as a kwarg so the
+        # engine can splice at sub-bar granularity. Older callbacks that
+        # don't accept the kwarg get the old (symbol, tf_seconds, rest_bar)
+        # signature via fallback.
         correction_applied = False
         if _correction_callback is not None:
             with _get_symbol_lock(symbol):
                 try:
-                    correction_applied = bool(_correction_callback(
-                        symbol, tf_seconds, rest_bar))
+                    try:
+                        correction_applied = bool(_correction_callback(
+                            symbol, tf_seconds, rest_bar,
+                            rest_per_second_bars=rest_per_second))
+                    except TypeError:
+                        # Callback doesn't accept the new kwarg —
+                        # backwards-compatible call.
+                        correction_applied = bool(_correction_callback(
+                            symbol, tf_seconds, rest_bar))
                 except Exception as e:
                     logger.warning(
                         "rest_verifier: correction callback raised sym=%s "
@@ -251,54 +269,29 @@ def _verify_sync(
         )
 
 
-def _fetch_rest_bar(
+def _fetch_rest_bar_window(
     symbol: str, bar_start: datetime, tf_seconds: int
-) -> Optional[dict]:
-    """Fetch REST per-second aggregates for the bar window and aggregate
-    them to a single OHLCV bar dict matching BarBuilder's accept_bar
-    shape.
-
-    Bypasses data_loader.fetch_1s_bars_for_window's day-level cache.
-    That cache is the right design for Hi-Fi backtest (one fetch per
-    ticker-day, reused across many backtest queries) but the WRONG
-    design for live verification: it captures whatever Polygon returned
-    at first-fetch time and never refreshes, so a long-lived verifier
-    thread keeps re-reading the stale snapshot. Direct probes from a
-    fresh Python process work because they populate a fresh cache.
-    Caught 2026-05-28 canary on sid 151 — 100% rest_unavailable rate
-    on alerts after the day cache was populated, even though REST data
-    settled normally and was visible to direct probes minutes later.
-
-    Calls _polygon_fetch_bars directly with millisecond-timestamp
-    endpoints to scope the fetch to the exact bar window. No caching;
-    each verifier call hits Polygon fresh.
-
-    Returns None if no REST data is available yet for this window
-    (verifier will retry).
-    """
+) -> Optional[list]:
+    # Fetch REST per-second aggregates for [bar_start, bar_end) and
+    # return them as a list of OHLCV dicts (sorted ascending by ts).
+    # Returns None when REST has no data yet for this window (verifier
+    # retries). Bypasses data_loader's day-level cache: caches there
+    # capture whatever Polygon returned at first-fetch time and never
+    # refresh, so long-lived verifier threads keep reading stale
+    # snapshots. Caught 2026-05-28 canary.
     try:
         from data_loader import (
             _polygon_fetch_bars, _polygon_bars_to_df, _to_polygon_ticker)
         import pandas as pd
         bar_end = bar_start + timedelta(seconds=tf_seconds)
-        # ±2s padding covers Polygon's per-second settle floor.
         padded_start = bar_start - timedelta(seconds=2)
         padded_end = bar_end + timedelta(seconds=2)
-        # Polygon /v2/aggs accepts `from` and `to` as either YYYY-MM-DD
-        # OR unix-ms timestamps. Use ms so the fetch is scoped to the
-        # narrow window — avoids transferring the entire trading day
-        # for what's effectively a 10-15 second query.
         from_ms = str(int(padded_start.timestamp() * 1000))
         to_ms = str(int(padded_end.timestamp() * 1000))
         poly_ticker = _to_polygon_ticker(symbol)
         results = _polygon_fetch_bars(
             poly_ticker, 1, "second", from_ms, to_ms)
         if not results:
-            # 2026-05-28 diagnostic: track when Polygon returns empty
-            # for live verification. Sweeper retries on a fresh-cache
-            # path are returning None for SPY bars that exist in a
-            # parallel fresh-process probe — narrowing down whether the
-            # fetch returns 0 rows or rows are filtered out.
             logger.info(
                 "rest_verifier: _polygon_fetch_bars returned 0 results "
                 "sym=%s poly=%s window_ms=[%s, %s]",
@@ -306,40 +299,63 @@ def _fetch_rest_bar(
             return None
         bars_1s = _polygon_bars_to_df(results)
         if bars_1s is None or len(bars_1s) == 0:
-            logger.info(
-                "rest_verifier: _polygon_bars_to_df produced empty df "
-                "sym=%s raw_results_count=%d", symbol, len(results))
             return None
-        # Filter to bars strictly inside [bar_start, bar_end) — the
-        # padding above could have pulled in adjacent seconds.
         bar_start_ts = pd.Timestamp(bar_start).tz_convert("UTC")
         bar_end_ts = pd.Timestamp(bar_end).tz_convert("UTC")
         in_window = bars_1s[
             (bars_1s.index >= bar_start_ts) & (bars_1s.index < bar_end_ts)
         ]
         if len(in_window) == 0:
-            logger.info(
-                "rest_verifier: in_window filter dropped all rows "
-                "sym=%s raw_count=%d index_range=[%s, %s] window=[%s, %s]",
-                symbol, len(bars_1s),
-                str(bars_1s.index[0]) if len(bars_1s) > 0 else 'n/a',
-                str(bars_1s.index[-1]) if len(bars_1s) > 0 else 'n/a',
-                bar_start_ts, bar_end_ts)
             return None
-        return {
-            "timestamp": bar_start,
-            "open": float(in_window["open"].iloc[0]),
-            "high": float(in_window["high"].max()),
-            "low": float(in_window["low"].min()),
-            "close": float(in_window["close"].iloc[-1]),
-            "volume": float(in_window["volume"].sum()),
-        }
+        out: list = []
+        for ts, row in in_window.iterrows():
+            out.append({
+                "timestamp": ts,
+                "open": float(row["open"]),
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+                "volume": float(row.get("volume", 0) or 0),
+            })
+        return out
     except Exception as e:
         logger.warning(
             "rest_verifier: REST fetch failed sym=%s bar=%s: %s",
             symbol, bar_start.isoformat(), e,
         )
         return None
+
+
+def _aggregate_rest_bar(per_second: list,
+                         bar_start: datetime) -> Optional[dict]:
+    # Aggregate a per-second list into a single OHLCV bar dict using
+    # the same rules as BarBuilder.accept_second_bar: open=first,
+    # high=max, low=min, close=last, volume=sum. Returns None on empty.
+    if not per_second:
+        return None
+    ordered = sorted(per_second,
+                     key=lambda b: b.get("timestamp"))
+    return {
+        "timestamp": bar_start,
+        "open": float(ordered[0]["open"]),
+        "high": max(float(b["high"]) for b in ordered),
+        "low": min(float(b["low"]) for b in ordered),
+        "close": float(ordered[-1]["close"]),
+        "volume": sum(float(b.get("volume", 0) or 0) for b in ordered),
+    }
+
+
+def _fetch_rest_bar(
+    symbol: str, bar_start: datetime, tf_seconds: int
+) -> Optional[dict]:
+    # Backwards-compatible wrapper that returns just the aggregated
+    # OHLCV dict. Kept for any existing callers; the new code path
+    # (Phase C, 2026-05-28) prefers _fetch_rest_bar_window +
+    # _aggregate_rest_bar so the per-second list survives for splicing.
+    per_sec = _fetch_rest_bar_window(symbol, bar_start, tf_seconds)
+    if not per_sec:
+        return None
+    return _aggregate_rest_bar(per_sec, bar_start)
 
 
 def _update_alerts(alert_ids: list[int], updates: dict) -> None:

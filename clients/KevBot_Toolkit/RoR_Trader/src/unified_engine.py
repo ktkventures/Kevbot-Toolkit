@@ -703,6 +703,17 @@ class IncrementalIndicatorEngine:
         self._snapshot_enabled = False
         self._pre_bar_snapshot = None
 
+        # Phase B (2026-05-28): rolling buffer of pre-bar snapshots indexed
+        # by bar_start. Lets apply_bar_correction rewind K bars back instead
+        # of K=1 only — critical for sub-minute TFs where REST settle can
+        # take longer than 1-2 bar periods. Bounded so we don't pin memory
+        # for the unbounded retention case. Populated only when
+        # _snapshot_enabled is True (live engines).
+        import collections as _coll
+        import os as _os
+        _k = int(_os.environ.get('INDICATOR_SNAPSHOT_BUFFER_K', '10'))
+        self._snapshot_buffer: '_coll.deque' = _coll.deque(maxlen=max(_k, 1))
+
         if 'ema' in self.required:
             for p in params['ema_periods']:
                 self.state.ema[p] = 0.0
@@ -826,44 +837,50 @@ class IncrementalIndicatorEngine:
 
         self._initialized = True
 
-    def snapshot_state(self):
-        """Deep-copy the engine's mutable state — built-in IndicatorState,
-        the _initialized flag, and every user-pack incremental engine —
-        into an opaque token for O(1) rewind. Mirrors the snapshot/restore
-        StrategyMonitor.compute_tentative_state already does per forming
-        bar, so the deepcopy cost is a known, accepted quantity.
-
-        2026-05-20 fix: user-pack engine classes loaded via importlib with
-        synthetic module names (`user_pack_*_indicator_incremental`) cannot
-        be pickled — pickle stores fully-qualified class paths and tries
-        to re-import them on deserialize, which fails because the
-        synthetic name isn't a real package path. Each user-pack engine
-        is now pickle-tested individually; un-picklable engines drop
-        from the snapshot with a warning, and on resume those indicators
-        warmup-from-scratch on the new data window (degraded benefit,
-        not failed snapshot).
-        """
+    def snapshot_state(self, persistent: bool = False):
+        # 2026-05-28 (Phase A): split into in-memory vs persistent modes.
+        # In-memory (default) — for apply_last_bar_correction,
+        # apply_bar_correction (multi-bar replay), compute_tentative_state.
+        # deepcopy only, INCLUDE all user packs (synthetic-module classes
+        # deepcopy fine even though they can't pickle). State survives
+        # restore + replay cleanly. This unlocks the existing rebroadcast
+        # correction path that was silently rebuilding UT Bot v4
+        # _trail_stop from scratch on every drift event.
+        # Persistent (persistent=True) — for serialize_backtest_snapshot
+        # which base64-encodes the pickled envelope into
+        # strategies.config.engine_snapshot_b64. Keep the pickle probe so
+        # we can drop un-picklable packs early; on resume those engines
+        # warmup from scratch on the new data window.
         import copy
-        import pickle as _pickle
         packs_out: dict = {}
-        for slug, eng in getattr(self, '_user_pack_engines', {}).items():
-            try:
-                deep = copy.deepcopy(eng)
-                # Probe pickle-roundtrip-ability NOW (vs at full-snapshot
-                # serialize time) so we can drop just THIS engine on
-                # failure instead of losing the whole snapshot.
-                _pickle.dumps(deep)
-                packs_out[slug] = deep
-            except Exception as e:
-                if slug not in _warned_unpicklable_slugs:
-                    _warned_unpicklable_slugs.add(slug)
+        if persistent:
+            import pickle as _pickle
+            for slug, eng in getattr(self, '_user_pack_engines', {}).items():
+                try:
+                    deep = copy.deepcopy(eng)
+                    _pickle.dumps(deep)
+                    packs_out[slug] = deep
+                except Exception as e:
+                    if slug not in _warned_unpicklable_slugs:
+                        _warned_unpicklable_slugs.add(slug)
+                        logger.warning(
+                            "snapshot_state(persistent=True): user-pack "
+                            "engine %r dropped — not picklable (%s). On "
+                            "resume this indicator will warmup from "
+                            "scratch on the new data window. (further "
+                            "occurrences silenced for this slug)", slug, e)
+        else:
+            for slug, eng in getattr(self, '_user_pack_engines', {}).items():
+                try:
+                    packs_out[slug] = copy.deepcopy(eng)
+                except Exception as e:
+                    # deepcopy failure is genuinely unexpected on these
+                    # classes — log distinctly so we notice if it ever
+                    # happens, but degrade gracefully like persistent does.
                     logger.warning(
-                        "snapshot_state: user-pack engine %r dropped from "
-                        "snapshot — not picklable (%s). On resume this "
-                        "indicator will warmup from scratch on the new "
-                        "data window. (further occurrences silenced for "
-                        "this slug)", slug, e)
-                # skip
+                        "snapshot_state(in-memory): deepcopy failed for "
+                        "user-pack %r: %s. Skipping; will warmup from "
+                        "scratch on restore.", slug, e)
         return (
             copy.deepcopy(self.state),
             self._initialized,
@@ -901,6 +918,73 @@ class IncrementalIndicatorEngine:
             'volume': float(row.get('volume', 0)),
             'timestamp': df.index[-1],
         })
+        return True
+
+    def apply_bar_correction(self, corrected_bar_start,
+                              df: pd.DataFrame) -> bool:
+        # Phase B (2026-05-28): multi-bar-back correction. Finds the
+        # pre-bar snapshot from before `corrected_bar_start` in the
+        # rolling buffer, restores it, and replays df forward from that
+        # bar. First replayed bar reads the now-corrected OHLCV (caller
+        # is expected to have already replaced the matching row in
+        # builder.history before calling). Subsequent bars use whatever
+        # was in df.
+        # Returns True on success; False if the snapshot isn't in the
+        # buffer (caller should fall back to recompute_from_history's
+        # full O(N) replay).
+        import pandas as _pd
+        if df is None or len(df) == 0:
+            return False
+        try:
+            _target = _pd.Timestamp(corrected_bar_start)
+            if _target.tzinfo is None:
+                _target = _target.tz_localize('UTC')
+        except Exception:
+            return False
+        # Find matching (bar_start, snap) in buffer. Walk reverse so we
+        # find the most recent if duplicates ever exist.
+        snap = None
+        for ts, s in reversed(self._snapshot_buffer):
+            if ts == _target:
+                snap = s
+                break
+        if snap is None:
+            return False
+        # Find the corrected bar's index in df BEFORE restoring state —
+        # if df doesn't contain the bar, we bail without side-effects.
+        idx_loc = None
+        for i in range(len(df) - 1, -1, -1):
+            ts = df.index[i]
+            if ts.tzinfo is None:
+                ts = ts.tz_localize('UTC')
+            if ts == _target:
+                idx_loc = i
+                break
+        if idx_loc is None:
+            return False
+        self.restore_state(snap)
+        # Trim the buffer to discard entries at or after the corrected
+        # bar — they're about to be re-pushed by the replay below.
+        new_entries = [(ts, s) for (ts, s) in self._snapshot_buffer
+                       if ts < _target]
+        self._snapshot_buffer.clear()
+        for entry in new_entries:
+            self._snapshot_buffer.append(entry)
+        # Replay df.iloc[idx_loc:] — update_bar will re-snapshot pre-bar
+        # state for each, repopulating the buffer.
+        for i in range(idx_loc, len(df)):
+            row = df.iloc[i]
+            ts = df.index[i]
+            if ts.tzinfo is None:
+                ts = ts.tz_localize('UTC')
+            self.update_bar({
+                'open': float(row['open']),
+                'high': float(row['high']),
+                'low': float(row['low']),
+                'close': float(row['close']),
+                'volume': float(row.get('volume', 0)),
+                'timestamp': ts,
+            })
         return True
 
     def recompute_from_history(self, df: pd.DataFrame) -> None:
@@ -959,8 +1043,23 @@ class IncrementalIndicatorEngine:
         # Snapshot pre-bar state (live engines only) so a Polygon
         # rebroadcast correction of THIS bar resolves in O(1) via
         # apply_last_bar_correction instead of a full-history replay.
+        # Phase B (2026-05-28): also append to _snapshot_buffer so
+        # multi-bar-back corrections (apply_bar_correction) can rewind
+        # to any of the last K bar_starts, not just the latest.
         if self._snapshot_enabled:
             self._pre_bar_snapshot = self.snapshot_state()
+            try:
+                _bar_ts = bar.get('timestamp')
+                if _bar_ts is not None:
+                    _ts = pd.Timestamp(_bar_ts)
+                    if _ts.tzinfo is None:
+                        _ts = _ts.tz_localize('UTC')
+                    self._snapshot_buffer.append(
+                        (_ts, self._pre_bar_snapshot))
+            except Exception:
+                # Snapshot buffer is best-effort. Failure here must not
+                # break the bar-processing hot path.
+                pass
 
         self.state.prev2_macd_hist = self.state.prev_macd_hist
         self.state.prev_macd_hist = self.state.current.get('macd_hist', 0.0)
@@ -3210,7 +3309,7 @@ def serialize_backtest_snapshot(strat, last_bar_ts: str,
             'fingerprint': fingerprint,
             'model_id': model_id,
             'last_bar_ts': last_bar_ts,
-            'engine': strat.indicators.snapshot_state(),
+            'engine': strat.indicators.snapshot_state(persistent=True),
             'position': _copy.deepcopy(strat.position.state),
         }
         return base64.b64encode(pickle.dumps(envelope)).decode('ascii')

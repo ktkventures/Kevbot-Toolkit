@@ -320,6 +320,18 @@ class BarBuilder:
         # back to SUBMINUTE_FORCE_CLOSE_GRACE_SEC. 1Min+ ignores grace
         # regardless of this value (see force_close_stale_bar).
         self.grace_sec_override: Optional[int] = None
+        # Phase C (2026-05-28): bounded per-second history retention so
+        # rest_verifier can splice REST per-second values at sub-bar
+        # granularity. Bucketed by bar_start; each entry is a list of
+        # per-second OHLCV dicts. Capped to K bar_starts via OrderedDict
+        # eviction in accept_second_bar to keep memory bounded
+        # (~10 bars × ~10 sec/bar × ~100 bytes/sec ≈ 10KB per builder).
+        from collections import OrderedDict as _OD
+        import os as _os
+        _per_sec_k = int(_os.environ.get(
+            'BARBUILDER_PER_SEC_HISTORY_K', '10'))
+        self._per_second_history: '_OD[pd.Timestamp, list]' = _OD()
+        self._per_second_history_max_buckets = max(_per_sec_k, 1)
 
     def seed_history(self, df: pd.DataFrame):
         """Seed builder history from a DataFrame.
@@ -492,6 +504,34 @@ class BarBuilder:
         sec_low = float(bar_dict['low'])
         sec_close = float(bar_dict['close'])
         sec_volume = float(bar_dict.get('volume', 0))
+
+        # Phase C (2026-05-28): retain per-second bar dict in bucketed
+        # history so rest_verifier can later splice REST per-second
+        # corrections at sub-bar granularity. Only retain for
+        # close_on_boundary=True mode (the canonical sub-minute path);
+        # chart-visual mode (False, used for 1Min+ aesthetics) has no
+        # downstream consumer that needs per-second history.
+        if close_on_boundary:
+            period_ts = pd.Timestamp(period_start)
+            if period_ts.tzinfo is None:
+                period_ts = period_ts.tz_localize('UTC')
+            bucket = self._per_second_history.get(period_ts)
+            if bucket is None:
+                bucket = []
+                self._per_second_history[period_ts] = bucket
+                # Evict the oldest bucket if we're over capacity.
+                while (len(self._per_second_history)
+                        > self._per_second_history_max_buckets):
+                    self._per_second_history.popitem(last=False)
+            sec_ts = pd.Timestamp(ts)
+            if sec_ts.tzinfo is None:
+                sec_ts = sec_ts.tz_localize('UTC')
+            bucket.append({
+                'timestamp': sec_ts,
+                'open': sec_open, 'high': sec_high,
+                'low': sec_low, 'close': sec_close,
+                'volume': sec_volume,
+            })
 
         # M8.7 rebroadcast handling (2026-05-02): if the incoming bar's
         # period_start matches the most recent history row, this is a
@@ -2792,66 +2832,189 @@ class SymbolHub:
         self._fanout_to_secondary_builders(bar_dict, source_label='ws')
 
     def apply_rest_correction(self, tf_seconds: int,
-                              rest_bar_dict: dict) -> bool:
-        # ws_rest_spliced (2026-05-28): replace the most recent WS bar
-        # with REST OHLCV, then recompute indicator state for every
-        # monitor on this TF via the existing rebroadcast pipeline.
-        # Returns True if applied, False on stale (a newer bar has
-        # already arrived and accept_bar would gap-fill instead of
-        # replace — never silently). Invoked off-thread by
-        # rest_verifier; per-symbol mutex is held by the verifier.
+                              rest_bar_dict: dict,
+                              rest_per_second_bars: list = None) -> bool:
+        # ws_rest_spliced (2026-05-28, refactored same day for Phase A+B+C):
+        # accepts a corrected bar from REST and updates the BarBuilder
+        # history + indicator state to converge on REST-aligned values.
+        # Three paths depending on where the bar is in history:
+        #   (1) Bar is the latest in builder.history → existing K=1 fast
+        #       path via accept_bar + apply_last_bar_correction. Preserves
+        #       Polygon rebroadcast semantics.
+        #   (2) Bar is in [latest-K, latest-1] window → multi-bar-back
+        #       replay via the new apply_bar_correction. Drops the prior
+        #       "stale" rejection — sub-minute TFs need this because REST
+        #       settle is usually >1 bar period.
+        #   (3) Bar is older than the K-window or not in history at all →
+        #       reject (logged), can't be corrected.
+        # If rest_per_second_bars is provided AND BarBuilder has per-second
+        # history for the bar, splice at per-second granularity and
+        # re-aggregate (Phase C). Otherwise replace the whole-bar OHLCV
+        # with rest_bar_dict's values (Phase B fallback).
+        # Invoked off-thread by rest_verifier; per-symbol mutex held by
+        # the verifier.
         builder = self.builders.get(tf_seconds)
         if builder is None or len(builder.history) == 0:
             return False
         rest_ts = pd.Timestamp(rest_bar_dict['timestamp'])
         if rest_ts.tzinfo is None:
             rest_ts = rest_ts.tz_localize('UTC')
-        last_ts = builder.history.index[-1]
-        if last_ts.tzinfo is None:
-            last_ts = last_ts.tz_localize('UTC')
-        if last_ts != rest_ts:
+        # Locate the target bar in history.
+        idx_loc = None
+        for i in range(len(builder.history) - 1, -1, -1):
+            ts = builder.history.index[i]
+            if ts.tzinfo is None:
+                ts = ts.tz_localize('UTC')
+            if ts == rest_ts:
+                idx_loc = i
+                break
+        if idx_loc is None:
             logger.info(
-                "apply_rest_correction: stale sym=%s tf=%ss "
-                "rest_bar=%s latest_history=%s — skipping",
-                self.symbol, tf_seconds, rest_ts, last_ts,
-            )
+                "apply_rest_correction: bar not in history sym=%s tf=%ss "
+                "rest_bar=%s — skipping",
+                self.symbol, tf_seconds, rest_ts)
             return False
-        builder.accept_bar(rest_bar_dict)
-        if not builder.last_was_duplicate:
-            return False
-        if builder.last_was_correction:
-            for monitor in self.monitors.values():
-                if monitor.tf_seconds != tf_seconds:
-                    continue
-                try:
-                    monitor.indicators.recompute_from_history(builder.history)
-                except Exception as e:
-                    logger.warning(
-                        "REST correction recompute failed sym=%s "
-                        "strat=%s tf=%ss: %s",
-                        self.symbol, monitor.strat_id, tf_seconds, e,
-                    )
-            shadow_self = self._shadow_engines.get(tf_seconds)
-            if shadow_self is not None:
-                try:
-                    shadow_self.indicators.recompute_from_history(builder.history)
-                except Exception as e:
-                    logger.warning(
-                        "REST correction shadow recompute failed "
-                        "sym=%s tf=%ss: %s",
-                        self.symbol, tf_seconds, e,
-                    )
+        offset_from_latest = (len(builder.history) - 1) - idx_loc
+
+        # Phase C: if per-second list provided AND per-second history
+        # exists for this bar_start, splice at per-second granularity and
+        # re-aggregate. Otherwise use the whole-bar values directly.
+        per_sec_used = False
+        effective_bar = dict(rest_bar_dict)
+        if (rest_per_second_bars
+                and hasattr(builder, '_per_second_history')
+                and rest_ts in builder._per_second_history):
             try:
-                from live_bars_writer import write_bar as _live_bars_write
-                _live_bars_write(self.symbol, tf_seconds, rest_bar_dict,
-                                 source='rest_correction')
-            except Exception:
-                pass
+                ws_per_sec = list(builder._per_second_history[rest_ts])
+                # Build a {ts: rest_per_sec_dict} index for splice.
+                rest_index = {}
+                for rb in rest_per_second_bars:
+                    rb_ts = pd.Timestamp(rb.get('timestamp'))
+                    if rb_ts.tzinfo is None:
+                        rb_ts = rb_ts.tz_localize('UTC')
+                    rest_index[rb_ts] = rb
+                # Splice: for each WS per-sec entry, if a REST entry
+                # exists at the same timestamp, use REST's OHLCV;
+                # otherwise keep WS's. Append any REST per-sec entries
+                # that fall in window but have no WS counterpart.
+                spliced: list = []
+                ws_ts_set = set()
+                for wb in ws_per_sec:
+                    wb_ts = pd.Timestamp(wb.get('timestamp'))
+                    if wb_ts.tzinfo is None:
+                        wb_ts = wb_ts.tz_localize('UTC')
+                    ws_ts_set.add(wb_ts)
+                    if wb_ts in rest_index:
+                        spliced.append(rest_index[wb_ts])
+                    else:
+                        spliced.append(wb)
+                bar_end = rest_ts + pd.Timedelta(seconds=tf_seconds)
+                for rb_ts, rb in rest_index.items():
+                    if rb_ts in ws_ts_set:
+                        continue
+                    if rest_ts <= rb_ts < bar_end:
+                        spliced.append(rb)
+                # Persist the spliced per-second list (so future
+                # corrections see corrected state).
+                builder._per_second_history[rest_ts] = spliced
+                # Re-aggregate using accept_second_bar's aggregation
+                # rules: open=first, high=max, low=min, close=last,
+                # volume=sum. Sort by timestamp first.
+                spliced.sort(key=lambda b: pd.Timestamp(b.get('timestamp')))
+                if spliced:
+                    agg_open = float(spliced[0]['open'])
+                    agg_close = float(spliced[-1]['close'])
+                    agg_high = max(float(b['high']) for b in spliced)
+                    agg_low = min(float(b['low']) for b in spliced)
+                    agg_vol = sum(float(b.get('volume', 0))
+                                  for b in spliced)
+                    effective_bar = {
+                        'timestamp': rest_ts,
+                        'open': agg_open, 'high': agg_high,
+                        'low': agg_low, 'close': agg_close,
+                        'volume': agg_vol,
+                    }
+                    per_sec_used = True
+            except Exception as e:
+                logger.warning(
+                    "apply_rest_correction: per-second splice failed "
+                    "sym=%s tf=%ss bar=%s: %s — falling back to whole-bar",
+                    self.symbol, tf_seconds, rest_ts, e)
+                effective_bar = dict(rest_bar_dict)
+
+        # Replace history row with effective_bar's OHLCV (handles both
+        # the K=1 latest case and any K-back case uniformly).
+        _cols = ['open', 'high', 'low', 'close', 'volume']
+        _new = [
+            float(effective_bar['open']),
+            float(effective_bar['high']),
+            float(effective_bar['low']),
+            float(effective_bar['close']),
+            float(effective_bar.get('volume', 0)),
+        ]
+        builder.history.loc[builder.history.index[idx_loc], _cols] = _new
+
+        # Indicator state recompute — pick the right path.
+        path_label = 'bar_level'
+        any_applied = False
+        for monitor in self.monitors.values():
+            if monitor.tf_seconds != tf_seconds:
+                continue
+            try:
+                if offset_from_latest == 0:
+                    # K=1 fast path — preserves existing apply_last_bar_
+                    # correction behavior. Pre-bar snapshot at idx_loc IS
+                    # _pre_bar_snapshot.
+                    ok = monitor.indicators.apply_last_bar_correction(
+                        builder.history)
+                else:
+                    # K>1 path — restore from snapshot buffer, replay
+                    # forward.
+                    ok = monitor.indicators.apply_bar_correction(
+                        rest_ts, builder.history)
+                if not ok:
+                    # Snapshot wasn't in buffer (engine cold-restarted,
+                    # or bar aged out). Full replay fallback.
+                    monitor.indicators.recompute_from_history(builder.history)
+                any_applied = True
+            except Exception as e:
+                logger.warning(
+                    "REST correction recompute failed sym=%s strat=%s "
+                    "tf=%ss K=%d: %s",
+                    self.symbol, monitor.strat_id, tf_seconds,
+                    offset_from_latest, e)
+        # Shadow engine (cross-TF confluence) — same logic.
+        shadow_self = self._shadow_engines.get(tf_seconds)
+        if shadow_self is not None:
+            try:
+                if offset_from_latest == 0:
+                    ok = shadow_self.indicators.apply_last_bar_correction(
+                        builder.history)
+                else:
+                    ok = shadow_self.indicators.apply_bar_correction(
+                        rest_ts, builder.history)
+                if not ok:
+                    shadow_self.indicators.recompute_from_history(
+                        builder.history)
+            except Exception as e:
+                logger.warning(
+                    "REST correction shadow recompute failed sym=%s "
+                    "tf=%ss K=%d: %s",
+                    self.symbol, tf_seconds, offset_from_latest, e)
+        try:
+            from live_bars_writer import write_bar as _live_bars_write
+            _live_bars_write(self.symbol, tf_seconds, effective_bar,
+                             source='rest_correction')
+        except Exception:
+            pass
+        if any_applied or shadow_self is not None:
+            if per_sec_used:
+                path_label = 'per_second'
             logger.info(
-                "REST correction applied: sym=%s tf=%ss bar=%s — "
-                "indicators recomputed, no alerts re-fired",
-                self.symbol, tf_seconds, rest_bar_dict.get('timestamp'),
-            )
+                "REST correction applied: sym=%s tf=%ss bar=%s K=%d "
+                "path=%s — indicators recomputed, no alerts re-fired",
+                self.symbol, tf_seconds, rest_ts.isoformat(),
+                offset_from_latest, path_label)
         return True
 
     @_prof_fn('s_on_second_bar')
@@ -3349,16 +3512,21 @@ class RalphEngine:
             _prof_dump_and_reset()
 
     def rest_correction_callback(self, symbol: str, tf_seconds: int,
-                                  rest_bar_dict: dict) -> bool:
+                                  rest_bar_dict: dict,
+                                  rest_per_second_bars: list = None
+                                  ) -> bool:
         # ws_rest_spliced (2026-05-28): module-level callback registered
         # with rest_verifier at worker startup. Routes the correction to
-        # the SymbolHub that owns BarBuilders for this symbol. Returns
-        # False (silent no-op) when the symbol has no live hub (e.g. a
-        # strategy was deleted while a verifier task was still queued).
+        # the SymbolHub that owns BarBuilders for this symbol. Phase C
+        # passes rest_per_second_bars when available so SymbolHub.
+        # apply_rest_correction can splice at sub-bar granularity.
+        # Returns False (silent no-op) when the symbol has no live hub.
         hub = self.hubs.get(symbol)
         if hub is None:
             return False
-        return hub.apply_rest_correction(tf_seconds, rest_bar_dict)
+        return hub.apply_rest_correction(
+            tf_seconds, rest_bar_dict,
+            rest_per_second_bars=rest_per_second_bars)
 
     def start(self, strategies: list, config: dict):
         """Start the engine (blocking — runs the async event loop)."""
