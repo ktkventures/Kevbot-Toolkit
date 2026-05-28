@@ -294,9 +294,21 @@ def _fetch_rest_bar(
         results = _polygon_fetch_bars(
             poly_ticker, 1, "second", from_ms, to_ms)
         if not results:
+            # 2026-05-28 diagnostic: track when Polygon returns empty
+            # for live verification. Sweeper retries on a fresh-cache
+            # path are returning None for SPY bars that exist in a
+            # parallel fresh-process probe — narrowing down whether the
+            # fetch returns 0 rows or rows are filtered out.
+            logger.info(
+                "rest_verifier: _polygon_fetch_bars returned 0 results "
+                "sym=%s poly=%s window_ms=[%s, %s]",
+                symbol, poly_ticker, from_ms, to_ms)
             return None
         bars_1s = _polygon_bars_to_df(results)
         if bars_1s is None or len(bars_1s) == 0:
+            logger.info(
+                "rest_verifier: _polygon_bars_to_df produced empty df "
+                "sym=%s raw_results_count=%d", symbol, len(results))
             return None
         # Filter to bars strictly inside [bar_start, bar_end) — the
         # padding above could have pulled in adjacent seconds.
@@ -306,6 +318,13 @@ def _fetch_rest_bar(
             (bars_1s.index >= bar_start_ts) & (bars_1s.index < bar_end_ts)
         ]
         if len(in_window) == 0:
+            logger.info(
+                "rest_verifier: in_window filter dropped all rows "
+                "sym=%s raw_count=%d index_range=[%s, %s] window=[%s, %s]",
+                symbol, len(bars_1s),
+                str(bars_1s.index[0]) if len(bars_1s) > 0 else 'n/a',
+                str(bars_1s.index[-1]) if len(bars_1s) > 0 else 'n/a',
+                bar_start_ts, bar_end_ts)
             return None
         return {
             "timestamp": bar_start,
