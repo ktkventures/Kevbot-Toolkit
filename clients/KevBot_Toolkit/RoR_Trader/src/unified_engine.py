@@ -2487,7 +2487,16 @@ class PositionStateMachine:
             'entry_price': self.state.entry_price,
             'entry_stop_price': self.state.stop_price,
             'direction': self.state.direction,
-            'exec_type': self.state.exec_type or 'C',
+            # 2026-05-28: stamp the EXIT's exec_type, not the entry's.
+            # The comment at lines 2466-2469 above and the 2026-04-20
+            # _resolve_exit_exec_type bugfix correctly compute exit_exec,
+            # but it was never plumbed into the signal dict — so every
+            # stop_loss / target / max_hold_bars alert was inheriting
+            # the entry's exec_type (e.g. 'C' from utv4_bull_flip),
+            # producing live alerts that disagreed with stop_config.
+            # exec_type='L'. Caught during ws_rest_spliced canary on
+            # sid 151 (Kevin verified config L vs alert C mismatch).
+            'exec_type': exit_exec,
             'exit_reason': reason,
             'atr': 0,  # filled by caller
             # Trade_Timestamps_Spec: 4-timestamp model is the contract.
