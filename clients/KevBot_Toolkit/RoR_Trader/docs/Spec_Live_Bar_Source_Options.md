@@ -1,7 +1,19 @@
 # Live Bar Source Options — Reducing Phantom/Missed Drift on Sub-Minute TFs
 
-**Status:** DECISION = B1 (Ralph polls Polygon REST directly) for MVP, 2026-05-27.
-B2 and B3 retained as future options if MVP outcomes warrant them.
+> **REVISED DECISION 2026-05-28:** Decision moved from B1 (pure REST
+> polled) to a hybrid **`ws_rest_spliced`** — WS-aggregated bars
+> drive alert dispatch (sub-second latency, identical to
+> `ws_agg_reconciled`), and a background verifier polls REST after
+> grace, splicing REST values into indicator history when drift is
+> caught. Pure REST was too slow (RTH probe 2026-05-28 showed p90
+> latency 8-23s). The hybrid keeps speed AND backtest-aligned state.
+> Shipped end-to-end same day (M1-M8). See plan
+> `/home/kevin/.claude/plans/breezy-dreaming-umbrella.md` and memory
+> `project_ws_rest_spliced_canary.md`. This doc retains the original
+> Phase A divergence-survey context that motivated the work.
+
+**Status:** SUPERSEDED — 2026-05-27 decision was B1; 2026-05-28
+revised to `ws_rest_spliced` after RTH latency probe.
 
 ## The problem this addresses
 

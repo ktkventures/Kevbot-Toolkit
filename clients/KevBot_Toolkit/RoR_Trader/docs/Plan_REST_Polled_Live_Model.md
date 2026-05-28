@@ -1,7 +1,17 @@
-# Plan — `rest_polled` Live Model (B1)
+# Plan — `rest_polled` Live Model (B1) — SUPERSEDED
+
+> **SUPERSEDED 2026-05-28** by `ws_rest_spliced`. RTH probe data on
+> 2026-05-28 showed pure-REST latency (p90 8-23s) was too slow to
+> drive sub-minute alerts. The chosen direction is the WS-tip,
+> REST-spliced hybrid — keep WS for sub-second alert latency, layer
+> REST verification + indicator-state correction after a grace
+> window. See plan `/home/kevin/.claude/plans/breezy-dreaming-umbrella.md`
+> and memory `project_ws_rest_spliced_canary.md`. This document is
+> retained for the requirements / architecture context that fed the
+> hybrid design; it is not the current implementation.
 
 **Companion:** `docs/Spec_Live_Bar_Source_Options.md` (decision doc)
-**Status:** PLAN — written 2026-05-27, pending Kevin's go-ahead
+**Status:** SUPERSEDED — written 2026-05-27, abandoned 2026-05-28
 **Target:** SPY 10Sec phantom/missed counts materially drop after
 rollout; 1Min behavior unchanged or improved.
 

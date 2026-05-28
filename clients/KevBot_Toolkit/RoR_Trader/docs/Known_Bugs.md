@@ -87,12 +87,13 @@ here until either (a) shipped + verified, or (b) explicitly deprecated.
 ---
 
 ### Ralph WS pipeline drops SPY sub-minute bars during active hours
-- **Status:** WONTFIX (migrating away)
+- **Status:** MITIGATED — root cause not fixed, but impact reduced by `ws_rest_spliced`
 - **Discovered:** 2026-05-27 during REST-vs-WS investigation
-- **Severity:** High while WS is the source; defanged after `rest_polled` rolls out
+- **Mitigated:** 2026-05-28 via `ws_rest_spliced` rollout
+- **Severity:** High while WS was the sole source; now reduced — `ws_rest_spliced` verifies WS bar closes against REST and splices REST values into indicator history when drift is caught, so indicator state converges to backtest-aligned values even when WS aggregation is faulty.
 - **Location:** Ralph's WebSocket bar aggregation pipeline
   (`ralph_engine.py` BarBuilder / on_second_bar)
-- **Symptom:** During the 18:00-19:30 UTC window today, 26% of SPY
+- **Symptom:** During the 18:00-19:30 UTC window on 2026-05-27, 26% of SPY
   10Sec bars (140/541) were missing from `live_bars`. The missing bars
   had real volume (7K-40K each), so not quiet-period artifacts.
   Confirmed not deploy-related: during the largest gap (18:06:00-18:22:10,
@@ -101,11 +102,19 @@ here until either (a) shipped + verified, or (b) explicitly deprecated.
 - **Hypothesis:** Polygon per-ticker WS subscription stuck after a
   reconnect, OR race condition in BarBuilder for SPY's high tick rate,
   OR Polygon A-channel throttling on SPY specifically.
-- **Why WONTFIX:** Rolling out `rest_polled` live model
-  (`docs/Plan_REST_Polled_Live_Model.md`) eliminates the WS path for
-  affected strategies. Investigating the root cause is lower priority
-  than shipping the REST migration. If we keep ws_agg_locked
-  strategies running long-term, revisit.
+- **Why not fully fixed:** Pure REST polling proved too slow on RTH probe
+  (2026-05-28, p90 8-23s) to drive sub-minute alerts directly. Chosen
+  direction was the hybrid `ws_rest_spliced` (see
+  `/home/kevin/.claude/plans/breezy-dreaming-umbrella.md` and memory
+  `project_ws_rest_spliced_canary.md`). The hybrid surfaces drift
+  events as `verification_status='corrected'` or `'drift_uncorrected'`
+  on the alerts table, so the WS coverage issue is now observable +
+  partially compensated rather than silent. On sub-minute TFs, the
+  `apply_rest_correction` engine path is structurally unable to splice
+  REST into a bar that's already 1-2 bars stale, so REAL drift on
+  sub-minute strategies still shows up as `drift_uncorrected`. Tracking
+  rate over a week to decide whether per-second splice escalation
+  (`project_per_second_splice_idea`) is warranted.
 
 ---
 
