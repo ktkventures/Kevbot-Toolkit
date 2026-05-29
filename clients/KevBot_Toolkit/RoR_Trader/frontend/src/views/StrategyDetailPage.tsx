@@ -3954,14 +3954,18 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                               </td>
                             </tr>
                           ) : recentAlerts
-                            // 2026-05-29 cap pattern. `recentAlerts` is ASC by
-                            // time; we want newest at the top, capped to 100
-                            // (or all). Tag each row with its original index
-                            // so historyMatches.alertMatches[origIdx] still
-                            // resolves correctly.
+                            // 2026-05-29 cap pattern. Explicitly sort DESC by
+                            // entry time (newest first) — don't rely on
+                            // recentAlerts arriving pre-sorted. Then cap to
+                            // 100 unless the user opted to show all. Tag each
+                            // row with its original index so historyMatches.
+                            // alertMatches[origIdx] still resolves correctly.
                             .map((r: any, origIdx: number) => ({ ...r, _origIdx: origIdx }))
-                            .slice()
-                            .reverse()
+                            .sort((a: any, b: any) => {
+                              const aMs = a.entryTime && a.entryTime !== '--' ? safeDateMs(a.entryTime) : 0;
+                              const bMs = b.entryTime && b.entryTime !== '--' ? safeDateMs(b.entryTime) : 0;
+                              return bMs - aMs;  // DESC — newest first
+                            })
                             .slice(0, showAllAlertHistory ? recentAlerts.length : 100)
                             .map((row: any) => {
                             const i = row._origIdx ?? 0;
