@@ -148,6 +148,21 @@ here until either (a) shipped + verified, or (b) explicitly deprecated.
 
 ---
 
+### Live engine fires through confluence whose shadow engine wasn't created
+- **Status:** Known bug, no fix shipped. Workaround: avoid declaring a secondary TF on a hub that already has a strategy using that TF as its primary.
+- **Discovered:** 2026-05-29 while creating TSLA canary sid 264 with `confluence: ['1m-SWING_123-NEUTRAL']`. TSLA hub already had multiple 1Min PRIMARY strategies (sid 174 and the 257-260 cohort), so no shadow engine for (TSLA, 1m) was created. Result was asymmetric:
+  - **Backtest correctly blocks:** the confluence record never populates → gate evaluates as FALSE always → 0 trades produced
+  - **Live incorrectly fires:** sid 264 fired the SAME 28 alerts as its no-confluence twin sid 263 in the same window, as if the gate weren't there
+- **Severity:** Medium-High. As the strategy fleet grows, every additional primary TF rules out using that TF as a secondary across the same hub. The fail-open behavior live means a strategy will produce alerts that backtest disagrees with, masquerading as real divergence.
+- **Location:** Shadow engine creation in `ralph_engine.py` `finalize_shadow_engines` (skips when `has_real=True`); confluence gate evaluation downstream that should respect the "shadow not available" condition rather than fail open.
+- **Two ways to fix:**
+  1. **Live: explicit fail-closed when shadow missing** — if a strategy declares a secondary TF confluence and no shadow exists for that (symbol, TF), live should NOT fire entries that depend on the gate. Matches backtest semantics. Minor code change in the per-bar gate evaluation path.
+  2. **Always create shadow engines for any declared secondary TF**, even when a primary monitor uses the same TF. The shadow's job (computing interpreter states) is distinct from the primary monitor's job (position management). Slightly more memory/CPU but eliminates the asymmetry entirely. Cleaner architectural answer.
+- **Suspected fix path:** Option 2 (always create the shadow) — primary monitors already compute their own interpreter states for trigger evaluation; the shadow's `_mtf_confluence` buffer is a separate concern from the primary's position machine. Splitting them cleanly removes the conflict.
+- **Workaround until fixed:** Use "odd" secondary TFs (2Min, 3Min) that don't conflict with any primary on the hub. Documented in `docs/SOP_Test_Strategy_Creation.md`.
+
+---
+
 ### Mass-builder strategies don't auto-snapshot for 10Sec and 5Min timeframes
 - **Status:** Known UX issue, no immediate code fix shipped. Workaround: manually click "Refresh Data" on each strategy after creation.
 - **Discovered:** 2026-05-29 — 12 TSLA canary strategies (sids 251-262) created via mass builder yesterday; only the four 1Min strategies (257-260) got auto-snapshots at ~13:45-13:51 UTC. The six 10Sec (251-256) and two 5Min (261-262) ended up with `config.engine_snapshot_b64 = False` and `data_refreshed_at = None`, meaning the live engine could never pick them up.
