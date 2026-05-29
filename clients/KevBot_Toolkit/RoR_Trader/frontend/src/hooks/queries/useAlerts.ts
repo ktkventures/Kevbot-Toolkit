@@ -13,10 +13,21 @@ export function useAlerts() {
   });
 }
 
-export function useStrategyAlerts(strategyId: number | null) {
+// 2026-05-29: bumped default limit from API default (50) to 1000 so
+// Strategy Detail's Alert History matches Algo History's "all in one
+// query, paginate client-side" pattern. 50 capped the visible alert
+// table at ~25 paired entry/exit rows even on strategies with thousands
+// of alerts in DB (Kevin caught this comparing alert deltas vs backtest).
+// 1000 is the API max. UI applies its own display cap (default 100)
+// with a "Show all N" toggle, matching the algo-history pattern.
+export function useStrategyAlerts(
+  strategyId: number | null,
+  limit: number = 1000,
+) {
   return useQuery({
-    queryKey: ['alerts', 'strategy', strategyId],
-    queryFn: () => apiFetch<any[]>(`/api/alerts/strategy/${strategyId}`),
+    queryKey: ['alerts', 'strategy', strategyId, limit],
+    queryFn: () =>
+      apiFetch<any[]>(`/api/alerts/strategy/${strategyId}?limit=${limit}`),
     enabled: strategyId !== null,
     refetchInterval: 5000,
   });

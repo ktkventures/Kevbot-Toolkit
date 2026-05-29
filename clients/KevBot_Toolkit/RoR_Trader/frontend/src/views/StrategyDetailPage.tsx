@@ -1496,6 +1496,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // M8.5 B+: expand beyond 100-row cap for algo history (off by default to
   // keep the DOM light; user opts in and accepts the render cost).
   const [showAllAlgoHistory, setShowAllAlgoHistory] = useState(false);
+  // 2026-05-29: mirror the algo-history cap pattern for Alert History.
+  // Default 100 rows visible, toggle to show all (up to the hook's 1000
+  // fetch ceiling). Caught by Kevin — the table was silently capped at
+  // ~25 paired rows because the underlying API default was 50.
+  const [showAllAlertHistory, setShowAllAlertHistory] = useState(false);
   // Chart & Trades history module — left pane source selector. 'algo'
   // compares the live algo lane vs alerts (accountability); 'backtest'
   // compares the canonical backtest lane vs alerts (fidelity-to-target).
@@ -3897,7 +3902,27 @@ export default function StrategyDetailPage({ strategyId }: Props) {
 
                   {/* Alert History (× on chart — actual alert executions) — RIGHT */}
                   <Card>
-                    <h4 className="text-sm font-medium mb-3">Alert History <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>({recentAlerts.length}) &middot; &Delta; vs {histLabel}</span></h4>
+                    <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
+                      <h4 className="text-sm font-medium">
+                        Alert History{' '}
+                        <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+                          (showing {Math.min(recentAlerts.length, showAllAlertHistory ? recentAlerts.length : 100).toLocaleString()} of {recentAlerts.length.toLocaleString()}) &middot; &Delta; vs {histLabel}
+                        </span>
+                      </h4>
+                      {recentAlerts.length > 100 && (
+                        <button
+                          onClick={() => setShowAllAlertHistory(v => !v)}
+                          className="text-xs"
+                          style={{
+                            color: 'var(--accent)', background: 'transparent',
+                            border: 'none', cursor: 'pointer', padding: '2px 6px',
+                          }}
+                          title="Rendering large alert histories can slow page interactions"
+                        >
+                          {showAllAlertHistory ? 'Show recent 100' : `Show all ${recentAlerts.length.toLocaleString()}`}
+                        </button>
+                      )}
+                    </div>
                     <div style={{ overflowX: 'auto', maxHeight: 400, overflowY: 'auto' }}>
                       <table className="w-full text-sm" style={{ borderCollapse: 'collapse' }}>
                         <thead>
@@ -3914,7 +3939,18 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                                 No alerts available — enable monitoring to populate
                               </td>
                             </tr>
-                          ) : recentAlerts.map((row: any, i: number) => {
+                          ) : recentAlerts
+                            // 2026-05-29 cap pattern. `recentAlerts` is ASC by
+                            // time; we want newest at the top, capped to 100
+                            // (or all). Tag each row with its original index
+                            // so historyMatches.alertMatches[origIdx] still
+                            // resolves correctly.
+                            .map((r: any, origIdx: number) => ({ ...r, _origIdx: origIdx }))
+                            .slice()
+                            .reverse()
+                            .slice(0, showAllAlertHistory ? recentAlerts.length : 100)
+                            .map((row: any) => {
+                            const i = row._origIdx ?? 0;
                             const m = historyMatches.alertMatches[i] || { matched: false, entryDelta: null, exitDelta: null };
                             const exitLabel = (row.exitReason || '--').replace(/_/g, ' ');
                             // Compute alert hold time from entry/exit timestamps
