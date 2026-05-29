@@ -68,17 +68,32 @@ def main():
         oh_rows = oh.get("rows") or []
         # Pull paired/phantom/missed by sid for strategies in the backlog
         sids_in_bl = {r.get("strategy_id") for r in rows}
-        print("=== Per-strategy denominator (overview endpoint) ===")
+        # 2026-05-29: prefer the GLOBAL fair counts for cross-strategy
+        # comparison — they apply a single fleet-wide cutoff so identical
+        # strategies actually report identical numbers. Raw counts include
+        # batch-lag at the right edge and produced misleading per-strategy
+        # asymmetry (sid 170 vs 172 case 2026-05-29). Raw counts shown in
+        # parens for context.
+        global_cutoff = (oh_rows[0].get("global_fair_cutoff_ts")
+                          if oh_rows else None)
+        print(f"=== Per-strategy denominator (overview, GLOBAL fair) ===")
+        if global_cutoff:
+            print(f"  Global fair cutoff: {global_cutoff[:19]}")
+            print(f"  (events newer than cutoff excluded as batch-lag)")
         for orow in oh_rows:
             sid = orow.get("strategy_id")
             if sid not in sids_in_bl:
                 continue
-            # Field names per overview endpoint shape
-            p_count = orow.get("phantom_count")
-            m_count = orow.get("missed_count")
-            paired = orow.get("paired_count")
-            print(f"  sid={sid:4d} {orow.get('symbol'):5s} {orow.get('timeframe'):6s} "
-                  f"paired={paired} phantom={p_count} missed={m_count}")
+            p_global = orow.get("phantom_count_global_fair")
+            m_global = orow.get("missed_count_global_fair")
+            paired_global = orow.get("paired_count_global_fair")
+            p_raw = orow.get("phantom_count")
+            paired_raw = orow.get("paired_count")
+            print(f"  sid={sid:4d} {orow.get('symbol'):5s} "
+                  f"{orow.get('timeframe'):6s} "
+                  f"paired={paired_global} phantom={p_global} "
+                  f"missed={m_global}  "
+                  f"(raw: paired={paired_raw} phantom={p_raw})")
         print()
 
     # Dedupe to clusters — events with same (timestamp, edge, event_type)

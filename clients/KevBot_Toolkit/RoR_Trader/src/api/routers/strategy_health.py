@@ -296,6 +296,50 @@ def get_strategy_health(
         missed = len(edges) - paired_edges
         return phantom, missed, paired_alerts
 
+    # 2026-05-29: GLOBAL fair_cutoff — used for cross-strategy comparisons.
+    # The per-strategy `fair_cutoff_dt = min(last_bt_processed, last_alert_at)`
+    # gives each strategy its own cutoff, which can drift by minutes between
+    # otherwise-identical strategies (different batch timing). When you're
+    # comparing strategies, that asymmetry inflates one strategy's phantom
+    # count vs another's even when the underlying alerts/trades are
+    # identical. The GLOBAL cutoff is the EARLIEST per-strategy fair_cutoff
+    # across the ACTIVE fleet — every strategy is then evaluated against
+    # the same absolute time. Important constraints:
+    #   - Only strategies with at least one event in the current window
+    #     contribute (otherwise a strategy that's been dormant for months
+    #     drags the global cutoff back to its last activity).
+    #   - The global cutoff is clamped to window_start so it can never
+    #     pre-date the window itself.
+    _global_fair_cutoff_dt: Optional[datetime] = None
+    for s in strats:
+        sid = s.get("id")
+        agg = per_sid.get(sid)
+        if not agg:
+            continue
+        # Skip strategies that don't have BOTH lanes active in the
+        # window. A strategy with alerts but no recent backtest trades
+        # would otherwise drag the global cutoff back to its last
+        # backtest-processed time — which is exactly the phantom condition
+        # we want to NOT have control the cutoff.
+        _le = _parse_iso(agg.get("latest_entry"))
+        _lx = _parse_iso(agg.get("latest_exit"))
+        _la = _parse_iso(last_alert_per_sid.get(sid))
+        _bt = None
+        for cand in (_le, _lx):
+            if cand is not None and (_bt is None or cand > _bt):
+                _bt = cand
+        if _bt is None or _la is None:
+            continue
+        # Require last_bt_processed AND last_alert_at to both be within the
+        # current window. A strategy that hasn't fired in this window
+        # would otherwise contribute a stale value.
+        if _bt < window_start_dt or _la < window_start_dt:
+            continue
+        _strat_cutoff = min(_bt, _la)
+        if (_global_fair_cutoff_dt is None
+                or _strat_cutoff < _global_fair_cutoff_dt):
+            _global_fair_cutoff_dt = _strat_cutoff
+
     out_rows: List[Dict[str, Any]] = []
     for s in strats:
         sid = s.get("id")
@@ -377,6 +421,25 @@ def get_strategy_health(
             phantom_count_fair = phantom_count
             missed_count_fair = missed_count
             paired_count_fair = paired_count
+
+        # 2026-05-29: GLOBAL fair counts (cross-strategy apples-to-apples).
+        # Use the fleet-wide minimum cutoff so every strategy is filtered
+        # against the same time. Eliminates the per-strategy batch-timing
+        # asymmetry — when two strategies fire identical alerts and have
+        # identical trades, their global_fair counts will match. When
+        # global cutoff differs from per-strategy cutoff, the global is
+        # always earlier (or equal), so global counts ≤ per-strategy
+        # counts.
+        if _global_fair_cutoff_dt is not None:
+            (phantom_count_global_fair,
+             missed_count_global_fair,
+             paired_count_global_fair) = _pair_phantom_missed(
+                edge_isos, alert_unix_list,
+                upper_bound_unix=_global_fair_cutoff_dt.timestamp())
+        else:
+            phantom_count_global_fair = phantom_count_fair
+            missed_count_global_fair = missed_count_fair
+            paired_count_global_fair = paired_count_fair
 
         forward_testing = bool(s.get("forward_testing"))
         is_streaming_eligible = ("entry_trigger_confluence_id" in cfg)
@@ -498,6 +561,17 @@ def get_strategy_health(
             "paired_count_fair": paired_count_fair,
             "fair_cutoff_ts": (fair_cutoff_dt.isoformat()
                                if fair_cutoff_dt else None),
+            # 2026-05-29 — GLOBAL fair counts. Use these for cross-strategy
+            # comparison; the per-strategy `*_fair` counts are still useful
+            # when looking at one strategy in isolation. Both share the
+            # same underlying pairing logic, only the upper-bound cutoff
+            # differs.
+            "phantom_count_global_fair": phantom_count_global_fair,
+            "missed_count_global_fair": missed_count_global_fair,
+            "paired_count_global_fair": paired_count_global_fair,
+            "global_fair_cutoff_ts": (
+                _global_fair_cutoff_dt.isoformat()
+                if _global_fair_cutoff_dt else None),
             "red_flags": red_flags,
             "updated_at": s.get("updated_at"),
             "created_at": s.get("created_at"),

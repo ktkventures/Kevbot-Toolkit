@@ -148,6 +148,21 @@ here until either (a) shipped + verified, or (b) explicitly deprecated.
 
 ---
 
+### Mass-builder strategies don't auto-snapshot for 10Sec and 5Min timeframes
+- **Status:** Known UX issue, no immediate code fix shipped. Workaround: manually click "Refresh Data" on each strategy after creation.
+- **Discovered:** 2026-05-29 — 12 TSLA canary strategies (sids 251-262) created via mass builder yesterday; only the four 1Min strategies (257-260) got auto-snapshots at ~13:45-13:51 UTC. The six 10Sec (251-256) and two 5Min (261-262) ended up with `config.engine_snapshot_b64 = False` and `data_refreshed_at = None`, meaning the live engine could never pick them up.
+- **Severity:** Medium UX. Strategies created via mass builder need an extra manual step to be eligible for live tracking. Particularly annoying because the recent Mass Builder ↔ Update Data alignment work was supposed to make them equivalent — Kevin's expectation was the strategies would "just kick in."
+- **Suspected cause:** Some auto-snapshot path (possibly in `WorkerManager` or a data-worker cron) handles 1Min strategies but not 10Sec / 5Min. Possibly TF-specific routing in `forward_test_service.append_new_trades_for_strategy` or the snapshot-subscribe mechanism. Needs investigation.
+- **Workaround:** From the UI, click "Update Data" / "Refresh Data" on each affected strategy. After the snapshot is created, the live engine's 5-min hot-reload cycle will pick them up.
+- **Quick triage script:**
+  ```python
+  # Find strategies needing refresh
+  c.table('strategies').select('id,symbol,timeframe,config').gte('id', N).execute()
+  # For each: bool((s.get('config') or {}).get('engine_snapshot_b64')) == False → needs refresh
+  ```
+
+---
+
 ### Supabase 522 timeout 2026-05-28 ~21:26Z — origin connection
 - **Status:** Resolved by Supabase project restart (~21:32Z)
 - **Discovered:** 2026-05-28 during divergence investigation
