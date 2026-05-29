@@ -1590,7 +1590,21 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     };
   }), [alerts]);
 
-  // Pair entry/exit alerts into trade rows (for Alert History table on Chart & Trades tab)
+  // Pair entry/exit alerts into trade rows (for Alert History table on Chart & Trades tab).
+  //
+  // 2026-05-29: LIFO pairing (was FIFO via `entries.shift()`). For
+  // single-position strategies, the live engine occasionally fires
+  // "signal-redundant" entry alerts while already in position. If those
+  // bursts mix with the limit-1000 window boundary or with bulk-recompute
+  // events, FIFO pairing would match a very old (still-queued) entry with
+  // a much later exit, producing 30-40+ minute holds that don't reflect
+  // any real trade. LIFO pairs each exit with the MOST RECENT entry,
+  // which is the correct semantic for a single-position strategy (the
+  // most recent entry-signal is what actually opened the live position;
+  // older queued entries were either already closed or are stale).
+  // Caught by Kevin 2026-05-29 — sid 171 alert table showed 35,279-second
+  // holds because FIFO was pairing an entry from 2026-05-27 16:20:23
+  // with an exit at 16:40:36 instead of with the entry at 16:40:34.
   const recentAlerts = useMemo(() => {
     const entries: any[] = [];
     const paired: any[] = [];
@@ -1599,7 +1613,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       if (evt.type === 'ENTRY') {
         entries.push(evt);
       } else if (evt.type === 'EXIT' && entries.length > 0) {
-        const entry = entries.shift();
+        const entry = entries.pop();
         const entryP = entry?.price ?? 0;
         const exitP = evt.price ?? 0;
         const stopP = entry?.stopPrice;
