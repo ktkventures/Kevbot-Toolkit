@@ -131,9 +131,13 @@ function rowSortValue(
     case 'lastBt':    return r.last_backtest_created_age_sec ?? Number.POSITIVE_INFINITY;
     case 'lastAlert': return r.last_alert_age_sec ?? Number.POSITIVE_INFINITY;
     case 'trades':    return -r.trade_count_backtest;
-    case 'paired':    return -(applesToApples ? r.paired_count_fair : r.paired_count);
-    case 'phantom':   return -(applesToApples ? r.phantom_count_fair : r.phantom_count);
-    case 'missed':    return -(applesToApples ? r.missed_count_fair : r.missed_count);
+    // 2026-05-29: when apples-to-apples is ON, use the GLOBAL fair counts
+    // (one fleet-wide cutoff so identical strategies report identical
+    // numbers) rather than per-strategy _fair (each strategy uses its
+    // own cutoff, which drifts and produces misleading asymmetry).
+    case 'paired':    return -(applesToApples ? r.paired_count_global_fair : r.paired_count);
+    case 'phantom':   return -(applesToApples ? r.phantom_count_global_fair : r.phantom_count);
+    case 'missed':    return -(applesToApples ? r.missed_count_global_fair : r.missed_count);
   }
 }
 
@@ -353,7 +357,7 @@ export default function StrategyHealthV1() {
             </label>
             <label
               style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', marginLeft: 8 }}
-              title="Apples-to-apples counts. When ON, Paired/Phantom/Missed only include events older than min(last alert, last backtest update) — events on the lag-tail (alert fired but backtest hasn't caught up yet) are excluded. Without this, the trailing lag inflates phantom counts with false positives."
+              title="Apples-to-apples counts (default ON). When ON, Paired/Phantom/Missed use a SINGLE fleet-wide cutoff so identical strategies report identical numbers — the cutoff is the earliest per-strategy min(last alert, last backtest update) among strategies active in both lanes. Without this toggle (or with it OFF), raw counts include the trailing batch-lag window and inflate phantom counts with false positives that don't reflect real divergence."
             >
               <input
                 type="checkbox"
@@ -555,32 +559,35 @@ export default function StrategyHealthV1() {
                                  ? 'var(--text-muted)' : 'var(--text-primary)' }}>
                     {r.trade_count_backtest}
                   </td>
+                  {/* 2026-05-29 — apples-to-apples ON uses GLOBAL fair counts
+                       (one fleet-wide cutoff). Per-strategy _fair shown in
+                       tooltip for reference along with raw. */}
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',
-                               color: (applesToApples ? r.paired_count_fair : r.paired_count) > 0
+                               color: (applesToApples ? r.paired_count_global_fair : r.paired_count) > 0
                                  ? '#7fd081' : 'var(--text-muted)' }}
                       title={applesToApples
-                        ? `raw: ${r.paired_count} · fair: ${r.paired_count_fair}`
-                        : `raw: ${r.paired_count} · fair (apples-to-apples): ${r.paired_count_fair}`}>
-                    {(applesToApples ? r.paired_count_fair : r.paired_count) || '—'}
+                        ? `global-fair: ${r.paired_count_global_fair} · per-strategy fair: ${r.paired_count_fair} · raw: ${r.paired_count}`
+                        : `raw: ${r.paired_count} · global-fair (apples-to-apples): ${r.paired_count_global_fair} · per-strategy fair: ${r.paired_count_fair}`}>
+                    {(applesToApples ? r.paired_count_global_fair : r.paired_count) || '—'}
                   </td>
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',
-                               color: (applesToApples ? r.phantom_count_fair : r.phantom_count) > 0
+                               color: (applesToApples ? r.phantom_count_global_fair : r.phantom_count) > 0
                                  ? '#ffc107' : 'var(--text-muted)' }}
                       title={applesToApples
-                        ? `raw: ${r.phantom_count} · fair: ${r.phantom_count_fair}`
-                        : `raw: ${r.phantom_count} · fair (apples-to-apples): ${r.phantom_count_fair}`}>
-                    {(applesToApples ? r.phantom_count_fair : r.phantom_count) || '—'}
+                        ? `global-fair: ${r.phantom_count_global_fair} · per-strategy fair: ${r.phantom_count_fair} · raw: ${r.phantom_count}`
+                        : `raw: ${r.phantom_count} · global-fair (apples-to-apples): ${r.phantom_count_global_fair} · per-strategy fair: ${r.phantom_count_fair}`}>
+                    {(applesToApples ? r.phantom_count_global_fair : r.phantom_count) || '—'}
                   </td>
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',
-                               color: (applesToApples ? r.missed_count_fair : r.missed_count) > 0
+                               color: (applesToApples ? r.missed_count_global_fair : r.missed_count) > 0
                                  ? '#ef5350' : 'var(--text-muted)' }}
                       title={applesToApples
-                        ? `raw: ${r.missed_count} · fair: ${r.missed_count_fair}`
-                        : `raw: ${r.missed_count} · fair (apples-to-apples): ${r.missed_count_fair}`}>
-                    {(applesToApples ? r.missed_count_fair : r.missed_count) || '—'}
+                        ? `global-fair: ${r.missed_count_global_fair} · per-strategy fair: ${r.missed_count_fair} · raw: ${r.missed_count}`
+                        : `raw: ${r.missed_count} · global-fair (apples-to-apples): ${r.missed_count_global_fair} · per-strategy fair: ${r.missed_count_fair}`}>
+                    {(applesToApples ? r.missed_count_global_fair : r.missed_count) || '—'}
                   </td>
                   <td style={{ padding: '6px 8px' }}>
                     <button

@@ -100,6 +100,18 @@ export interface StrategyHealthRow {
   /** The upper bound (ISO timestamp) used to compute the _fair counts.
    *  Null when one or both source timestamps are unknown. */
   fair_cutoff_ts: string | null;
+  /** GLOBAL apples-to-apples variants (2026-05-29). Same pairing as
+   *  _fair, but the upper-bound cutoff is computed ONCE across the
+   *  whole active fleet (= the earliest per-strategy cutoff among
+   *  strategies with both alerts AND backtest trades in the window).
+   *  Every strategy is evaluated against the same absolute time, so
+   *  identical strategies report identical numbers. Use these instead
+   *  of the per-strategy _fair counts whenever comparing strategies
+   *  to each other (the UI default for apples-to-apples mode). */
+  phantom_count_global_fair: number;
+  missed_count_global_fair: number;
+  paired_count_global_fair: number;
+  global_fair_cutoff_ts: string | null;
 
   red_flags: StrategyHealthFlag[];
 
