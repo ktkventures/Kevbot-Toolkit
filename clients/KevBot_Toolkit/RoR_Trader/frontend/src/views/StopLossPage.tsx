@@ -150,7 +150,7 @@ function Toggle({ enabled, onChange }: { enabled: boolean; onChange: () => void 
    Detail View Tabs
    ======================================================================== */
 
-function ParametersTab({ pack }: { pack: StopPack }) {
+function ParametersTab({ pack, onParamChange }: { pack: StopPack; onParamChange?: (key: string, val: number) => void }) {
   return (
     <Card>
       <div className="flex items-center justify-between mb-4">
@@ -178,6 +178,16 @@ function ParametersTab({ pack }: { pack: StopPack }) {
               value={param.value as number}
               disabled={pack.isSaved}
               readOnly={pack.isSaved}
+              min={param.min}
+              max={param.max}
+              step={param.step ?? (param.type === 'int' ? 1 : 0.01)}
+              onChange={(e) => {
+                if (pack.isSaved || !onParamChange) return;
+                const v = param.type === 'int'
+                  ? parseInt(e.target.value, 10)
+                  : parseFloat(e.target.value);
+                if (!Number.isNaN(v)) onParamChange(param.key, v);
+              }}
             />
             {param.unit && <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{param.unit}</span>}
             {param.min !== undefined && <span className="text-xs" style={{ color: 'var(--text-muted)' }}>({param.min}{'\u2013'}{param.max})</span>}
@@ -518,7 +528,18 @@ export default function StopLossPage() {
         <TabBar tabs={['Parameters', 'Behavior', 'Preview', 'Code', 'Danger Zone']}>
           {(tab) => (
             <div>
-              {tab === 'Parameters' && <ParametersTab pack={activePack} />}
+              {tab === 'Parameters' && (
+                <ParametersTab
+                  pack={activePack}
+                  onParamChange={isDraft ? (key, val) => {
+                    setDraftPack({
+                      ...activePack,
+                      params: activePack.params.map((p) =>
+                        p.key === key ? { ...p, value: val } : p),
+                    });
+                  } : undefined}
+                />
+              )}
               {tab === 'Behavior' && <BehaviorTab pack={activePack} />}
               {tab === 'Preview' && <PreviewTab pack={activePack} />}
               {tab === 'Code' && <CodeTab pack={activePack} />}
