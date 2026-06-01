@@ -50,6 +50,18 @@ logger = logging.getLogger("data_worker")
 # lane and the legacy append lane agree on what "settled" means.
 LAG_MINUTES = int(os.getenv("ALGO_HISTORY_LAG_MINUTES", "15"))
 
+# Phase 1 workaround for the backtest-snapshot user-pack drop bug
+# (docs/Plan_Backtest_Snapshot_Fix.md). The persistent snapshot's pickle
+# probe fails for importlib-loaded user packs, so resume-from-snapshot
+# ticks see COLD user-pack engines and miss flips that the
+# continuously-warm live engine detects. The tick instead cold-starts
+# over the previous N bars + new bars and discards trades entered in
+# the warmup window. Default 60 covers MACD(12,26,9)'s ~35-bar signal-
+# line warmup. Set to 0 to disable (reverts to current/broken behavior;
+# kept as a rollback path).
+BACKTEST_SNAPSHOT_WARMUP_BARS = int(
+    os.getenv("BACKTEST_SNAPSHOT_WARMUP_BARS", "60"))
+
 # Backtest models the store (Polygon REST 1s bars) can correctly serve.
 REST_BACKTEST_MODELS = {None, "", "rest_only", "rest_hifi"}
 
@@ -359,32 +371,69 @@ def run_store_fed_window(state: StrategyEngineState, store, until_dt: datetime):
     if df is None or len(df) == 0:
         return pd.DataFrame(), state.snapshot_b64, None, 'no_bars'
 
-    # Strip bars at/before the snapshot — already absorbed by a prior
-    # run (mirror services.py:642-652).
+    # Bar-filter timestamp aligned to df.index tz (mirror services.py:642-652).
     last_bar_for_filter = pd.Timestamp(envelope['last_bar_ts'])
     if last_bar_for_filter.tz is None:
         last_bar_for_filter = last_bar_for_filter.tz_localize('UTC')
     if df.index.tz is None:
         last_bar_for_filter = last_bar_for_filter.tz_localize(None)
-    df = df[df.index > last_bar_for_filter]
-    if len(df) == 0:
-        return pd.DataFrame(), state.snapshot_b64, None, 'no_new_bars'
+
+    # Phase 1 warmup-window replay (docs/Plan_Backtest_Snapshot_Fix.md).
+    # Re-process the trailing pre-snapshot bars alongside the new bars
+    # from a COLD engine so user-pack engines (which the persistent
+    # snapshot silently drops) get warmed before they evaluate any
+    # committable bar. Suppress trades whose entry falls in the warmup
+    # window. resume_snapshot is left None on this path — restoring
+    # built-in state and then replaying its own absorbed bars would
+    # double-update running EMAs/MACD/ATR and corrupt the next tick.
+    warmup_n = BACKTEST_SNAPSHOT_WARMUP_BARS
+    if warmup_n > 0:
+        pre_df = df[df.index <= last_bar_for_filter].tail(warmup_n)
+        post_df = df[df.index > last_bar_for_filter]
+        if len(post_df) == 0:
+            return pd.DataFrame(), state.snapshot_b64, None, 'no_new_bars'
+        if len(pre_df) == 0:
+            # Store doesn't cover the warmup window — fall back to plain
+            # snapshot resume for this tick (user packs will be cold, but
+            # we have no warmup bars to fix that).
+            df_run = post_df
+            resume = envelope
+        else:
+            df_run = pd.concat([pre_df, post_df])
+            resume = None
+    else:
+        df_run = df[df.index > last_bar_for_filter]
+        if len(df_run) == 0:
+            return pd.DataFrame(), state.snapshot_b64, None, 'no_new_bars'
+        resume = envelope
 
     enabled_gen = gp_module.get_enabled_general_packs(
         gp_module.load_general_packs())
-    sec_tf_map = get_secondary_tf_map(df)
+    sec_tf_map = get_secondary_tf_map(df_run)
     trades, _enriched, captured_b64 = run_unified_backtest(
-        df, state.strat,
+        df_run, state.strat,
         general_packs=enabled_gen,
         secondary_tf_map=sec_tf_map if sec_tf_map else None,
         include_open_position=False,
         last_bar_partial=False,
-        resume_snapshot=envelope,
+        resume_snapshot=resume,
         return_snapshot=True,
         snapshot_model_id=state.data_source,
     )
+
+    # Drop any trade entered at/before the snapshot boundary — those
+    # belong to the previous window's commit set.
+    if (warmup_n > 0 and isinstance(trades, pd.DataFrame)
+            and len(trades) > 0 and 'entry_fill_ts' in trades.columns):
+        entry_ts = pd.to_datetime(
+            trades['entry_fill_ts'], utc=True, errors='coerce')
+        cutoff = last_bar_for_filter
+        if getattr(cutoff, 'tz', None) is None:
+            cutoff = pd.Timestamp(cutoff).tz_localize('UTC')
+        trades = trades[entry_ts > cutoff].copy()
+
     new_b64 = captured_b64 if captured_b64 is not None else state.snapshot_b64
-    last_bar_ts = df.index[-1]
+    last_bar_ts = df_run.index[-1]
     if not isinstance(trades, pd.DataFrame):
         trades = pd.DataFrame()
     return trades, new_b64, last_bar_ts, 'ok'
