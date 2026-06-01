@@ -25,13 +25,11 @@ import pandas as pd
 
 logger = logging.getLogger("unified_engine")
 
-# Dedupe key for the snapshot_state "not picklable" warning. Each
-# user-pack slug only needs to log this once per process lifetime —
-# subsequent snapshot attempts will produce the same failure, and
-# emitting the warning every forming bar drowns out everything else
-# in the worker logs (was blocking [rest_verifier] observability
-# during M7 canary 2026-05-28).
-_warned_unpicklable_slugs: set[str] = set()
+# (Phase 2 cleanup) The `_warned_unpicklable_slugs` set used to dedupe
+# per-slug pickle-probe warnings in `snapshot_state(persistent=True)`. The
+# probe is gone — `user_pack_state_codec.serialize_pack_state` now extracts
+# `__dict__` instead of pickling the engine instance, so importlib-loaded
+# pack classes serialize cleanly.
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -838,45 +836,40 @@ class IncrementalIndicatorEngine:
         self._initialized = True
 
     def snapshot_state(self, persistent: bool = False):
-        # 2026-05-28 (Phase A): split into in-memory vs persistent modes.
-        # In-memory (default) — for apply_last_bar_correction,
-        # apply_bar_correction (multi-bar replay), compute_tentative_state.
-        # deepcopy only, INCLUDE all user packs (synthetic-module classes
-        # deepcopy fine even though they can't pickle). State survives
-        # restore + replay cleanly. This unlocks the existing rebroadcast
-        # correction path that was silently rebuilding UT Bot v4
-        # _trail_stop from scratch on every drift event.
-        # Persistent (persistent=True) — for serialize_backtest_snapshot
+        # Two modes for two callers.
+        # In-memory (default) — apply_last_bar_correction, apply_bar_
+        # correction (multi-bar replay), compute_tentative_state. Stores
+        # deepcopies of the live user-pack engine instances; restored
+        # in-process so synthetic-module classes round-trip fine.
+        # Persistent (persistent=True) — serialize_backtest_snapshot,
         # which base64-encodes the pickled envelope into
-        # strategies.config.engine_snapshot_b64. Keep the pickle probe so
-        # we can drop un-picklable packs early; on resume those engines
-        # warmup from scratch on the new data window.
+        # `strategies.config.engine_snapshot_b64`. Uses
+        # user_pack_state_codec to extract each engine's `__dict__` into
+        # a pickle-safe dict, bypassing the importlib synthetic-class
+        # problem that previously dropped ALL user-pack state on persist
+        # (root cause of the fleet-wide phantom rate fixed in Phase 2
+        # 2026-06-01; see docs/Plan_Backtest_Snapshot_Fix.md).
         import copy
         packs_out: dict = {}
         if persistent:
-            import pickle as _pickle
+            from user_pack_state_codec import (
+                serialize_pack_state, PackStateCodecError)
             for slug, eng in getattr(self, '_user_pack_engines', {}).items():
                 try:
-                    deep = copy.deepcopy(eng)
-                    _pickle.dumps(deep)
-                    packs_out[slug] = deep
-                except Exception as e:
-                    if slug not in _warned_unpicklable_slugs:
-                        _warned_unpicklable_slugs.add(slug)
-                        logger.warning(
-                            "snapshot_state(persistent=True): user-pack "
-                            "engine %r dropped — not picklable (%s). On "
-                            "resume this indicator will warmup from "
-                            "scratch on the new data window. (further "
-                            "occurrences silenced for this slug)", slug, e)
+                    packs_out[slug] = serialize_pack_state(eng)
+                except PackStateCodecError as e:
+                    # A pack's explicit override failed or returned the
+                    # wrong type — surface immediately, do not silently
+                    # drop. This is the contract; pack authors must fix.
+                    logger.error(
+                        "snapshot_state(persistent=True): codec error for "
+                        "user-pack %r: %s. Pack state will be missing from "
+                        "this snapshot until the override is fixed.", slug, e)
         else:
             for slug, eng in getattr(self, '_user_pack_engines', {}).items():
                 try:
                     packs_out[slug] = copy.deepcopy(eng)
                 except Exception as e:
-                    # deepcopy failure is genuinely unexpected on these
-                    # classes — log distinctly so we notice if it ever
-                    # happens, but degrade gracefully like persistent does.
                     logger.warning(
                         "snapshot_state(in-memory): deepcopy failed for "
                         "user-pack %r: %s. Skipping; will warmup from "
@@ -888,12 +881,43 @@ class IncrementalIndicatorEngine:
         )
 
     def restore_state(self, snap) -> None:
-        """Restore a snapshot_state() token in place."""
+        """Restore a snapshot_state() token in place.
+
+        `packs` may be either a dict of deepcopied engine instances (the
+        in-memory path) or a dict of state envelopes from
+        user_pack_state_codec.serialize_pack_state (the persistent path).
+        Dispatch is by value type — dicts go through the codec; anything
+        else is treated as a live instance.
+        """
+        from user_pack_state_codec import restore_pack_state, PackStateCodecError
         state, initialized, packs = snap
         self.state = state
         self._initialized = initialized
-        if packs:
-            self._user_pack_engines = packs
+        if not packs:
+            return
+        live_engines = getattr(self, '_user_pack_engines', {}) or {}
+        for slug, payload in packs.items():
+            if isinstance(payload, dict):
+                # Persistent codec envelope. Apply onto the freshly-init
+                # engine instance that `UnifiedStrategy.__init__` already
+                # created for this strategy. If the engine isn't in
+                # live_engines (e.g. strategy edited mid-resume) skip.
+                eng = live_engines.get(slug)
+                if eng is None:
+                    logger.warning(
+                        "restore_state: snapshot has packs[%r] but no live "
+                        "engine to restore into — skipping", slug)
+                    continue
+                try:
+                    restore_pack_state(eng, payload)
+                except PackStateCodecError as e:
+                    logger.error(
+                        "restore_state: codec error for user-pack %r: %s. "
+                        "Engine left at fresh init state.", slug, e)
+            else:
+                # In-memory deepcopy path — replace the engine wholesale.
+                live_engines[slug] = payload
+        self._user_pack_engines = live_engines
 
     def apply_last_bar_correction(self, df: pd.DataFrame) -> bool:
         """O(1) re-sync after a Polygon rebroadcast corrected ONLY the

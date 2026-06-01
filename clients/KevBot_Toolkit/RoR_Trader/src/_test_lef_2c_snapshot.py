@@ -237,6 +237,118 @@ def test_corrupt_b64_returns_none():
     print("  ✓ corrupt/empty b64 returns None (no raise)")
 
 
+def test_userpack_state_through_snapshot_envelope():
+    """Phase 2 (2026-06-01): the persistent snapshot used to drop ALL
+    user-pack engine state because pickle could not serialize importlib-
+    loaded pack classes. With `user_pack_state_codec`, each engine's
+    `__dict__` is extracted into a pickle-safe dict before pickling.
+
+    This test loads a real pack (ut_bot_v4), injects it into an
+    IncrementalIndicatorEngine, warms it with bars, runs through the full
+    serialize → b64 → deserialize → restore flow, and verifies the
+    restored engine carries identical state — proving the previously-
+    dropped user-pack state survives the envelope round-trip.
+    """
+    import importlib.util
+    import pickle
+    import base64
+
+    # Load ut_bot_v4 incremental class directly (no pack_registry — we
+    # only need the class).
+    pack_path = os.path.normpath(os.path.join(
+        HERE, '..', 'user_packs', 'ut_bot_v4', 'indicator_incremental.py'))
+    spec = importlib.util.spec_from_file_location(
+        '_codec_test_utbotv4', pack_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    UtBotV4 = mod.UtBotV4Incremental
+
+    # Build an engine instance with the pack registered as a user-pack.
+    # We use UnifiedStrategy's machinery loosely — IncrementalIndicatorEngine
+    # is the moving part for snapshot/restore.
+    from unified_engine import IncrementalIndicatorEngine
+
+    strat_a = UnifiedStrategy(_make_strategy(), general_packs=None)
+    eng_a = strat_a.indicators
+    pack_a = UtBotV4()
+    eng_a._user_pack_engines = {'ut_bot_v4': pack_a}
+
+    # Warm the pack with 50 bars.
+    df = _make_df(50)
+    for i in range(len(df)):
+        row = df.iloc[i]
+        pack_a.update_bar({
+            'open': float(row['open']), 'high': float(row['high']),
+            'low': float(row['low']), 'close': float(row['close']),
+            'volume': float(row['volume']),
+            'timestamp': df.index[i],
+        })
+    # Capture state for the assertion below — copy so we can mutate pack_a
+    # afterwards without affecting the reference.
+    import copy as _copy
+    expected_attrs = _copy.deepcopy(pack_a.__dict__)
+
+    # Persistent-mode snapshot → envelope round-trip via pickle.
+    snap = eng_a.snapshot_state(persistent=True)
+    state, initialized, packs = snap
+    assert 'ut_bot_v4' in packs, (
+        f"user-pack state should be in snapshot; got {list(packs)}")
+    assert isinstance(packs['ut_bot_v4'], dict), (
+        f"persistent snapshot should be codec dict, "
+        f"got {type(packs['ut_bot_v4']).__name__}")
+
+    envelope = {
+        'schema_version': SNAPSHOT_SCHEMA_VERSION,
+        'fingerprint': 'fp',
+        'model_id': 'test',
+        'last_bar_ts': str(df.index[-1]),
+        'engine': snap,
+        'position': None,
+    }
+    b64 = base64.b64encode(pickle.dumps(envelope)).decode('ascii')
+    restored = pickle.loads(base64.b64decode(b64))
+
+    # Build a fresh strategy with its own fresh pack instance — this
+    # mirrors production: a new worker boot constructs UnifiedStrategy,
+    # which populates _user_pack_engines with FRESH instances, then
+    # apply_backtest_snapshot restores state onto them.
+    strat_b = UnifiedStrategy(_make_strategy(), general_packs=None)
+    eng_b = strat_b.indicators
+    pack_b = UtBotV4()
+    eng_b._user_pack_engines = {'ut_bot_v4': pack_b}
+    eng_b.restore_state(restored['engine'])
+
+    # Fresh pack_b instance now carries pack_a's warmed state.
+    restored_attrs = pack_b.__dict__
+    mismatches = []
+    for k in sorted(set(expected_attrs) | set(restored_attrs)):
+        e, r = expected_attrs.get(k), restored_attrs.get(k)
+        if e != r:
+            try:
+                if abs(float(e) - float(r)) < 1e-12:
+                    continue
+            except (TypeError, ValueError):
+                pass
+            mismatches.append(f"{k}: {e!r} vs {r!r}")
+    if mismatches:
+        raise AssertionError(
+            "ut_bot_v4 state diverged through codec+envelope round-trip:\n  "
+            + "\n  ".join(mismatches))
+
+    # Sanity: feed both packs the same next bar; outputs must match.
+    next_bar = {'open': 110.0, 'high': 110.5, 'low': 109.5,
+                'close': 110.2, 'volume': 1000.0,
+                'timestamp': df.index[-1] + pd.Timedelta(minutes=1)}
+    out_a = pack_a.update_bar(dict(next_bar))
+    out_b = pack_b.update_bar(dict(next_bar))
+    if out_a != out_b:
+        raise AssertionError(
+            f"post-restore divergence on next bar: a={out_a} b={out_b}")
+
+    print(f"  ✓ ut_bot_v4 state survives codec + pickle envelope round-trip "
+          f"({len(expected_attrs)} attrs, next-bar output identical)")
+
+
 if __name__ == '__main__':
     print("\n=== LEF 2c snapshot smoke test ===\n")
     test_fingerprint_stability_and_change()
@@ -244,4 +356,5 @@ if __name__ == '__main__':
     test_resume_equals_full()
     test_schema_version_mismatch()
     test_corrupt_b64_returns_none()
+    test_userpack_state_through_snapshot_envelope()
     print("\n=== ALL PASS ===\n")

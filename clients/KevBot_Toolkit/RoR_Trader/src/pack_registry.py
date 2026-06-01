@@ -336,6 +336,22 @@ def load_single_pack(pack_dir: Path) -> RegisteredPack:
     except Exception as e:
         # Audit failure should never block pack load
         warnings.append(f"audit_trigger_levels crashed: {e}")
+
+    # State-protocol validation (Phase 2 codec). Checks that the
+    # incremental class is compatible with `user_pack_state_codec` —
+    # hard errors on inconsistent serialize_state/restore_state override,
+    # warnings on exotic __dict__ types that the generic codec can't
+    # round-trip. See `pack_spec.validate_state_protocol` for the rules.
+    if incremental_class is not None:
+        try:
+            from pack_spec import validate_state_protocol
+            sp_errors, sp_warnings = validate_state_protocol(incremental_class)
+            if sp_errors:
+                errors.extend(sp_errors)
+            warnings.extend(sp_warnings)
+        except Exception as e:
+            warnings.append(f"validate_state_protocol crashed: {e}")
+
     if warnings:
         for w in warnings:
             print(f"⚠️  [pack_registry] {slug}: {w}")

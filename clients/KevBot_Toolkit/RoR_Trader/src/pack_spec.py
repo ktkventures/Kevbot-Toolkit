@@ -945,3 +945,94 @@ def validate_column_contract(
         )
 
     return (len(errors) == 0), errors
+
+
+# Types the generic state codec round-trips safely. A pack class storing
+# anything else in `__dict__` should either restrict itself to this set
+# (preferred) or opt in to explicit serialize_state/restore_state methods.
+_STATE_PROTOCOL_SAFE_TYPES = (int, float, bool, str, type(None), list, dict)
+
+
+def validate_state_protocol(incremental_class) -> Tuple[List[str], List[str]]:
+    """Verify a pack's incremental class is compatible with the persistent
+    state codec (`user_pack_state_codec.py`).
+
+    Returns `(errors, warnings)`. Errors block registration; warnings do not.
+
+    Rules (Phase 2 lenient v1):
+    - HARD ERROR: defining `serialize_state` without `restore_state` (or
+      vice versa). The codec dispatches on both-present; an inconsistent
+      override is silently ignored, which breaks the contract.
+    - WARNING: instantiating the class with no args populates `__dict__`
+      with a non-pickle-safe type (numpy array, instance of another
+      class, etc.). Generic codec stores `dict(__dict__)`, which pickle
+      handles for primitives + lists + dicts + pandas.Timestamp. Anything
+      exotic should be migrated to the opt-in protocol.
+
+    Pack class is expected to accept `**params` with all params optional
+    (mirrors the existing pack convention). If the class can't be
+    instantiated without args, we emit a single warning and skip the
+    attr inspection — registration is unaffected.
+    """
+    errors: list = []
+    warnings: list = []
+
+    if incremental_class is None:
+        return errors, warnings
+
+    has_serialize = callable(getattr(incremental_class, 'serialize_state', None))
+    has_restore = callable(getattr(incremental_class, 'restore_state', None))
+    if has_serialize != has_restore:
+        which = 'serialize_state' if has_serialize else 'restore_state'
+        other = 'restore_state' if has_serialize else 'serialize_state'
+        errors.append(
+            f"{incremental_class.__name__} defines `{which}` without "
+            f"`{other}`. The codec dispatches on both-present; defining "
+            f"only one is a silent contract bug. Add the missing method "
+            f"(see user_pack_state_codec docstring) or remove the existing "
+            f"one to fall back to the generic codec."
+        )
+        return errors, warnings
+
+    if has_serialize:
+        # Explicit override — pack owns its own state shape. Skip attr walk.
+        return errors, warnings
+
+    try:
+        eng = incremental_class()
+    except Exception as e:
+        warnings.append(
+            f"{incremental_class.__name__} could not be instantiated with "
+            f"no args ({e}). State-protocol attr-type check skipped. If "
+            f"this pack works at runtime, fine — but ensure all `__init__` "
+            f"params have defaults so the validator can introspect."
+        )
+        return errors, warnings
+
+    # Detect attrs whose type isn't safe for the generic codec's pickle path.
+    # pandas.Timestamp is allowed via lazy isinstance check (don't import
+    # pandas unconditionally — keeps pack_spec light).
+    try:
+        import pandas as _pd
+        _pd_Timestamp = _pd.Timestamp
+    except Exception:
+        _pd_Timestamp = None
+
+    exotic: list = []
+    for k, v in vars(eng).items():
+        if isinstance(v, _STATE_PROTOCOL_SAFE_TYPES):
+            continue
+        if _pd_Timestamp is not None and isinstance(v, _pd_Timestamp):
+            continue
+        exotic.append(f"{k}: {type(v).__module__}.{type(v).__name__}")
+
+    if exotic:
+        warnings.append(
+            f"{incremental_class.__name__} stores non-codec-safe attrs in "
+            f"__dict__: {exotic}. The generic codec may fail at "
+            f"snapshot/restore. Either restrict state to "
+            f"(int|float|bool|str|None|list|dict|Timestamp) or implement "
+            f"explicit serialize_state + restore_state methods."
+        )
+
+    return errors, warnings
