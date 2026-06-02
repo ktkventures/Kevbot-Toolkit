@@ -14,6 +14,151 @@ here until either (a) shipped + verified, or (b) explicitly deprecated.
 
 ## Active
 
+### User-pack confluence gates silently fail on secondary timeframes (Phase 2 fleet)
+- **Status:** RECHARACTERIZED 2026-06-02 evening — NOT a code defect, IS a silent live-engine stale-state bug. See "Update" section below.
+- **Discovered:** 2026-06-02 — verified across all 15 user packs via PACKTEST canaries
+- **Severity:** **HIGHEST** — affects every production strategy that uses any user pack as a cross-TF confluence gate. Confluence requirements that should restrict entries are evaluating as "never satisfied" (or never blocking, depending on the gate semantics). The strategy fires entries that don't conform to the user's intended gate logic. **Today's quantified empirical impact: 14 of 15 PACKTEST gate canaries fired 0 alerts over a full trading day** while their trigger-mode siblings fired 3-367 alerts each.
+- **Quantified scope (2026-06-02 13:30-20:30 UTC):**
+  - TRIGGER canaries (pack as the entry signal): 15/15 fired alerts (range 3-367)
+  - GATE canaries (pack as a 2-minute confluence requirement): **14/15 fired 0 alerts**
+  - Only exception: Swing 1-2-3 gate (sid 301) fired 204 alerts. Hypothesis: its `NEUTRAL` state is the engine's default-when-unset value, so the gate passes by default regardless of whether the pack computed anything on the secondary TF.
+- **Affected packs (gate canary sid in parens, all 0 alerts unless noted):**
+  - Bollinger Bands (sid 277), EMA Price Position v3 (279), EMA Price Position v4 (281), EMA Stack v2 (283), MACD Histogram v2 (285), MACD Line v2 (287), RSI Zones 2 (289), Relative Volume v2 (291), Support Resistance Channels (293), Stochastic Oscillator (295), Strat Assistant (297), SuperTrend (299), UT Bot V4 (303), VWAP v2 (305)
+- **Hypothesis (high-confidence, code review pending):** The live engine's `_ShadowIndicatorEngine` for secondary timeframes (the layer that computes cross-TF confluence — Phase 30L) **does not instantiate user-pack incremental engines** for the secondary TF. Only the PRIMARY-TF `_user_pack_engines` exist and get fed bars. When a gate references `2m-MACD_LINE_V2-M>S+`, the engine looks up the 2m MACD_LINE_V2 state — which was never computed because no 2m MACD_LINE_V2 engine exists — and returns "no state." The "no state" return then evaluates falsy against any specific state requirement.
+- **Why Swing 1-2-3 passes:** the swing pattern state machine defaults to `NEUTRAL` between confirmed patterns. Even with no computation, requesting `NEUTRAL` returns true. Other packs require an actively-computed state name that's only produced after engine ingestion.
+- **Why this wasn't caught earlier:** the Phase 2 codec fix this morning addressed *primary-TF* user-pack state persistence in the persistent snapshot. It did not address the secondary-TF engine instantiation gap. The bug was masked previously by:
+  - The fleet phantom-rate noise floor (24-95%) under the original snapshot bug — secondary-TF gate failures were a small contribution to a much bigger problem
+  - Most production strategies were using SWING_123 NEUTRAL or similar default-passing states, hiding the issue
+  - Today's PACKTEST canaries deliberately exercise a wide variety of specific-state gates → finally exposed the gap
+- **Investigation TODO:**
+  - Read `unified_engine.py` around the `_ShadowIndicatorEngine` class (also see memory `feedback_polygon_xtf_live_regression.md` for prior Phase-30L bug context)
+  - Confirm: does the secondary engine instantiate `_user_pack_engines` from `pack_registry`?
+  - Confirm: does the secondary engine receive bar feeds on the secondary TF cadence?
+  - Check the cross-TF gate evaluator: how does it resolve a state value for a secondary-TF user-pack interpreter? Does it call into the pack's interpreter function, or read a pre-computed column?
+- **Repro:** open My Strategies page, look at any PACKTEST `· gate` canary other than Swing 1-2-3 — alert count = 0 over many hours. Compare to its trigger sibling which fires actively.
+- **Workaround:** none safe. Users currently relying on user-pack confluence gates are not getting the gate behavior they expect. Strategies fire on raw triggers regardless of the gate's state. This is the case for most of the user's production confluence configurations (e.g., `5m-MACD_LINE_V2-M<S+`, `10m-STOCHASTIC_OSCILLATOR-BULLISH_MIDRANGE`).
+- **Implication for past phantom-rate readings:** strategies appearing healthy (low phantom rate) with cross-TF user-pack gates may have been "healthy" only because both lanes were producing the same gate-bypass behavior. The backtest and live engine likely BOTH skip the gate — making them agree even though the gate is broken. Real verification requires built-in confluence (EMA_STACK, MACD_LINE which are BUILT-IN, not user-pack) on the secondary TF.
+
+#### Update 2026-06-02 evening — rediagnosed via GATE-DIAG diagnostic deploy
+
+Deployed `logger.info` instrumentation in `_ShadowIndicatorEngine.__init__` and `on_bar_close` (commit `734e03e`). Within 4 minutes of the worker restart that the deploy triggered, **8 of 14 previously-silent gate canaries started firing alerts** (sids 277, 283, 285, 287, 293, 299, 301, 305 — 2 alerts each). The GATE-DIAG output showed shadow engines were correctly:
+- Instantiating `_user_pack_<slug>` engines from req_ind (e.g., the 2m shadow had all 15 pack engines)
+- Producing pack indicator columns into `current` after `update_bar` (mhv2_hist, mlv2_line, etc.)
+- Dispatching user-pack interpreters and emitting state into `interps`
+- Building confluence records in the correct format (`2M-MACD_HISTOGRAM_V2-H+up`, etc.) that match the strategy's normalized confluence_set
+
+**The bug is NOT a code defect in the gate-evaluation path.** The instrumented code paths work correctly when freshly booted. Some state in the long-running ralph_engine worker gets stale or silently fails over time, and the symptom is "cross-TF user-pack confluence stops contributing to the gate evaluation." A restart heals it.
+
+This is in the same class as the data-worker silent stale-roster bug (see entry below). The watchdog task (#21) was scoped to data_worker only; **it should be expanded to cover ralph_engine too** — periodically self-test that secondary-TF user-pack shadow engines are still producing the expected confluence records, and force a re-init if they're not.
+
+**Status updated to RECHARACTERIZED.** Will not be fixed by the user-pack-engine wiring change I originally proposed. Investigation should pivot to:
+1. What state degrades in the ralph_engine over time that breaks shadow user-pack flow?
+2. Why does the existing 5-min `STRATEGY_REFRESH_INTERVAL` reload not heal it?
+3. Add observability + watchdog so we don't need a restart to recover.
+
+The 6 gate canaries that didn't fire post-restart (RSI Zones 2, RVOL v2, Stochastic, Strat Assistant, UT Bot V4, Swing 1-2-3) all have restrictive state requirements (EXTREME_OVERBOUGHT, EXTREME, OVERBOUGHT_BEARISH, INSIDE, BULL_TREND, NEUTRAL) that may legitimately not have been met in the post-deploy window. Need more market hours to confirm those work too.
+
+---
+
+### Data-worker silently keeps a stale strategy roster — only fixable by restart
+- **Status:** OPEN
+- **Discovered:** 2026-06-02 (Kevin deleted ~50 strategies from the DB via UI; worker continued reporting `engines=64` for 23+ hours through multiple 5-min reload cycles)
+- **Severity:** **Medium-high** — operationally invisible. Worker keeps ticking "ghost" engines (snapshot flush attempts to deleted strategy IDs trip the circuit breaker → real ticks get skipped → lag grows linearly). Only signal a user sees is "snapshots aren't refreshing" on the strategy-health UI; no error log is emitted that points at the root cause.
+- **Location:** `src/data_worker.py:328-409` — `_load_streaming_strategies()` is supposed to add/remove engines on a `STRATEGY_RELOAD_INTERVAL` cadence (5 min). For 23h+, the engines dict held 64 entries despite the DB only having ~15. No `[stream] tracking N strategies` log line appeared in 2000+ lines of worker output during that period — the reload's success-path logger.info at line 404 wasn't firing, but the metrics thread was still emitting the stale `engines=64` count from `self._engines`.
+- **Symptom on the worker metrics:**
+  - `engines=N` is stuck at the count from the last successful boot/reload
+  - `circuit=OPEN(opens 1) skips=40+` — flushes/inserts against deleted strategy IDs trip the breaker
+  - `lag_max` grows linearly (no real ticks happening)
+  - `trades_written` near zero
+- **Symptom on the strategy-health UI:**
+  - Strategies show snapshot ages of 16-17 hours (matching the time of the last bulk UAD) instead of refreshing on the normal 5-min cadence
+  - Combined with the `strategy_health` pagination bug (fixed `d4e5dc8`), looks like 100% phantom rate even on healthy strategies
+- **Root-cause hypotheses (not narrowed further):**
+  - The streaming thread died on an uncaught `BaseException` (KeyboardInterrupt-class or in-process error). The `try/except Exception` at `data_worker.py:422-424` doesn't catch these. Metrics thread keeps reading the dict.
+  - `load_all_desired_states()` HTTP call hung indefinitely (no explicit timeout) during a Supabase 522 window, blocking the reload. We hit several 522s on 2026-06-02 morning.
+  - Some lock contention or generator state in `_load_streaming_strategies` left the reload short-circuiting silently.
+- **Fix:** force redeploy via `railway variable set RESTART_ANCHOR=...` — `engines=64` snapped to `engines=15` immediately on restart, snapshots resumed refreshing within ~14 min.
+- **Mitigations to ship:**
+  - Add a heartbeat `logger.info("[stream] pass tick, last_reload_age=%ss")` at the top of `_streaming_pass()` so next occurrence shows whether the thread is even running.
+  - Wrap `_load_streaming_strategies()` calls in a watchdog that escalates to `logger.error` if more than 2× `STRATEGY_RELOAD_INTERVAL` elapses with no reload completion.
+  - Add HTTP timeouts on `load_all_desired_states()` and `load_strategies_monitoring_admin()` (currently rely on PostgREST/Supabase defaults).
+- **NOT to confuse with:** the `strategy_health` 50k-row pagination bug (fixed in `d4e5dc8`). Both surfaced as "endpoint reports wrong numbers" but the root causes are independent.
+
+---
+
+### Streaming-tick backtest path under-fires ~7% vs warm recompute
+- **Status:** OPEN
+- **Discovered:** 2026-06-01 (during Phase 2 verification, sid 263 + 268 snapshot diff)
+- **Severity:** Medium — accounts for the residual ~5-8% phantom rate that persists after the Phase 2 user-pack codec fix. Pre-existing structural behavior that Phase 2 didn't introduce but now sits at the top of the noise floor.
+- **Location:** Most likely `src/unified_engine.py:3371-3395` (`apply_backtest_snapshot` — Tier 3 §8.2 always-start-flat). Possibly also `src/data_worker_engine.py:run_store_fed_window` boundary handling.
+- **Symptom:** The data-worker streaming-tick path produces a strict SUBSET of warm-recompute trades over the same window — every streaming-tick trade is a true positive (matches warm-recompute on `entry_fill_ts` exactly + `entry_price` within $0.01), but the streaming-tick path misses ~7% of flips that warm-recompute catches. Missed trades are scattered across the window (not clustered around any obvious boundary).
+- **Hard evidence (sid 263 + 268, 2026-06-01 18:36 → 20:00 UTC):**
+  - sid 263: 30 streaming-tick trades / 33 warm-recompute trades — 30/30 (100%) match on timestamp + sub-cent price; 3 only-in-recompute.
+  - sid 268: 39 streaming-tick trades / 43 warm-recompute trades — 39/39 (100%) match; 4 only-in-recompute.
+  - Combined: 100% precision, ~93% recall.
+  - Examples of "only in recompute" trades: sid 263 entry @ 2026-06-01T18:44:30, 19:55:30; sid 268 entry @ 19:25:50, 19:52:30. All on bar boundaries. None have a corresponding streaming-tick trade within ±60s.
+- **Hypothesis (not yet confirmed):** Tier 3 §8.2 always-start-flat. Every streaming tick resumes with `position=FLAT` regardless of what the prior tick had open. If a flip happens early in the new tick window where the warm-recompute would have been `IN_POSITION` (and would have exited normally before entering the next), the FLAT-start streaming-tick takes a different path through the position state machine. Some entries fall in the gap. Tier 3 §4.1 says "pre-boundary window owns any open trade" — but if a strategy's previous backtest run stopped *before* the gap-trade's entry (which is the case for newly-deployed Phase 2 strategies that haven't been recomputed yet), the trade is nobody's.
+- **Why this is separate from the Phase 2 codec bug:** Phase 2 fixed *user-pack state being dropped* on persist. This bug is about *position state* being deliberately reset to FLAT on resume (Tier 3 design choice). The two are independent — Phase 2 unmasked this residual because the codec removed the dominant noise source (24-95% phantom rates from cold packs).
+- **Investigation plan:**
+  - Run Layer 4 walkthrough on a sample of "only in recompute" trades — pull surrounding bars, position state, prior-tick boundaries.
+  - Quantify: what % of UAD-vs-streaming diff falls exactly on a tick boundary (where Tier 3 §8.2 would manifest) vs. scattered (which would point elsewhere)?
+  - Test hypothesis: would carrying position state across the snapshot boundary (Tier 3 §8.5 collapse) eliminate the gap? See [[project-tier3-85-engine-unification]] memory — task #25 is the long-form fix.
+- **NOT a Phase 2 regression.** Pre-existing; Phase 2 just made it visible by removing the bigger bug on top. Quantify, classify, then decide if it warrants the §8.5 collapse work or a lighter targeted fix.
+
+---
+
+### Backtest snapshot drops ALL user-pack state — fleet-wide phantoms
+- **Status:** FIXED-PENDING-VERIFY (Phase 2 codec shipped 2026-06-01 at `f006937`; verified working on sid 263/268 same day — 100% precision on streaming-tick trades vs warm recompute. 24h fleet-wide stability check still owed.)
+- **Discovered:** 2026-05-29 (investigating TSLA-263 phantom-rate root cause; bug existed since Phase A snapshot redesign on 2026-05-28)
+- **Severity:** **HIGHEST** — pollutes Layer 2 phantom counts and Layer 3 fill deltas across every strategy in the fleet that runs in snapshot-resume mode (i.e., everything past its `last_recompute_until_ts`)
+- **Location:**
+  - `src/unified_engine.py:3287-3319` — `serialize_backtest_snapshot` calls `snapshot_state(persistent=True)`
+  - `src/unified_engine.py:856-871` — the `persistent=True` branch runs `pickle.dumps(deep)` as a probe; importlib-loaded user packs fail this probe and get silently dropped from `packs_out`
+  - `src/unified_engine.py:890-896` — `restore_state` skips assignment when `packs` is empty (`if packs:`), so `_user_pack_engines` keeps the fresh `__init__` values
+  - `src/data_worker_engine.py:323-390` — `run_store_fed_window` calls the above on every tick
+- **Symptom:** Strategy's stored backtest has multi-minute gaps where live alerts fired. Each backtest snapshot-resume tick has a COLD UT Bot v4 (and all other user packs), so the indicator's `_atr` / `_trail_stop` / `_position` never accumulate across ticks. Tick processes too few bars per cycle (gated by `LAG_MINUTES=15`) for cold state to converge. Result: backtest misses entry/exit flips that live (continuously warm) engine detects.
+- **Hard evidence (sid 263):**
+  - From-scratch `UtBotV4Incremental` on Polygon REST 1Sec→10Sec (full 2h warmup) matches live `bar_engine_states` to 0.001 on `trail_stop` at every critical bar. All 5 flips fire on same bars. Indicator code is correct.
+  - Bar OHLC values are bit-identical between live and REST (verified at 18:54:20: o=436.392 h=436.5 l=436.36 c=436.4899). Bar data is consistent.
+  - Decoded `strategies.config.engine_snapshot_b64` for sid 263 (last_bar_ts=19:48:20): `packs in snapshot (0 entries): []`. UT Bot v4 is NOT in the saved snapshot.
+- **Why Phase A authors knew about it:** The comment at `unified_engine.py:869` says explicitly: *"on resume this indicator will warmup from scratch on the new data window."* They consciously deferred the backtest-side fix when shipping Phase A's live-side fixes on 2026-05-28.
+- **Why fresh canaries look clean:** A fresh canary's FIRST backtest is a full recompute (no snapshot resume), so user packs warm up across hours of history. Phantoms only appear after the first snapshot is saved and tick-mode kicks in. Sid 263 was created today; its phantom rate grew over the day as snapshot-resume took over.
+- **Why built-ins are unaffected:** Built-in indicator state (`atr_value`, `ema`, `macd_*`, etc.) lives on the `IndicatorState` class, which pickles cleanly. The pickle-probe drop only hits the `_user_pack_engines` dict.
+- **What this explains across the fleet:**
+  - Sid 263's gap pattern (18:51:10 → 18:57:40 with no backtest trade despite live alerts at 18:54:30 and 18:55:10).
+  - The TSLA-263 24% vs SPY-268 14% phantom-rate split — noise within the broader bug, not a real symbol-specific effect.
+  - The Layer 3 entry-delta outliers on the SPY 10Sec cohort — older strategies have more accumulated snapshot-resume cycles, more drift.
+  - The mlv2 missed-entries we saw in the walkthrough — same root cause for any user-pack-based strategy, not just UT Bot v4.
+- **Fix options (see session_2026-05-29 memory for full pros/cons):**
+  - **(A) `__getstate__`/`__setstate__` per pack** — pickle-based, ~10 LOC/pack × 16 packs
+  - **(B) Custom `serialize_state()` / `restore_state()` protocol** — pickle-free, JSON-compatible state dicts, ~150 LOC + protocol contract. Recommended.
+  - **(C) cloudpickle** — single-line library swap; adds dependency risk
+  - **(D) Warmup-window replay** — interim patch, no snapshot change; replay last 20 bars cold before processing new bars
+- **Backup branch covering pre-fix state:** `backup-2026-05-29-layer1-solid` at d8ba188
+- **DO NOT confuse this with user-pack determinism.** UT Bot v4 just passed a rigorous determinism test (0.001 trail_stop agreement). The bug is in the SNAPSHOT path, not in the pack itself. Other packs may still have legitimate determinism issues — but those are separate from this one.
+- **Empirical impact (sid 263, 2026-05-29 ~21:33):** Triggered "Update All Data" (full recompute via `/api/strategies/{id}/refresh`). Same-window before/after comparison on the 3h window [17:47:27 → 20:47:27]:
+  - **Phantom rate (raw): 95 → 3 (-97%)**
+  - **Missed rate (raw, 1h): 26 → 3 (-88%)**
+  - **Paired count (raw): 2 → 94 (47×)**
+  - Unpaired alerts: 20 → 3 (-85%)
+  - Unpaired backtest edges: 26 → 4 (-85%)
+  - Layer 3 entry avg delta: 8.5s → 3.6s; entry ≤5s: 82.1% → 91.5%
+  - **KPI swing: −34.56R → +37.98R (+72.5R) on the same trade window** — proves the bug isn't just dropping/missing trades, it's producing actively WRONG ones from cold-state user packs
+  - Residual ~3-5% phantoms after recompute are likely the known `phase2_signal_exit` cases + cross-event mispairings, not this bug
+  - Recompute saved a NEW snapshot at 21:24 — STILL with 0 user packs. Bug recurs from this moment forward; strategy will drift back to phantom-heavy over the next 24-48h unless re-recomputed or fixed.
+- **Manual workaround until Phase 2 shipped:** Click "Update All Data" on a strategy → triggers `recompute_and_persist_stored_trades` which runs the full warm engine, replaces all backtest trades. Buys clean state for ~24h before drift sets in again. Use this on canaries to keep weekend data clean.
+- **Fix shipped 2026-06-01 (`f006937`) — Phase 2 user-pack state codec:**
+  - New module `src/user_pack_state_codec.py` extracts `dict(eng.__dict__)` (deep-copied) per user-pack engine and stores it under the snapshot's `packs` field, sidestepping the importlib synthetic-class pickle issue that previously dropped them.
+  - `unified_engine.snapshot_state(persistent=True)` and `restore_state` route through the codec.
+  - Opt-in override: any pack class can define `serialize_state` + `restore_state` to take control of its own state representation.
+  - `pack_spec.validate_state_protocol` + `pack_registry` lenient v1 contract check (errors on inconsistent override; warnings on exotic types).
+  - Tests: 15/15 packs round-trip cleanly via `_test_userpack_state_codec.py`; `_test_lef_2c_snapshot.py` extended with a user-pack envelope round-trip case (passes).
+  - Backup branch: `dev-backup-pre-phase2-codec`.
+  - Phase 1 (warmup-window replay, `684265c`) was superseded; its dead code remains gated behind `BACKTEST_SNAPSHOT_WARMUP_BARS=0` Railway env and will be removed after 24h Phase 2 stability.
+  - Empirical verification 2026-06-01 (sid 263 + 268): post-fix decoded snapshots have `packs=['ut_bot_v4']` (was `packs=[]`); streaming-tick trades match warm-recompute on entry_fill_ts + entry_price within $0.01 (100% precision); residual ~7% recall gap is tracked as a separate bug above.
+
+---
+
 ### mlv2_cross_bear walker reclassification
 - **Status:** OPEN
 - **Discovered:** 2026-05-27 (Railway logs, multiple strategies)
