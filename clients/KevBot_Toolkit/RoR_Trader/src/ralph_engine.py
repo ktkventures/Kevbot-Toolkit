@@ -1506,6 +1506,13 @@ class _ShadowIndicatorEngine:
             'Min', 'M').replace('Hour', 'H').replace(
             'Day', 'D').replace('Week', 'W')
         self._current_confluence: Set[str] = set()
+        # GATE-DIAG 2026-06-02: trace shadow init to confirm user-pack
+        # markers and engine instantiation. Temporary — remove after fix.
+        _up_markers = sorted([i for i in req_ind if i.startswith('_user_pack_')])
+        _up_engines = sorted(getattr(self.indicators, '_user_pack_engines', {}).keys())
+        logger.info(
+            "[GATE-DIAG] shadow init tf=%ss interp=%s up_markers=%s up_engines=%s",
+            tf_seconds, sorted(req_interp), _up_markers, _up_engines)
 
     def warmup(self, df: pd.DataFrame):
         self.indicators.warmup(df)
@@ -1525,6 +1532,34 @@ class _ShadowIndicatorEngine:
         for ikey, state_val in interps.items():
             self._current_confluence.add(
                 f'{self._tf_short_label}-{ikey}-{state_val}')
+
+        # GATE-DIAG 2026-06-02: trace shadow bar processing for user-pack
+        # interpreters. Filter to non-built-in interp keys to keep volume
+        # manageable. Temporary — remove after gate-mode bug is fixed.
+        _up_interp_keys = [
+            k for k in self.trigger_eval.required_interpreters
+            if k not in {'EMA_STACK', 'EMA_PRICE_POSITION',
+                         'EMA_PRICE_POSITION_V2', 'MACD_LINE',
+                         'MACD_HISTOGRAM', 'VWAP', 'RVOL',
+                         'UTBOT', 'UTBOT_V2'}
+        ]
+        if _up_interp_keys:
+            _up_cols_in_current = sorted([
+                k for k in current
+                if not k.startswith(('ema', 'macd', 'vwap', 'rvol',
+                                      'utbot', 'open', 'high', 'low',
+                                      'close', 'volume', 'atr',
+                                      'macd_', 'vol_'))
+            ])[:20]
+            _up_interps_emitted = sorted([
+                k for k in interps if k in _up_interp_keys
+            ])
+            logger.info(
+                "[GATE-DIAG] sh_bar tf=%ss req_up_interps=%s "
+                "up_cols_in_current=%s interps_emitted=%s confluence=%s",
+                self.tf_seconds, sorted(_up_interp_keys),
+                _up_cols_in_current, _up_interps_emitted,
+                sorted(self._current_confluence)[:10])
 
         return self._current_confluence
 
