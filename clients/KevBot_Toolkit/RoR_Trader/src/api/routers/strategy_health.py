@@ -59,6 +59,33 @@ _WINDOW_HOURS_DEFAULT = 24
 _WINDOW_HOURS_MIN = 1
 _WINDOW_HOURS_MAX = 168                     # 7 days max
 
+# Supabase REST returns up to ~50k rows per request when no .range() is set.
+# The fleet has > 50k backtest trades total; an unpaginated select silently
+# truncates and drops whichever strategies happen to fall past the cap (which
+# strategies it drops is non-deterministic without an explicit .order). Always
+# use _paginated_fetch for the per-strategy aggregation queries below.
+# (Bug discovered 2026-06-02 — strategy-health reported 100% phantom for new
+# canaries sids 271/272/275 because their trades sat past the silent cap.)
+_PAGE_SIZE = 5000
+
+
+def _paginated_fetch(query_builder) -> List[Dict[str, Any]]:
+    """Iterate `.range(offset, offset+_PAGE_SIZE-1)` on a PostgREST query
+    builder until a partial page comes back (signal: < _PAGE_SIZE rows).
+    Caller is responsible for setting `.order(...)` on the builder so
+    pagination is deterministic.
+    """
+    rows: List[Dict[str, Any]] = []
+    offset = 0
+    while True:
+        chunk = query_builder.range(
+            offset, offset + _PAGE_SIZE - 1).execute().data or []
+        rows.extend(chunk)
+        if len(chunk) < _PAGE_SIZE:
+            break
+        offset += _PAGE_SIZE
+    return rows
+
 
 def _parse_iso_or_unix(s) -> datetime | None:
     """Accept ISO 8601 ('2026-05-26T22:00:00Z') or Unix-sec string.
@@ -150,10 +177,14 @@ def get_strategy_health(
     # `created_at` is the freshness signal Kevin asked for 2026-05-27 —
     # "when was the latest backtest trade written" vs entry_fill_ts which
     # is "when did the trade execute" (could be days ago for backfills).
-    trade_resp = c.table("trades").select(
+    # Sort + paginate so the result is deterministic and complete. Without
+    # this, PostgREST silently caps at ~50k rows; strategies whose trades
+    # land past the cap get an empty `recent_edges` and are misreported as
+    # 100% phantom downstream (see _PAGE_SIZE docstring).
+    trade_query = c.table("trades").select(
         "strategy_id,entry_fill_ts,exit_fill_ts,data_source,created_at"
-    ).like("data_source", "backtest_%").execute()
-    trades: List[Dict[str, Any]] = trade_resp.data or []
+    ).like("data_source", "backtest_%").order("strategy_id").order("id")
+    trades: List[Dict[str, Any]] = _paginated_fetch(trade_query)
 
     # Fetch the most-recent alert per strategy (for the "last alert
     # received" column and the upside-down-timestamps filter). Bound by
@@ -751,11 +782,13 @@ def get_strategy_health_backlog(
         "id,strategy_id,entry_fill_ts,exit_fill_ts,exit_reason,"
         "data,data_source"
     ).like("data_source", "backtest_%").gte(
-        "entry_fill_ts", window_start_iso)
+        "entry_fill_ts", window_start_iso).order("strategy_id").order("id")
     if strategy_id is not None:
         trade_query = trade_query.eq("strategy_id", strategy_id)
-    trade_resp = trade_query.execute()
-    trades_in_window: List[Dict[str, Any]] = trade_resp.data or []
+    # Window-scoped but still paginate — the divergence backlog can pull
+    # multi-day windows; a 7d window on a busy fleet exceeds the silent
+    # 50k cap (see _paginated_fetch).
+    trades_in_window: List[Dict[str, Any]] = _paginated_fetch(trade_query)
 
     # Pull alerts within window.
     alert_query = c.table("alerts").select(
