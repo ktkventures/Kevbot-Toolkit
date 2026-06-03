@@ -579,14 +579,26 @@ class DataWorkerManager:
         lags = [e.lag_seconds(now) for e in elig if e.last_bar_ts is not None]
         lag_max = round(max(lags)) if lags else None
         caught = sum(1 for e in elig if e.catchup_done and e.snapshot_b64)
-        logger.info(
+        # Watchdog phase 1 (visibility): how long since the strategy
+        # reload thread last ran a full pass? If this grows past
+        # 2× STRATEGY_RELOAD_INTERVAL, the reload thread has likely
+        # silently failed (the 2026-06-02 ghost-roster bug). Detection
+        # only — no auto-heal yet. See [[feedback-actually-check-dont-assume]].
+        reload_age_s = (round(time.monotonic() - self._last_reload_at)
+                        if self._last_reload_at > 0 else None)
+        reload_stale = (reload_age_s is not None
+                        and reload_age_s > 2 * STRATEGY_RELOAD_INTERVAL)
+        log_fn = logger.error if reload_stale else logger.info
+        log_fn(
             "[metrics] streaming: engines=%d eligible=%d caught_up=%d | "
             "ticks=%d errored=%d trades_written=%d last_tick=%d | "
-            "tick_p95=%s | lag_max=%ss | flushes=%d(err %d) catchups=%d"
-            "(no_baseline %d) kpi=%d | circuit=%s(opens %d) skips=%d",
+            "tick_p95=%s | lag_max=%ss | reload_age=%ss%s | "
+            "flushes=%d(err %d) catchups=%d(no_baseline %d) kpi=%d | "
+            "circuit=%s(opens %d) skips=%d",
             len(engines), len(elig), caught, sm['ticks_total'],
             sm['ticks_errored'], sm['trades_written_total'],
             sm['trades_written_last_tick'], sm['tick_latency_p95'], lag_max,
+            reload_age_s, ' STALE' if reload_stale else '',
             sm['snapshot_flushes_total'], sm['snapshot_flush_errors'],
             sm['catchups_run'], sm['catchups_skipped_no_baseline'],
             sm['kpi_recomputes_total'], cb['state'], cb['open_count'],
