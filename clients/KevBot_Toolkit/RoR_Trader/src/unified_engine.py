@@ -507,6 +507,22 @@ def resolve_strategy_requirements(strategy: dict) -> Tuple[
 
     exit_triggers = _resolve_trigger_ids(strategy, 'exit_triggers')
     for et in exit_triggers:
+        if et == 'opposite_signal':
+            # Resolve the sentinel to the actual opposite trigger so it
+            # lands in the required-triggers set — without this the
+            # DataFrame extraction at the user-pack trigger fan-in
+            # (`_user_trig_cols`) never picks up the opposite's
+            # `trig_*` column, c_triggers misses the boolean, and exit
+            # never fires. Matches the PositionStateMachine sentinel-
+            # resolution swap below.
+            try:
+                from triggers import get_opposite_trigger
+                opp = get_opposite_trigger(entry)
+                if opp:
+                    _process_trigger_id(opp)
+            except ImportError:
+                pass
+            continue
         _process_trigger_id(et)
     if not exit_triggers:
         exit_single = _resolve_trigger_id(strategy, 'exit_trigger')
@@ -2173,6 +2189,20 @@ class PositionStateMachine:
                     pass
             elif et:
                 self.exit_triggers = {et}
+
+        # Resolve 'opposite_signal' sentinel anywhere in the exit set (modern
+        # `exit_trigger_confluence_ids: ['opposite_signal']` path stores it
+        # as a literal that the per-bar evaluator can't look up — without
+        # this swap, exit never fires and the position gets stuck open).
+        if 'opposite_signal' in self.exit_triggers:
+            self.exit_triggers.discard('opposite_signal')
+            try:
+                from triggers import get_opposite_trigger
+                opp = get_opposite_trigger(self.entry_trigger)
+                if opp:
+                    self.exit_triggers.add(opp)
+            except ImportError:
+                pass
 
         self.bar_count_exit = strategy.get('bar_count_exit')
         self.time_exit_config = strategy.get('time_exit_config')
