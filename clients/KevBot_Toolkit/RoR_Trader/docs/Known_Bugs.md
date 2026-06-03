@@ -14,6 +14,58 @@ here until either (a) shipped + verified, or (b) explicitly deprecated.
 
 ## Active
 
+### 15 swing-stop strategies silent in live engine since 2026-06-03T19:58 UTC
+- **Status:** OPEN — root cause unknown; manual worker restart does NOT heal
+- **Discovered:** 2026-06-03 EOD via Kevin's report that sid 270 had no alerts since 13:58 MDT
+- **Affected sids (15):** 136, 174, 194, 263, 265, 266, 267, 268, 269, 270, 271, 272, 273, 275 (sid 274 never fired — separate case)
+- **100% correlation:** every silent strategy uses `stop_config.method='swing'`. Every still-firing PACKTEST canary uses `method='atr'`. No exceptions either way (15-of-15 vs 19-of-19 in sampled fleet).
+- **Symptoms in `monitor_status.engine_state.positions[sid]`:**
+  - `status='FLAT'`, `entry_trigger=''`, `entry_bar_count=0`, `last_exit_bar_count=0`
+  - i.e. the PositionState is at its default — NO entries OR exits since the manual restart at 21:10 UTC
+  - For comparison, sid 302 (PACKTEST UT Bot V4 trigger, also SPY 10sec): `entry_bar_count=14297`, firing continuously
+- **What's been ruled out:**
+  - Worker deploy churn: silence started at 19:58 UTC in the deploy-free clean window (18:08-20:27 UTC)
+  - Watchdog `os._exit(2)`: no position_carryover record at 19:58; full restart didn't happen
+  - Today's commits: none touch swing-stop, StrategyMonitor instantiation, or bar feeding
+  - Polygon WS subscription drop: PACKTEST canaries on SAME symbol (SPY) keep firing
+  - Manual `railway redeploy --service "Data Worker"` at 21:10 UTC: did NOT heal the affected sids
+- **What's NOT ruled out:**
+  - Phase 2 codec snapshot-restore failing silently for these sids → some user-pack engine starts in non-firing state but fresh enough to not error
+  - Bar feed reaches sid 270's monitor but its process_bar entry path is rejecting silently somewhere we haven't logged
+  - Some accumulated state in the worker process that survives across deploys via something other than monitor_status (unlikely but possible)
+- **Defense added 2026-06-03 (`69c3f7f`):** `SwingStop.compute` no longer falls back to `ATR × 1.5` on empty buffer; raises `StopComputationError` instead, which the engine's `check_entry` catches and logs as `[stop-comp] sid=X entry rejected: ...`. Going forward any silent stop-comp failure will leave a clear log trail. Does NOT directly fix the 15 silent strategies (they don't appear to be hitting the stop-comp path at all — they're stuck upstream).
+- **Backup branch:** `dev-backup-2026-06-03-eod` at `69c3f7f` — last known state with sid 278/280 EMA PP fix, watchdog, opposite_signal fix, and ATR-fallback removal all in place.
+- **Next steps for tomorrow:**
+  1. Try toggling sid 270's monitor Disable→Enable from the UI. If it starts firing alerts, the bug is in strategy reload (not init).
+  2. Look at the data_worker engine reload path for any code that treats swing-stop strategies differently (a code path that bails on `method='swing'` would be the smoking gun).
+  3. Consider whether the Phase 2 codec persists `_high_low_buffer` correctly — if not, swing strategies restored from a snapshot would have empty buffer, which would now LOUDLY error in logs (`[stop-comp]` lines).
+  4. If 1-3 don't pan out, more aggressive: full worker restart in pre-market hours (before 8 AM UTC tomorrow) so Tier 3 §8.2 carryover is clean.
+- **Operational risk:** these affected strategies include Kevin's primary test bench (TEST-P2-*, TSLA-CANARY-*, SPY-CANARY-*). PACKTEST canaries are unaffected so divergence remeasurement work can still proceed.
+
+---
+
+### ralph_engine watchdog — needs different semantics than data_worker's
+- **Status:** OPEN — design constraint, not a bug. Documented to prevent the mistake.
+- **Discovered:** 2026-06-03 (Kevin flagged the risk while we shipped data_worker watchdog)
+- **Why this matters:** The same silent stale-state bug class affects ralph_engine too (yesterday's gate-mode dead canaries). The instinct is to copy the data_worker watchdog (3 STALE ticks → `os._exit(2)`) onto ralph_engine. **Do not do that.**
+- **Why ralph_engine restart is high-stakes:**
+  - Live engine owns active position state. Restarting mid-RTH causes per-Tier-3-§8.2 always-start-flat to wipe in-memory open positions. The next bar may re-fire an entry on a strategy that should have an OPEN position, OR miss a stop/target evaluation because the position state was lost.
+  - Pre-restart positions ARE owned by the pre-restart window per Tier 3 §4.1, but only if the carryover mechanism caught them. Mid-bar transitions are fragile.
+  - 30-60s of alert silence during restart — alerts that should have fired during boot are dropped.
+- **Safer restart windows:**
+  - **Best:** before extended hours start (< 4 AM ET / < 8 AM UTC)
+  - **OK:** after extended hours close (> 8 PM ET / > 24:00 UTC)
+  - **Risky:** any RTH or extended hours session
+  - **Emergency only:** mid-RTH (e.g., circuit OPEN or alert engine genuinely dead for >30 min)
+- **Right design for ralph_engine auto-heal:**
+  - Detect stale similarly (log + alert)
+  - DO NOT auto-exit. Instead: schedule the auto-exit at the next safe restart window (e.g., extended-hours close at 24:00 UTC) and only execute if still stale at that time.
+  - For mid-day genuinely-dead scenarios, surface to operator (Kevin) for explicit decision instead of auto-acting.
+- **Action for now:** keep ralph_engine watchdog OUT of today's scope. Detection-only (log STALE) might be safe to add later. Auto-heal logic needs Tier 3 carryover review first.
+- **The hard-to-notice case:** if ralph_engine degrades silently during market hours, alerts stop firing or fire wrong, and Kevin doesn't see it visually until the divergence accumulates. Mitigation: a separate dashboard alarm on "no alerts fired in last N minutes during market hours" — passive detection, no auto-action.
+
+---
+
 ### User-pack confluence gates silently fail on secondary timeframes (Phase 2 fleet)
 - **Status:** RECHARACTERIZED 2026-06-02 evening — NOT a code defect, IS a silent live-engine stale-state bug. See "Update" section below.
 - **Discovered:** 2026-06-02 — verified across all 15 user packs via PACKTEST canaries
