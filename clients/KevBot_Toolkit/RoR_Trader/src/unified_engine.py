@@ -457,6 +457,25 @@ def resolve_strategy_requirements(strategy: dict) -> Tuple[
         if base != trigger_id:
             triggers.add(base)
 
+        # User-pack triggers (template slug carries `_user_pack: True`) must
+        # NOT be inferred against the built-in TRIGGER_PREFIX_TO_TEMPLATE
+        # map: e.g. `ema_pp_v3_default_cross_short_up` startswith `ema_pp_`
+        # would otherwise falsely register the `ema_price_position` template
+        # and add the built-in `ema` indicator — which then fails to resolve
+        # because the user's only enabled EMA group uses an `ema_pp_v3`
+        # template, not `ema_price_position`. The user-pack marker
+        # `_user_pack_<slug>` is added later via the pack_registry loop.
+        try:
+            from confluence_groups import TEMPLATES as _TEMPLATES
+            for slug in sorted(_TEMPLATES.keys(), key=len, reverse=True):
+                tpl = _TEMPLATES.get(slug, {})
+                if not tpl.get('_user_pack'):
+                    continue
+                if base.startswith(slug + '_') or base == slug:
+                    return
+        except ImportError:
+            pass
+
         matched_template = None
         for prefix in sorted(TRIGGER_PREFIX_TO_TEMPLATE.keys(),
                              key=len, reverse=True):
