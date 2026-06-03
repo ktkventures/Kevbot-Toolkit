@@ -36,6 +36,7 @@ from pack_spec import (
     validate_python_file,
     validate_function_exists,
     audit_trigger_levels,
+    audit_opposite_trigger_pairing,
     SAFE_BUILTINS,
 )
 
@@ -336,6 +337,10 @@ def load_single_pack(pack_dir: Path) -> RegisteredPack:
     except Exception as e:
         # Audit failure should never block pack load
         warnings.append(f"audit_trigger_levels crashed: {e}")
+    try:
+        warnings.extend(audit_opposite_trigger_pairing(manifest))
+    except Exception as e:
+        warnings.append(f"audit_opposite_trigger_pairing crashed: {e}")
 
     # State-protocol validation (Phase 2 codec). Checks that the
     # incremental class is compatible with `user_pack_state_codec` —

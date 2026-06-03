@@ -363,6 +363,7 @@ def list_user_packs(user=Depends(get_current_user)):
             "description": m.get("description", ""),
             "is_valid": pack.is_valid,
             "validation_errors": pack.validation_errors,
+            "validation_warnings": pack.validation_warnings,
             "parameters_schema": m.get("parameters_schema", {}),
             "plot_schema": m.get("plot_schema", {}),
             "outputs": m.get("outputs", []),

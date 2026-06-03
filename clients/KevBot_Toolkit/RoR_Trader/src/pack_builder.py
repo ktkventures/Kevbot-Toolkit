@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Tuple
 
 from pack_spec import (
     validate_manifest, validate_python_file, validate_function_exists,
-    audit_trigger_levels,
+    audit_trigger_levels, audit_opposite_trigger_pairing,
 )
 
 
@@ -330,6 +330,15 @@ def generate_code_prompt(
                  "The level column must have a valid value on EVERY bar; do NOT use `.where(trigger_boolean, other=np.nan)` to filter it.")
     parts.append("16. Level columns (referenced from `trigger_levels`) and candle color columns (referenced from `plot_config.candle_color_column`) are internal — "
                  "include them in indicator_columns but do NOT add them to column_color_map or plot_schema.")
+    parts.append("16a. CRITICAL — Opposite-trigger pairing: strategies built on this pack may use `opposite_signal` "
+                 "as their exit, which auto-resolves the entry trigger's inverse via "
+                 "`triggers.get_opposite_trigger`. That helper recognizes suffix pairs "
+                 "(`_up`/`_down`, `_bull`/`_bear`, `_pos`/`_neg`, `_buy`/`_sell`, `_long`/`_short`) "
+                 "and word-substitution pairs (`bull`/`bear`, `upper`/`lower`, `enter`/`exit`, etc.). "
+                 "If you give a trigger a name that doesn't fit one of these patterns, ALSO declare its "
+                 "opposite trigger explicitly in the `triggers` list — otherwise strategies using "
+                 "`opposite_signal` exit will silently no-op (position stuck open until stop hits). "
+                 "The audit at install/validate time will flag unpaired triggers; rename or add a sibling.")
     parts.append("17. CRITICAL — Live-mode column contract: every column your interpreter reads (via `df[\"X\"]` or `df.get(\"X\")`) MUST be emitted by BOTH "
                  "indicator.py (batch path) AND indicator_incremental.py's `update_bar()` return dict (live path). If they differ, the pack will pass "
                  "backtest but mis-classify live bars — exactly the ut_bot_v4 FLIP gap (fixed 2026-04-27). "
@@ -748,6 +757,18 @@ def validate_parsed_response(parsed: Dict) -> Tuple[bool, List[str]]:
         errors.append(
             "trigger_levels audit failed (rule 14 / 14a in prompt): "
             + " ".join(audit_warnings)
+        )
+
+    # 1.6 opposite-trigger pairing audit: surface triggers whose
+    # `opposite_signal` exit won't auto-resolve, so the author can
+    # either rename to a recognized suffix-pair or declare the missing
+    # opposite trigger. Treated as ERROR in AI builder (auto-fix can
+    # surface it); WARNING at install time for legacy compat.
+    opp_warnings = audit_opposite_trigger_pairing(manifest)
+    if opp_warnings:
+        errors.append(
+            "opposite-trigger pairing audit: "
+            + " ".join(opp_warnings)
         )
 
     if not indicator_code:

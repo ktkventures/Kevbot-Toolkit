@@ -199,6 +199,134 @@ def looks_cross_style(trigger_base: str) -> bool:
     return bool(_CROSS_STYLE_PATTERN.search(trigger_base))
 
 
+def audit_opposite_trigger_pairing(manifest: dict) -> List[str]:
+    """Return WARNINGS for triggers whose opposite can't be auto-resolved.
+
+    Strategies can specify `exit_trigger_confluence_ids: ['opposite_signal']`
+    to exit on the inverse of the entry trigger. The engine resolves the
+    sentinel via `triggers.get_opposite_trigger(prefixed_trigger_id)`,
+    which uses a suffix table (`_up/_down`, `_bull/_bear`, `_pos/_neg`,
+    `_buy/_sell`, `_long/_short`) plus a small explicit-pair dict.
+
+    Triggers whose names don't fit those patterns (e.g. `bull_flip`,
+    `oversold`, `extreme_high`) return None and `opposite_signal` exits
+    silently no-op — the user MUST specify an explicit opposite via
+    `exit_trigger_confluence_ids: ['<pack>_default_<opposite_base>']`.
+
+    This audit surfaces the gap at install time so authors learn before
+    a strategy gets stuck-open in production. Pack still loads + works.
+
+    Returns: list of warning strings (one per unpaired trigger). Empty
+    list = every trigger pairs cleanly (including the case where two
+    paired triggers BOTH list each other's name as opposite).
+    """
+    warnings = []
+    triggers = manifest.get("triggers", []) or []
+    if not isinstance(triggers, list):
+        return warnings
+    trigger_prefix = manifest.get("trigger_prefix") or manifest.get("slug")
+    if not trigger_prefix:
+        return warnings
+
+    try:
+        from triggers import get_opposite_trigger
+    except Exception as e:
+        warnings.append(
+            f"audit_opposite_trigger_pairing skipped: "
+            f"triggers.get_opposite_trigger import failed: {e}"
+        )
+        return warnings
+
+    declared_bases = {
+        t.get("base") for t in triggers
+        if isinstance(t, dict) and t.get("base")
+    }
+
+    # Word-substitution heuristics for "obvious pair candidate" detection.
+    # If `get_opposite_trigger` returns None, we still suppress the
+    # warning when the pack declares an obvious sibling — that means
+    # the author paired them manually; users picking `opposite_signal`
+    # exit would hit the gap, but explicit exits work fine, and the
+    # author clearly knows about the pairing.
+    _WORD_PAIRS = [
+        ('bull', 'bear'), ('bullish', 'bearish'),
+        ('long', 'short'),
+        ('above', 'below'),
+        ('upper', 'lower'),
+        ('overbought', 'oversold'),
+        ('enter', 'exit'),
+        ('breakout', 'breakdown'),
+        ('support', 'resistance'),
+    ]
+
+    def _has_obvious_pair_in_pack(base_name: str) -> bool:
+        # Token-level word substitution: split on `_`, swap each token.
+        tokens = base_name.split('_')
+        for i, tok in enumerate(tokens):
+            tok_l = tok.lower()
+            for a, b in _WORD_PAIRS:
+                swap = None
+                if tok_l == a:
+                    swap = b
+                elif tok_l == b:
+                    swap = a
+                if swap is None:
+                    continue
+                candidate_tokens = tokens.copy()
+                # Preserve case style of the original token
+                if tok.isupper():
+                    candidate_tokens[i] = swap.upper()
+                elif tok[:1].isupper():
+                    candidate_tokens[i] = swap.capitalize()
+                else:
+                    candidate_tokens[i] = swap
+                candidate = '_'.join(candidate_tokens)
+                if candidate in declared_bases and candidate != base_name:
+                    return True
+        return False
+
+    for t in triggers:
+        if not isinstance(t, dict):
+            continue
+        base = t.get("base")
+        if not base:
+            continue
+        prefixed = f"{trigger_prefix}_{base}"
+        opp = get_opposite_trigger(prefixed)
+        if opp is None:
+            if _has_obvious_pair_in_pack(base):
+                # Author already paired this manually — no warning, but
+                # strategies still need explicit exits.
+                continue
+            warnings.append(
+                f"Trigger '{base}' has no auto-resolvable opposite via "
+                f"triggers.get_opposite_trigger('{prefixed}') and no "
+                f"obvious sibling found in the pack's other triggers. "
+                f"Strategies using this trigger with `opposite_signal` "
+                f"exit will silently no-op — exits must be specified "
+                f"explicitly. Consider renaming to use a recognized "
+                f"suffix pair (_up/_down, _bull/_bear, _pos/_neg, "
+                f"_buy/_sell, _long/_short), or declare a paired trigger "
+                f"in this pack's `triggers` list."
+            )
+            continue
+        # Strip prefix from `opp` to get the opposite base name. Then
+        # check the pack actually defines that opposite trigger.
+        if opp.startswith(trigger_prefix + "_"):
+            opp_base = opp[len(trigger_prefix) + 1:]
+            if opp_base not in declared_bases:
+                warnings.append(
+                    f"Trigger '{base}' resolves to opposite '{opp_base}' "
+                    f"via suffix-pair table but that trigger is not "
+                    f"declared in this pack's `triggers` list. "
+                    f"`opposite_signal` exits will look up a column "
+                    f"({trigger_prefix}_{opp_base}) that doesn't exist; "
+                    f"the position will get stuck open. Either declare "
+                    f"the opposite trigger or rename this one."
+                )
+    return warnings
+
+
 def audit_trigger_levels(manifest: dict) -> List[str]:
     """Return a list of WARNINGS (not errors) about trigger_levels coverage.
 
