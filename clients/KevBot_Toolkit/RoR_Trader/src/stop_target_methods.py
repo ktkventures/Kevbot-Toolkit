@@ -88,6 +88,18 @@ class PercentageStop(StopMethod):
         return ctx.entry_price - distance if ctx.direction == 'LONG' else ctx.entry_price + distance
 
 
+class StopComputationError(Exception):
+    """Raised when a stop method cannot produce a valid stop price.
+
+    Loud failure rather than silent fallback to ATR×1.5 — a misaligned stop
+    silently produced by a fallback was driving backtest↔live divergence
+    invisibly (the strategy fires entries against an ATR stop while the
+    user thinks they're getting swing-stop semantics). The engine's
+    `check_entry` catches this, logs it, and rejects the entry. The next
+    bar with a healthy stop-computation context will fire normally.
+    """
+
+
 class SwingStop(StopMethod):
     """Swing stop: lowest low (LONG) or highest high (SHORT) over lookback bars,
     with optional padding. Excludes the current bar from the lookback window."""
@@ -99,9 +111,13 @@ class SwingStop(StopMethod):
         buf = list(ctx.high_low_buffer)[:-1]
         window = buf[-lookback:] if len(buf) >= lookback else buf
         if not window:
-            # Fallback: ATR × 1.5 (same as original)
-            distance = ctx.atr * 1.5
-            return ctx.entry_price - distance if ctx.direction == 'LONG' else ctx.entry_price + distance
+            raise StopComputationError(
+                f"swing stop requires non-empty high/low buffer (lookback="
+                f"{lookback}); buffer is empty — likely a freshly-restarted "
+                f"engine that hasn't yet processed any bars. Entry rejected; "
+                f"this is the loud-failure replacement for the legacy ATR×1.5 "
+                f"silent fallback that drove backtest↔live divergence."
+            )
         if ctx.direction == 'LONG':
             return min(low for _, low in window) - padding
         else:
@@ -118,13 +134,21 @@ STOP_METHODS: Dict[str, StopMethod] = {
 
 
 def compute_stop(ctx: StopContext) -> float:
-    """Dispatch to the registered stop method. Falls back to ATR × 1.5 if unknown."""
+    """Dispatch to the registered stop method.
+
+    Unknown method name → StopComputationError (NOT a silent ATR fallback).
+    The caller catches this and rejects the entry; misconfigured stop_config
+    is a surface-loud issue, not a silently-wrong-stop issue.
+    """
     method_name = ctx.config.get('method', 'atr')
     method = STOP_METHODS.get(method_name)
     if method is None:
-        # Fallback: ATR × 1.5 (same as original `else` branch in _compute_stop)
-        distance = ctx.atr * 1.5
-        return ctx.entry_price - distance if ctx.direction == 'LONG' else ctx.entry_price + distance
+        raise StopComputationError(
+            f"unknown stop method '{method_name}'; valid methods: "
+            f"{sorted(STOP_METHODS.keys())}. Entry rejected — fix the "
+            f"strategy's stop_config.method instead of falling back to "
+            f"ATR×1.5 silently."
+        )
     return method.compute(ctx)
 
 

@@ -2307,7 +2307,16 @@ class PositionStateMachine:
         if not atr or atr <= 0:
             atr = fill_price * 0.01
 
-        stop_price = self._compute_stop(fill_price, atr, vals_for_stop)
+        try:
+            stop_price = self._compute_stop(fill_price, atr, vals_for_stop)
+        except Exception as e:
+            from stop_target_methods import StopComputationError
+            if isinstance(e, StopComputationError):
+                logger.warning(
+                    "[stop-comp] sid=%s entry rejected: %s",
+                    self.strat_id, e)
+                return None
+            raise
 
         # Stop-validity guard: reject entry if stop is on the wrong side
         if self.state.direction == 'LONG' and stop_price >= fill_price:
@@ -2711,7 +2720,16 @@ class PositionStateMachine:
         if not atr or atr <= 0:
             atr = fill_price * 0.01
 
-        stop_price = self._compute_stop(fill_price, atr, current_values)
+        try:
+            stop_price = self._compute_stop(fill_price, atr, current_values)
+        except Exception as e:
+            from stop_target_methods import StopComputationError
+            if isinstance(e, StopComputationError):
+                logger.warning(
+                    "[stop-comp] sid=%s entry rejected: %s",
+                    self.strat_id, e)
+                return None
+            raise
 
         # Stop-validity guard: reject entry if stop is on the wrong side
         if self.state.direction == 'LONG' and stop_price >= fill_price:
