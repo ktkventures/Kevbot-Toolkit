@@ -135,6 +135,9 @@ class DataWorkerManager:
         self._kpi_stop = threading.Event()
         self._last_catchup_at = 0.0
         self._last_reload_at = 0.0
+        # Watchdog phase 2 — bookkeeping for auto-restart safety bounds.
+        self._boot_mono = time.monotonic()
+        self._stale_count = 0
 
     def run(self):
         logger.info("Data-worker starting — pinned_symbols=%s "
@@ -579,15 +582,33 @@ class DataWorkerManager:
         lags = [e.lag_seconds(now) for e in elig if e.last_bar_ts is not None]
         lag_max = round(max(lags)) if lags else None
         caught = sum(1 for e in elig if e.catchup_done and e.snapshot_b64)
-        # Watchdog phase 1 (visibility): how long since the strategy
-        # reload thread last ran a full pass? If this grows past
-        # 2× STRATEGY_RELOAD_INTERVAL, the reload thread has likely
-        # silently failed (the 2026-06-02 ghost-roster bug). Detection
-        # only — no auto-heal yet. See [[feedback-actually-check-dont-assume]].
+        # Watchdog phase 1 (visibility) + phase 2 (auto-heal):
+        # If `_last_reload_at` hasn't advanced past 2× STRATEGY_RELOAD_INTERVAL,
+        # the streaming thread is likely wedged (e.g., supabase HTTP hang —
+        # the 2026-06-02 ghost-roster bug). HTTP timeouts (db.py ClientOptions
+        # postgrest_client_timeout=30) close the most common hang path; this
+        # is the belt-and-suspenders: after 3 consecutive STALE observations
+        # (~3 min) AND uptime > 15 min, force a process restart so Railway
+        # respawns the container with a fresh state.
         reload_age_s = (round(time.monotonic() - self._last_reload_at)
                         if self._last_reload_at > 0 else None)
         reload_stale = (reload_age_s is not None
                         and reload_age_s > 2 * STRATEGY_RELOAD_INTERVAL)
+        if reload_stale:
+            self._stale_count = getattr(self, '_stale_count', 0) + 1
+        else:
+            self._stale_count = 0
+        uptime_s = round(time.monotonic() - getattr(self, '_boot_mono', 0))
+        # Auto-restart triggers: 3 consecutive stale ticks AND we've been
+        # up at least 15 min (prevents instant restart loops if a fresh
+        # boot is also broken — gives the new process time to recover).
+        if self._stale_count >= 3 and uptime_s > 900:
+            logger.error(
+                "[watchdog] reload stale for %d consecutive ticks "
+                "(reload_age=%ss, uptime=%ss) — exiting for Railway respawn",
+                self._stale_count, reload_age_s, uptime_s)
+            import os as _os
+            _os._exit(2)
         log_fn = logger.error if reload_stale else logger.info
         log_fn(
             "[metrics] streaming: engines=%d eligible=%d caught_up=%d | "

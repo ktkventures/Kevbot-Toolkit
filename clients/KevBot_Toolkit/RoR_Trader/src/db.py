@@ -208,6 +208,14 @@ def get_admin_client():
 
     Used by the worker service only — never in the web app.
     The service role key has full access to all rows regardless of user_id.
+
+    Explicit `postgrest_client_timeout` (2026-06-03) closes the indefinite-
+    hang path: when Supabase has a network blip or 522, the underlying
+    HTTPX call could previously block forever, wedging the worker's
+    reload thread until manual restart. With a 30s timeout, the call
+    raises and the reload thread retries on the next 5-min cycle.
+    Watchdog phase 2 — pairs with the STALE detection in data_worker's
+    metrics line.
     """
     global _admin_client
     if not USE_DB:
@@ -216,7 +224,15 @@ def get_admin_client():
     with _client_lock:
         if _admin_client is None:
             from supabase import create_client
-            _admin_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+            try:
+                from supabase import ClientOptions
+                opts = ClientOptions(postgrest_client_timeout=30)
+                _admin_client = create_client(
+                    SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, options=opts)
+            except ImportError:
+                # Older supabase-py without ClientOptions — fall back.
+                _admin_client = create_client(
+                    SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
     return _admin_client
 
 
