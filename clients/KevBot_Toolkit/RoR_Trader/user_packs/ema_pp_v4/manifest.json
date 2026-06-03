@@ -59,11 +59,11 @@
     {"base": "cross_mid_up",     "name": "Price Crosses Above Mid EMA",   "direction": "BOTH", "type": "BOTH"},
     {"base": "cross_mid_down",   "name": "Price Crosses Below Mid EMA",   "direction": "BOTH", "type": "BOTH"}
   ],
-  "trigger_levels": {
-    "cross_short_up":   {"level_column": "eppv4_short_prev", "cross": "above"},
-    "cross_short_down": {"level_column": "eppv4_short_prev", "cross": "below"},
-    "cross_mid_up":     {"level_column": "eppv4_mid_prev",   "cross": "above"},
-    "cross_mid_down":   {"level_column": "eppv4_mid_prev",   "cross": "below"}
+  "trigger_levels_phase2": {
+    "cross_short_up":   {"reason": "Bar-close cross detection — eppv4_short_prev column stores the CURRENT bar's EMA (despite the _prev name), so L-type intra-bar eval is structurally not evaluable. Triggers fire as C-type from incremental's __-prefixed boolean columns. 2026-06-03 — was 'trigger_levels' with level_column references; that caused batch to produce 0 trades because LevelExecution.check_entry_signal couldn't find these in l_type_fills. True L1 would require the incremental to emit the actual PREVIOUS bar's value under _prev (compare to UT Bot V4's utv4_trailing_stop_prev which is correctly the prior-bar value)."},
+    "cross_short_down": {"reason": "Bar-close cross detection — same rationale as cross_short_up."},
+    "cross_mid_up":     {"reason": "Bar-close cross detection — same rationale as cross_short_up."},
+    "cross_mid_down":   {"reason": "Bar-close cross detection — same rationale as cross_short_up."}
   },
   "indicator_columns": ["eppv4_short_prev", "eppv4_mid_prev", "eppv4_long_prev"],
   "column_color_map": {

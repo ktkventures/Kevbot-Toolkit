@@ -59,11 +59,11 @@
     {"base": "cross_mid_up",     "name": "Price Crosses Above Mid EMA",   "direction": "BOTH", "type": "BOTH"},
     {"base": "cross_mid_down",   "name": "Price Crosses Below Mid EMA",   "direction": "BOTH", "type": "BOTH"}
   ],
-  "trigger_levels": {
-    "cross_short_up":   {"level_column": "eppv3_short", "cross": "above"},
-    "cross_short_down": {"level_column": "eppv3_short", "cross": "below"},
-    "cross_mid_up":     {"level_column": "eppv3_mid",   "cross": "above"},
-    "cross_mid_down":   {"level_column": "eppv3_mid",   "cross": "below"}
+  "trigger_levels_phase2": {
+    "cross_short_up":   {"reason": "Bar-close cross detection — level_column references current-bar EMA (L0), which is structurally not evaluable intra-bar in batch. Triggers fire as C-type from incremental's __-prefixed boolean columns. 2026-06-03 — was 'trigger_levels' with level_column references; that caused batch to produce 0 trades because LevelExecution.check_entry_signal couldn't find these in l_type_fills."},
+    "cross_short_down": {"reason": "Bar-close cross detection — same rationale as cross_short_up."},
+    "cross_mid_up":     {"reason": "Bar-close cross detection — same rationale as cross_short_up."},
+    "cross_mid_down":   {"reason": "Bar-close cross detection — same rationale as cross_short_up."}
   },
   "indicator_columns": ["eppv3_short", "eppv3_mid", "eppv3_long"],
   "column_color_map": {
