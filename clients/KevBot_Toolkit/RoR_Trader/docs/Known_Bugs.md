@@ -14,6 +14,42 @@ here until either (a) shipped + verified, or (b) explicitly deprecated.
 
 ## Active
 
+### `alerts.live_model` field NULL on default-model strategies → rest_verifier silently skips them
+- **Status:** OPEN — root cause located; design intent ambiguous
+- **Discovered:** 2026-06-04 (Kevin pushed back on Layer 1 N/A claim — pointed out `live_model=None` falls back to default)
+- **Symptom:** Layer 1 (bar fidelity) in SOP is unusable for 89.7% of the fleet because `alerts.verification_status=NULL` everywhere.
+- **Fleet impact (24h sample, 5000 alerts):**
+  - `alerts.live_model` field values: `None: 4484 (89.7%)`, `ws_rest_spliced: 516 (10.3%)`
+  - `verification_status` values: `None: 4495`, `verified: 339`, `corrected: 32`, `rest_unavailable: 115`, `gap_fill_unverified: 15`, `drift_uncorrected: 4`
+  - **Only 11 sids ever get verified** (174, 194, 263, 265-273, 275 — Kevin's older strategies that have `config.live_model='ws_rest_spliced'` explicitly set, likely via `_bulk_set_live_model.py`)
+  - All 30 PACKTEST canaries (276-305) miss verification entirely
+- **Root cause located in BOTH dispatchers:**
+  - `src/ralph_engine.py:1572-1575` (Ralph dispatcher)
+  - `src/worker.py:228-231` (DBAlertDispatcher)
+  ```python
+  live_model_at_fire = (
+      (strategy.get('config') or {}).get('live_model')
+      or strategy.get('live_model')
+  )  # ← Returns None when neither field set, even though engine resolves to default
+  ```
+  Both paths read `config.live_model` but DON'T fall back to `strategy_models.get_default_live_model()` (which returns `'ws_rest_spliced'` per the registry at `strategy_models.py:213-216`).
+- **Downstream consequence:** `rest_verifier.py:401` short-circuits with `if alert.get("live_model") != "ws_rest_spliced": return`. Result: REST verification never runs for any alert with NULL live_model.
+- **Design intent ambiguity:** worker.py:226-227 comment says "historical alerts stay null and render as 'unknown' per Kevin's 'honesty over speed' guidance". That makes sense for handling live_model UPGRADES (don't retroactively re-attribute), but it conflates "user hasn't decided yet" with "actually running default". For strategies that NEVER explicitly set live_model and rely on the default resolution at engine init, the alert SHOULD carry the resolved default.
+- **Proposed fix:**
+  ```python
+  from strategy_models import get_default_live_model
+  live_model_at_fire = (
+      (strategy.get('config') or {}).get('live_model')
+      or strategy.get('live_model')
+      or get_default_live_model()
+  )
+  ```
+  in both `ralph_engine.py:1572` and `worker.py:228`. Caveat: needs Kevin's sign-off because it changes alert attribution for ~4500 historical-from-this-point-forward alerts.
+- **Alternative fix:** explicitly assign `live_model='ws_rest_spliced'` to all strategies via the `_bulk_set_live_model.py` script. More transparent (config explicitly carries the value) but requires the script to be re-run any time the default changes.
+- **Impact on SOP:** until fixed, Layer 1 is uninformative for almost the entire fleet. Layer 3 (fill delta) and Layer 2 (pair rate) are the only usable layers for PACKTEST canaries.
+
+---
+
 ### Backtest session filter NOT applied on `primary_df` injection path
 - **Status:** OPEN — root cause located; fix not yet shipped
 - **Discovered:** 2026-06-03 EOD via sid 268 (SPY-CANARY-10s-NoConf, `trading_session=RTH`)
