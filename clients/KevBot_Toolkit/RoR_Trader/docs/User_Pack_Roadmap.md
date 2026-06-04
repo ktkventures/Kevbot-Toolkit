@@ -2,8 +2,18 @@
 
 A living per-pack health register. Distinct from `Known_Bugs.md` — that doc is for active fixable bugs across the whole system; this one is the **ongoing per-pack catalog** that survives bug-fix cycles and tracks each pack's trigger-mode and gate-mode health over time.
 
-**Last update:** 2026-06-02 — after the Phase 2 codec ship + PACKTEST canary creation + worker restart
+**Last update:** 2026-06-04 00:30 UTC — late-night session adding Tier-A regression note + tonight's commits
 **Authoritative truth source:** PACKTEST canaries (sids 276-305, 2 per pack: `· trigger` and `· gate`)
+
+> **2026-06-04 Regression Note** — apples-to-apples re-run on 2026-06-03 13:30-20:00 UTC at ±5s (same methodology as 2026-06-02 baselines below):
+>
+> | Pack | sid | Baseline (06-02) | Today (06-03) | Δ |
+> |---|---|---|---|---|
+> | UT Bot V4 | 302 | 94% | **63.0%** | -31pp |
+> | EMA Stack v2 | 282 | 91% | **52.3%** | -39pp |
+> | RSI Zones 2 | 288 | 89% | **51.0%** | -38pp |
+>
+> All three Tier-A "strongest performers" dropped 31-39pp in 24h. Today's full canary cohort clusters at 50-65% for healthy packs. **Three confounders distinguish today's measurement from the 06-02 baseline:** (1) snapshot lag bug for sids 297-305 inflating phantoms; (2) RTH session filter bug inflating "missed" on RTH strategies; (3) 15 silent swing-stop strategies dark since 2026-06-03T19:58 UTC. The regression is real but the magnitude is partially measurement noise from these bugs. See `Known_Bugs.md` + `memory/project_session_2026-06-03.md` for details. Tomorrow's first RTH hour (with Layer 1 verification now active per `b2387ff`) will clarify whether restart heals.
 
 ---
 
