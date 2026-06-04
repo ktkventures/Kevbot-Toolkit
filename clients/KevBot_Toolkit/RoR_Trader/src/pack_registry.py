@@ -483,6 +483,93 @@ def get_pack(slug: str) -> Optional[RegisteredPack]:
     return _user_packs.get(slug)
 
 
+def get_diagnostic_columns_for_strategy(strat: dict) -> list[str]:
+    """Return the union of `diagnostic_columns` across every pack the
+    strategy uses (entry trigger, exit triggers, confluence packs,
+    stop / target / time-exit packs).
+
+    Used by both unified_engine (backtest) and ralph_engine (live) to
+    decide which indicator columns to capture in the bar_diagnostics
+    table per bar. Returns [] for strategies whose packs declare no
+    diagnostic columns — engines short-circuit cleanly in that case.
+
+    Lookup walks:
+      - `entry_trigger_confluence_id` → confluence group → base_template → pack
+      - `exit_trigger_confluence_ids` (list) → same
+      - `confluence` (list of group IDs) → same
+
+    Stop/target/time-exit packs aren't enumerated here yet (Phase B —
+    when those start declaring diagnostic_columns). Caller doesn't
+    need to handle missing data: empty list is a normal early return.
+
+    Args:
+        strat: Strategy dict (must have `confluence` / `entry_trigger_confluence_id`
+               / `exit_trigger_confluence_ids` keys, all optional).
+
+    Returns:
+        Sorted list of unique column names. Empty if no pack opted in.
+    """
+    if not isinstance(strat, dict):
+        return []
+    try:
+        from confluence_groups import (
+            TEMPLATES,
+            load_confluence_groups,
+            get_group_by_id,
+        )
+    except Exception:
+        return []
+
+    cols: set[str] = set()
+    groups = None  # lazy-load on first lookup
+
+    def _add_from_template(template_slug):
+        tpl = TEMPLATES.get(template_slug)
+        if not tpl:
+            return
+        diag = tpl.get('diagnostic_columns') or []
+        if isinstance(diag, list):
+            cols.update(str(c) for c in diag)
+
+    def _add_from_group_id(gid):
+        nonlocal groups
+        if not gid:
+            return
+        # Fast path — pack-synthesized "default" group: `{slug}_default_{...}`.
+        # These don't live in the user-groups table; the registry creates them
+        # implicitly from the pack manifest. Match by longest TEMPLATES-slug
+        # prefix so e.g. `ema_pp_v4_default_bull` resolves to `ema_pp_v4`
+        # even though `ema_pp` is also a registered template.
+        best_slug = None
+        for tpl_slug in TEMPLATES:
+            if (gid == tpl_slug
+                    or gid.startswith(tpl_slug + '_default')
+                    or gid.startswith(tpl_slug + '_')):
+                if best_slug is None or len(tpl_slug) > len(best_slug):
+                    best_slug = tpl_slug
+        if best_slug is not None:
+            _add_from_template(best_slug)
+            return
+        # User-saved group — query the DB.
+        if groups is None:
+            try:
+                groups = load_confluence_groups()
+            except Exception:
+                groups = []
+        grp = get_group_by_id(gid, groups)
+        if grp is None:
+            return
+        _add_from_template(getattr(grp, 'base_template', None))
+
+    _add_from_group_id(strat.get('entry_trigger_confluence_id'))
+    for gid in (strat.get('exit_trigger_confluence_ids') or []):
+        _add_from_group_id(gid)
+    for gid in (strat.get('confluence') or []):
+        _add_from_group_id(gid)
+
+    return sorted(cols)
+
+
 def get_trigger_level_spec(trigger_id: str) -> Optional[dict]:
     """Resolve a trigger_id to its pack manifest's `trigger_levels` entry.
 
@@ -622,6 +709,12 @@ def _inject_into_templates(manifest: dict) -> None:
         "output_descriptions": manifest["output_descriptions"],
         "triggers": manifest["triggers"],
         "indicator_columns": manifest["indicator_columns"],
+        # Subset of indicator_columns the pack author has flagged as worth
+        # capturing per-bar for live/backtest divergence diagnostics. Logged
+        # to the bar_diagnostics table by both engines when set. Keep this
+        # to 2-5 numeric columns per pack — JSONB payload size grows with
+        # bar count. (2026-06-04 #57)
+        "diagnostic_columns": manifest.get("diagnostic_columns", []),
         "display_type": manifest.get("display_type", "overlay"),
         "column_color_map": manifest.get("column_color_map", {}),
         "plot_config": manifest.get("plot_config", {}),

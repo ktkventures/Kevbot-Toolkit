@@ -62,6 +62,12 @@ MANIFEST_OPTIONAL_FIELDS = [
     # IDs (with _ib/_lc/_cc suffixes) automatically based on this map.
     # See pack_builder_context.md for the modular trigger pattern.
     "trigger_levels",
+    # Subset of indicator_columns the pack flags as worth capturing per
+    # bar for live/backtest divergence diagnostics. Logged to the
+    # bar_diagnostics table by both engines when set. Keep this to 2-5
+    # numeric columns per pack — JSONB payload grows linearly with bar
+    # count. Added 2026-06-04 (#57 Pack-declared diagnostic columns).
+    "diagnostic_columns",
 ]
 
 

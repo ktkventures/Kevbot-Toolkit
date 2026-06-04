@@ -2323,6 +2323,85 @@ def list_system_settings() -> list:
         return []
 
 
+# ===========================================================================
+# bar_diagnostics — per-bar indicator state for live/backtest divergence diag
+# ===========================================================================
+
+def save_bar_diagnostics_batch(rows: list[dict]) -> int:
+    """Batch-upsert per-bar diagnostic state. Returns rows-written count.
+
+    Each row must contain: strategy_id (int), bar_ts (ISO str), source
+    (live|backtest|algo), values (dict). Uses the admin client so engines
+    (no JWT) can write. `on_conflict=(strategy_id,bar_ts,source)` so a
+    backtest re-run cleanly overwrites a prior recompute for the same
+    bar.
+
+    Empty input is a no-op (returns 0). Failures are logged but never
+    raised — diagnostic logging is best-effort and must never block the
+    engine's hot path.
+    """
+    if not USE_DB or not rows:
+        return 0
+    try:
+        client = get_admin_client()
+        # Normalize rows — drop any with missing required fields.
+        norm = []
+        for r in rows:
+            sid = r.get('strategy_id')
+            bts = r.get('bar_ts')
+            src = r.get('source')
+            vals = r.get('values')
+            if sid is None or not bts or not src or not isinstance(vals, dict):
+                continue
+            norm.append({
+                'strategy_id': int(sid),
+                'bar_ts': bts if isinstance(bts, str) else bts.isoformat(),
+                'source': src,
+                'values': vals,
+            })
+        if not norm:
+            return 0
+        (client.table('bar_diagnostics')
+         .upsert(norm, on_conflict='strategy_id,bar_ts,source')
+         .execute())
+        return len(norm)
+    except Exception as e:
+        logger.warning("save_bar_diagnostics_batch failed: %s", e)
+        return 0
+
+
+def load_bar_diagnostics(
+    strategy_id: int,
+    start_ts: str | None = None,
+    end_ts: str | None = None,
+    source: str | None = None,
+    limit: int = 10000,
+) -> list[dict]:
+    """Read bar diagnostics for a strategy. Admin client.
+
+    Returns rows sorted by (bar_ts, source). Used by the admin
+    comparison UI (57E) and ad-hoc probes.
+    """
+    if not USE_DB:
+        return []
+    try:
+        client = get_admin_client()
+        q = client.table('bar_diagnostics').select(
+            'strategy_id,bar_ts,source,values,created_at'
+        ).eq('strategy_id', strategy_id)
+        if start_ts:
+            q = q.gte('bar_ts', start_ts)
+        if end_ts:
+            q = q.lte('bar_ts', end_ts)
+        if source:
+            q = q.eq('source', source)
+        r = q.order('bar_ts').order('source').limit(limit).execute()
+        return r.data or []
+    except Exception as e:
+        logger.warning("load_bar_diagnostics failed: %s", e)
+        return []
+
+
 def set_system_setting(key: str, value, *, description: str | None = None,
                        updated_by: str | None = None) -> bool:
     """Upsert a system_settings key. Returns True on success.

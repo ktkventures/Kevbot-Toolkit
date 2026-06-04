@@ -69,6 +69,10 @@
     "utv4_trailing_stop",
     "utv4_trailing_stop_prev"
   ],
+  "diagnostic_columns": [
+    "utv4_trailing_stop",
+    "utv4_trailing_stop_prev"
+  ],
   "column_color_map": {
     "utv4_trailing_stop": "stop_color"
   },
