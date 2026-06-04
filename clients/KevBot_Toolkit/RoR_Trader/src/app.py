@@ -3689,8 +3689,39 @@ def _check_auth_quick() -> bool:
     return 'auth_user' in st.session_state and st.session_state['auth_user'] is not None
 
 
+_PROCESS_BOOT_DONE = False
+
+
+def _process_boot_once():
+    """Run once per Streamlit process. Mirrors api/main.py startup hooks.
+
+    Streamlit re-runs main() on every interaction, but Python module
+    globals persist across reruns within the same process. This flag
+    ensures one-time work (orphan job cleanup) only fires on actual
+    process boot.
+    """
+    global _PROCESS_BOOT_DONE
+    if _PROCESS_BOOT_DONE:
+        return
+    _PROCESS_BOOT_DONE = True
+    try:
+        from update_jobs import cleanup_orphaned_update_jobs
+        import threading
+        threading.Thread(
+            target=cleanup_orphaned_update_jobs,
+            daemon=True,
+            name="streamlit_uj_orphan_cleanup",
+        ).start()
+    except Exception as _e:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Streamlit update_jobs orphan cleanup failed: %s", _e)
+
+
 def main():
     from db import USE_DB
+
+    _process_boot_once()
 
     # Page config must be the first Streamlit command
     if USE_DB and not _check_auth_quick():
@@ -3805,7 +3836,7 @@ def main():
     SECTIONS = ["Dashboard", "Confluence Packs", "Strategies", "Portfolios", "Alerts", "Settings"]
     SECTION_SUB_PAGES = {
         "Confluence Packs": ["TF Confluence", "General", "Risk Management", "User Packs", "Pack Builder", "Timeframes"],
-        "Strategies": ["Strategy Builder", "My Strategies", "Mass Builder", "Mass Results"],
+        "Strategies": ["Strategy Builder", "My Strategies", "Mass Builder", "Mass Results", "Update Jobs"],
         "Portfolios": ["My Portfolios", "Portfolio Requirements"],
         "Alerts": ["Alerts & Signals", "Webhook Templates"],
     }
@@ -3815,6 +3846,7 @@ def main():
         "My Strategies": ("Strategies", "My Strategies"),
         "Mass Builder": ("Strategies", "Mass Builder"),
         "Mass Results": ("Strategies", "Mass Results"),
+        "Update Jobs": ("Strategies", "Update Jobs"),
         "Portfolios": ("Portfolios", "My Portfolios"),
         "Portfolio Requirements": ("Portfolios", "Portfolio Requirements"),
         "Alerts & Signals": ("Alerts", "Alerts & Signals"),
@@ -3955,6 +3987,8 @@ def main():
             render_mass_strategy_builder()
         elif sub == "Mass Results":
             render_mass_strategy_results()
+        elif sub == "Update Jobs":
+            render_update_jobs()
     elif section == "Portfolios":
         sub = render_sub_nav("Portfolios")
         if sub == "My Portfolios":
@@ -6164,8 +6198,8 @@ def render_strategy_list():
     with col_update:
         st.write("")  # vertical spacing to align with header
         if st.button("Update Data",
-                      help="Refresh KPIs and equity curves for all strategies"):
-            st.session_state._trigger_bulk_update = True
+                      help="Recompute trades + KPIs for all strategies (async — runs server-side; safe to close browser)"):
+            st.session_state._trigger_bulk_update_async = True
             st.rerun()
     with col_new:
         st.write("")  # vertical spacing to align with header
@@ -6205,9 +6239,12 @@ def render_strategy_list():
                 st.session_state._confirm_reset_all_alerts = False
                 st.rerun()
 
-    # --- Bulk data refresh handler ---
-    if st.session_state.get('_trigger_bulk_update', False):
-        st.session_state._trigger_bulk_update = False
+    # --- Bulk data refresh handler (async) ---
+    # Kicks off an update_job in a daemon thread + navigates to the
+    # Update Jobs page. The job survives browser close (runs in this
+    # Streamlit process; orphan cleanup recovers if the process dies).
+    if st.session_state.get('_trigger_bulk_update_async', False):
+        st.session_state._trigger_bulk_update_async = False
         _upd_strategies = load_strategies()
         _processable = [s for s in _upd_strategies
                         if 'entry_trigger_confluence_id' in s or s.get('strategy_origin') == 'webhook_inbound']
@@ -6215,40 +6252,37 @@ def render_strategy_list():
         if not _processable:
             st.warning("No strategies to update.")
         else:
-            _progress = st.progress(0.0, text="Initializing...")
-
-            def _on_progress(current, total, name):
-                _progress.progress(current / total,
-                                   text=f"Updating {current}/{total}: {name}")
-
-            _result = bulk_refresh_all_strategies(
-                progress_callback=_on_progress)
-            _progress.progress(1.0, text="Complete!")
-
-            # Clear session caches so detail pages use fresh data
-            for _s in _processable:
-                _sid = _s['id']
-                st.session_state.strategy_trades_cache.pop(_sid, None)
-                st.session_state.pop(f"bt_trades_{_sid}", None)
-                st.session_state.pop(f"ft_data_{_sid}", None)
-                for _k in [k for k in st.session_state
-                           if k.startswith(f"bt_ext_{_sid}_")
-                           or k.startswith(f"ft_ext_{_sid}_")]:
-                    st.session_state.pop(_k, None)
-            # Invalidate portfolio caches that depend on strategy data
-            for _port in load_portfolios():
-                st.session_state.pop(f"port_data_{_port['id']}", None)
-
-            _msg = f"Updated {_result['success_count']} strategies"
-            if _result['skipped_count']:
-                _msg += f" ({_result['skipped_count']} legacy skipped)"
-            if _result['failed_ids']:
-                st.error(
-                    f"Failed: strategy IDs {_result['failed_ids']}")
-            st.success(_msg)
-            import time as _time_mod
-            _time_mod.sleep(1.5)
-            st.rerun()
+            try:
+                from db import save_update_job
+                from update_jobs import start_update_job_async
+                from auth import get_user
+                _user = get_user() if USE_DB else None
+                _user_id = (_user or {}).get('id') if isinstance(_user, dict) else None
+                _strategy_ids = [int(s['id']) for s in _processable]
+                _job_id = save_update_job({
+                    'name': f"Update all ({len(_strategy_ids)} strategies)",
+                    'mode': 'all',
+                    'scope': 'bulk',
+                    'strategy_ids': _strategy_ids,
+                    'status': 'queued',
+                    'progress': {
+                        'current_step': 0,
+                        'total_steps': len(_strategy_ids),
+                        'current_sid': None,
+                        'current_phase': 'queued',
+                        'per_strategy': {},
+                    },
+                })
+                if _job_id is None:
+                    st.error("Failed to create update job. Check API logs.")
+                else:
+                    start_update_job_async(_job_id, 'all', _strategy_ids, _user_id)
+                    st.session_state._update_job_focus_id = _job_id
+                    st.session_state.nav_target = "Update Jobs"
+                    st.toast(f"Update job #{_job_id} started — running in background")
+                    st.rerun()
+            except Exception as _e:
+                st.error(f"Failed to start async update job: {_e}")
 
     strategies = load_strategies()
 
@@ -10720,6 +10754,238 @@ def render_mass_strategy_results():
                              type="secondary", use_container_width=True):
                     delete_mass_search(sid)
                     st.rerun()
+
+
+def render_update_jobs():
+    """Render the Update Jobs page — async UAD job list + per-job progress."""
+    from db import (
+        load_update_jobs, get_update_job, delete_update_job, save_update_job,
+    )
+    from update_jobs import (
+        start_update_job_async, cancel_update_job, is_job_running,
+    )
+    from auth import get_user
+
+    st.header("Update Jobs")
+    st.caption("Background jobs that recompute backtest + algo trades server-side. "
+               "Safe to navigate away — they keep running.")
+
+    # --- Top action bar: kick off a new bulk job + manual refresh ---
+    _bar = st.columns([1, 1, 1, 3])
+    with _bar[0]:
+        if st.button("Start: Update All Data",
+                     key="uj_start_all",
+                     type="primary",
+                     help="Recompute all trades for every strategy",
+                     use_container_width=True):
+            st.session_state._uj_kickoff_mode = 'all'
+            st.rerun()
+    with _bar[1]:
+        if st.button("Start: Append New Only",
+                     key="uj_start_new",
+                     help="Append only new trades since last update (faster)",
+                     use_container_width=True):
+            st.session_state._uj_kickoff_mode = 'new'
+            st.rerun()
+    with _bar[2]:
+        if st.button("Refresh", key="uj_refresh", use_container_width=True):
+            st.rerun()
+
+    # --- Handle kickoff ---
+    _kick = st.session_state.pop('_uj_kickoff_mode', None)
+    if _kick in ('all', 'new'):
+        _strats = load_strategies()
+        _eligible = [s for s in _strats
+                     if 'entry_trigger_confluence_id' in s
+                     or s.get('strategy_origin') == 'webhook_inbound']
+        if not _eligible:
+            st.warning("No eligible strategies to update.")
+        else:
+            try:
+                _user = get_user() if USE_DB else None
+                _uid = (_user or {}).get('id') if isinstance(_user, dict) else None
+                _sids = [int(s['id']) for s in _eligible]
+                _name = ("Update all" if _kick == 'all' else "Append new") + \
+                        f" ({len(_sids)} strategies)"
+                _jid = save_update_job({
+                    'name': _name,
+                    'mode': _kick,
+                    'scope': 'bulk',
+                    'strategy_ids': _sids,
+                    'status': 'queued',
+                    'progress': {
+                        'current_step': 0,
+                        'total_steps': len(_sids),
+                        'current_sid': None,
+                        'current_phase': 'queued',
+                        'per_strategy': {},
+                    },
+                })
+                if _jid is None:
+                    st.error("Failed to create update job.")
+                else:
+                    start_update_job_async(_jid, _kick, _sids, _uid)
+                    st.session_state._update_job_focus_id = _jid
+                    st.toast(f"Update job #{_jid} started.")
+                    st.rerun()
+            except Exception as _e:
+                st.error(f"Failed to start job: {_e}")
+
+    # --- Focus on a specific job if one was just kicked off ---
+    _focus_id = st.session_state.get('_update_job_focus_id')
+    if _focus_id is not None:
+        _focus = get_update_job(_focus_id)
+        if _focus:
+            st.markdown("---")
+            st.subheader(f"Most recent job — #{_focus_id}")
+            _render_update_job_detail(_focus)
+        else:
+            st.session_state.pop('_update_job_focus_id', None)
+
+    # --- Recent jobs list ---
+    st.markdown("---")
+    st.subheader("Recent Jobs")
+    _jobs = load_update_jobs(limit=25)
+    if not _jobs:
+        st.info("No update jobs yet. Click **Start: Update All Data** above to kick one off.")
+        return
+
+    _STATUS_ICONS = {
+        'queued': "[queue]",
+        'running': "[running]",
+        'completed': "[ok]",
+        'failed': "[fail]",
+        'cancelled': "[cancelled]",
+        'orphaned': "[orphaned]",
+    }
+    _any_running = False
+    for _job in _jobs:
+        _jid = _job.get('id')
+        _status = _job.get('status', 'unknown')
+        _mode = _job.get('mode', '?')
+        _scope = _job.get('scope', '?')
+        _sids = _job.get('strategy_ids') or []
+        _created = (_job.get('created_at') or '')[:19].replace('T', ' ')
+        _progress = _job.get('progress') or {}
+        _cur = _progress.get('current_step', 0)
+        _tot = _progress.get('total_steps', len(_sids))
+        _summary = _job.get('summary') or {}
+
+        if _status == 'running':
+            _any_running = True
+
+        with st.container(border=True):
+            _c = st.columns([4, 1, 1, 1, 1, 1])
+            with _c[0]:
+                _icon = _STATUS_ICONS.get(_status, _status)
+                _name = _job.get('name') or f"Job {_jid}"
+                st.markdown(f"**{_icon} {_name}** — `{_status}` · {_scope}/{_mode}")
+                _line = f"`#{_jid}` · {len(_sids)} strategies · {_cur}/{_tot} done · {_created}"
+                if _status == 'completed' and _summary:
+                    _line += (f" · ok={_summary.get('succeeded', 0)}"
+                              f" fail={_summary.get('failed', 0)}"
+                              f" inserted={_summary.get('total_trades_inserted', 0)}"
+                              f" elapsed={_summary.get('total_elapsed_s', 0)}s")
+                st.caption(_line)
+                if _status == 'running' and _tot:
+                    st.progress(min(_cur / _tot, 1.0))
+            with _c[1]:
+                if st.button("View", key=f"uj_view_{_jid}", use_container_width=True):
+                    st.session_state._update_job_focus_id = _jid
+                    st.rerun()
+            with _c[2]:
+                if _status == 'running':
+                    if st.button("Cancel", key=f"uj_cancel_{_jid}",
+                                 type="secondary", use_container_width=True):
+                        cancel_update_job(_jid)
+                        from db import update_update_job
+                        update_update_job(_jid, {'status': 'cancelled'})
+                        st.toast(f"Cancelled #{_jid}.")
+                        st.rerun()
+            with _c[3]:
+                pass
+            with _c[4]:
+                pass
+            with _c[5]:
+                if _status != 'running':
+                    if st.button("Delete", key=f"uj_del_{_jid}",
+                                 type="secondary", use_container_width=True):
+                        delete_update_job(_jid)
+                        if st.session_state.get('_update_job_focus_id') == _jid:
+                            st.session_state.pop('_update_job_focus_id', None)
+                        st.rerun()
+
+    # Auto-refresh every 5s while any job is running
+    if _any_running:
+        import time as _time_mod
+        _time_mod.sleep(5)
+        st.rerun()
+
+
+def _render_update_job_detail(job: dict):
+    """Render per-strategy progress for a single update_job row."""
+    _jid = job.get('id')
+    _status = job.get('status', 'unknown')
+    _mode = job.get('mode', '?')
+    _progress = job.get('progress') or {}
+    _per = _progress.get('per_strategy') or {}
+    _cur = _progress.get('current_step', 0)
+    _tot = _progress.get('total_steps', 0)
+    _phase = _progress.get('current_phase') or ''
+    _cur_sid = _progress.get('current_sid')
+
+    _meta = st.columns(4)
+    with _meta[0]:
+        st.metric("Status", _status)
+    with _meta[1]:
+        st.metric("Progress", f"{_cur}/{_tot}")
+    with _meta[2]:
+        st.metric("Mode", _mode)
+    with _meta[3]:
+        if _cur_sid is not None:
+            st.metric("Current sid", str(_cur_sid))
+        else:
+            st.metric("Phase", _phase or "—")
+
+    if _status == 'running' and _tot:
+        st.progress(min(_cur / _tot, 1.0),
+                    text=f"sid={_cur_sid} · {_phase}")
+
+    _summary = job.get('summary') or {}
+    if _summary:
+        st.caption(
+            f"Summary — succeeded={_summary.get('succeeded', 0)}"
+            f" · failed={_summary.get('failed', 0)}"
+            f" · trades inserted={_summary.get('total_trades_inserted', 0)}"
+            f" · elapsed={_summary.get('total_elapsed_s', 0)}s")
+
+    if job.get('error'):
+        st.error(job['error'])
+
+    # Per-strategy breakdown table
+    if _per:
+        with st.expander(f"Per-strategy detail ({len(_per)} entries)",
+                         expanded=(_status == 'running')):
+            _rows = []
+            for _sid, _info in _per.items():
+                _row = {
+                    'sid': _sid,
+                    'status': _info.get('status', '?'),
+                    'elapsed_s': _info.get('elapsed_s'),
+                }
+                if isinstance(_info.get('backtest'), dict):
+                    _row['bt_status'] = _info['backtest'].get('status')
+                    _row['bt_count'] = _info['backtest'].get('count')
+                if isinstance(_info.get('algo'), dict):
+                    _row['algo_status'] = _info['algo'].get('status')
+                    _row['algo_count'] = _info['algo'].get('count')
+                if _info.get('error'):
+                    _row['error'] = (_info['error'] or '')[:80]
+                _rows.append(_row)
+            if _rows:
+                import pandas as _pd
+                st.dataframe(_pd.DataFrame(_rows), use_container_width=True,
+                             hide_index=True)
 
 
 def render_portfolios():
