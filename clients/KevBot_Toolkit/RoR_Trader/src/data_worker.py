@@ -160,9 +160,26 @@ class DataWorkerManager:
         self._start_recon_loop()
         self._start_metrics_loop()
         self._start_coarse_ingest_loop()
-        self._start_streaming_loop()
-        self._start_snapshot_flush_loop()
-        self._start_kpi_recompute_loop()
+        # Streaming backtest loops are togglable via env var so operators
+        # can switch to on-demand-only UAD when scaling beyond what the
+        # always-on streaming pipeline can keep up with. Default ON for
+        # backwards compatibility. Bar ingest / recon / metrics keep
+        # running regardless — they're stateless and cheap.
+        # Pattern mirrors ALGO_HISTORY_CRON_ENABLED.
+        _streaming_enabled = os.environ.get(
+            "DATA_WORKER_STREAMING_ENABLED", "true"
+        ).strip().lower() in ("1", "true", "yes", "on")
+        if _streaming_enabled:
+            self._start_streaming_loop()
+            self._start_snapshot_flush_loop()
+            self._start_kpi_recompute_loop()
+        else:
+            logger.info(
+                "[data_worker] streaming disabled via "
+                "DATA_WORKER_STREAMING_ENABLED=false — backtest pipeline "
+                "will not auto-catch-up; use on-demand /api/update-jobs/run "
+                "instead"
+            )
 
         # Main thread does only the healthcheck — all work is on daemons.
         while self._running:

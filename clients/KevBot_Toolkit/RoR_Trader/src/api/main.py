@@ -67,6 +67,7 @@ def create_app() -> FastAPI:
     from api.routers.recompute_jobs import router as recompute_jobs_router
     from api.routers.admin_parity import router as admin_parity_router
     from api.routers.strategy_health import router as strategy_health_router
+    from api.routers.update_jobs import router as update_jobs_router
 
     app.include_router(auth_router)
     app.include_router(settings_router)
@@ -89,6 +90,7 @@ def create_app() -> FastAPI:
     app.include_router(recompute_jobs_router)
     app.include_router(admin_parity_router)
     app.include_router(strategy_health_router)
+    app.include_router(update_jobs_router)
 
     # Load user packs at startup — registers indicators, interpreters,
     # triggers, and intra-bar level maps. DB group creation is skipped
@@ -111,6 +113,16 @@ def create_app() -> FastAPI:
             import logging
             logging.getLogger(__name__).warning(
                 "Mass search startup cleanup failed (non-fatal): %s", e)
+        # Same pattern for update_jobs — orphan any 'running' UAD jobs
+        # from a previous worker process so the UI surfaces them and the
+        # user can retry.
+        try:
+            from update_jobs import cleanup_orphaned_update_jobs
+            cleanup_orphaned_update_jobs()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Update jobs orphan cleanup failed (non-fatal): %s", e)
     threading.Thread(target=_startup_cleanup, daemon=True, name="startup_orphan_cleanup").start()
 
     # Stale parity_status cleanup — bg parity threads are daemon=True and

@@ -2055,6 +2055,229 @@ def delete_mass_search(search_id: str):
 
 
 # ============================================================
+# Update Jobs CRUD (async on-demand UAD)
+# ============================================================
+# Backs the update_jobs table. Mirrors mass_searches pattern:
+# background daemon thread updates progress_data as job runs; row
+# survives worker restart via cleanup_orphaned_update_jobs on api boot.
+# See migrations/update_jobs_table.sql.
+
+def save_update_job(job: dict) -> int | None:
+    """Save (upsert) an update job. Returns the job ID.
+
+    `job` shape mirrors mass_searches usage:
+      - top-level columns: name, mode, scope, strategy_ids, status
+      - JSONB config_data: progress, summary, results, error
+    """
+    job_id = job.get('id')
+    now = datetime.now(timezone.utc).isoformat()
+    job['updated_at'] = now
+    if not job.get('created_at'):
+        job['created_at'] = now
+
+    if not USE_DB:
+        logger.warning("save_update_job: USE_DB is false, dropping job")
+        return None
+
+    try:
+        client = get_client()
+        user_id = get_current_user_id()
+        row = {
+            'user_id': user_id,
+            'name': job.get('name', 'Untitled Update'),
+            'mode': job.get('mode', 'new'),
+            'scope': job.get('scope', 'single'),
+            'strategy_ids': job.get('strategy_ids', []),
+            'status': job.get('status', 'queued'),
+            'config_data': json.loads(json.dumps(
+                {k: v for k, v in job.items() if k not in (
+                    'id', 'user_id', 'name', 'mode', 'scope',
+                    'strategy_ids', 'status', 'created_at', 'updated_at',
+                )},
+                default=str
+            )),
+            'created_at': job['created_at'],
+            'updated_at': now,
+        }
+        if job_id:
+            row['id'] = job_id
+            client.table('update_jobs').upsert(row).execute()
+            return job_id
+        # Timestamp-based int ID (matches mass_searches pattern)
+        import time as _time
+        row['id'] = int(_time.time() * 1000) % (2**31)
+        result = client.table('update_jobs').insert(row).execute()
+        if result.data and len(result.data) > 0:
+            return result.data[0].get('id')
+        return row['id']
+    except Exception as e:
+        logger.warning("save_update_job DB error: %s", e)
+        return None
+
+
+def get_update_job(job_id) -> dict | None:
+    """Read a single update job row, merging config_data into top-level."""
+    if not USE_DB:
+        return None
+    try:
+        client = get_client()
+        result = (client.table('update_jobs').select('*')
+                  .eq('id', job_id).maybe_single().execute())
+        if not result or not result.data:
+            return None
+        row = result.data
+        # Flatten config_data into the top-level dict so callers can
+        # access progress / summary / results / error directly.
+        cfg = row.pop('config_data', {}) or {}
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg)
+            except Exception:
+                cfg = {}
+        row.update(cfg)
+        return row
+    except Exception as e:
+        logger.warning("get_update_job DB error: %s", e)
+        return None
+
+
+def update_update_job(job_id, updates: dict):
+    """Partial update of an update_jobs row.
+
+    Top-level columns (status) are written directly. JSONB fields
+    (progress, summary, results, error) are merged into config_data
+    via read-modify-write to preserve other keys.
+    """
+    if not USE_DB:
+        return
+    try:
+        client = get_client()
+        row = {'updated_at': datetime.now(timezone.utc).isoformat()}
+        if 'status' in updates:
+            row['status'] = updates['status']
+        _jsonb_keys = ('progress', 'summary', 'results', 'error')
+        if any(k in updates for k in _jsonb_keys):
+            res = (client.table('update_jobs').select('config_data')
+                   .eq('id', job_id).maybe_single().execute())
+            cfg = (res.data or {}).get('config_data', {}) if res and res.data else {}
+            if isinstance(cfg, str):
+                try:
+                    cfg = json.loads(cfg)
+                except Exception:
+                    cfg = {}
+            for key in _jsonb_keys:
+                if key in updates:
+                    cfg[key] = updates[key]
+            # Sanitize for JSON (mirrors update_mass_search pattern)
+            import numpy as _np
+            def _sanitize(o):
+                if isinstance(o, (_np.integer,)):
+                    return int(o)
+                if isinstance(o, (_np.floating,)):
+                    return float(o) if not _np.isnan(o) and not _np.isinf(o) else 0
+                if isinstance(o, (_np.bool_,)):
+                    return bool(o)
+                if isinstance(o, _np.ndarray):
+                    return o.tolist()
+                if isinstance(o, set):
+                    return list(o)
+                return str(o)
+            row['config_data'] = json.loads(json.dumps(cfg, default=_sanitize))
+        client.table('update_jobs').update(row).eq('id', job_id).execute()
+    except Exception as e:
+        logger.warning("update_update_job DB error: %s", e)
+
+
+def load_update_jobs(limit: int = 50) -> list:
+    """Return recent update jobs for current user, newest first."""
+    if not USE_DB:
+        return []
+    try:
+        client = get_client()
+        result = (client.table('update_jobs').select('*')
+                  .order('created_at', desc=True).limit(limit).execute())
+        rows = result.data or []
+        # Flatten config_data so list-view callers see uniform fields.
+        out = []
+        for row in rows:
+            cfg = row.pop('config_data', {}) or {}
+            if isinstance(cfg, str):
+                try:
+                    cfg = json.loads(cfg)
+                except Exception:
+                    cfg = {}
+            row.update(cfg)
+            out.append(row)
+        return out
+    except Exception as e:
+        logger.warning("load_update_jobs DB error: %s", e)
+        return []
+
+
+def delete_update_job(job_id) -> bool:
+    """Delete a job. Returns True if a row was deleted, False otherwise."""
+    if not USE_DB:
+        return False
+    try:
+        client = get_client()
+        result = client.table('update_jobs').delete().eq('id', job_id).execute()
+        return bool(result.data)
+    except Exception as e:
+        logger.warning("delete_update_job DB error: %s", e)
+        return False
+
+
+def load_orphaned_update_jobs() -> list:
+    """Return jobs marked status='running' but with no in-process executor.
+
+    Called at api startup — finds rows whose worker died before completion
+    (e.g., Railway redeploy mid-job) so they can be marked 'orphaned' and
+    surfaced in the UI for the user to retry. Admin client (no RLS) so
+    we see all users' jobs.
+    """
+    if not USE_DB:
+        return []
+    try:
+        client = get_admin_client()
+        result = (client.table('update_jobs').select('*')
+                  .eq('status', 'running').execute())
+        return result.data or []
+    except Exception as e:
+        logger.warning("load_orphaned_update_jobs DB error: %s", e)
+        return []
+
+
+def mark_update_job_orphaned(job_id, error_msg: str = "worker died mid-job") -> None:
+    """Mark a stuck 'running' job as 'orphaned' from admin context.
+
+    Used at api startup for cleanup. No RLS (admin client) so it works
+    across all users even when invoked from boot without a user context.
+    """
+    if not USE_DB:
+        return
+    try:
+        client = get_admin_client()
+        cfg_q = (client.table('update_jobs').select('config_data')
+                 .eq('id', job_id).maybe_single().execute())
+        cfg = (cfg_q.data or {}).get('config_data', {}) if cfg_q and cfg_q.data else {}
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg)
+            except Exception:
+                cfg = {}
+        cfg['error'] = error_msg
+        (client.table('update_jobs')
+         .update({
+             'status': 'orphaned',
+             'config_data': cfg,
+             'updated_at': datetime.now(timezone.utc).isoformat(),
+         })
+         .eq('id', job_id).execute())
+    except Exception as e:
+        logger.warning("mark_update_job_orphaned DB error: %s", e)
+
+
+# ============================================================
 # User Pack Parity Status CRUD
 # ============================================================
 # Backs the user_pack_parity_status table — one row per
