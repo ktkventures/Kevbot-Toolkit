@@ -1003,9 +1003,16 @@ def append_new_trades_for_strategy(
                 from api.routers.strategies import run_hifi_pass2
                 # Phase D (2026-05-14): ALGO-APPEND writes cache rows,
                 # so scope Hi-Fi to the algo lane.
+                # incremental=True (2026-06-04 fix): the BT lane already
+                # had this since 2026-05-27 but the algo lane was missed.
+                # Without it, every cron/Update-New-Data cycle walks every
+                # cache_% trade in the strategy's history (1000+ rows for
+                # active canaries), dominating the 180s+ per-strategy
+                # runtime even when only a few new trades exist.
                 hifi_summary = run_hifi_pass2(
                     strategy_id,
                     data_source_filter='cache_%',
+                    incremental=True,
                     user={'id': user_id},
                 )
                 logger.info(
