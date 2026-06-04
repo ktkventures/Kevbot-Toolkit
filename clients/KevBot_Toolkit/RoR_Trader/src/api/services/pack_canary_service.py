@@ -97,60 +97,66 @@ def _pick_gate_state(manifest: dict) -> Optional[str]:
     return outs[0]
 
 
-def _base_canary_config(name: str, user_id: str) -> dict:
-    """Shared canary strategy config — modelled on a real 10Sec
-    strategy (verified against sid 170). Role-specific fields
-    (triggers, confluence) are layered on by the caller."""
-    return {
-        'name': name,
-        'user_id': user_id,
-        'symbol': CANARY_SYMBOL,
-        'timeframe': CANARY_PRIMARY_TF,
-        'direction': CANARY_DIRECTION,
-        'strategy_origin': CANARY_ORIGIN,
-        'trading_session': CANARY_SESSION,
-        'tags': [CANARY_TAG],
-        # Monitored so the live worker actually watches it — the whole
-        # point of a canary.
-        'alert_tracking_enabled': True,
-        # Self-contained ATR stop — no dependency on a stop pack
-        # existing. Profitability is irrelevant; this just lets trades
-        # close so the canary cycles.
-        'stop_config': {'method': 'atr', 'atr_mult': 1.5, 'exec_type': 'L'},
-        'target_config': None,
-        'risk_per_trade': 100.0,
-        'starting_balance': 10000.0,
-        'data_days': 2,
-        'data_seed': 42,
-        'lookback_mode': 'Days',
-    }
-
-
 def _build_trigger_canary(pack, user_id: str) -> Optional[dict]:
     """Pack as the ENTRY TRIGGER, no confluence gate. None if the
-    pack declares no triggers (gate-only packs)."""
+    pack declares no triggers (gate-only packs).
+
+    2026-06-04: refactored to route through `strategy_factory.build_strategy_config`
+    so the resulting dict matches the canonical shape used by Mass Builder,
+    Strategy Builder UI, and AI/SOP. Previously this path wrote ~12 fields;
+    now it writes the full 42-field canonical shape (engine model defaults
+    automatically applied via the factory).
+    """
+    from strategy_factory import build_strategy_config
+
     m = pack.manifest or {}
     slug = m.get('slug')
     bull = _pick_trigger_base(m, bullish=True)
     if not bull:
         return None
     bear = _pick_trigger_base(m, bullish=False)
-    cfg = _base_canary_config(
-        _canary_name(m.get('name', slug), 'trigger'), user_id)
-    cfg['entry_trigger_confluence_id'] = f'{slug}_default_{bull}'
-    # Exit on the pack's bearish trigger when it has one, else
-    # opposite-signal so the canary still cycles.
-    cfg['exit_trigger_confluence_ids'] = (
+    name = _canary_name(m.get('name', slug), 'trigger')
+    entry_cid = f'{slug}_default_{bull}'
+    exit_cids = (
         [f'{slug}_default_{bear}'] if bear and bear != bull
-        else ['opposite_signal'])
-    cfg['confluence'] = []
-    return cfg
+        else ['opposite_signal']
+    )
+    return build_strategy_config(
+        name=name,
+        user_id=user_id,
+        symbol=CANARY_SYMBOL,
+        timeframe=CANARY_PRIMARY_TF,
+        direction=CANARY_DIRECTION,
+        entry_trigger_confluence_id=entry_cid,
+        exit_trigger_confluence_ids=exit_cids,
+        confluence=[],
+        trading_session=CANARY_SESSION,
+        strategy_origin=CANARY_ORIGIN,
+        # Self-contained ATR stop — no dependency on a stop pack
+        # existing. Profitability is irrelevant; this just lets trades
+        # close so the canary cycles.
+        stop_config={'method': 'atr', 'atr_mult': 1.5, 'exec_type': 'L'},
+        target_config=None,
+        risk_per_trade=100.0,
+        starting_balance=10000.0,
+        data_days=2,
+        data_seed=42,
+        lookback_mode='Days',
+        tags=[CANARY_TAG],
+        alert_tracking_enabled=True,
+    )
 
 
 def _build_gate_canary(pack, user_id: str) -> Optional[dict]:
     """Pack as a 2Min cross-TF CONFLUENCE GATE, with a borrowed
     known-good entry trigger. None if the pack declares no interpreter
-    outputs (trigger-only packs)."""
+    outputs (trigger-only packs).
+
+    2026-06-04: refactored to route through `strategy_factory.build_strategy_config`
+    — same rationale as `_build_trigger_canary`.
+    """
+    from strategy_factory import build_strategy_config
+
     m = pack.manifest or {}
     slug = m.get('slug')
     interps = m.get('interpreters') or []
@@ -164,12 +170,28 @@ def _build_gate_canary(pack, user_id: str) -> Optional[dict]:
         entry, exit_ = _BORROWED_TRIGGER_ALT, _BORROWED_EXIT_ALT
     else:
         entry, exit_ = _BORROWED_TRIGGER, _BORROWED_EXIT
-    cfg = _base_canary_config(
-        _canary_name(m.get('name', slug), 'gate'), user_id)
-    cfg['entry_trigger_confluence_id'] = entry
-    cfg['exit_trigger_confluence_ids'] = [exit_]
-    cfg['confluence'] = [f'{CANARY_GATE_TF_PREFIX}-{interp}-{state}']
-    return cfg
+    name = _canary_name(m.get('name', slug), 'gate')
+    return build_strategy_config(
+        name=name,
+        user_id=user_id,
+        symbol=CANARY_SYMBOL,
+        timeframe=CANARY_PRIMARY_TF,
+        direction=CANARY_DIRECTION,
+        entry_trigger_confluence_id=entry,
+        exit_trigger_confluence_ids=[exit_],
+        confluence=[f'{CANARY_GATE_TF_PREFIX}-{interp}-{state}'],
+        trading_session=CANARY_SESSION,
+        strategy_origin=CANARY_ORIGIN,
+        stop_config={'method': 'atr', 'atr_mult': 1.5, 'exec_type': 'L'},
+        target_config=None,
+        risk_per_trade=100.0,
+        starting_balance=10000.0,
+        data_days=2,
+        data_seed=42,
+        lookback_mode='Days',
+        tags=[CANARY_TAG],
+        alert_tracking_enabled=True,
+    )
 
 
 def _existing_canaries(slug: str, pack_name: str, user_id: str) -> dict:
