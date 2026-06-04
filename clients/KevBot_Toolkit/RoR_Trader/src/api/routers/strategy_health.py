@@ -637,6 +637,15 @@ _CLASS_TIMESTAMPS_OUT_OF_SYNC = "timestamps_out_of_sync"
 _CLASS_PHASE2_SIGNAL_EXIT = "phase2_signal_exit"
 _CLASS_NON_FILL_EVENT = "non_fill_event"
 _CLASS_LEGACY_STRATEGY = "legacy_strategy"
+_CLASS_CROSS_EXEC_TYPE_MISMATCH = "cross_exec_type_mismatch"
+
+# Below this, a within-window pair is treated as the "same event" — even
+# a 1s delta on bar-close exits is normal alert dispatch latency. Above
+# this, a pair where the live alert and the backtest trade disagree on
+# exec_type (C vs L) is flagged as cross_exec_type_mismatch instead of
+# being silently filtered as "paired = OK". See SOP §"Proposed new
+# buckets" — promoted to the auto-classifier 2026-06-04.
+_PAIR_TIGHT_THRESHOLD_SEC = 2.0
 
 
 @router.get("/backlog")
@@ -831,6 +840,71 @@ def get_strategy_health_backlog(
             return _CLASS_NON_FILL_EVENT, f"event_type={ev!r} (not a fill)"
         return _CLASS_NEEDS_INVESTIGATION, "Alert fired but no matching backtest edge"
 
+    def _detect_pair_mismatch(
+        alert: Dict[str, Any],
+        trade: Dict[str, Any],
+        edge: str,
+        delta_s: float,
+    ) -> tuple[bool, str]:
+        """Decide whether a paired (alert, trade) tuple is actually a
+        cross_exec_type_mismatch and should be surfaced rather than
+        silently filtered as "paired = OK".
+
+        Catches two directions of the bug:
+          (a) live exit alert is C-type signal (utv4_bear_flip etc.) at
+              bar close, but backtest exited intra-bar via stop_loss /
+              target (L-type). The pair times match within the 60s
+              window but represent different events.
+          (b) live exit alert is L-type stop_loss, but the backtest exit
+              was a signal trigger (non-_ib C-type) — the inverse case.
+
+        Same logic on the entry side: alert.exec_type vs the trade's
+        entry_exec_type.
+
+        Returns (is_mismatch, reason).
+        """
+        if delta_s <= _PAIR_TIGHT_THRESHOLD_SEC:
+            # Within 2s is normal alert dispatch latency on a same-event pair.
+            return False, ""
+
+        alert_ex = (alert.get("exec_type") or "").upper()
+        if not alert_ex:
+            return False, ""
+
+        if edge == "exit":
+            # Trade-side: stop_loss / target are L-type (intra-bar level
+            # cross). Anything else is a C-type signal exit.
+            er = (trade.get("exit_reason") or "").lower()
+            trade_implied = "L" if er in ("stop_loss", "stop", "target") else "C"
+            alert_trig = (alert.get("trigger_id") or "")
+            # If the alert came in as L-type stop, the implied "alert" type
+            # also resolves to L regardless of exec_type spelling.
+            if alert_trig in ("stop_loss", "stop", "target"):
+                alert_implied = "L"
+            else:
+                alert_implied = alert_ex
+            if alert_implied != trade_implied:
+                return True, (
+                    f"exit pair Δ={delta_s:.1f}s — live={alert_implied} "
+                    f"({alert_trig or alert_ex}) vs "
+                    f"backtest={trade_implied} ({er or 'signal'})")
+        elif edge == "entry":
+            # Trade-side: read stored entry_exec_type. Default to C
+            # (most strategies are C-on-entry).
+            trade_data = trade.get("data") or {}
+            if not isinstance(trade_data, dict):
+                trade_data = {}
+            trade_entry_ex = (
+                trade.get("entry_exec_type")
+                or trade_data.get("entry_exec_type")
+                or "C"
+            ).upper()
+            if alert_ex != trade_entry_ex:
+                return True, (
+                    f"entry pair Δ={delta_s:.1f}s — live={alert_ex} vs "
+                    f"backtest={trade_entry_ex}")
+        return False, ""
+
     def _classify_missed(trade: Dict[str, Any], edge: str,
                          strat: Dict[str, Any]) -> tuple[str, str]:
         """Classify a missed entry or exit edge."""
@@ -897,20 +971,60 @@ def get_strategy_health_backlog(
                               or dt.timestamp() <= fair_cutoff_unix)]
 
         # 2-pointer pair.
+        # `paired_tuples` keeps the (alert_idx, edge_idx, delta_s) for
+        # post-pairing mismatch detection. Without it the pair scan loses
+        # the delta and we'd have to recompute.
         i = j = 0
         paired_edge_idx = set()
         paired_alert_idx = set()
+        paired_tuples: List[tuple[int, int, float]] = []
         while i < len(edges) and j < len(alerts_sorted):
             diff = alerts_sorted[j][0] - edges[i][0]
             if abs(diff) <= _DIVERGENCE_TOLERANCE_SEC:
                 paired_edge_idx.add(i)
                 paired_alert_idx.add(j)
+                paired_tuples.append((j, i, abs(diff)))
                 i += 1
                 j += 1
             elif diff < 0:
                 j += 1
             else:
                 i += 1
+
+        # cross_exec_type_mismatch detection (2026-06-04). For each
+        # paired (alert, edge) tuple, check whether the live exec_type
+        # disagrees with the backtest's implied exec_type. These were
+        # previously filtered out as "paired = OK" but they're real
+        # divergences (different exit triggers ~5-30s apart inflate
+        # Layer 3 fill_ts delta without showing up as phantom/missed).
+        for (al_idx, edge_idx, delta_s) in paired_tuples:
+            ts, edge, trade = edges[edge_idx]
+            _, alert = alerts_sorted[al_idx]
+            is_mm, mm_reason = _detect_pair_mismatch(
+                alert, trade, edge, delta_s)
+            if not is_mm:
+                continue
+            cls = _CLASS_CROSS_EXEC_TYPE_MISMATCH
+            if only_needs_investigation and cls != _CLASS_NEEDS_INVESTIGATION:
+                continue
+            out_rows.append({
+                "event_type": "mismatch",
+                "strategy_id": sid,
+                "strategy_name": strat.get("name"),
+                "symbol": strat.get("symbol"),
+                "timeframe": strat.get("timeframe"),
+                "direction": strat.get("direction"),
+                "edge": edge,
+                "timestamp": datetime.fromtimestamp(
+                    ts, tz=timezone.utc).isoformat(),
+                "trade_id": trade.get("id"),
+                "alert_id": alert.get("id"),
+                "exit_reason": trade.get("exit_reason"),
+                "exit_trigger": (trade.get("exit_trigger")
+                                 or (trade.get("data") or {}).get("exit_trigger")),
+                "classification": cls,
+                "classification_reason": mm_reason,
+            })
 
         # Emit unpaired events.
         for idx, (ts, edge, trade) in enumerate(edges):
