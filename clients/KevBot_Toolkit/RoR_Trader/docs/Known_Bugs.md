@@ -14,6 +14,47 @@ here until either (a) shipped + verified, or (b) explicitly deprecated.
 
 ## Active
 
+### Backtest session filter NOT applied on `primary_df` injection path
+- **Status:** OPEN — root cause located; fix not yet shipped
+- **Discovered:** 2026-06-03 EOD via sid 268 (SPY-CANARY-10s-NoConf, `trading_session=RTH`)
+- **Symptom:** strategy configured for RTH; **alerts respect RTH** (live engine filters correctly) but `backtest_*` rows in the `trades` table contain entries during extended hours (e.g. sid 268 last 30 backtest trades: 0 RTH, 30 extended — entries between 19:23-19:37 ET, well past 16:00 ET close).
+- **Fleet audit (sample of last 10 backtest trades per strategy):** 13 of 14 `trading_session=RTH` strategies show extended-hour backtest trades. Only sid 266 was clean (5-min TF, few trades, not enough sample).
+  - Worst offenders: sids 263, 267, 268, 270, 273, 275 — 10/10 backtest trades are extended-hours
+- **Root cause located in `src/services.py:251-271`:**
+  ```python
+  use_injected = primary_df is not None
+  ...
+  if use_injected:
+      df = primary_df.copy()         # ← NO session filter applied
+  else:
+      df = load_market_data(symbol, ..., session=session)  # REST path filters via _filter_session
+  ```
+  When `prepare_data_with_indicators` is called with an injected `primary_df` (the typical path for `data_worker_engine.run_store_fed_window`, which feeds bars from the live-bars cache), the `session` parameter is accepted but never applied. The REST fallback path correctly calls `load_from_polygon` which applies `_filter_session(df, session)` at `data_loader.py:563`.
+- **Why live alerts are correct:** `ralph_engine.StrategyMonitor._is_in_session` filters per-bar before evaluating triggers, independent of the data source.
+- **Proposed fix:** in `prepare_data_with_indicators`, when `use_injected` is True, also apply `_filter_session(df, session)` after the copy. The filter is idempotent (filtering an already-RTH df returns the same df), so safe even if a caller pre-filtered.
+- **Backfill consideration:** existing extended-hour `backtest_rest_hifi` rows for RTH strategies need to be DELETEd from the `trades` table — the fix only affects forward writes.
+- **Side effect on divergence metrics:** the extended-hour backtest trades inflate the "missed" count (backtest-only events with no matching alert) in `_remeasure_pair_rates_5s.py` and the strategy_health endpoint. Until the bug is fixed + backfill complete, RTH-strategy pair rates are pessimistic.
+
+---
+
+### Snapshot lag — algo cron not processing all canary strategies
+- **Status:** OPEN — root cause hypothesized; needs verification
+- **Discovered:** 2026-06-03 EOD via Kevin's UI observation (sid 302 last snapshot 3h 45min old) + fleet audit
+- **Snapshot age distribution** (current as of 2026-06-04 00:13 UTC):
+  - sids 276-295 (most PACKTEST canaries): 8-13 min old — fresh ✓
+  - **sids 297-305 (Strat Assistant gate through VWAP v2 gate): 225-232 min old — STALE** (~3h 50min)
+  - `last_recompute_until_ts` for the stale group ranges 356-358 min ago — i.e. that's when the cron last touched them
+- **Smoking gun:** sids 297-305 ALL have engine_snapshot_at within 7 seconds of each other (~232.5 min ago). This is consistent with a single batch run that completed for 297-305 then stopped — the next run never reached them.
+- **Hypothesis:** algo-history cron has a per-cycle bar/strategy budget and processes strategies in a fixed order (numeric sid?). When the cycle exhausts budget, later sids don't get touched. They wait until the next cycle, where the early sids consume the budget again. Higher-numbered sids never get reached.
+- **Alternative hypothesis:** alerts-gate optimization in `append_new_trades_for_strategy` (line 789 of `forward_test_service.py`) skips strategies with no recent exit alerts. Many gate canaries (odd-numbered sids 297, 299, etc.) have few/no exit alerts → skipped indefinitely.
+- **Impact on divergence metrics:** stale-snapshot canaries show 0% pair rates with 100% phantoms in the divergence report — alerts fire but backtest hasn't produced corresponding trades. Not a real divergence; just a measurement artifact.
+- **Investigation steps:**
+  1. Check the cron's `append_new_trades_for_strategy` code path for budget/timeout caps
+  2. Run a manual `recompute_and_persist_stored_trades` on sid 302 and time it — if it takes >5 min, that's why the cron skips it
+  3. Look at worker logs for `[ALGO-APPEND]` lines on sids 297-305 — if they're absent or only in `recently_processed` skip path, that confirms the skip pattern
+
+---
+
 ### 15 swing-stop strategies silent in live engine since 2026-06-03T19:58 UTC
 - **Status:** OPEN — root cause unknown; manual worker restart does NOT heal
 - **Discovered:** 2026-06-03 EOD via Kevin's report that sid 270 had no alerts since 13:58 MDT
