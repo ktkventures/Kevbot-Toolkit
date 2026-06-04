@@ -169,3 +169,43 @@ export function useCleanupOrphans() {
     },
   });
 }
+
+// ============================================================
+// System settings — DB-backed toggles (e.g., streaming on/off)
+// ============================================================
+
+export interface SystemSetting {
+  key: string;
+  value: any;
+  db_value: any;
+  source: 'db' | 'env';
+  description?: string;
+  type?: string;
+  env_var?: string;
+  env_default?: string;
+  updated_at?: string | null;
+  updated_by?: string | null;
+}
+
+export function useSystemSettings() {
+  return useQuery({
+    queryKey: ['system-settings'],
+    queryFn: () =>
+      apiFetch<{ settings: SystemSetting[] }>('/api/admin/system-settings'),
+    refetchInterval: 30_000,
+  });
+}
+
+export function useSetSystemSetting() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ key, value }: { key: string; value: any }) =>
+      apiFetch<SystemSetting>(`/api/admin/system-settings/${key}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ value }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['system-settings'] });
+    },
+  });
+}

@@ -19,6 +19,8 @@ import {
   useCancelUpdateJob,
   useDeleteUpdateJob,
   useCleanupOrphans,
+  useSystemSettings,
+  useSetSystemSetting,
   type UpdateJobListItem,
   type UpdateJobStatus,
 } from '@/hooks/queries/useUpdateJobs';
@@ -334,6 +336,140 @@ function JobCard({
   );
 }
 
+function StreamingToggleCard() {
+  const { data, isLoading } = useSystemSettings();
+  const setMut = useSetSystemSetting();
+  const setting = data?.settings.find(
+    (s) => s.key === 'data_worker_streaming_enabled',
+  );
+  const enabled = !!setting?.value;
+  const source = setting?.source;
+  const updatedAt = setting?.updated_at;
+
+  if (isLoading || !setting) {
+    return (
+      <Card>
+        <div style={{ padding: '12px', color: 'var(--text-muted)' }}>
+          Loading streaming mode…
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          justifyContent: 'space-between',
+          gap: '16px',
+          flexWrap: 'wrap',
+        }}
+      >
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              flexWrap: 'wrap',
+              marginBottom: '6px',
+            }}
+          >
+            <span style={{ fontSize: '15px', fontWeight: 600 }}>
+              Streaming Mode (Data Worker)
+            </span>
+            <span
+              style={{
+                background: enabled ? 'var(--green-muted)' : 'var(--bg-input)',
+                color: enabled ? 'var(--green)' : 'var(--text-muted)',
+                fontSize: '11px',
+                padding: '2px 8px',
+                borderRadius: '4px',
+                fontWeight: 600,
+                textTransform: 'uppercase',
+              }}
+            >
+              {enabled ? 'AUTO (streaming on)' : 'MANUAL (on-demand only)'}
+            </span>
+            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+              source: {source}
+              {updatedAt && ` · updated ${fmtAge(updatedAt)}`}
+            </span>
+          </div>
+          <p
+            style={{
+              fontSize: '12px',
+              color: 'var(--text-secondary)',
+              margin: 0,
+              lineHeight: 1.5,
+            }}
+          >
+            {setting.description}
+          </p>
+          <p
+            style={{
+              fontSize: '11px',
+              color: 'var(--text-muted)',
+              marginTop: '6px',
+              marginBottom: 0,
+            }}
+          >
+            Data Worker re-reads this every ~30s. Changes take effect within a
+            minute without a Railway redeploy.
+          </p>
+        </div>
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '6px',
+            alignItems: 'flex-end',
+          }}
+        >
+          <button
+            style={{
+              ...btnSecondary,
+              background: enabled ? 'var(--red-muted)' : 'var(--green-muted)',
+              color: enabled ? 'var(--red)' : 'var(--green)',
+              border: 'none',
+              fontWeight: 600,
+              opacity: setMut.isPending ? 0.6 : 1,
+              minWidth: '180px',
+            }}
+            disabled={setMut.isPending}
+            onClick={() => {
+              const next = !enabled;
+              const verb = next ? 'ENABLE' : 'DISABLE';
+              if (
+                !confirm(
+                  `${verb} streaming mode?\n\n` +
+                    (next
+                      ? 'Data Worker will resume continuous backtest catchup, snapshot flush, and KPI recompute. Strategies will keep KPIs fresh automatically.'
+                      : 'Data Worker will stop continuous catchup. Trades + KPIs will only update when you trigger an /admin/update-jobs run. Bar ingest + live alerts are unaffected.'),
+                )
+              ) {
+                return;
+              }
+              setMut.mutate({
+                key: 'data_worker_streaming_enabled',
+                value: next,
+              });
+            }}
+          >
+            {setMut.isPending
+              ? 'Saving…'
+              : enabled
+              ? 'Switch to MANUAL'
+              : 'Switch to AUTO'}
+          </button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 export default function UpdateJobsAdminPage() {
   const searchParams = useSearchParams();
   const highlightId = searchParams.get('highlight');
@@ -395,6 +531,10 @@ export default function UpdateJobsAdminPage() {
         >
           {cleanupMut.isPending ? 'Cleaning…' : 'Clean orphans'}
         </button>
+      </div>
+
+      <div style={{ marginBottom: '16px' }}>
+        <StreamingToggleCard />
       </div>
 
       <div

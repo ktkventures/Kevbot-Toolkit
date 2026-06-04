@@ -2277,6 +2277,79 @@ def mark_update_job_orphaned(job_id, error_msg: str = "worker died mid-job") -> 
         logger.warning("mark_update_job_orphaned DB error: %s", e)
 
 
+# ===========================================================================
+# system_settings — platform-wide runtime flags
+# ===========================================================================
+
+def get_system_setting(key: str, default=None):
+    """Read a single system_settings value. Returns `default` on miss or error.
+
+    Uses the admin client so the Data Worker (no JWT) can read.
+    """
+    if not USE_DB:
+        return default
+    try:
+        client = get_admin_client()
+        r = (client.table('system_settings').select('value')
+             .eq('key', key).maybe_single().execute())
+        if not r or not r.data:
+            return default
+        val = r.data.get('value')
+        # JSONB column — Supabase python client deserializes, but if it
+        # ever comes back as a string fall through to json.loads.
+        if isinstance(val, str):
+            try:
+                val = json.loads(val)
+            except Exception:
+                pass
+        return val
+    except Exception as e:
+        logger.warning("get_system_setting(%s) failed: %s", key, e)
+        return default
+
+
+def list_system_settings() -> list:
+    """List all system_settings rows. Admin client."""
+    if not USE_DB:
+        return []
+    try:
+        client = get_admin_client()
+        r = (client.table('system_settings')
+             .select('key,value,description,updated_at,updated_by')
+             .order('key').execute())
+        return r.data or []
+    except Exception as e:
+        logger.warning("list_system_settings failed: %s", e)
+        return []
+
+
+def set_system_setting(key: str, value, *, description: str | None = None,
+                       updated_by: str | None = None) -> bool:
+    """Upsert a system_settings key. Returns True on success.
+
+    `value` is stored as JSONB; pass Python primitives (bool/int/str/list/dict).
+    `updated_by` is the user_id who flipped it (for audit). Uses admin client.
+    """
+    if not USE_DB:
+        return False
+    try:
+        client = get_admin_client()
+        payload = {
+            'key': key,
+            'value': value,
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        }
+        if description is not None:
+            payload['description'] = description
+        if updated_by is not None:
+            payload['updated_by'] = updated_by
+        client.table('system_settings').upsert(payload, on_conflict='key').execute()
+        return True
+    except Exception as e:
+        logger.warning("set_system_setting(%s) failed: %s", key, e)
+        return False
+
+
 # ============================================================
 # User Pack Parity Status CRUD
 # ============================================================

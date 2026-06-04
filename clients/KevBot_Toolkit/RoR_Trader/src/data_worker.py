@@ -85,6 +85,10 @@ STRATEGY_RELOAD_INTERVAL = int(
     os.getenv("DATA_WORKER_STRATEGY_RELOAD_SECONDS", "300"))
 CATCHUP_STAGGER_SECONDS = int(
     os.getenv("DATA_WORKER_CATCHUP_STAGGER_SECONDS", "5"))
+# TTL on the cached DB-backed streaming-on/off flag. 30s by default — the
+# admin UI toggle propagates within ~30s without a Railway redeploy.
+STREAMING_FLAG_TTL = int(
+    os.getenv("DATA_WORKER_STREAMING_FLAG_TTL_SECONDS", "30"))
 
 # --- Phase 2.5 Tier-2 coarse-bar config ---
 COARSE_WINDOW_DAYS = int(
@@ -139,6 +143,60 @@ class DataWorkerManager:
         self._boot_mono = time.monotonic()
         self._stale_count = 0
 
+        # Streaming-toggle cache — DB-backed system_settings flag, refreshed
+        # every STREAMING_FLAG_TTL seconds. Each loop pass calls
+        # _streaming_enabled_effective() and short-circuits when disabled.
+        self._streaming_flag_cache: bool | None = None
+        self._streaming_flag_checked_at: float = 0.0
+        self._streaming_flag_last_logged: bool | None = None
+
+    def _streaming_enabled_effective(self) -> bool:
+        """Whether the streaming pipeline should run on this pass.
+
+        Reads `system_settings.data_worker_streaming_enabled` (DB) with a
+        ~30s in-memory cache so flipping the admin UI toggle propagates
+        within a minute. Falls back to DATA_WORKER_STREAMING_ENABLED env
+        var (default 'true') when the DB row is missing.
+        """
+        now = time.monotonic()
+        if (self._streaming_flag_cache is not None
+                and (now - self._streaming_flag_checked_at) < STREAMING_FLAG_TTL):
+            return self._streaming_flag_cache
+
+        env_default = os.environ.get(
+            "DATA_WORKER_STREAMING_ENABLED", "true"
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+        db_value = None
+        try:
+            from db import get_system_setting
+            db_value = get_system_setting("data_worker_streaming_enabled")
+        except Exception as e:
+            logger.warning("[stream] system_settings read failed: %s", e)
+
+        if isinstance(db_value, bool):
+            effective = db_value
+        elif isinstance(db_value, str):
+            effective = db_value.strip().lower() in ("1", "true", "yes", "on")
+        elif db_value is None:
+            effective = env_default
+        else:
+            # Numeric or other truthy/falsy JSONB scalar
+            effective = bool(db_value)
+
+        # Log only on state transitions so we don't spam the log every 30s.
+        if effective != self._streaming_flag_last_logged:
+            logger.info(
+                "[stream] effective streaming flag = %s (db=%r, env_default=%s)",
+                "ENABLED" if effective else "DISABLED",
+                db_value, env_default,
+            )
+            self._streaming_flag_last_logged = effective
+
+        self._streaming_flag_cache = effective
+        self._streaming_flag_checked_at = now
+        return effective
+
     def run(self):
         logger.info("Data-worker starting — pinned_symbols=%s "
                     "(dynamic discovery for the rest)", PINNED_SYMBOLS)
@@ -160,26 +218,21 @@ class DataWorkerManager:
         self._start_recon_loop()
         self._start_metrics_loop()
         self._start_coarse_ingest_loop()
-        # Streaming backtest loops are togglable via env var so operators
-        # can switch to on-demand-only UAD when scaling beyond what the
-        # always-on streaming pipeline can keep up with. Default ON for
-        # backwards compatibility. Bar ingest / recon / metrics keep
-        # running regardless — they're stateless and cheap.
-        # Pattern mirrors ALGO_HISTORY_CRON_ENABLED.
-        _streaming_enabled = os.environ.get(
-            "DATA_WORKER_STREAMING_ENABLED", "true"
-        ).strip().lower() in ("1", "true", "yes", "on")
-        if _streaming_enabled:
-            self._start_streaming_loop()
-            self._start_snapshot_flush_loop()
-            self._start_kpi_recompute_loop()
-        else:
-            logger.info(
-                "[data_worker] streaming disabled via "
-                "DATA_WORKER_STREAMING_ENABLED=false — backtest pipeline "
-                "will not auto-catch-up; use on-demand /api/update-jobs/run "
-                "instead"
-            )
+        # Streaming backtest loops always start — but each pass checks
+        # `_streaming_enabled_effective()` which reads from system_settings
+        # (DB) with ~30s cache, falling back to DATA_WORKER_STREAMING_ENABLED
+        # env var. Lets operators flip the toggle from the admin UI
+        # (/admin/update-jobs) without a Railway redeploy.
+        # Bar ingest / recon / metrics keep running regardless.
+        self._start_streaming_loop()
+        self._start_snapshot_flush_loop()
+        self._start_kpi_recompute_loop()
+        logger.info(
+            "[data_worker] streaming initial state: %s (env=%s) — toggle "
+            "via /admin/update-jobs streaming switch",
+            "ENABLED" if self._streaming_enabled_effective() else "DISABLED",
+            os.environ.get("DATA_WORKER_STREAMING_ENABLED", "true"),
+        )
 
         # Main thread does only the healthcheck — all work is on daemons.
         while self._running:
@@ -449,6 +502,8 @@ class DataWorkerManager:
 
     def _streaming_pass(self):
         """One streaming-loop iteration — prime, reload, catch-up, tick."""
+        if not self._streaming_enabled_effective():
+            return
         if not is_market_window():
             return
         now_mono = time.monotonic()
@@ -510,6 +565,8 @@ class DataWorkerManager:
         self._flush_thread.start()
 
     def _flush_all_snapshots(self):
+        if not self._streaming_enabled_effective():
+            return
         with self._engines_lock:
             engines = list(self._engines.values())
         flushed = 0
@@ -539,6 +596,8 @@ class DataWorkerManager:
         self._kpi_thread.start()
 
     def _kpi_recompute_pass(self):
+        if not self._streaming_enabled_effective():
+            return
         with self._engines_lock:
             engines = [e for e in self._engines.values()
                        if e.has_traded_since_kpi]
@@ -620,7 +679,14 @@ class DataWorkerManager:
         reload_age_s = (round(time.monotonic() - self._last_reload_at)
                         if self._last_reload_at > 0 else None)
         in_market = _imw()
+        # Also guard on the streaming-enabled flag — when streaming is
+        # toggled OFF via system_settings, the streaming pass returns
+        # early before touching `_last_reload_at`, so STALE would
+        # falsely trigger the same restart-loop bug that the market-
+        # window guard fixed on 2026-06-04.
+        streaming_on = self._streaming_enabled_effective()
         reload_stale = (in_market
+                        and streaming_on
                         and reload_age_s is not None
                         and reload_age_s > 2 * STRATEGY_RELOAD_INTERVAL)
         if reload_stale:
@@ -631,7 +697,7 @@ class DataWorkerManager:
         # Auto-restart triggers: 3 consecutive stale ticks AND we've been
         # up at least 15 min AND we're inside the market window (so the
         # streaming pass is actually expected to be advancing _last_reload_at).
-        if self._stale_count >= 3 and uptime_s > 900 and in_market:
+        if self._stale_count >= 3 and uptime_s > 900 and in_market and streaming_on:
             logger.error(
                 "[watchdog] reload stale for %d consecutive ticks "
                 "(reload_age=%ss, uptime=%ss) — exiting for Railway respawn",
