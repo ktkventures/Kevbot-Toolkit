@@ -225,9 +225,21 @@ class DBAlertDispatcher:
         # which live_model produced each alert. Future model switches affect
         # alerts going forward only — historical alerts stay null and render
         # as "unknown" per Kevin's "honesty over speed" guidance.
+        # 2026-06-04: added get_default_live_model() fallback so strategies
+        # that rely on the resolved default (the typical case — PACKTEST
+        # canaries + most newly-created strategies don't explicitly set
+        # config.live_model) carry that default on the alert record. Without
+        # this, rest_verifier short-circuits and Layer 1 (verification_status)
+        # stays NULL for ~90% of the fleet.
+        try:
+            from strategy_models import get_default_live_model
+            _default_live_model = get_default_live_model()
+        except Exception:
+            _default_live_model = None
         live_model_at_fire = (
             (strategy.get('config') or {}).get('live_model')
             or strategy.get('live_model')
+            or _default_live_model
         )
 
         alert = {
