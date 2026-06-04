@@ -1337,7 +1337,7 @@ export default function StrategiesPage() {
             style={{ ...btnSecondary, opacity: queueing ? 0.6 : 1 }}
             className="text-sm"
             disabled={queueing || selectedIds.size === 0}
-            title="Queue an append job in the background. Fast on stamped strategies; slow on cold-start. Returns immediately — view progress on /jobs."
+            title="Queue an append job in the background (DB-persisted; survives worker restart). Returns immediately — view progress on /admin/update-jobs."
             onClick={async () => {
               if (queueing || selectedIds.size === 0) return;
               const ids = Array.from(selectedIds).map(Number);
@@ -1345,14 +1345,14 @@ export default function StrategiesPage() {
               const token = localStorage.getItem('ror_access_token') || '';
               const base = process.env.NEXT_PUBLIC_API_URL || '';
               try {
-                const resp = await fetch(`${base}/api/jobs/recompute`, {
+                const resp = await fetch(`${base}/api/update-jobs/run`, {
                   method: 'POST',
                   headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ strategy_ids: ids, job_type: 'append_recent' }),
+                  body: JSON.stringify({ strategy_ids: ids, mode: 'new', name: `Append new (${ids.length} strategies)` }),
                 });
                 const result = await resp.json();
                 if (resp.ok && result.job_id) {
-                  window.location.href = `/jobs?highlight=${result.job_id}`;
+                  window.location.href = `/admin/update-jobs?highlight=${result.job_id}`;
                 } else {
                   alert(`Queue failed: ${result?.detail || 'unknown error'}`);
                 }
@@ -1369,7 +1369,7 @@ export default function StrategiesPage() {
             style={{ ...btnSecondary, opacity: queueing ? 0.6 : 1 }}
             className="text-sm"
             disabled={queueing || selectedIds.size === 0}
-            title="Queue a full-backtest job in the background. Reruns the entire backtest per strategy — slow but exhaustive. Returns immediately — view progress on /jobs."
+            title="Queue a full-backtest job in the background (DB-persisted; survives worker restart). Returns immediately — view progress on /admin/update-jobs."
             onClick={async () => {
               if (queueing || selectedIds.size === 0) return;
               const ids = Array.from(selectedIds).map(Number);
@@ -1377,14 +1377,14 @@ export default function StrategiesPage() {
               const token = localStorage.getItem('ror_access_token') || '';
               const base = process.env.NEXT_PUBLIC_API_URL || '';
               try {
-                const resp = await fetch(`${base}/api/jobs/recompute`, {
+                const resp = await fetch(`${base}/api/update-jobs/run`, {
                   method: 'POST',
                   headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ strategy_ids: ids, job_type: 'full_recompute' }),
+                  body: JSON.stringify({ strategy_ids: ids, mode: 'all', name: `Update all (${ids.length} strategies)` }),
                 });
                 const result = await resp.json();
                 if (resp.ok && result.job_id) {
-                  window.location.href = `/jobs?highlight=${result.job_id}`;
+                  window.location.href = `/admin/update-jobs?highlight=${result.job_id}`;
                 } else {
                   alert(`Queue failed: ${result?.detail || 'unknown error'}`);
                 }

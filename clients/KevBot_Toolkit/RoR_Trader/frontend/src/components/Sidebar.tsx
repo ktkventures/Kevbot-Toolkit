@@ -109,6 +109,7 @@ const navItems: NavItem[] = [
       { href: '/admin/parity', label: 'Parity Comparison' },
       { href: '/admin/live-models', label: 'Live Models' },
       { href: '/admin/backtest-models', label: 'Backtest / Algo Models' },
+      { href: '/admin/update-jobs', label: 'Update Jobs' },
     ],
   },
   {
