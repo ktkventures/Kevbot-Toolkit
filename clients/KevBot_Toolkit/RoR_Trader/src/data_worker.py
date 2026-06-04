@@ -590,9 +590,21 @@ class DataWorkerManager:
         # is the belt-and-suspenders: after 3 consecutive STALE observations
         # (~3 min) AND uptime > 15 min, force a process restart so Railway
         # respawns the container with a fresh state.
+        #
+        # 2026-06-04: market-window guard added. The streaming pass returns
+        # early when `is_market_window() == False`, so `_last_reload_at`
+        # never advances during market-closed hours. That FALSELY triggered
+        # STALE → watchdog → os._exit(2) every 15min, killing Data Worker
+        # in a restart loop overnight (boot at 23:42 ET, ext-hours starts
+        # 4 AM ET → 4+ hours of false STALE before any real bar processing
+        # could occur). Skip watchdog evaluation outside market hours so
+        # the loop can idle cleanly through pre-market.
+        from data_worker_ingest import is_market_window as _imw
         reload_age_s = (round(time.monotonic() - self._last_reload_at)
                         if self._last_reload_at > 0 else None)
-        reload_stale = (reload_age_s is not None
+        in_market = _imw()
+        reload_stale = (in_market
+                        and reload_age_s is not None
                         and reload_age_s > 2 * STRATEGY_RELOAD_INTERVAL)
         if reload_stale:
             self._stale_count = getattr(self, '_stale_count', 0) + 1
@@ -600,9 +612,9 @@ class DataWorkerManager:
             self._stale_count = 0
         uptime_s = round(time.monotonic() - getattr(self, '_boot_mono', 0))
         # Auto-restart triggers: 3 consecutive stale ticks AND we've been
-        # up at least 15 min (prevents instant restart loops if a fresh
-        # boot is also broken — gives the new process time to recover).
-        if self._stale_count >= 3 and uptime_s > 900:
+        # up at least 15 min AND we're inside the market window (so the
+        # streaming pass is actually expected to be advancing _last_reload_at).
+        if self._stale_count >= 3 and uptime_s > 900 and in_market:
             logger.error(
                 "[watchdog] reload stale for %d consecutive ticks "
                 "(reload_age=%ss, uptime=%ss) — exiting for Railway respawn",
