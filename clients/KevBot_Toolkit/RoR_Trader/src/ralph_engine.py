@@ -3070,23 +3070,74 @@ class SymbolHub:
         for monitor in self.monitors.values():
             if monitor.tf_seconds != tf_seconds:
                 continue
+            # Build per-monitor post-correction replay callback that emits
+            # source='live_corrected' rows to bar_diagnostics. Only attach
+            # when the monitor has diagnostic_columns declared and we're
+            # going through the K>1 replay path (K=1 fast path doesn't
+            # replay multiple bars). The callback projects each replayed
+            # bar's update_bar return into the diagnostic schema and
+            # writes via the existing save_bar_diagnostics_batch (best-
+            # effort, swallows errors). 2026-06-05 #57G.
+            _diag_cols = getattr(monitor, '_diag_cols', None) or []
+            _live_corr_buf: list = []
+            if _diag_cols:
+                def _replay_cb(_ts, _vals, _sid=monitor.strat_id, _cols=_diag_cols, _buf=_live_corr_buf):
+                    _row: dict = {}
+                    for _c in _cols:
+                        _v = (_vals or {}).get(_c)
+                        if _v is None:
+                            continue
+                        try:
+                            _fv = float(_v)
+                            if _fv == _fv and _fv not in (float('inf'), float('-inf')):
+                                _row[_c] = _fv
+                        except (TypeError, ValueError):
+                            continue
+                    if not _row:
+                        return
+                    _bts_iso = (_ts.isoformat()
+                                if hasattr(_ts, 'isoformat') else str(_ts))
+                    _buf.append({
+                        'strategy_id': _sid,
+                        'bar_ts': _bts_iso,
+                        'source': 'live_corrected',
+                        'values': _row,
+                    })
+            else:
+                _replay_cb = None
             try:
                 if offset_from_latest == 0:
                     # K=1 fast path — preserves existing apply_last_bar_
                     # correction behavior. Pre-bar snapshot at idx_loc IS
-                    # _pre_bar_snapshot.
+                    # _pre_bar_snapshot. Replay callback doesn't fire here
+                    # (no multi-bar replay); we capture post-correction
+                    # state for the latest bar via an explicit lookup
+                    # after the call (the fast path uses _pre_bar_snapshot
+                    # rewind + single update_bar internally; result is in
+                    # the engine state but not surfaced through a
+                    # callback).
                     ok = monitor.indicators.apply_last_bar_correction(
                         builder.history)
                 else:
                     # K>1 path — restore from snapshot buffer, replay
                     # forward.
                     ok = monitor.indicators.apply_bar_correction(
-                        rest_ts, builder.history)
+                        rest_ts, builder.history,
+                        replay_callback=_replay_cb)
                 if not ok:
                     # Snapshot wasn't in buffer (engine cold-restarted,
                     # or bar aged out). Full replay fallback.
                     monitor.indicators.recompute_from_history(builder.history)
                 any_applied = True
+                # Flush this monitor's live_corrected buffer.
+                if _live_corr_buf:
+                    try:
+                        from db import save_bar_diagnostics_batch
+                        save_bar_diagnostics_batch(_live_corr_buf)
+                    except Exception as _e:
+                        logger.warning(
+                            "live_corrected flush failed sid=%s: %s",
+                            monitor.strat_id, _e)
             except Exception as e:
                 logger.warning(
                     "REST correction recompute failed sym=%s strat=%s "

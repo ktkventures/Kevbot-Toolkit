@@ -980,7 +980,8 @@ class IncrementalIndicatorEngine:
         return True
 
     def apply_bar_correction(self, corrected_bar_start,
-                              df: pd.DataFrame) -> bool:
+                              df: pd.DataFrame,
+                              replay_callback=None) -> bool:
         # Phase B (2026-05-28): multi-bar-back correction. Finds the
         # pre-bar snapshot from before `corrected_bar_start` in the
         # rolling buffer, restores it, and replays df forward from that
@@ -1031,12 +1032,18 @@ class IncrementalIndicatorEngine:
             self._snapshot_buffer.append(entry)
         # Replay df.iloc[idx_loc:] — update_bar will re-snapshot pre-bar
         # state for each, repopulating the buffer.
+        # `replay_callback` (2026-06-05, #57G) — if provided, called per
+        # replayed bar with (bar_ts, values_dict) where values_dict is the
+        # post-correction return of update_bar. Used by the live engine to
+        # write source='live_corrected' rows to bar_diagnostics so the
+        # comparison view sees both the pre-correction (real-time) and
+        # post-correction (settled) snapshots.
         for i in range(idx_loc, len(df)):
             row = df.iloc[i]
             ts = df.index[i]
             if ts.tzinfo is None:
                 ts = ts.tz_localize('UTC')
-            self.update_bar({
+            vals = self.update_bar({
                 'open': float(row['open']),
                 'high': float(row['high']),
                 'low': float(row['low']),
@@ -1044,6 +1051,13 @@ class IncrementalIndicatorEngine:
                 'volume': float(row.get('volume', 0)),
                 'timestamp': ts,
             })
+            if replay_callback is not None:
+                try:
+                    replay_callback(ts, vals)
+                except Exception as _cb_e:
+                    logger.warning(
+                        "apply_bar_correction replay_callback raised: %s",
+                        _cb_e)
         return True
 
     def recompute_from_history(self, df: pd.DataFrame) -> None:
