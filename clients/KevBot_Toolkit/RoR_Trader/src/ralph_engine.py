@@ -959,6 +959,25 @@ class StrategyMonitor:
         self._current_confluence: Set[str] = set()
         self._interp_keys = list(req_interp)
 
+        # Bar-diagnostics (#57C, 2026-06-05). Resolve declared columns
+        # once at init — by-strategy lookup that walks the pack manifests.
+        # Empty list ⇒ logging disabled cleanly for this strategy. Buffer
+        # writes flush every _DIAG_FLUSH_EVERY bars in on_bar_close to
+        # keep the hot tick path lean.
+        self._diag_buffer: List[dict] = []
+        self._diag_cols: List[str] = []
+        # Lower threshold than backtest (60) — live engine has no end-of-run
+        # flush, so we want diagnostic rows visible within ~5 minutes of
+        # the bar closing. At 10Sec primary TF: 30 bars × 10s = 5 min.
+        self._DIAG_FLUSH_EVERY = 30
+        try:
+            from pack_registry import get_diagnostic_columns_for_strategy
+            self._diag_cols = get_diagnostic_columns_for_strategy(strategy) or []
+        except Exception as _diag_e:
+            logger.warning("ralph bar_diagnostics setup sid=%s failed: %s",
+                           self.strat_id, _diag_e)
+            self._diag_cols = []
+
         # General Pack references (for GEN- confluence records)
         # Only keep packs referenced by this strategy's general_confluences
         gp_ids_needed = set()
@@ -1049,6 +1068,44 @@ class StrategyMonitor:
         # 1. Update indicators (O(1))
         current = self.indicators.update_bar(bar)
         prev = self.indicators.get_prev_values()
+
+        # 1a. Bar-diagnostics capture (#57C). Project declared columns
+        # from `current`; buffer; flush every N bars. Skipped if pack
+        # didn't declare diagnostic_columns. Best-effort — never blocks
+        # the tick path. Source='live' distinguishes from backtest/algo
+        # writes coming through unified_engine.
+        if self._diag_cols:
+            _vals: dict = {}
+            for _c in self._diag_cols:
+                _v = current.get(_c)
+                if _v is None:
+                    continue
+                try:
+                    _fv = float(_v)
+                    if _fv == _fv and _fv not in (float('inf'), float('-inf')):
+                        _vals[_c] = _fv
+                except (TypeError, ValueError):
+                    continue
+            if _vals:
+                _bts = bar.get('timestamp')
+                if _bts is not None:
+                    _bts_iso = (_bts.isoformat()
+                                if hasattr(_bts, 'isoformat') else str(_bts))
+                    self._diag_buffer.append({
+                        'strategy_id': self.strat_id,
+                        'bar_ts': _bts_iso,
+                        'source': 'live',
+                        'values': _vals,
+                    })
+                    if len(self._diag_buffer) >= self._DIAG_FLUSH_EVERY:
+                        try:
+                            from db import save_bar_diagnostics_batch
+                            save_bar_diagnostics_batch(self._diag_buffer)
+                        except Exception as _diag_e:
+                            logger.warning(
+                                "ralph bar_diagnostics flush sid=%s failed: %s",
+                                self.strat_id, _diag_e)
+                        self._diag_buffer.clear()
 
         # 1b. Feed high/low into position buffer (for swing stops/targets)
         self.position.update_high_low(bar['high'], bar['low'])

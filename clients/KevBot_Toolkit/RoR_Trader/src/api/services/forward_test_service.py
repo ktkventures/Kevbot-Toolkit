@@ -869,6 +869,7 @@ def append_new_trades_for_strategy(
                     expected_fingerprint=algo_fingerprint,
                     expected_model_id=f"algo_{algo_model}",
                     return_snapshot=True,
+                    diagnostics_source='algo',
                 )
             else:
                 # Full-path: no snapshot benefit (this branch runs the
@@ -1385,6 +1386,7 @@ def append_new_backtest_trades_for_strategy(
                 expected_fingerprint=bt_fingerprint,
                 expected_model_id=f"backtest_{bt_model}",
                 return_snapshot=True,
+                diagnostics_source='backtest',
             )
         except Exception as e:
             logger.warning(

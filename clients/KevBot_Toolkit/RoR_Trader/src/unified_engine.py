@@ -3500,6 +3500,7 @@ def run_unified_backtest(
     resume_snapshot: Optional[dict] = None,
     return_snapshot: bool = False,
     snapshot_model_id: Optional[str] = None,
+    diagnostics_source: Optional[str] = None,
 ):
     """Run unified backtest on historical OHLCV data.
 
@@ -3614,6 +3615,38 @@ def run_unified_backtest(
         _last_cb_time = _time.monotonic()
         progress_cb(0, _total_bars)
 
+    # Bar-diagnostics instrumentation (#57C, 2026-06-05). When the caller
+    # passes diagnostics_source in {'backtest','algo'}, we look up the
+    # strategy's declared diagnostic_columns once + buffer (bar_ts, values)
+    # tuples through the loop. Flushed every 60 bars and at end. Failures
+    # are swallowed by save_bar_diagnostics_batch — diagnostic logging
+    # must never block the engine hot path.
+    _diag_buffer: list[dict] = []
+    _diag_cols: list[str] = []
+    _diag_sid: Optional[int] = None
+    _DIAG_FLUSH_EVERY = 60
+    if diagnostics_source in ('backtest', 'algo'):
+        try:
+            from pack_registry import get_diagnostic_columns_for_strategy
+            _diag_cols = get_diagnostic_columns_for_strategy(strategy) or []
+            _diag_sid = strategy.get('id') if isinstance(strategy, dict) else None
+            if not _diag_cols or _diag_sid is None:
+                # Nothing to log — disable cleanly.
+                _diag_cols = []
+        except Exception as _e:
+            logger.warning("bar_diagnostics setup failed (non-fatal): %s", _e)
+            _diag_cols = []
+
+    def _diag_flush():
+        if not _diag_buffer:
+            return
+        try:
+            from db import save_bar_diagnostics_batch
+            save_bar_diagnostics_batch(_diag_buffer)
+        except Exception as _e:
+            logger.warning("bar_diagnostics flush failed (non-fatal): %s", _e)
+        _diag_buffer.clear()
+
     for i in range(len(df)):
         if progress_cb is not None and i > 0:
             _dbar = i - _last_cb_bar
@@ -3675,6 +3708,41 @@ def run_unified_backtest(
         indicator_rows.append(ind_vals)
         interp_rows.append(interp_states)
         trigger_rows.append(trig_bools)
+
+        # Bar-diagnostics capture (#57C). Project the declared diagnostic
+        # columns off ind_vals; skip if the column is missing or NaN
+        # (warmup bars, user-pack indicators not yet computed). Buffered;
+        # flushed every _DIAG_FLUSH_EVERY bars.
+        if _diag_cols and _diag_sid is not None:
+            _bts = bar.get('timestamp')
+            if _bts is not None:
+                _vals: dict = {}
+                for _c in _diag_cols:
+                    _v = ind_vals.get(_c)
+                    if _v is None:
+                        continue
+                    try:
+                        # Cast to JSON-safe float (drops NaN/inf cleanly).
+                        _fv = float(_v)
+                        if _fv == _fv and _fv not in (float('inf'), float('-inf')):
+                            _vals[_c] = _fv
+                    except (TypeError, ValueError):
+                        continue
+                if _vals:
+                    _bts_iso = (_bts.isoformat()
+                                if hasattr(_bts, 'isoformat') else str(_bts))
+                    _diag_buffer.append({
+                        'strategy_id': _diag_sid,
+                        'bar_ts': _bts_iso,
+                        'source': diagnostics_source,
+                        'values': _vals,
+                    })
+                    if len(_diag_buffer) >= _DIAG_FLUSH_EVERY:
+                        _diag_flush()
+
+    # Final flush of any remaining buffered diagnostic rows.
+    if _diag_cols:
+        _diag_flush()
 
     # If position is still open, append a synthetic open-trade row so charts
     # can plot the entry marker immediately (before the trade closes).

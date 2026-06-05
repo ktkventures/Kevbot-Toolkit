@@ -518,6 +518,7 @@ def get_strategy_trades_for_window(
     expected_fingerprint: str | None = None,
     expected_model_id: str | None = None,
     return_snapshot: bool = False,
+    diagnostics_source: str | None = None,
 ):
     """Run the unified engine over a small windowed slice of bars.
 
@@ -671,6 +672,7 @@ def get_strategy_trades_for_window(
                 resume_snapshot=envelope,
                 return_snapshot=True,
                 snapshot_model_id=expected_model_id,
+                diagnostics_source=diagnostics_source,
             )
             trades, _enriched, captured_b64 = _result_tuple
             if captured_b64 is not None:
