@@ -1598,21 +1598,42 @@ def append_windowed_backtest_trades_for_strategy(
     Update New Data won't touch (because it uses `max(entry_fill_ts)`
     and so skips over gaps that have trades on both sides).
 
-    Pattern mirrors append_new_backtest:
+    UAD-PARITY CONTRACT (2026-06-05): the trades emitted for [window_start,
+    window_end] must match what `recompute_and_persist_stored_trades`
+    (UAD) would emit for the same window. Two-tier strategy:
+
+      Tier 1 — snapshot resume (preferred): if the strategy's stored
+        backtest snapshot has `last_bar_ts <= window_start`, resume
+        from it. Indicator + position state are bit-identical to the
+        last UAD, so engine output IS UAD-parity by construction. Zero
+        warmup-load cost. Common in MANUAL streaming mode (snapshots
+        get stale as time passes).
+
+      Tier 2 — UAD-equivalent cold warmup (fallback): when snapshot is
+        missing / invalid / too recent (last_bar_ts > window_start),
+        load the same warmup UAD would use for THIS strategy's natural
+        visible window. That's `WARMUP_MULTIPLIER × visible_days` per
+        `compute_warmup_days`. Solve back to `warmup_bars` and pass to
+        `get_strategy_trades_for_window` so the engine loads
+        [window_start - uad_warmup_days, window_end] instead of the
+        100-bar default. Slower than Tier 1 but still UAD-parity.
+
+    Pattern (post-fix):
       1. Load strategy + raw config
-      2. Run engine over [window_start, window_end] with explicit
-         since/until (no snapshot resume — the window is bounded and
-         small enough that fresh warmup is fast)
+      2. Try Tier 1 snapshot resume; fall back to Tier 2
       3. Filter closed trades to ones within the window
       4. Dedup against existing backtest_* trades in the window
          (entry_fill_ts, exit_fill_ts) unique
       5. Insert new rows; per-row insert_trade_admin handles
          unique-constraint collisions gracefully
-      6. Hi-Fi pass on the inserted set (if model in HIFI set)
+      6. Persist any fresh snapshot the engine emitted (extends the
+         resume chain forward for future window-fills)
+      7. Hi-Fi pass on the inserted set (if model in HIFI set)
 
-    Does NOT update KPIs, snapshot, or last_recompute_until_ts — this
-    is a targeted backfill, not a forward-progressing update. Existing
-    streaming pipeline owns those.
+    Does NOT update KPIs or last_recompute_until_ts — this is a
+    targeted backfill, not a forward-progressing update. Snapshot
+    persistence IS updated when the engine emits a newer one, since
+    that's necessary for the resume chain to remain useful.
 
     Args:
       strategy_id: int
@@ -1668,37 +1689,136 @@ def append_windowed_backtest_trades_for_strategy(
         set_admin_user_context(user_id)
 
     try:
-        # No snapshot resume — fresh warmup is the safer choice for an
-        # arbitrary window. (Snapshot resume requires the engine state to
-        # match an exact bar; for backfill of arbitrary windows we don't
-        # have a guaranteed snapshot anchor.)
+        # ── UAD-parity warmup resolution ────────────────────────────────
+        # Tier 1: try snapshot resume. If the strategy's stored backtest
+        # snapshot has last_bar_ts <= window_start, the engine can resume
+        # from there with bit-identical state — zero warmup load.
+        # Tier 2 (fallback): cold start, but load UAD's full warmup so
+        # indicator state at window_start matches what UAD would have.
+        path_used = None  # for diagnostics in the return value
+        resume_b64 = None
+        resume_fingerprint = None
+        resume_model_id = None
+
+        bt_snapshot_b64 = cfg.get('engine_snapshot_b64')
+        snapshot_last_ts = None
+        if bt_snapshot_b64:
+            try:
+                from unified_engine import (
+                    compute_backtest_fingerprint,
+                    deserialize_backtest_snapshot,
+                )
+                bt_fingerprint = compute_backtest_fingerprint(strat)
+                envelope = deserialize_backtest_snapshot(
+                    bt_snapshot_b64,
+                    expected_fingerprint=bt_fingerprint,
+                    expected_model_id=f"backtest_{bt_model}",
+                )
+                if envelope is not None and envelope.get('last_bar_ts'):
+                    last_ts_raw = envelope.get('last_bar_ts')
+                    # `last_bar_ts` is serialized as a string per
+                    # unified_engine.serialize_backtest_snapshot.
+                    if isinstance(last_ts_raw, str):
+                        last_ts = datetime.fromisoformat(
+                            last_ts_raw.replace('Z', '+00:00'))
+                    elif hasattr(last_ts_raw, 'to_pydatetime'):
+                        last_ts = last_ts_raw.to_pydatetime()
+                    else:
+                        last_ts = last_ts_raw
+                    if last_ts.tzinfo is None:
+                        last_ts = last_ts.replace(tzinfo=timezone.utc)
+                    if last_ts <= window_start:
+                        snapshot_last_ts = last_ts
+                        resume_b64 = bt_snapshot_b64
+                        resume_fingerprint = bt_fingerprint
+                        resume_model_id = f"backtest_{bt_model}"
+            except Exception as e:
+                logger.warning(
+                    "[BT-WINDOW] sid=%s snapshot deserialize failed, "
+                    "falling back to cold warmup: %s", strategy_id, e)
+
+        # Compute cold-warmup `warmup_bars` matching UAD's natural
+        # warmup_days for this strategy. Inverse of services.py:622
+        #   warmup_days ≈ warmup_bars / binding_bpd × 365/252
+        # → warmup_bars ≈ warmup_days × binding_bpd × 252/365
+        # We always pass this; it's only USED on the fallback path
+        # (snapshot resume ignores warmup_bars per services.py:627).
+        from strategy_data import (
+            resolve_visible_window, compute_warmup_days,
+        )
+        from data_loader import (
+            BARS_PER_DAY, get_required_tfs_from_confluence, get_tf_from_label,
+        )
+        import math as _math
+        uad_vs, uad_ve, _src = resolve_visible_window(strat)
+        uad_visible_days = max(
+            1.0, (uad_ve - uad_vs).total_seconds() / 86400.0)
+        uad_warmup_days = compute_warmup_days(strat, uad_visible_days)
+        req_labels = get_required_tfs_from_confluence(
+            strat.get('confluence', []))
+        sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
+        all_tfs = [strat.get('timeframe', '1Min')] + list(sec_tfs)
+        bpds = [BARS_PER_DAY.get(tf, 390) for tf in all_tfs]
+        binding_bpd = min(bpd for bpd in bpds if bpd > 0) if bpds else 390
+        uad_warmup_bars = max(
+            100, int(_math.ceil(uad_warmup_days * binding_bpd * 252 / 365)))
+
         try:
-            all_trades_df = svc.get_strategy_trades_for_window(
-                strat,
-                since_dt=window_start,
-                until_dt=window_end,
-                model_override=bt_model,
-                diagnostics_source='backtest',
-            )
+            if resume_b64:
+                # Tier 1: snapshot resume — bit-identical to UAD state
+                # at snapshot.last_bar_ts. Engine processes
+                # [last_bar_ts, window_end].
+                path_used = 'snapshot_resume'
+                all_trades_df, new_bt_snapshot_b64 = svc.get_strategy_trades_for_window(
+                    strat,
+                    since_dt=snapshot_last_ts,
+                    until_dt=window_end,
+                    model_override=bt_model,
+                    resume_snapshot_b64=resume_b64,
+                    expected_fingerprint=resume_fingerprint,
+                    expected_model_id=resume_model_id,
+                    return_snapshot=True,
+                    diagnostics_source='backtest',
+                )
+            else:
+                # Tier 2: cold warmup, but sized to UAD's warmup_days so
+                # indicator convergence at window_start matches UAD.
+                path_used = 'cold_warmup_uad_matched'
+                logger.info(
+                    "[BT-WINDOW] sid=%s cold path: uad_warmup_days=%.1f "
+                    "binding_bpd=%s → warmup_bars=%d",
+                    strategy_id, uad_warmup_days, binding_bpd, uad_warmup_bars)
+                all_trades_df, new_bt_snapshot_b64 = svc.get_strategy_trades_for_window(
+                    strat,
+                    since_dt=window_start,
+                    until_dt=window_end,
+                    warmup_bars=uad_warmup_bars,
+                    model_override=bt_model,
+                    return_snapshot=True,
+                    diagnostics_source='backtest',
+                )
         except Exception as e:
             logger.warning(
-                "[BT-WINDOW] strategy=%s engine run failed: %s",
-                strategy_id, e)
+                "[BT-WINDOW] strategy=%s engine run failed (%s): %s",
+                strategy_id, path_used, e)
             return {'status': 'error',
                     'reason': f'engine: {e}',
-                    'inserted': 0}
+                    'inserted': 0,
+                    'path': path_used}
 
         if all_trades_df is None or len(all_trades_df) == 0:
             return {'status': 'no_new_trades', 'inserted': 0,
                     'window_start': window_start.isoformat(),
                     'window_end': window_end.isoformat(),
+                    'path': path_used,
                     'elapsed_s': round(_time.time() - t0, 2)}
 
         # Only closed trades fully within the window
         if 'exit_fill_ts' not in all_trades_df.columns:
             return {'status': 'error',
                     'reason': 'engine output missing exit_fill_ts column',
-                    'inserted': 0}
+                    'inserted': 0,
+                    'path': path_used}
         closed_mask = all_trades_df['exit_fill_ts'].notna()
         closed = all_trades_df[closed_mask].copy()
         if len(closed) == 0:
@@ -1706,6 +1826,7 @@ def append_windowed_backtest_trades_for_strategy(
                     'reason': 'no_closed_trades_in_window',
                     'window_start': window_start.isoformat(),
                     'window_end': window_end.isoformat(),
+                    'path': path_used,
                     'elapsed_s': round(_time.time() - t0, 2)}
         entry_ts_col = pd.to_datetime(closed['entry_fill_ts'], utc=True,
                                      errors='coerce')
@@ -1717,6 +1838,7 @@ def append_windowed_backtest_trades_for_strategy(
                     'reason': 'all_outside_window',
                     'window_start': window_start.isoformat(),
                     'window_end': window_end.isoformat(),
+                    'path': path_used,
                     'elapsed_s': round(_time.time() - t0, 2)}
 
         # Dedup against existing backtest_* trades in this window
@@ -1751,6 +1873,7 @@ def append_windowed_backtest_trades_for_strategy(
                     'reason': 'all_already_in_db',
                     'window_start': window_start.isoformat(),
                     'window_end': window_end.isoformat(),
+                    'path': path_used,
                     'elapsed_s': round(_time.time() - t0, 2)}
 
         new_df = pd.DataFrame(new_records)
@@ -1765,6 +1888,26 @@ def append_windowed_backtest_trades_for_strategy(
             except Exception as e:
                 logger.warning(
                     "[BT-WINDOW] sid=%s insert_trade failed: %s",
+                    strategy_id, e)
+
+        # Persist the fresh snapshot the engine emitted, when we have
+        # a usable one. Only update if the engine produced a newer
+        # snapshot — an engine miss / serialization failure leaves
+        # `new_bt_snapshot_b64=None`, in which case keep the prior
+        # snapshot to avoid invalidation cascade. The snapshot's
+        # last_bar_ts will now be at-or-after this window's end, so
+        # FUTURE window-fills inside this strategy's recent history can
+        # take the Tier 1 resume path instead of paying cold warmup.
+        if new_bt_snapshot_b64 is not None and \
+                new_bt_snapshot_b64 != bt_snapshot_b64:
+            try:
+                cfg['engine_snapshot_b64'] = new_bt_snapshot_b64
+                cfg['engine_snapshot_at'] = datetime.now(
+                    timezone.utc).isoformat()
+                _stamp_config(strategy_id, user_id, cfg)
+            except Exception as e:
+                logger.warning(
+                    "[BT-WINDOW] sid=%s snapshot persist failed: %s",
                     strategy_id, e)
 
         # Invalidate cache so the next get_strategy_trades_for_window
@@ -1801,15 +1944,27 @@ def append_windowed_backtest_trades_for_strategy(
                     strategy_id, e)
 
         logger.info(
-            "[BT-WINDOW] strategy=%s window=[%s,%s] inserted=%d",
+            "[BT-WINDOW] strategy=%s window=[%s,%s] inserted=%d path=%s",
             strategy_id, window_start.isoformat()[:19],
-            window_end.isoformat()[:19], inserted)
+            window_end.isoformat()[:19], inserted, path_used)
 
         result = {
             'status': 'window_filled',
             'inserted': inserted,
             'window_start': window_start.isoformat(),
             'window_end': window_end.isoformat(),
+            'path': path_used,
+            'warmup': {
+                # Diagnostic — surfaces which warmup the engine ran with
+                # so the operator can sanity-check UAD parity.
+                'uad_visible_days': round(uad_visible_days, 2),
+                'uad_warmup_days': round(uad_warmup_days, 2),
+                'binding_bpd': binding_bpd,
+                'uad_warmup_bars': uad_warmup_bars,
+                'snapshot_last_ts': (
+                    snapshot_last_ts.isoformat()
+                    if snapshot_last_ts is not None else None),
+            },
             'elapsed_s': round(_time.time() - t0, 2),
         }
         if hifi_summary is not None:
