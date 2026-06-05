@@ -638,6 +638,7 @@ _CLASS_PHASE2_SIGNAL_EXIT = "phase2_signal_exit"
 _CLASS_NON_FILL_EVENT = "non_fill_event"
 _CLASS_LEGACY_STRATEGY = "legacy_strategy"
 _CLASS_CROSS_EXEC_TYPE_MISMATCH = "cross_exec_type_mismatch"
+_CLASS_PHANTOM_PRE_CORRECTION = "phantom_pre_correction"
 
 # Below this, a within-window pair is treated as the "same event" — even
 # a 1s delta on bar-close exits is normal alert dispatch latency. Above
@@ -799,9 +800,14 @@ def get_strategy_health_backlog(
     # 50k cap (see _paginated_fetch).
     trades_in_window: List[Dict[str, Any]] = _paginated_fetch(trade_query)
 
-    # Pull alerts within window.
+    # Pull alerts within window. `would_fire_post_correction` (#57H) is
+    # set asynchronously by ralph_engine.apply_rest_correction when a
+    # REST splice fires on the alert's bar — used by _classify_phantom
+    # to surface the phantom_pre_correction bucket separately from
+    # needs_investigation.
     alert_query = c.table("alerts").select(
-        "id,strategy_id,fill_ts,trigger_ts,event_type"
+        "id,strategy_id,fill_ts,trigger_ts,event_type,"
+        "would_fire_post_correction"
     ).gte("timestamp", window_start_iso).lte(
         "timestamp", window_end_iso)
     if strategy_id is not None:
@@ -834,6 +840,18 @@ def get_strategy_health_backlog(
             cfg_ = {}
         if "entry_trigger_confluence_id" not in cfg_:
             return _CLASS_LEGACY_STRATEGY, "Strategy pre-dates confluence-ID schema"
+        # phantom_pre_correction (#57H): the alert's bar had a REST splice
+        # and the post-correction indicator state would NOT have fired the
+        # trigger. This is structural WS-vs-REST noise, not a real bug.
+        # NULL = no splice fired on this bar (classification unchanged).
+        # TRUE = trigger still fires post-correction (real divergence;
+        # falls through to needs_investigation below).
+        wf = alert.get("would_fire_post_correction")
+        if wf is False:
+            return _CLASS_PHANTOM_PRE_CORRECTION, (
+                "Alert fired on WS-derived state; REST-corrected state "
+                "would NOT have fired the same trigger (structural WS "
+                "noise, not a backtest gap)")
         ev = (alert.get("event_type") or "").lower()
         if ev and ev not in ("entry", "exit", "fill",
                               "entry_signal", "exit_signal"):

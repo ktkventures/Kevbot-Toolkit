@@ -3160,6 +3160,59 @@ class SymbolHub:
                         logger.warning(
                             "live_corrected flush failed sid=%s: %s",
                             monitor.strat_id, _e)
+
+                # Post-hoc reclassification (#57H, 2026-06-05). For any
+                # alert that fired on a corrected bar, check whether the
+                # REST-aligned indicator state would have ALSO fired the
+                # same trigger. The post-correction state.current dict
+                # contains the trigger booleans under their trigger_id
+                # keys (e.g. 'utv4_bull_flip'). If False after splice,
+                # the alert was a phantom_pre_correction (structural WS
+                # noise, not a real bug). Stored on the alerts row;
+                # strategy_health classifier reads it to surface a
+                # phantom_pre_correction bucket separate from
+                # needs_investigation. Best-effort, never raises.
+                if ok:
+                    try:
+                        _post_current = (
+                            getattr(monitor.indicators, 'state', None)
+                            and monitor.indicators.state.current
+                        ) or {}
+                        if _post_current:
+                            from db import get_admin_client as _gac
+                            _rcl = _gac()
+                            _ar = (_rcl.table('alerts')
+                                   .select('id,trigger_id')
+                                   .eq('strategy_id', monitor.strat_id)
+                                   .eq('bar_time', rest_ts.isoformat())
+                                   .execute())
+                            for _alert in _ar.data or []:
+                                _trig = _alert.get('trigger_id')
+                                if not _trig:
+                                    continue
+                                # Strip exec-type suffix to find the base
+                                # trigger column. Suffixes: _ib, _lc, _cc,
+                                # _hm, _hl. The indicator class returns
+                                # values under the base trigger name only
+                                # (e.g. 'utv4_bull_flip').
+                                _base = _trig
+                                for _suf in ('_ib', '_lc', '_cc', '_hm', '_hl'):
+                                    if _base.endswith(_suf):
+                                        _base = _base[:-len(_suf)]
+                                        break
+                                _would_fire = bool(_post_current.get(_base, False))
+                                (_rcl.table('alerts')
+                                 .update({'would_fire_post_correction': _would_fire})
+                                 .eq('id', _alert['id']).execute())
+                                logger.info(
+                                    "post_correction reclass sid=%s alert=%s "
+                                    "trigger=%s would_fire=%s",
+                                    monitor.strat_id, _alert['id'],
+                                    _trig, _would_fire)
+                    except Exception as _rc_e:
+                        logger.warning(
+                            "post_correction reclass sid=%s failed: %s",
+                            monitor.strat_id, _rc_e)
             except Exception as e:
                 logger.warning(
                     "REST correction recompute failed sym=%s strat=%s "

@@ -60,6 +60,7 @@ Defined in `src/api/routers/strategy_health.py` near the `_CLASS_*` constants.
 | `non_fill_event` | Known cause: event isn't a fill (e.g., cancel) |
 | `legacy_strategy` | Known cause: pre-spec strategy without canonical timestamps |
 | `cross_exec_type_mismatch` | **NEW 2026-06-04** — paired event whose live exec_type disagrees with backtest's implied exec_type. Surfaced as `event_type=mismatch` with both alert_id and trade_id. Mostly exit pairs where live fired C-type signal at bar close but backtest fired L-type stop intra-bar (or vice versa). Pair time delta > 2s. Don't count toward "phantom" or "missed" — they're real pairs but represent different events. |
+| `phantom_pre_correction` | **NEW 2026-06-05** — alert fired on WS-derived indicator state, but the post-REST-splice state would NOT have triggered. Structural WS-vs-REST noise, not a real bug. Driven by `alerts.would_fire_post_correction = false` set by `ralph_engine.apply_rest_correction` when a per-bar verify splice fires on an alert's bar. Don't count toward `needs_investigation`. |
 
 ##### Proposed new buckets (uncommitted to code — pending walkthrough findings)
 | Bucket | Meaning |
