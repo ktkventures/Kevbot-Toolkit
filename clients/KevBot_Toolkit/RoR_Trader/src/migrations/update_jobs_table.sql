@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS update_jobs (
     id BIGINT PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     name TEXT NOT NULL DEFAULT 'Untitled Update',
-    mode TEXT NOT NULL CHECK (mode IN ('all', 'new')),
+    mode TEXT NOT NULL CHECK (mode IN ('all', 'new', 'window')),
     scope TEXT NOT NULL CHECK (scope IN ('single', 'bulk')) DEFAULT 'single',
     strategy_ids INTEGER[] NOT NULL,
     status TEXT NOT NULL DEFAULT 'queued'
