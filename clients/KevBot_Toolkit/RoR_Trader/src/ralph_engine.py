@@ -3181,10 +3181,17 @@ class SymbolHub:
                         if _post_current:
                             from db import get_admin_client as _gac
                             _rcl = _gac()
+                            # Query alerts in [bar_start, bar_start+tf_seconds).
+                            # L-type alerts stamp bar_time = intra-bar fill_ts
+                            # (not the boundary), so exact equality misses
+                            # them. The range covers C-type (boundary) AND
+                            # L-type (intra-bar) alerts for this bar.
+                            _bar_end = (rest_ts + pd.Timedelta(seconds=tf_seconds))
                             _ar = (_rcl.table('alerts')
-                                   .select('id,trigger_id')
+                                   .select('id,trigger_id,bar_time')
                                    .eq('strategy_id', monitor.strat_id)
-                                   .eq('bar_time', rest_ts.isoformat())
+                                   .gte('bar_time', rest_ts.isoformat())
+                                   .lt('bar_time', _bar_end.isoformat())
                                    .execute())
                             for _alert in _ar.data or []:
                                 _trig = _alert.get('trigger_id')
