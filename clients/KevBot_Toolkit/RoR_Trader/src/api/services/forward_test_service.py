@@ -1583,6 +1583,247 @@ def append_new_backtest_trades_for_strategy(
             clear_current_user()
 
 
+def append_windowed_backtest_trades_for_strategy(
+    strategy_id: int,
+    user_id: str,
+    window_start: datetime,
+    window_end: datetime,
+) -> Dict[str, Any]:
+    """Backfill a SPECIFIC time window of the BACKTEST lane.
+
+    Variant of `append_new_backtest_trades_for_strategy` that takes an
+    EXPLICIT [window_start, window_end] instead of computing the start
+    from the latest existing trade. Used by the gap-detection cron and
+    the manual "Window Backfill" UI to fill gaps in the BT lane that
+    Update New Data won't touch (because it uses `max(entry_fill_ts)`
+    and so skips over gaps that have trades on both sides).
+
+    Pattern mirrors append_new_backtest:
+      1. Load strategy + raw config
+      2. Run engine over [window_start, window_end] with explicit
+         since/until (no snapshot resume — the window is bounded and
+         small enough that fresh warmup is fast)
+      3. Filter closed trades to ones within the window
+      4. Dedup against existing backtest_* trades in the window
+         (entry_fill_ts, exit_fill_ts) unique
+      5. Insert new rows; per-row insert_trade_admin handles
+         unique-constraint collisions gracefully
+      6. Hi-Fi pass on the inserted set (if model in HIFI set)
+
+    Does NOT update KPIs, snapshot, or last_recompute_until_ts — this
+    is a targeted backfill, not a forward-progressing update. Existing
+    streaming pipeline owns those.
+
+    Args:
+      strategy_id: int
+      user_id: str
+      window_start: tz-aware datetime — earliest bar to recompute
+      window_end: tz-aware datetime — latest bar to recompute (exclusive)
+
+    Returns:
+        {'status': 'window_filled' | 'no_new_trades' | 'error',
+         'inserted': int, 'window_start': iso, 'window_end': iso,
+         'elapsed_s': float, ...}
+    """
+    import time as _time
+    import pandas as pd
+    import services as svc
+    from db import (
+        get_strategy_by_id_admin,
+        set_admin_user_context,
+        get_current_user_id,
+        clear_current_user,
+        get_admin_client,
+    )
+
+    t0 = _time.time()
+    if window_start.tzinfo is None:
+        window_start = window_start.replace(tzinfo=timezone.utc)
+    if window_end.tzinfo is None:
+        window_end = window_end.replace(tzinfo=timezone.utc)
+    if window_end <= window_start:
+        return {'status': 'error',
+                'reason': 'window_end must be after window_start',
+                'inserted': 0}
+
+    strat = get_strategy_by_id_admin(strategy_id, user_id)
+    if strat is None:
+        return {'status': 'error',
+                'reason': f'strategy {strategy_id} not found',
+                'inserted': 0}
+
+    # Read raw config JSONB (avoids the flattened-shape gotcha that
+    # bit append_new_backtest before the 2026-05-20 fix).
+    _raw_client = get_admin_client()
+    _raw_resp = (_raw_client.table('strategies').select('config')
+                 .eq('id', strategy_id).eq('user_id', user_id).single().execute())
+    cfg = dict(_raw_resp.data.get('config') or {}) if _raw_resp.data else {}
+    bt_model = (cfg.get('backtest_model')
+                or strat.get('backtest_model')
+                or 'rest_hifi')
+
+    _prev_user = get_current_user_id()
+    _need_ctx_swap = _prev_user != user_id
+    if _need_ctx_swap:
+        set_admin_user_context(user_id)
+
+    try:
+        # No snapshot resume — fresh warmup is the safer choice for an
+        # arbitrary window. (Snapshot resume requires the engine state to
+        # match an exact bar; for backfill of arbitrary windows we don't
+        # have a guaranteed snapshot anchor.)
+        try:
+            all_trades_df = svc.get_strategy_trades_for_window(
+                strat,
+                since_dt=window_start,
+                until_dt=window_end,
+                model_override=bt_model,
+                diagnostics_source='backtest',
+            )
+        except Exception as e:
+            logger.warning(
+                "[BT-WINDOW] strategy=%s engine run failed: %s",
+                strategy_id, e)
+            return {'status': 'error',
+                    'reason': f'engine: {e}',
+                    'inserted': 0}
+
+        if all_trades_df is None or len(all_trades_df) == 0:
+            return {'status': 'no_new_trades', 'inserted': 0,
+                    'window_start': window_start.isoformat(),
+                    'window_end': window_end.isoformat(),
+                    'elapsed_s': round(_time.time() - t0, 2)}
+
+        # Only closed trades fully within the window
+        if 'exit_fill_ts' not in all_trades_df.columns:
+            return {'status': 'error',
+                    'reason': 'engine output missing exit_fill_ts column',
+                    'inserted': 0}
+        closed_mask = all_trades_df['exit_fill_ts'].notna()
+        closed = all_trades_df[closed_mask].copy()
+        if len(closed) == 0:
+            return {'status': 'no_new_trades', 'inserted': 0,
+                    'reason': 'no_closed_trades_in_window',
+                    'window_start': window_start.isoformat(),
+                    'window_end': window_end.isoformat(),
+                    'elapsed_s': round(_time.time() - t0, 2)}
+        entry_ts_col = pd.to_datetime(closed['entry_fill_ts'], utc=True,
+                                     errors='coerce')
+        in_window = (entry_ts_col >= pd.Timestamp(window_start)) & \
+                    (entry_ts_col < pd.Timestamp(window_end))
+        closed = closed[in_window]
+        if len(closed) == 0:
+            return {'status': 'no_new_trades', 'inserted': 0,
+                    'reason': 'all_outside_window',
+                    'window_start': window_start.isoformat(),
+                    'window_end': window_end.isoformat(),
+                    'elapsed_s': round(_time.time() - t0, 2)}
+
+        # Dedup against existing backtest_* trades in this window
+        existing_q = (_raw_client.table('trades')
+                      .select('entry_fill_ts,exit_fill_ts')
+                      .eq('strategy_id', strategy_id)
+                      .like('data_source', 'backtest_%')
+                      .gte('entry_fill_ts', window_start.isoformat())
+                      .lt('entry_fill_ts', window_end.isoformat())
+                      .execute())
+        existing_keys: set = set()
+        for r in (existing_q.data or []):
+            existing_keys.add((r.get('entry_fill_ts'), r.get('exit_fill_ts')))
+
+        from db import insert_trade_admin
+        ds_tag = f'backtest_{bt_model}'
+        inserted = 0
+        new_records = []
+        for _, row in closed.iterrows():
+            ek_raw = row.get('entry_fill_ts')
+            xk_raw = row.get('exit_fill_ts')
+            if pd.isna(ek_raw) or pd.isna(xk_raw):
+                continue
+            ek = ek_raw.isoformat() if hasattr(ek_raw, 'isoformat') else str(ek_raw)
+            xk = xk_raw.isoformat() if hasattr(xk_raw, 'isoformat') else str(xk_raw)
+            if (ek, xk) in existing_keys:
+                continue
+            new_records.append(row)
+
+        if not new_records:
+            return {'status': 'no_new_trades', 'inserted': 0,
+                    'reason': 'all_already_in_db',
+                    'window_start': window_start.isoformat(),
+                    'window_end': window_end.isoformat(),
+                    'elapsed_s': round(_time.time() - t0, 2)}
+
+        new_df = pd.DataFrame(new_records)
+        new_serialized = _serialize_trades(new_df)
+        for rec in new_serialized:
+            rec_copy = dict(rec)
+            rec_copy['data_source'] = ds_tag
+            try:
+                row_saved = insert_trade_admin(strategy_id, user_id, rec_copy)
+                if row_saved is not None:
+                    inserted += 1
+            except Exception as e:
+                logger.warning(
+                    "[BT-WINDOW] sid=%s insert_trade failed: %s",
+                    strategy_id, e)
+
+        # Invalidate cache so the next get_strategy_trades_for_window
+        # call (e.g., a chart fetch) sees the inserts.
+        try:
+            from trades_store import _cache_invalidate
+            _cache_invalidate(strategy_id, user_id)
+        except Exception:
+            pass
+
+        # Hi-Fi pass on the just-inserted backtest_% rows
+        HIFI_BACKTEST_MODELS = {'rest_hifi', 'cache_locked', 'cache_corrected'}
+        hifi_summary = None
+        if bt_model in HIFI_BACKTEST_MODELS and inserted > 0:
+            try:
+                from api.routers.strategies import run_hifi_pass2
+                hifi_summary = run_hifi_pass2(
+                    strategy_id,
+                    data_source_filter='backtest_%',
+                    incremental=True,
+                    user={'id': user_id},
+                )
+                logger.info(
+                    "[BT-WINDOW] strategy=%s window=[%s,%s] Hi-Fi: refined "
+                    "entries=%s exits=%s persisted=%s",
+                    strategy_id, window_start.isoformat()[:19],
+                    window_end.isoformat()[:19],
+                    hifi_summary.get('entries_refined', 0),
+                    hifi_summary.get('exits_refined', 0),
+                    hifi_summary.get('persisted', 0))
+            except Exception as e:
+                logger.warning(
+                    "[BT-WINDOW] strategy=%s Hi-Fi pass failed: %s",
+                    strategy_id, e)
+
+        logger.info(
+            "[BT-WINDOW] strategy=%s window=[%s,%s] inserted=%d",
+            strategy_id, window_start.isoformat()[:19],
+            window_end.isoformat()[:19], inserted)
+
+        result = {
+            'status': 'window_filled',
+            'inserted': inserted,
+            'window_start': window_start.isoformat(),
+            'window_end': window_end.isoformat(),
+            'elapsed_s': round(_time.time() - t0, 2),
+        }
+        if hifi_summary is not None:
+            result['hifi'] = {
+                'entries_refined': hifi_summary.get('entries_refined', 0),
+                'exits_refined': hifi_summary.get('exits_refined', 0),
+                'persisted': hifi_summary.get('persisted', 0),
+            }
+        return result
+    finally:
+        if _need_ctx_swap:
+            clear_current_user()
+
+
 def recompute_and_persist_algo_trades(
     strategy_id: int,
     user_id: str,

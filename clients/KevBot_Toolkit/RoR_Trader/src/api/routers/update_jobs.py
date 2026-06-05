@@ -29,9 +29,11 @@ def start_update_job(
     """Start an async UAD job. Returns immediately with `job_id`.
 
     Request body:
-      - mode: 'all' | 'new' (required)
+      - mode: 'all' | 'new' | 'window' (required)
       - strategy_ids: [int, int, ...] (required; can be length 1 for single-strategy)
       - name: optional display name
+      - window_start, window_end: ISO timestamp strings — REQUIRED when mode='window';
+                                  define the [start, end) range to backfill on the BT lane
 
     Frontend then polls `/api/update-jobs/progress/{job_id}` to render status.
     """
@@ -40,10 +42,10 @@ def start_update_job(
         raise HTTPException(status_code=501, detail="update-jobs requires DB mode")
 
     mode = payload.get("mode")
-    if mode not in ("all", "new"):
+    if mode not in ("all", "new", "window"):
         raise HTTPException(
             status_code=400,
-            detail="payload.mode must be 'all' or 'new'",
+            detail="payload.mode must be 'all', 'new', or 'window'",
         )
 
     strategy_ids = payload.get("strategy_ids")
@@ -60,14 +62,42 @@ def start_update_job(
             detail="payload.strategy_ids must be ints",
         )
 
+    # Window mode requires explicit start/end. Validate as parseable ISO
+    # before queuing so we fail loudly at the API boundary, not silently
+    # mid-job.
+    window_start = payload.get("window_start")
+    window_end = payload.get("window_end")
+    if mode == "window":
+        if not window_start or not window_end:
+            raise HTTPException(
+                status_code=400,
+                detail="mode='window' requires window_start and window_end "
+                       "(ISO timestamp strings)",
+            )
+        from datetime import datetime as _dt
+        try:
+            _ws = _dt.fromisoformat(window_start.replace("Z", "+00:00"))
+            _we = _dt.fromisoformat(window_end.replace("Z", "+00:00"))
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"window_start/window_end must be ISO timestamps: {e}",
+            )
+        if _we <= _ws:
+            raise HTTPException(
+                status_code=400,
+                detail="window_end must be after window_start",
+            )
+
     name = payload.get("name") or (
         f"Update {mode} ({len(strategy_ids)} strategies)"
+        + (f" {window_start[:16]}→{window_end[:16]}" if mode == "window" else "")
     )
     scope = "single" if len(strategy_ids) == 1 else "bulk"
     user_id = user.get("id") if isinstance(user, dict) else getattr(user, "id", None)
 
     from db import save_update_job
-    job_id = save_update_job({
+    job_record = {
         "name": name,
         "mode": mode,
         "scope": scope,
@@ -80,7 +110,13 @@ def start_update_job(
             "current_phase": "queued",
             "per_strategy": {},
         },
-    })
+    }
+    # Store window info in config_data so the UI can display it on the
+    # job card without re-deriving from the name.
+    if mode == "window":
+        job_record["window_start"] = window_start
+        job_record["window_end"] = window_end
+    job_id = save_update_job(job_record)
     if job_id is None:
         raise HTTPException(
             status_code=500,
@@ -88,7 +124,11 @@ def start_update_job(
         )
 
     from update_jobs import start_update_job_async
-    start_update_job_async(job_id, mode, strategy_ids, user_id)
+    start_update_job_async(
+        job_id, mode, strategy_ids, user_id,
+        window_start=window_start,
+        window_end=window_end,
+    )
 
     return {
         "job_id": job_id,

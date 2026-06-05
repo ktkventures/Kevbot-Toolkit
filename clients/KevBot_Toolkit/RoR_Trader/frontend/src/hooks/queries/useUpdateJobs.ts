@@ -9,7 +9,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api/client';
 
-export type UpdateJobMode = 'all' | 'new';
+export type UpdateJobMode = 'all' | 'new' | 'window';
 export type UpdateJobScope = 'single' | 'bulk';
 export type UpdateJobStatus =
   | 'queued'
@@ -112,6 +112,11 @@ export function useStartUpdateJob() {
       mode: UpdateJobMode;
       strategy_ids: number[];
       name?: string;
+      // Required when mode === 'window'. ISO timestamps defining the
+      // [start, end) range to backfill on the BT lane. Ignored for
+      // 'all' and 'new' modes.
+      window_start?: string;
+      window_end?: string;
     }) =>
       apiFetch<{
         job_id: number;

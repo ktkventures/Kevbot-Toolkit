@@ -336,6 +336,332 @@ function JobCard({
   );
 }
 
+/**
+ * Convert a `<input type="datetime-local">` value (no timezone, e.g.
+ * "2026-06-05T13:30") into an ISO UTC string. The input is interpreted
+ * as UTC, NOT local — the form label makes this explicit.
+ */
+function localInputToUtcIso(v: string): string | null {
+  if (!v) return null;
+  // Already has seconds? Use as-is. Otherwise add :00.
+  const withSeconds = /T\d{2}:\d{2}:\d{2}$/.test(v) ? v : `${v}:00`;
+  return `${withSeconds}Z`;
+}
+
+/**
+ * Format a Date as a `datetime-local` value in UTC (YYYY-MM-DDTHH:mm).
+ * Used by the "Today RTH" / "Last 1h" preset buttons.
+ */
+function dateToUtcLocalInput(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return (
+    `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}` +
+    `T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`
+  );
+}
+
+function WindowBackfillCard() {
+  const startMut = useStartUpdateJob();
+  const [sidsRaw, setSidsRaw] = useState('');
+  const [windowStart, setWindowStart] = useState('');
+  const [windowEnd, setWindowEnd] = useState('');
+  const [lastResult, setLastResult] = useState<{
+    job_id: number;
+    strategy_count: number;
+  } | null>(null);
+
+  const parsedSids = sidsRaw
+    .split(/[,\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => Number(s))
+    .filter((n) => Number.isInteger(n) && n > 0);
+
+  const startIso = localInputToUtcIso(windowStart);
+  const endIso = localInputToUtcIso(windowEnd);
+  const validRange =
+    startIso && endIso && new Date(endIso) > new Date(startIso);
+  const canSubmit =
+    parsedSids.length > 0 && validRange && !startMut.isPending;
+
+  const presetTodayRTH = () => {
+    // RTH = 13:30-20:00 UTC. Use today's date, RTH open → now (or RTH close).
+    const now = new Date();
+    const open = new Date(
+      Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate(),
+        13,
+        30,
+        0,
+      ),
+    );
+    const close = new Date(
+      Date.UTC(
+        now.getUTCFullYear(),
+        now.getUTCMonth(),
+        now.getUTCDate(),
+        20,
+        0,
+        0,
+      ),
+    );
+    const end = now < close ? now : close;
+    setWindowStart(dateToUtcLocalInput(open));
+    setWindowEnd(dateToUtcLocalInput(end));
+  };
+
+  const presetLastNHours = (hours: number) => {
+    const now = new Date();
+    const start = new Date(now.getTime() - hours * 3_600_000);
+    setWindowStart(dateToUtcLocalInput(start));
+    setWindowEnd(dateToUtcLocalInput(now));
+  };
+
+  const onSubmit = () => {
+    if (!canSubmit || !startIso || !endIso) return;
+    const label =
+      parsedSids.length === 1
+        ? `Window backfill sid ${parsedSids[0]}`
+        : `Window backfill ${parsedSids.length} strategies`;
+    startMut.mutate(
+      {
+        mode: 'window',
+        strategy_ids: parsedSids,
+        window_start: startIso,
+        window_end: endIso,
+        name: label,
+      },
+      {
+        onSuccess: (res) => {
+          setLastResult({
+            job_id: res.job_id,
+            strategy_count: res.strategy_count,
+          });
+        },
+      },
+    );
+  };
+
+  const inputStyle: React.CSSProperties = {
+    padding: '6px 10px',
+    borderRadius: '6px',
+    border: '1px solid var(--border)',
+    background: 'var(--bg-input)',
+    color: 'var(--text)',
+    fontSize: '13px',
+    fontFamily: 'monospace',
+  };
+
+  return (
+    <Card>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+          flexWrap: 'wrap',
+          marginBottom: '10px',
+        }}
+      >
+        <span style={{ fontSize: '15px', fontWeight: 600 }}>
+          Manual Window Backfill (BT lane)
+        </span>
+        <span
+          style={{
+            background: 'var(--blue-muted, #1e40af44)',
+            color: 'var(--blue, #3b82f6)',
+            fontSize: '11px',
+            padding: '2px 8px',
+            borderRadius: '4px',
+            fontWeight: 600,
+            textTransform: 'uppercase',
+          }}
+        >
+          new
+        </span>
+      </div>
+      <p
+        style={{
+          fontSize: '12px',
+          color: 'var(--text-secondary)',
+          margin: '0 0 14px 0',
+          lineHeight: 1.5,
+        }}
+      >
+        Re-run the backtest for one or more strategies over an explicit
+        time window. Inserts BT trades into the {'{[start, end)}'} range
+        only — does NOT touch the algo lane, KPIs, snapshot, or
+        last_recompute_until_ts. Use this to fill deploy-churn gaps
+        without re-running a full Update All Data.
+      </p>
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr',
+          gap: '12px',
+          marginBottom: '12px',
+        }}
+      >
+        <div>
+          <label
+            style={{
+              display: 'block',
+              fontSize: '12px',
+              color: 'var(--text-muted)',
+              marginBottom: '4px',
+            }}
+          >
+            Strategy IDs (comma- or space-separated)
+          </label>
+          <input
+            style={{ ...inputStyle, width: '100%' }}
+            placeholder="e.g. 302  or  263, 267, 290"
+            value={sidsRaw}
+            onChange={(e) => setSidsRaw(e.target.value)}
+          />
+          {sidsRaw && (
+            <div
+              style={{
+                fontSize: '11px',
+                color: 'var(--text-muted)',
+                marginTop: '3px',
+              }}
+            >
+              parsed: {parsedSids.length} sid
+              {parsedSids.length === 1 ? '' : 's'}
+              {parsedSids.length > 0 && ` → [${parsedSids.join(', ')}]`}
+            </div>
+          )}
+        </div>
+
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: '12px',
+          }}
+        >
+          <div>
+            <label
+              style={{
+                display: 'block',
+                fontSize: '12px',
+                color: 'var(--text-muted)',
+                marginBottom: '4px',
+              }}
+            >
+              Window start (UTC)
+            </label>
+            <input
+              type="datetime-local"
+              style={{ ...inputStyle, width: '100%' }}
+              value={windowStart}
+              onChange={(e) => setWindowStart(e.target.value)}
+            />
+          </div>
+          <div>
+            <label
+              style={{
+                display: 'block',
+                fontSize: '12px',
+                color: 'var(--text-muted)',
+                marginBottom: '4px',
+              }}
+            >
+              Window end (UTC)
+            </label>
+            <input
+              type="datetime-local"
+              style={{ ...inputStyle, width: '100%' }}
+              value={windowEnd}
+              onChange={(e) => setWindowEnd(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+          <button
+            style={{ ...btnSecondary, fontSize: '11px' }}
+            onClick={presetTodayRTH}
+            type="button"
+          >
+            Today RTH (13:30 → now)
+          </button>
+          <button
+            style={{ ...btnSecondary, fontSize: '11px' }}
+            onClick={() => presetLastNHours(1)}
+            type="button"
+          >
+            Last 1h
+          </button>
+          <button
+            style={{ ...btnSecondary, fontSize: '11px' }}
+            onClick={() => presetLastNHours(4)}
+            type="button"
+          >
+            Last 4h
+          </button>
+          <button
+            style={{ ...btnSecondary, fontSize: '11px' }}
+            onClick={() => presetLastNHours(24)}
+            type="button"
+          >
+            Last 24h
+          </button>
+        </div>
+      </div>
+
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '12px',
+          flexWrap: 'wrap',
+        }}
+      >
+        <button
+          style={{
+            ...btnSecondary,
+            background: canSubmit
+              ? 'var(--green-muted)'
+              : 'var(--bg-input)',
+            color: canSubmit ? 'var(--green)' : 'var(--text-muted)',
+            border: 'none',
+            fontWeight: 600,
+            opacity: startMut.isPending ? 0.6 : 1,
+            cursor: canSubmit ? 'pointer' : 'not-allowed',
+          }}
+          disabled={!canSubmit}
+          onClick={onSubmit}
+        >
+          {startMut.isPending ? 'Submitting…' : 'Run Window Backfill'}
+        </button>
+        {!validRange && (windowStart || windowEnd) && (
+          <span style={{ fontSize: '11px', color: 'var(--red)' }}>
+            window end must be after window start
+          </span>
+        )}
+        {startMut.isError && (
+          <span style={{ fontSize: '11px', color: 'var(--red)' }}>
+            {(startMut.error as any)?.message || 'request failed'}
+          </span>
+        )}
+        {lastResult && (
+          <span style={{ fontSize: '11px', color: 'var(--green)' }}>
+            queued job #{lastResult.job_id} ({lastResult.strategy_count}{' '}
+            sid
+            {lastResult.strategy_count === 1 ? '' : 's'}) — watch progress
+            below
+          </span>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 function StreamingToggleCard() {
   const { data, isLoading } = useSystemSettings();
   const setMut = useSetSystemSetting();
@@ -535,6 +861,10 @@ export default function UpdateJobsAdminPage() {
 
       <div style={{ marginBottom: '16px' }}>
         <StreamingToggleCard />
+      </div>
+
+      <div style={{ marginBottom: '16px' }}>
+        <WindowBackfillCard />
       </div>
 
       <div

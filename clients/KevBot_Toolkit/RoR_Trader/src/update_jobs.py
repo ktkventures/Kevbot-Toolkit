@@ -75,16 +75,22 @@ def start_update_job_async(
     mode: str,
     strategy_ids: list[int],
     user_id: str,
+    window_start: str | None = None,
+    window_end: str | None = None,
 ) -> None:
     """Spawn a daemon thread to run UAD for the strategy_ids list.
 
-    mode='all':  recompute_and_persist_stored_trades (full backtest)
-                 + recompute_and_persist_algo_trades (full algo)
-    mode='new':  append_new_backtest_trades_for_strategy
-                 + append_new_trades_for_strategy
+    mode='all':    recompute_and_persist_stored_trades (full backtest)
+                   + recompute_and_persist_algo_trades (full algo)
+    mode='new':    append_new_backtest_trades_for_strategy
+                   + append_new_trades_for_strategy
+    mode='window': append_windowed_backtest_trades_for_strategy
+                   (BT lane only; requires window_start + window_end)
 
     Per-strategy progress is written to the DB row's config_data.progress
     field every step. Cancellation is checked between strategies.
+
+    window_* params are ISO timestamp strings; only used when mode='window'.
     """
     def _worker():
         # Capture admin user context for the lifetime of this thread so
@@ -110,6 +116,7 @@ def start_update_job_async(
                 recompute_and_persist_algo_trades,
                 append_new_backtest_trades_for_strategy,
                 append_new_trades_for_strategy,
+                append_windowed_backtest_trades_for_strategy,
             )
         except Exception as e:
             logger.error("[update_job %s] forward_test_service import failed: %s",
@@ -156,17 +163,30 @@ def start_update_job_async(
             })
 
             try:
+                algo = None  # window mode only touches BT lane
                 if mode == 'all':
                     bt = recompute_and_persist_stored_trades(sid, user_id)
                     algo = recompute_and_persist_algo_trades(sid, user_id)
-                else:  # 'new'
+                elif mode == 'new':
                     bt = append_new_backtest_trades_for_strategy(
                         sid, user_id, force=True)
                     algo = append_new_trades_for_strategy(
                         sid, user_id, force=True)
+                elif mode == 'window':
+                    # Window backfill — BT lane only. Caller must pass
+                    # ISO timestamps; convert here.
+                    if not window_start or not window_end:
+                        raise ValueError(
+                            "mode='window' requires window_start and window_end")
+                    from datetime import datetime as _dt
+                    ws = _dt.fromisoformat(window_start.replace('Z', '+00:00'))
+                    we = _dt.fromisoformat(window_end.replace('Z', '+00:00'))
+                    bt = append_windowed_backtest_trades_for_strategy(
+                        sid, user_id, ws, we)
+                else:
+                    raise ValueError(f"unknown mode: {mode!r}")
 
                 # Try to extract inserted trade counts for the summary.
-                # Both lanes return shape {status, ..., inserted/trades, ...}
                 bt_count = 0
                 if isinstance(bt, dict):
                     bt_count = (bt.get('inserted') or bt.get('trades') or 0)
@@ -183,7 +203,8 @@ def start_update_job_async(
                         'count': int(bt_count),
                     },
                     'algo': {
-                        'status': algo.get('status') if isinstance(algo, dict) else 'unknown',
+                        'status': algo.get('status') if isinstance(algo, dict) else (
+                            'skipped' if mode == 'window' else 'unknown'),
                         'count': int(algo_count),
                     },
                 }
