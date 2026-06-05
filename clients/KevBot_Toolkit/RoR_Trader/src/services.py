@@ -264,6 +264,17 @@ def prepare_data_with_indicators(
     # Load raw bars (or use the injected DataFrame)
     if use_injected:
         df = primary_df.copy()
+        # #42 fix (2026-06-05): apply session filter to injected df for
+        # parity with load_market_data's filtering. Without this, callers
+        # that inject pre-loaded bars (cache_locked path, BT-recompute
+        # path) skip the RTH/Extended Hours filter, and indicator state
+        # gets computed on bars the live engine wouldn't see — source of
+        # phantom entries on session-boundary bars. trading_session
+        # values: 'RTH' / 'Pre-Market' / 'After Hours' / 'Extended Hours'
+        # / '24/7' (crypto, no filter). Same enum as load_market_data.
+        if session and session != "24/7":
+            from data_loader import _filter_session
+            df = _filter_session(df, session)
     else:
         df = load_market_data(symbol, days=days, seed=seed,
                               start_date=start_date, end_date=end_date,
