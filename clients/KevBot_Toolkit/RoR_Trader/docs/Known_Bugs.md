@@ -14,6 +14,27 @@ here until either (a) shipped + verified, or (b) explicitly deprecated.
 
 ## Active
 
+### Manual Window Backfill over-produces ~17% extra trades vs UAD on same window
+- **Status:** WIP — feature shipped, marked "do not trust" on the admin page; needs root-cause + fix
+- **Discovered:** 2026-06-05 (parity test on sid 296 canary)
+- **Symptom:** `append_windowed_backtest_trades_for_strategy` (mode='window' in `/api/update-jobs/run`) produces more BT trades than `recompute_and_persist_stored_trades` (UAD) does for the same `[window_start, window_end]` range.
+- **Parity-test result on sid 296, window = [13:30, 20:00) UTC:**
+  - Window-backfill inserted 433 in-window trades
+  - UAD's clean recompute produced 359 in-window trades
+  - Shared (identical entry/exit): 358
+  - UAD-only: 1 (window-start edge case)
+  - Window-backfill-only: **75** (the over-production)
+- **Pattern in over-produced trades:** rapid-fire re-entry clusters, e.g.
+  - 14:36:20, 14:37:50, 14:39:10, 14:40:30, 14:41:50, 14:42:50, 14:43:40 → 7 entries in 7 minutes
+  - 15:07:30 → 15:14:30 → 8 entries in 7 minutes
+- **Suspected root cause:** Tier 1 snapshot resume restores INDICATOR state from the envelope but forces POSITION state to FLAT (per Tier 3 §8.2 — `apply_backtest_snapshot` in `unified_engine.py` intentionally drops `envelope['position']`). What also fails to carry over is the post-exit cooldown counter (`last_exit_bar_count` from Phase 30I — "1-bar cooldown"). When the resumed engine exits a trade and the next entry signal fires immediately, it re-enters because cooldown count = 0 (cold-started), whereas UAD's continuous backtest carries the correct cooldown forward and suppresses the re-entry. Hypothesis — not yet root-cause-verified.
+- **The same root cause likely affects Tier 2 (UAD-matched cold warmup):** the engine starts FLAT regardless of which warmup tier is used, so cooldown state is also cold there. (Wasn't exercised in the canary test — Tier 1 fired for both sid 263 and sid 296.)
+- **Operator-visible warning:** WindowBackfillCard in `UpdateJobsAdminPage.tsx` displays a red "WIP — do not trust" banner explaining the parity gap.
+- **Proposed fixes (ranked):**
+  1. **Investigate + fix cooldown serialization** — walk PositionStateMachine state in `unified_engine.py`, find any bar-count-based state that isn't in the snapshot envelope, add it to `serialize_backtest_snapshot`. This preserves the perf win (snapshot resume = near-zero warmup).
+  2. **Route through UAD path** — call `get_strategy_trades(strat)` (the full UAD code path) on the natural visible window, filter output to `[window_start, window_end]`. Guaranteed UAD parity by construction. Cost: full UAD load time (~minutes per strategy) — defeats the "fast targeted backfill" purpose. Use only if #1 proves too complex.
+- **Until fixed, use UAD (Update All Data) to fill gaps.** UAD on sid 296 took 629s (~10.5min) tonight — slow but trustworthy.
+
 ### `alerts.live_model` field NULL on default-model strategies → rest_verifier silently skips them
 - **Status:** OPEN — root cause located; design intent ambiguous
 - **Discovered:** 2026-06-04 (Kevin pushed back on Layer 1 N/A claim — pointed out `live_model=None` falls back to default)

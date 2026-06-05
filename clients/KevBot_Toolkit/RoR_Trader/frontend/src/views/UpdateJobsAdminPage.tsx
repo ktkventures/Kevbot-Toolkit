@@ -470,17 +470,38 @@ function WindowBackfillCard() {
         </span>
         <span
           style={{
-            background: 'var(--blue-muted, #1e40af44)',
-            color: 'var(--blue, #3b82f6)',
+            background: 'var(--red-muted)',
+            color: 'var(--red)',
             fontSize: '11px',
             padding: '2px 8px',
             borderRadius: '4px',
-            fontWeight: 600,
+            fontWeight: 700,
             textTransform: 'uppercase',
           }}
+          title="Over-produces ~17% extra trades vs UAD on canary sid 296 (2026-06-05). Do not trust output until cooldown/position-state serialization is fixed."
         >
-          new
+          WIP — do not trust
         </span>
+      </div>
+      <div
+        style={{
+          background: 'var(--red-muted)',
+          color: 'var(--red)',
+          border: '1px solid var(--red)',
+          borderRadius: '6px',
+          padding: '8px 12px',
+          fontSize: '12px',
+          lineHeight: 1.5,
+          marginBottom: '14px',
+        }}
+      >
+        <strong>⚠ WORK IN PROGRESS — parity bug.</strong> On the
+        2026-06-05 sid 296 canary, this produced 433 in-window trades
+        while Update All Data produced 359 — ~17% over-production.
+        Suspected cause: snapshot-resume re-initializes the post-exit
+        cooldown counter to 0, allowing rapid re-entries UAD would
+        suppress. Use <em>Update All Data</em> for trustworthy
+        backfills until this is fixed.
       </div>
       <p
         style={{
@@ -493,8 +514,7 @@ function WindowBackfillCard() {
         Re-run the backtest for one or more strategies over an explicit
         time window. Inserts BT trades into the {'{[start, end)}'} range
         only — does NOT touch the algo lane, KPIs, snapshot, or
-        last_recompute_until_ts. Use this to fill deploy-churn gaps
-        without re-running a full Update All Data.
+        last_recompute_until_ts.
       </p>
 
       <div
