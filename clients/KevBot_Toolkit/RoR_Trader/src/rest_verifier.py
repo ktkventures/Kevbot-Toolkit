@@ -51,6 +51,52 @@ _warned_disabled = False
 _symbol_locks: dict[str, threading.Lock] = {}
 _symbol_locks_mutex = threading.Lock()
 
+# Per-bar verify schedule (2026-06-05, #57E+F). Each closed bar gets
+# verified at these offsets past bar close (not bar start). Each pass
+# is skipped early if the prior pass's REST close matched the current
+# bar's OHLCV — i.e., the bar has settled and no more drift is expected.
+# Polygon REST typically settles within seconds; the longer-tail
+# adjustments (odd lots, corrections) can take up to ~15 min.
+_BAR_VERIFY_SCHEDULE_S = (None, 60, 300, 900)  # 1st = grace_seconds (TF-aware)
+
+# In-memory per-bar verify state. Keyed by (symbol, tf_seconds, bar_start_iso).
+# Used to (a) dedup concurrent passes, (b) detect when the bar has
+# settled (REST close stable across passes), (c) decide whether to
+# skip a pass because the bar was evicted from BarBuilder history.
+# GC'd in _gc_bar_verify_state when entries exceed ~1h age.
+_bar_verify_state: dict[tuple, dict] = {}
+_bar_verify_state_lock = threading.Lock()
+
+
+def _bar_state_key(symbol: str, tf_seconds: int, bar_start: datetime) -> tuple:
+    return (symbol, tf_seconds, bar_start.isoformat())
+
+
+def _get_bar_verify_state(key: tuple) -> dict:
+    with _bar_verify_state_lock:
+        return dict(_bar_verify_state.get(key, {}))
+
+
+def _set_bar_verify_state(key: tuple, **updates) -> None:
+    with _bar_verify_state_lock:
+        entry = _bar_verify_state.setdefault(key, {})
+        entry.update(updates)
+
+
+def _gc_bar_verify_state(cutoff_age_seconds: int = 3600) -> int:
+    """Drop _bar_verify_state entries whose bar_start is older than
+    cutoff_age_seconds. Called opportunistically. Returns count dropped."""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(seconds=cutoff_age_seconds)
+    cutoff_iso = cutoff.isoformat()
+    dropped = 0
+    with _bar_verify_state_lock:
+        keys_to_drop = [k for k in _bar_verify_state if k[2] < cutoff_iso]
+        for k in keys_to_drop:
+            _bar_verify_state.pop(k, None)
+            dropped += 1
+    return dropped
+
 
 def _get_executor() -> ThreadPoolExecutor:
     global _executor
@@ -99,6 +145,196 @@ def configure(
     """
     global _correction_callback
     _correction_callback = correction_callback
+
+
+def queue_verify_for_bar(
+    symbol: str,
+    tf_seconds: int,
+    bar_start: datetime,
+    ws_close: float,
+    grace_seconds: float,
+    pass_num: int = 1,
+    max_wait_seconds: float = 60.0,
+    correction_threshold: float = 0.01,
+) -> None:
+    """Bar-scoped verification (no alert_ids — runs on every closed bar).
+
+    Schedules pass `pass_num` of the multi-pass verify cadence
+    (T+grace, T+60s, T+5min, T+15min). Each pass:
+      1. Sleeps until its scheduled time relative to bar_close.
+      2. Fetches REST and compares to the bar's current OHLCV (which
+         may have been spliced by an earlier pass).
+      3. If drift > correction_threshold AND splice succeeds, marks
+         this pass as having corrected.
+      4. Updates _bar_verify_state with the REST close from this pass.
+      5. If the REST close didn't change since the last pass (settled)
+         OR pass_num >= 4, doesn't schedule the next pass.
+      6. Otherwise queues pass_num+1 with the next scheduled offset.
+
+    No-op when REST_VERIFY_ENABLED unset. Per-symbol mutex prevents
+    concurrent corrections. Never raises.
+
+    Added 2026-06-05 (#57E+F) — closes the WS-bar-drift gap on bars
+    that don't trigger alerts. Architecture: see queue_verify (which
+    handles alert-triggered verification) — they share splice
+    machinery, _verify_sync_core does the work.
+    """
+    if not is_enabled():
+        return
+    if not symbol or bar_start is None:
+        return
+    try:
+        _get_executor().submit(
+            _verify_bar_sync,
+            symbol, tf_seconds, bar_start, ws_close,
+            grace_seconds, pass_num,
+            max_wait_seconds, correction_threshold,
+        )
+    except Exception as e:
+        logger.warning("queue_verify_for_bar: submit failed: %s", e)
+
+
+def _verify_bar_sync(
+    symbol: str,
+    tf_seconds: int,
+    bar_start: datetime,
+    ws_close: float,
+    grace_seconds: float,
+    pass_num: int,
+    max_wait_seconds: float,
+    correction_threshold: float,
+) -> None:
+    """Background worker for a single pass of per-bar verification.
+
+    Mirrors `_verify_sync`'s flow but without the alert_ids parameter
+    (bar-scoped, not alert-scoped) and with multi-pass scheduling +
+    settle detection.
+    """
+    key = _bar_state_key(symbol, tf_seconds, bar_start)
+    try:
+        bar_close = bar_start + timedelta(seconds=tf_seconds)
+
+        # Pass-specific delay. Pass 1 uses grace_seconds (TF-aware);
+        # subsequent passes use _BAR_VERIFY_SCHEDULE_S offsets.
+        if pass_num == 1:
+            target_delay = grace_seconds
+        elif 2 <= pass_num <= len(_BAR_VERIFY_SCHEDULE_S):
+            target_delay = _BAR_VERIFY_SCHEDULE_S[pass_num - 1]
+        else:
+            return  # out of range
+        if target_delay is None:
+            return
+
+        sleep_for = (
+            (bar_close - datetime.now(timezone.utc)).total_seconds()
+            + target_delay
+        )
+        if sleep_for > 0:
+            time.sleep(sleep_for)
+
+        # Check if a prior pass settled this bar. If so, skip.
+        state = _get_bar_verify_state(key)
+        if state.get('settled'):
+            return
+
+        # Poll REST for this bar. Aggregates per-second to OHLCV.
+        deadline = bar_close + timedelta(seconds=max_wait_seconds + target_delay)
+        rest_per_second: Optional[list] = None
+        rest_bar: Optional[dict] = None
+        while datetime.now(timezone.utc) < deadline:
+            rest_per_second = _fetch_rest_bar_window(
+                symbol, bar_start, tf_seconds)
+            if rest_per_second:
+                rest_bar = _aggregate_rest_bar(rest_per_second, bar_start)
+                if rest_bar is not None:
+                    break
+            time.sleep(2.0)
+
+        if rest_bar is None:
+            logger.debug(
+                "bar_verify: sym=%s bar=%s pass=%d — REST unavailable",
+                symbol, bar_start.isoformat(), pass_num)
+            # Don't mark settled — let later passes try again. But cap
+            # at pass_num=4 by not scheduling further.
+            return
+
+        rest_close = float(rest_bar["close"])
+        prior_rest_close = state.get('last_rest_close')
+
+        # Settle detection: if this pass's REST matches the prior pass's
+        # REST within tolerance, the bar has stopped moving — no more
+        # passes needed.
+        settled = (
+            prior_rest_close is not None
+            and abs(rest_close - prior_rest_close) < correction_threshold
+        )
+
+        # Compare current bar state in BarBuilder.history (which may
+        # have already been spliced) vs latest REST. If drift detected,
+        # trigger splice via the existing callback.
+        delta = ws_close - rest_close
+        correction_applied = False
+        if abs(delta) >= correction_threshold and _correction_callback is not None:
+            with _get_symbol_lock(symbol):
+                try:
+                    try:
+                        correction_applied = bool(_correction_callback(
+                            symbol, tf_seconds, rest_bar,
+                            rest_per_second_bars=rest_per_second))
+                    except TypeError:
+                        correction_applied = bool(_correction_callback(
+                            symbol, tf_seconds, rest_bar))
+                except Exception as e:
+                    logger.warning(
+                        "bar_verify: correction callback raised sym=%s "
+                        "bar=%s pass=%d: %s",
+                        symbol, bar_start.isoformat(), pass_num, e)
+
+        # Persist pass result
+        _set_bar_verify_state(
+            key,
+            pass_num=pass_num,
+            last_rest_close=rest_close,
+            last_delta=delta,
+            last_correction=correction_applied,
+            settled=settled,
+        )
+
+        if correction_applied:
+            logger.info(
+                "bar_verify: sym=%s bar=%s pass=%d CORRECTED "
+                "ws_close=%s rest_close=%s Δ=%+.4f",
+                symbol, bar_start.isoformat(), pass_num,
+                ws_close, rest_close, delta)
+        elif abs(delta) < correction_threshold:
+            logger.debug(
+                "bar_verify: sym=%s bar=%s pass=%d VERIFIED Δ=%+.4f",
+                symbol, bar_start.isoformat(), pass_num, delta)
+        else:
+            logger.info(
+                "bar_verify: sym=%s bar=%s pass=%d DRIFT_UNCORRECTED Δ=%+.4f "
+                "(callback returned False — likely bar evicted from history)",
+                symbol, bar_start.isoformat(), pass_num, delta)
+
+        # Schedule next pass if not settled and not at the last pass.
+        if not settled and pass_num < len(_BAR_VERIFY_SCHEDULE_S):
+            queue_verify_for_bar(
+                symbol, tf_seconds, bar_start, ws_close,
+                grace_seconds=grace_seconds,
+                pass_num=pass_num + 1,
+                max_wait_seconds=max_wait_seconds,
+                correction_threshold=correction_threshold,
+            )
+
+        # Opportunistic GC: every ~100 bars trim old entries.
+        if len(_bar_verify_state) > 1000:
+            _gc_bar_verify_state()
+
+    except Exception as e:
+        logger.warning(
+            "bar_verify: _verify_bar_sync crashed sym=%s bar=%s pass=%d: %s",
+            symbol, bar_start.isoformat() if bar_start else "?", pass_num, e,
+            exc_info=True)
 
 
 def queue_verify(

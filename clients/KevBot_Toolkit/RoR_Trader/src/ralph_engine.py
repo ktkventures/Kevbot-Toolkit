@@ -2448,6 +2448,36 @@ class SymbolHub:
         Caller is responsible for adding the bar to the builder's history
         (via accept_bar or _close_bar inside accept_second_bar).
         """
+        # Per-bar REST verification trigger (#57E+F, 2026-06-05). Queue a
+        # bar-scoped verify for every closed bar — closes the drift gap on
+        # bars that don't fire alerts. One queue per (symbol, tf_seconds,
+        # bar_start) regardless of how many monitors are listening; the
+        # splice writes propagate through the shared BarBuilder. Best-
+        # effort: queue_verify_for_bar is no-op when REST_VERIFY_ENABLED
+        # is unset, so the worker stays safe pre-rollout.
+        try:
+            from rest_verifier import queue_verify_for_bar, is_enabled as _rv_enabled
+            if _rv_enabled():
+                _bar_ts_raw = bar_dict.get('timestamp')
+                _bar_close = bar_dict.get('close')
+                if _bar_ts_raw is not None and _bar_close is not None:
+                    if isinstance(_bar_ts_raw, str):
+                        from datetime import datetime as _dt
+                        _bts = _dt.fromisoformat(_bar_ts_raw.replace('Z', '+00:00'))
+                    else:
+                        _bts = _bar_ts_raw
+                    # TF-based grace: faster check for sub-minute, slower
+                    # for 1Min+ where settle time is forgivingly longer.
+                    _grace = 5.0 if tf_seconds < 60 else 30.0
+                    queue_verify_for_bar(
+                        self.symbol, tf_seconds, _bts, float(_bar_close),
+                        grace_seconds=_grace, pass_num=1,
+                    )
+        except Exception as _e:
+            logger.warning(
+                "queue_verify_for_bar dispatch failed sym=%s tf=%ss: %s",
+                self.symbol, tf_seconds, _e)
+
         # Update shared confluence buffer (shadow engines first)
         shadow = self._shadow_engines.get(tf_seconds)
         if shadow and shadow.indicators._initialized:
