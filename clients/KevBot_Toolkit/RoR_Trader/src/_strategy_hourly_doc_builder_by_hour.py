@@ -140,6 +140,49 @@ def main():
         for h, r in hours.items():
             by_hour[h][sid_str] = r
 
+    sorted_hours = sorted(by_hour.keys())
+
+    # Pre-compute KPIs per hour so we can rank hours
+    hour_kpis = {}
+    for h in sorted_hours:
+        rows = by_hour[h]
+        rankable_cpcts = []
+        for sid_str, r in rows.items():
+            if r["alerts"] >= 1 and r["bt_events"] >= 1:
+                denom = r["paired"] + r["phantom"] + r["missed"]
+                cpct = (100 * r["paired"] / denom) if denom > 0 else 0.0
+                rankable_cpcts.append(cpct)
+        if rankable_cpcts:
+            hour_kpis[h] = {
+                "n_ranked": len(rankable_cpcts),
+                "avg": sum(rankable_cpcts) / len(rankable_cpcts),
+                "max": max(rankable_cpcts),
+                "min": min(rankable_cpcts),
+            }
+        else:
+            hour_kpis[h] = {"n_ranked": 0, "avg": None,
+                            "max": None, "min": None}
+
+    # Rank hours by each metric (rank 1 = highest avg/max/min)
+    # Skip hours with None (no ranked strategies)
+    ranked_hours_with_data = [h for h in sorted_hours
+                              if hour_kpis[h]["avg"] is not None]
+
+    def rank_by(metric: str) -> dict:
+        sorted_by = sorted(ranked_hours_with_data,
+                            key=lambda h: -hour_kpis[h][metric])
+        return {h: i + 1 for i, h in enumerate(sorted_by)}
+
+    avg_rank = rank_by("avg")
+    max_rank = rank_by("max")
+    min_rank = rank_by("min")
+    n_with_data = len(ranked_hours_with_data)
+
+    # Identify top-5 by each metric for highlighting
+    top5_avg = set(h for h in ranked_hours_with_data if avg_rank[h] <= 5)
+    top5_max = set(h for h in ranked_hours_with_data if max_rank[h] <= 5)
+    top5_min = set(h for h in ranked_hours_with_data if min_rank[h] <= 5)
+
     # Build doc
     doc = []
     doc.append("# Hourly Cohort Tables — 2026-06-06\n")
@@ -153,8 +196,37 @@ def main():
         "hour by Combined %. Only strategies with alerts ≥ 1 AND "
         "BT events ≥ 1 in that hour are ranked.\n"
     )
+
+    # SUMMARY TABLE — all hours chronologically with KPIs + cross-hour ranks
+    doc.append("## Cross-hour summary — KPIs + ranks\n")
+    doc.append(f"_All {n_with_data} hours with ranked-strategy activity, "
+               f"sorted chronologically. The Avg/Max/Min rank columns show "
+               f"how each hour compares to the other hours by that metric "
+               f"(rank 1 = best). Top 5 by each metric marked with ⭐._\n")
+    doc.append(
+        "| Hour (UTC) | Ranked N | Avg Combined % | Max Combined % | "
+        "Min Combined % | Avg Rank | Max Rank | Min Rank |")
+    doc.append(
+        "|---|---|---|---|---|---|---|---|")
+    for h in sorted_hours:
+        kpi = hour_kpis[h]
+        if kpi["avg"] is None:
+            doc.append(f"| {h} | {kpi['n_ranked']} | — | — | — | — | — | — |")
+            continue
+        avg_marker = "⭐ " if h in top5_avg else ""
+        max_marker = "⭐ " if h in top5_max else ""
+        min_marker = "⭐ " if h in top5_min else ""
+        doc.append(
+            f"| {h} | {kpi['n_ranked']} | "
+            f"{kpi['avg']:.1f}% | {kpi['max']:.1f}% | {kpi['min']:.1f}% | "
+            f"{avg_marker}{avg_rank[h]}/{n_with_data} | "
+            f"{max_marker}{max_rank[h]}/{n_with_data} | "
+            f"{min_marker}{min_rank[h]}/{n_with_data} |"
+        )
+    doc.append("")
+    doc.append("---\n")
+
     doc.append("## Index of hours\n")
-    sorted_hours = sorted(by_hour.keys())
     for h in sorted_hours:
         n_active = len(by_hour[h])
         # Tag the index with strategy count so reader can skim
