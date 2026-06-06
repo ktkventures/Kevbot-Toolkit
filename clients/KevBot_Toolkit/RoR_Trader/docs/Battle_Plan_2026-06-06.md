@@ -7,7 +7,20 @@
 
 ## 🚨 ACTIVE DIAGNOSTIC TEST — DO NOT VIOLATE 🚨
 
-**Test window:** From 2026-06-06 (Saturday) through **2026-06-09 Monday post-RTH (~20:00 UTC, 16:00 ET)**.
+### T0 RECORDED — Battle Plan window is OFFICIALLY ACTIVE
+
+| Event | Timestamp |
+|---|---|
+| **T0** — bulk fleet UAD completion | **2026-06-06T10:10:50 UTC** |
+| Test window opens | T0 |
+| Test window closes | **2026-06-09 Monday ~20:00 UTC** (RTH close + analysis), or when user explicitly says "exit Battle Plan window" |
+| Job that established T0 | `#462509980` — Update all (45 strategies), completed in 14195s, 45 succeeded, 0 failed |
+
+**Baseline snapshots saved at T0:**
+- `/tmp/post_uad_baseline_T0_2026-06-06T10-10-50Z.json` — canonical post-fleet-UAD hourly per-strategy state
+- `/tmp/utbot_hourly_5d/all_strategies.json` — same content (working copy that gets overwritten on each script run; the timestamped file is the immutable T0 anchor)
+
+**Test window dates:** 2026-06-06 (Saturday) through **2026-06-09 Monday post-RTH (~20:00 UTC, 16:00 ET)**.
 
 **The diagnostic question:** does the live engine accumulate state drift in real-time during a market session, or was Friday's noise a one-time deploy-churn event?
 
