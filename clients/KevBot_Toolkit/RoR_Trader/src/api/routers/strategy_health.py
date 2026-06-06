@@ -1129,6 +1129,167 @@ def get_strategy_health_backlog(
 # ─────────────────────────────────────────────────────────────────────
 
 import bisect as _bisect
+import re as _re
+
+
+# Map trigger ID prefix → user-friendly pack code (the short form
+# Kevin uses in conversation: utv4 / eppv3 / mhv2 / bb / etc.).
+# These are extracted by stripping the trigger-specific suffix from
+# the entry_trigger string. The list is exhaustive for the known
+# packs; unknown prefixes fall through to whatever the entry_trigger
+# string itself contains before the first '_'.
+_TRIGGER_PREFIX_PACKS = {
+    "utv4": "ut_bot_v4",
+    "eppv3": "ema_pp_v3",
+    "eppv4": "ema_pp_v4",
+    "mhv2": "macd_histogram_v2",
+    "mlv2": "macd_line_v2",
+    "rv2": "rvol_v2",
+    "bb": "bollinger_bands",
+    "esv2": "ema_stack_v2",
+    "sto": "stochastic_oscillator",
+    "src": "sr_channels",
+    "strat": "strat_assistant",
+    "st": "supertrend",
+    "sw123": "swing_1_2_3",
+    "vwapv2": "vwap_v2",
+    "rsi2": "rsi_zones_2",
+    "rsi": "rsi_zones",
+    "macd": "macd",
+    "ema": "ema",
+}
+
+
+def _trigger_to_pack(trigger_id: str | None) -> str | None:
+    """Map an entry/exit trigger id to its pack code."""
+    if not trigger_id:
+        return None
+    # Try longest prefix first so 'utv4' matches before 'ut'
+    for prefix in sorted(_TRIGGER_PREFIX_PACKS.keys(),
+                          key=len, reverse=True):
+        if trigger_id.startswith(prefix + "_") or trigger_id == prefix:
+            return _TRIGGER_PREFIX_PACKS[prefix]
+    # Fallback: use the substring before the first '_'
+    head = trigger_id.split("_")[0]
+    return head if head else None
+
+
+# Confluence records are formatted "{TF}-{INTERPRETER}-{state}"
+# e.g. "1M-EMA_STACK-SML". Map interpreter codes to pack codes.
+_INTERPRETER_PACKS = {
+    "EMA_STACK": "ema_stack_v2",
+    "EMA_PP_V3": "ema_pp_v3",
+    "EMA_PP_V4": "ema_pp_v4",
+    "EPP_V3": "ema_pp_v3",
+    "EPP_V4": "ema_pp_v4",
+    "EPPV3": "ema_pp_v3",
+    "EPPV4": "ema_pp_v4",
+    "MACD_HISTOGRAM_V2": "macd_histogram_v2",
+    "MACD_LINE_V2": "macd_line_v2",
+    "MHV2": "macd_histogram_v2",
+    "MLV2": "macd_line_v2",
+    "RVOL_V2": "rvol_v2",
+    "RV2": "rvol_v2",
+    "BOLLINGER": "bollinger_bands",
+    "BB": "bollinger_bands",
+    "STOCHASTIC": "stochastic_oscillator",
+    "STO": "stochastic_oscillator",
+    "SR_CHANNELS": "sr_channels",
+    "SRC": "sr_channels",
+    "STRAT_ASSISTANT": "strat_assistant",
+    "STRAT": "strat_assistant",
+    "SUPERTREND": "supertrend",
+    "ST": "supertrend",
+    "SWING_1_2_3": "swing_1_2_3",
+    "SW123": "swing_1_2_3",
+    "VWAP_V2": "vwap_v2",
+    "VWAPV2": "vwap_v2",
+    "RSI_ZONES": "rsi_zones",
+    "RSI_ZONES_2": "rsi_zones_2",
+    "UTBOT_V4": "ut_bot_v4",
+    "UT_BOT_V4": "ut_bot_v4",
+    "UTV4": "ut_bot_v4",
+}
+
+
+def _confluence_to_packs(confluence: list | None) -> list[str]:
+    """Map confluence records → unique list of pack codes."""
+    if not confluence:
+        return []
+    found = set()
+    for rec in confluence:
+        if not isinstance(rec, str):
+            continue
+        parts = rec.split("-", 2)
+        if len(parts) < 2:
+            continue
+        # Skip general-pack records (TF prefix 'GEN')
+        if parts[0] == "GEN":
+            continue
+        interp = parts[1].strip().upper()
+        if interp in _INTERPRETER_PACKS:
+            found.add(_INTERPRETER_PACKS[interp])
+        # Some records use lowercase / hybrid keys — try variants
+        elif interp.replace("_", "").upper() in _INTERPRETER_PACKS:
+            found.add(_INTERPRETER_PACKS[interp.replace("_", "").upper()])
+    return sorted(found)
+
+
+def _build_strategy_metadata(c, cohort: list[int]) -> dict:
+    """For each sid in cohort, return:
+      {sid: {name, symbol, timeframe, session, trigger_pack,
+             gate_packs[], strategy_type}}
+    strategy_type: 'trigger' if entry_trigger pack and no other gate
+                   packs in confluence; 'gate' if confluence has at
+                   least one pack distinct from the entry pack;
+                   'both' otherwise.
+    """
+    if not cohort:
+        return {}
+    meta = {}
+    # Batch in groups of 500
+    for i in range(0, len(cohort), 500):
+        batch = cohort[i:i + 500]
+        r = (c.table("strategies")
+             .select("id,name,symbol,config").in_("id", batch).execute())
+        for row in r.data or []:
+            sid = row["id"]
+            cfg = row.get("config") or {}
+            if isinstance(cfg, str):
+                try:
+                    import json as _json2
+                    cfg = _json2.loads(cfg)
+                except (TypeError, ValueError):
+                    cfg = {}
+            entry_trig = (cfg.get("entry_trigger")
+                          or cfg.get("entry_trigger_confluence_id"))
+            trigger_pack = _trigger_to_pack(entry_trig)
+            gate_packs = _confluence_to_packs(cfg.get("confluence") or [])
+            # Exclude trigger pack from gate set
+            gate_packs = [g for g in gate_packs if g != trigger_pack]
+            # Classify
+            name = row.get("name") or ""
+            name_lc = name.lower()
+            # PACKTEST naming pattern is reliable; fall back to confluence
+            if "· gate" in name_lc or "- gate" in name_lc:
+                stype = "gate"
+            elif "· trigger" in name_lc or "- trigger" in name_lc:
+                stype = "trigger"
+            elif gate_packs:
+                stype = "gate"
+            else:
+                stype = "trigger"
+            meta[sid] = {
+                "strategy_id": sid,
+                "name": name or None,
+                "symbol": row.get("symbol"),
+                "timeframe": cfg.get("timeframe"),
+                "session": cfg.get("trading_session"),
+                "trigger_pack": trigger_pack,
+                "gate_packs": gate_packs,
+                "strategy_type": stype,
+            }
+    return meta
 
 
 def _pair_events_5s(a_ts: list[float],
@@ -1453,6 +1614,9 @@ def get_strategy_health_by_hour(
         rows.sort(key=lambda x: x["strategy_id"])
         strategies_by_hour[h] = rows
 
+    # Strategy metadata (packs, type, session, etc.) for client-side filtering
+    strategy_meta = _build_strategy_metadata(c, cohort)
+
     return {
         "now": now.isoformat(),
         "since": since_iso,
@@ -1470,6 +1634,8 @@ def get_strategy_health_by_hour(
              "timeframe": names.get(sid, {}).get("timeframe")}
             for sid in cohort
         ],
+        "strategy_metadata": [strategy_meta[sid] for sid in cohort
+                              if sid in strategy_meta],
     }
 
 
@@ -1793,8 +1959,32 @@ def get_strategy_health_by_deploy(
             "n_ranked_strategies": n_ranked,
         })
 
+    # Per-strategy per-deploy data for client-side filtering
+    strategies_by_deploy: dict = {}
+    for i, w in enumerate(windows):
+        sha = w["sha"]
+        by_sid = window_data.get(i, {})
+        rows = []
+        for sid, b in by_sid.items():
+            denom = b["paired"] + b["phantom"] + b["missed"]
+            cpct = (100 * b["paired"] / denom) if denom > 0 else 0.0
+            rows.append({
+                "strategy_id": sid,
+                "alerts": b["alerts"],
+                "bt_events": b["bt_events"],
+                "paired": b["paired"],
+                "phantom": b["phantom"],
+                "missed": b["missed"],
+                "combined_pct": round(cpct, 1),
+                "rankable": b["alerts"] >= 1 and b["bt_events"] >= 1,
+            })
+        rows.sort(key=lambda r: r["strategy_id"])
+        strategies_by_deploy[sha] = rows
+
     # Reverse so newest first for UI
     deploys_out.reverse()
+
+    strategy_meta = _build_strategy_metadata(c, cohort)
 
     return {
         "now": now.isoformat(),
@@ -1803,5 +1993,8 @@ def get_strategy_health_by_deploy(
         "pair_window_s": pair_window_s,
         "deploy_count": len(deploys_out),
         "deploys": deploys_out,
+        "strategies_by_deploy": strategies_by_deploy,
         "cohort_size": len(cohort),
+        "strategy_metadata": [strategy_meta[sid] for sid in cohort
+                              if sid in strategy_meta],
     }

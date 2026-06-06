@@ -24,6 +24,12 @@ import {
   type ByHourKpiRow,
   type ByHourStrategyRow,
 } from '@/hooks/queries/useStrategyHealthByHour';
+import {
+  FilterBar,
+  passesFilters,
+  useFilterState,
+  type StrategyMeta,
+} from '@/components/StrategyFilters';
 
 const DATE_PRESETS = [
   { id: '24h', name: 'Last 24 hours', days: 1 },
@@ -72,10 +78,122 @@ export default function StrategyHealthByHourV3() {
     pairWindowS: 5,
   });
 
-  const hourRows: ByHourKpiRow[] = data?.hours ?? [];
-  const stratsForHour: ByHourStrategyRow[] = selectedHour
-    ? data?.strategies_by_hour?.[selectedHour] ?? []
-    : [];
+  const cohortMeta: StrategyMeta[] = data?.strategy_metadata ?? [];
+  const { filters } = useFilterState();
+
+  // Allowed sids = strategies passing the active filters
+  const allowedSids = useMemo(() => {
+    if (cohortMeta.length === 0) return null;
+    const s = new Set<number>();
+    for (const m of cohortMeta) {
+      if (passesFilters(m, filters)) s.add(m.strategy_id);
+    }
+    return s;
+  }, [cohortMeta, filters]);
+
+  // Re-aggregate hours based on filtered cohort
+  const hourRows: ByHourKpiRow[] = useMemo(() => {
+    if (!data) return [];
+    if (!allowedSids) return data.hours;
+    // Recompute KPIs + ranks across filtered set
+    const computed = Object.entries(data.strategies_by_hour).map(
+      ([hour, rows]) => {
+        const inFilter = rows.filter((r) => allowedSids.has(r.strategy_id));
+        const ranked = inFilter.filter(
+          (r) => r.alerts >= 1 && r.bt_events >= 1,
+        );
+        const cpcts = ranked.map((r) => r.combined_pct);
+        if (cpcts.length === 0) {
+          return {
+            hour_utc: hour,
+            n_active: inFilter.length,
+            n_ranked: 0,
+            avg_combined_pct: null,
+            max_combined_pct: null,
+            min_combined_pct: null,
+            avg_rank: null,
+            max_rank: null,
+            min_rank: null,
+            ranked_total: 0,
+          };
+        }
+        return {
+          hour_utc: hour,
+          n_active: inFilter.length,
+          n_ranked: cpcts.length,
+          avg_combined_pct:
+            Math.round(
+              (cpcts.reduce((a, b) => a + b, 0) / cpcts.length) * 10,
+            ) / 10,
+          max_combined_pct: Math.round(Math.max(...cpcts) * 10) / 10,
+          min_combined_pct: Math.round(Math.min(...cpcts) * 10) / 10,
+          avg_rank: null,
+          max_rank: null,
+          min_rank: null,
+          ranked_total: 0,
+        };
+      },
+    );
+    // Sort hours chronologically + assign cross-hour ranks
+    const typed: ByHourKpiRow[] = computed.map((c) => ({
+      hour_utc: c.hour_utc,
+      n_active: c.n_active,
+      n_ranked: c.n_ranked,
+      avg_combined_pct: c.avg_combined_pct,
+      max_combined_pct: c.max_combined_pct,
+      min_combined_pct: c.min_combined_pct,
+      avg_rank: null as number | null,
+      max_rank: null as number | null,
+      min_rank: null as number | null,
+      ranked_total: 0,
+    }));
+    typed.sort((a, b) => a.hour_utc.localeCompare(b.hour_utc));
+    const withData = typed.filter((h) => h.avg_combined_pct !== null);
+    const n = withData.length;
+    const byAvg = [...withData].sort(
+      (a, b) => (b.avg_combined_pct ?? 0) - (a.avg_combined_pct ?? 0),
+    );
+    const byMax = [...withData].sort(
+      (a, b) => (b.max_combined_pct ?? 0) - (a.max_combined_pct ?? 0),
+    );
+    const byMin = [...withData].sort(
+      (a, b) => (b.min_combined_pct ?? 0) - (a.min_combined_pct ?? 0),
+    );
+    const avgRankMap = new Map(byAvg.map((h, i) => [h.hour_utc, i + 1]));
+    const maxRankMap = new Map(byMax.map((h, i) => [h.hour_utc, i + 1]));
+    const minRankMap = new Map(byMin.map((h, i) => [h.hour_utc, i + 1]));
+    for (const h of typed) {
+      h.avg_rank = avgRankMap.get(h.hour_utc) ?? null;
+      h.max_rank = maxRankMap.get(h.hour_utc) ?? null;
+      h.min_rank = minRankMap.get(h.hour_utc) ?? null;
+      h.ranked_total = n;
+    }
+    return typed;
+  }, [data, allowedSids]);
+
+  // Filter per-strategy rows for the drill-down + recompute rank-in-hour
+  const stratsForHour: ByHourStrategyRow[] = useMemo(() => {
+    if (!selectedHour || !data) return [];
+    const rows = data.strategies_by_hour[selectedHour] ?? [];
+    const filtered = allowedSids
+      ? rows.filter((r) => allowedSids.has(r.strategy_id))
+      : rows;
+    // Recompute within-hour rank within the filtered set
+    const rankable = filtered
+      .filter((r) => r.alerts >= 1 && r.bt_events >= 1)
+      .sort((a, b) => {
+        const d = b.combined_pct - a.combined_pct;
+        return d !== 0 ? d : b.alerts - a.alerts;
+      });
+    const rankMap = new Map(
+      rankable.map((r, i) => [r.strategy_id, i + 1]),
+    );
+    return filtered.map((r) => ({
+      ...r,
+      rank: rankMap.get(r.strategy_id) ?? null,
+      rank_total: rankable.length,
+    }));
+  }, [selectedHour, data, allowedSids]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -140,6 +258,15 @@ export default function StrategyHealthByHourV3() {
           )}
         </div>
       </Card>
+
+      {/* Filter bar */}
+      {cohortMeta.length > 0 && (
+        <Card>
+          <div style={{ padding: 12 }}>
+            <FilterBar cohort={cohortMeta} />
+          </div>
+        </Card>
+      )}
 
       {/* Loading / error */}
       {isLoading && (

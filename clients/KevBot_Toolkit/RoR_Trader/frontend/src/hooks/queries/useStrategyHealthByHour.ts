@@ -57,6 +57,7 @@ export interface StrategyHealthByHourResponse {
   hours: ByHourKpiRow[];
   strategies_by_hour: Record<string, ByHourStrategyRow[]>;
   cohort: ByHourCohortEntry[];
+  strategy_metadata: import('@/components/StrategyFilters').StrategyMeta[];
 }
 
 interface UseByHourOpts {

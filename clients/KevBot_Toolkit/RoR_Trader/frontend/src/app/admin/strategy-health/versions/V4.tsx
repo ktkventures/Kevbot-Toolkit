@@ -23,6 +23,12 @@ import {
   useStrategyHealthByDeploy,
   type DeployWindowRow,
 } from '@/hooks/queries/useStrategyHealthByDeploy';
+import {
+  FilterBar,
+  passesFilters,
+  useFilterState,
+  type StrategyMeta,
+} from '@/components/StrategyFilters';
 
 const DATE_PRESETS = [
   { id: '24h', name: 'Last 24 hours', days: 1 },
@@ -84,7 +90,53 @@ export default function StrategyHealthByDeployV4() {
     pairWindowS: 5,
   });
 
-  const deploys: DeployWindowRow[] = data?.deploys ?? [];
+  const cohortMeta: StrategyMeta[] = data?.strategy_metadata ?? [];
+  const { filters } = useFilterState();
+
+  const allowedSids = useMemo(() => {
+    if (cohortMeta.length === 0) return null;
+    const s = new Set<number>();
+    for (const m of cohortMeta) {
+      if (passesFilters(m, filters)) s.add(m.strategy_id);
+    }
+    return s;
+  }, [cohortMeta, filters]);
+
+  // Re-aggregate deploy rows from filtered cohort
+  const deploys: DeployWindowRow[] = useMemo(() => {
+    if (!data) return [];
+    if (!allowedSids) return data.deploys;
+    return data.deploys.map((d) => {
+      const sRows = (data.strategies_by_deploy[d.sha] ?? []).filter((r) =>
+        allowedSids.has(r.strategy_id),
+      );
+      const totA = sRows.reduce((a, b) => a + b.alerts, 0);
+      const totBT = sRows.reduce((a, b) => a + b.bt_events, 0);
+      const totP = sRows.reduce((a, b) => a + b.paired, 0);
+      const totPh = sRows.reduce((a, b) => a + b.phantom, 0);
+      const totM = sRows.reduce((a, b) => a + b.missed, 0);
+      const denom = totP + totPh + totM;
+      const cpct = denom > 0 ? (100 * totP) / denom : null;
+      const ranked = sRows.filter((r) => r.rankable);
+      const avgCpct =
+        ranked.length > 0
+          ? ranked.reduce((a, b) => a + b.combined_pct, 0) / ranked.length
+          : null;
+      return {
+        ...d,
+        alerts: totA,
+        bt_events: totBT,
+        paired: totP,
+        phantom: totPh,
+        missed: totM,
+        combined_pct: cpct !== null ? Math.round(cpct * 10) / 10 : null,
+        avg_strategy_combined_pct:
+          avgCpct !== null ? Math.round(avgCpct * 10) / 10 : null,
+        n_active_strategies: sRows.length,
+        n_ranked_strategies: ranked.length,
+      };
+    });
+  }, [data, allowedSids]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -146,6 +198,15 @@ export default function StrategyHealthByDeployV4() {
           )}
         </div>
       </Card>
+
+      {/* Filter bar */}
+      {cohortMeta.length > 0 && (
+        <Card>
+          <div style={{ padding: 12 }}>
+            <FilterBar cohort={cohortMeta} />
+          </div>
+        </Card>
+      )}
 
       {isLoading && (
         <Card>

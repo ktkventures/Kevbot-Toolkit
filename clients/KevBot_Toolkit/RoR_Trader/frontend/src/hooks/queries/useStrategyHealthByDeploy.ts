@@ -26,6 +26,17 @@ export interface DeployWindowRow {
   n_ranked_strategies: number;
 }
 
+export interface DeployStrategyRow {
+  strategy_id: number;
+  alerts: number;
+  bt_events: number;
+  paired: number;
+  phantom: number;
+  missed: number;
+  combined_pct: number;
+  rankable: boolean;
+}
+
 export interface StrategyHealthByDeployResponse {
   now: string;
   since: string;
@@ -33,7 +44,9 @@ export interface StrategyHealthByDeployResponse {
   pair_window_s: number;
   deploy_count: number;
   deploys: DeployWindowRow[];
+  strategies_by_deploy: Record<string, DeployStrategyRow[]>;
   cohort_size: number;
+  strategy_metadata: import('@/components/StrategyFilters').StrategyMeta[];
   note?: string;
 }
 
