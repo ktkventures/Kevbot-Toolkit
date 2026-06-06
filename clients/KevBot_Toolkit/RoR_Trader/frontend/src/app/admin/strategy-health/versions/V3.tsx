@@ -1,0 +1,467 @@
+'use client';
+
+/**
+ * Strategy Health V3 — "By Hour" tab.
+ *
+ * Surfaces the cross-hour pair-rate analysis at ±5s window:
+ *   - Cross-hour KPI summary table (every hour with KPIs + ranks)
+ *   - Click any hour row to drill into per-strategy detail
+ *
+ * Combined % = paired / (paired + phantom + missed). The primary
+ * single-number KPI for live↔backtest pair quality. Rank columns
+ * show how each hour compares to other hours by avg/max/min combined %
+ * (rank 1 = best). The per-hour detail drill shows every strategy's
+ * combined % with a rank within that hour (rank 1 = cleanest strategy
+ * in that hour).
+ *
+ * Pure read-only dashboard, no engine impact.
+ */
+
+import { useMemo, useState } from 'react';
+import Card from '@/components/Card';
+import {
+  useStrategyHealthByHour,
+  type ByHourKpiRow,
+  type ByHourStrategyRow,
+} from '@/hooks/queries/useStrategyHealthByHour';
+
+const DATE_PRESETS = [
+  { id: '24h', name: 'Last 24 hours', days: 1 },
+  { id: '7d', name: 'Last 7 days', days: 7 },
+  { id: '14d', name: 'Last 14 days', days: 14 },
+] as const;
+
+function fmtPct(v: number | null): string {
+  if (v === null || v === undefined) return '—';
+  return `${v.toFixed(1)}%`;
+}
+
+function pctCellColor(v: number | null): React.CSSProperties {
+  if (v === null) return {};
+  if (v >= 90) return { color: 'var(--green, #22c55e)', fontWeight: 600 };
+  if (v >= 70) return { color: 'var(--text)' };
+  if (v >= 40) return { color: 'var(--orange, #f59e0b)' };
+  return { color: 'var(--red, #ef4444)' };
+}
+
+function rankCell(rank: number | null, total: number): React.ReactNode {
+  if (rank === null || rank === undefined) return '—';
+  const star = rank <= 5 ? '⭐ ' : '';
+  return (
+    <span style={rank <= 5 ? { fontWeight: 600 } : undefined}>
+      {star}
+      {rank}/{total}
+    </span>
+  );
+}
+
+export default function StrategyHealthByHourV3() {
+  const [preset, setPreset] = useState<(typeof DATE_PRESETS)[number]['id']>(
+    '7d',
+  );
+  const [selectedHour, setSelectedHour] = useState<string | null>(null);
+
+  const sinceISO = useMemo(() => {
+    const d = DATE_PRESETS.find((p) => p.id === preset)?.days ?? 7;
+    const dt = new Date(Date.now() - d * 24 * 3600 * 1000);
+    return dt.toISOString();
+  }, [preset]);
+
+  const { data, isLoading, error } = useStrategyHealthByHour({
+    since: sinceISO,
+    pairWindowS: 5,
+  });
+
+  const hourRows: ByHourKpiRow[] = data?.hours ?? [];
+  const stratsForHour: ByHourStrategyRow[] = selectedHour
+    ? data?.strategies_by_hour?.[selectedHour] ?? []
+    : [];
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Controls */}
+      <Card>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            flexWrap: 'wrap',
+            padding: '12px',
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>Date range</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              ±5s pair window. Combined % = paired / (paired + phantom +
+              missed).
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            {DATE_PRESETS.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => {
+                  setPreset(p.id);
+                  setSelectedHour(null);
+                }}
+                style={{
+                  padding: '6px 12px',
+                  borderRadius: 6,
+                  fontSize: 12,
+                  border: '1px solid var(--border)',
+                  background:
+                    preset === p.id
+                      ? 'var(--blue-muted, #1e40af44)'
+                      : 'var(--bg-input)',
+                  color:
+                    preset === p.id
+                      ? 'var(--blue, #3b82f6)'
+                      : 'var(--text-secondary)',
+                  fontWeight: preset === p.id ? 600 : 400,
+                  cursor: 'pointer',
+                }}
+              >
+                {p.name}
+              </button>
+            ))}
+          </div>
+          {data && (
+            <div
+              style={{
+                marginLeft: 'auto',
+                fontSize: 11,
+                color: 'var(--text-muted)',
+              }}
+            >
+              cohort: {data.cohort_size} strategies · hours with data:{' '}
+              {data.hours_with_data} / {data.hours_count}
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {/* Loading / error */}
+      {isLoading && (
+        <Card>
+          <div style={{ padding: 24, color: 'var(--text-muted)' }}>
+            Loading hourly pair-rate analysis…
+          </div>
+        </Card>
+      )}
+      {error && (
+        <Card>
+          <div style={{ padding: 12, color: 'var(--red)' }}>
+            Failed to load: {(error as any)?.message || 'unknown'}
+          </div>
+        </Card>
+      )}
+
+      {/* Cross-hour summary */}
+      {data && !isLoading && (
+        <Card>
+          <div style={{ padding: '12px 16px' }}>
+            <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>
+              Cross-hour summary
+            </div>
+            <div
+              style={{
+                fontSize: 11,
+                color: 'var(--text-muted)',
+                marginBottom: 10,
+              }}
+            >
+              Each row = one hour. Rank columns show this hour&apos;s rank
+              across all {data.hours_with_data} hours with data (rank 1 =
+              best by that metric, top 5 marked with ⭐). Click any row to
+              drill into the per-strategy detail for that hour.
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table
+                style={{
+                  width: '100%',
+                  borderCollapse: 'collapse',
+                  fontSize: 12,
+                  fontFamily: 'monospace',
+                }}
+              >
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                    <th style={{ textAlign: 'left', padding: '6px 8px' }}>
+                      Hour (UTC)
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px' }}>
+                      Ranked N
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px' }}>
+                      Avg Combined %
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px' }}>
+                      Max Combined %
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px' }}>
+                      Min Combined %
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px' }}>
+                      Avg Rank
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px' }}>
+                      Max Rank
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px' }}>
+                      Min Rank
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {hourRows.map((r) => {
+                    const isSel = selectedHour === r.hour_utc;
+                    return (
+                      <tr
+                        key={r.hour_utc}
+                        onClick={() => setSelectedHour(r.hour_utc)}
+                        style={{
+                          borderBottom: '1px solid var(--border-muted)',
+                          cursor: 'pointer',
+                          background: isSel
+                            ? 'var(--blue-muted, #1e40af22)'
+                            : undefined,
+                        }}
+                      >
+                        <td style={{ padding: '4px 8px' }}>{r.hour_utc}</td>
+                        <td
+                          style={{ textAlign: 'right', padding: '4px 8px' }}
+                        >
+                          {r.n_ranked}/{r.n_active}
+                        </td>
+                        <td
+                          style={{
+                            textAlign: 'right',
+                            padding: '4px 8px',
+                            ...pctCellColor(r.avg_combined_pct),
+                          }}
+                        >
+                          {fmtPct(r.avg_combined_pct)}
+                        </td>
+                        <td
+                          style={{
+                            textAlign: 'right',
+                            padding: '4px 8px',
+                            ...pctCellColor(r.max_combined_pct),
+                          }}
+                        >
+                          {fmtPct(r.max_combined_pct)}
+                        </td>
+                        <td
+                          style={{
+                            textAlign: 'right',
+                            padding: '4px 8px',
+                            ...pctCellColor(r.min_combined_pct),
+                          }}
+                        >
+                          {fmtPct(r.min_combined_pct)}
+                        </td>
+                        <td
+                          style={{ textAlign: 'right', padding: '4px 8px' }}
+                        >
+                          {rankCell(r.avg_rank, r.ranked_total)}
+                        </td>
+                        <td
+                          style={{ textAlign: 'right', padding: '4px 8px' }}
+                        >
+                          {rankCell(r.max_rank, r.ranked_total)}
+                        </td>
+                        <td
+                          style={{ textAlign: 'right', padding: '4px 8px' }}
+                        >
+                          {rankCell(r.min_rank, r.ranked_total)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Per-hour drill-down */}
+      {selectedHour && data && (
+        <Card>
+          <div style={{ padding: '12px 16px' }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 600 }}>
+                  Hour {selectedHour} UTC — per-strategy detail
+                </div>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: 'var(--text-muted)',
+                    marginTop: 2,
+                  }}
+                >
+                  Rank = cohort rank within this hour (rank 1 = cleanest
+                  strategy this hour). Only strategies with alerts ≥ 1
+                  AND BT events ≥ 1 are ranked.
+                </div>
+              </div>
+              <button
+                onClick={() => setSelectedHour(null)}
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 6,
+                  fontSize: 12,
+                  border: '1px solid var(--border)',
+                  background: 'var(--bg-input)',
+                  cursor: 'pointer',
+                }}
+              >
+                Close
+              </button>
+            </div>
+            <div style={{ overflowX: 'auto', marginTop: 10 }}>
+              <table
+                style={{
+                  width: '100%',
+                  borderCollapse: 'collapse',
+                  fontSize: 12,
+                  fontFamily: 'monospace',
+                }}
+              >
+                <thead>
+                  <tr style={{ borderBottom: '1px solid var(--border)' }}>
+                    <th style={{ textAlign: 'right', padding: '6px 8px' }}>
+                      sid
+                    </th>
+                    <th style={{ textAlign: 'left', padding: '6px 8px' }}>
+                      Strategy
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px' }}>
+                      Alerts
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px' }}>
+                      BT events
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px' }}>
+                      Paired
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px' }}>
+                      Phantom
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px' }}>
+                      Missed
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px' }}>
+                      Combined %
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px' }}>
+                      Alert-pair %
+                    </th>
+                    <th style={{ textAlign: 'right', padding: '6px 8px' }}>
+                      Rank
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stratsForHour
+                    .slice()
+                    .sort((a, b) => {
+                      // Rank ascending (best first); unranked last
+                      if (a.rank === null && b.rank === null)
+                        return a.strategy_id - b.strategy_id;
+                      if (a.rank === null) return 1;
+                      if (b.rank === null) return -1;
+                      return a.rank - b.rank;
+                    })
+                    .map((r) => (
+                      <tr
+                        key={r.strategy_id}
+                        style={{
+                          borderBottom: '1px solid var(--border-muted)',
+                        }}
+                      >
+                        <td
+                          style={{ textAlign: 'right', padding: '4px 8px' }}
+                        >
+                          {r.strategy_id}
+                        </td>
+                        <td style={{ padding: '4px 8px' }}>
+                          {r.name || '(unknown)'}{' '}
+                          <span
+                            style={{
+                              color: 'var(--text-muted)',
+                              fontSize: 11,
+                            }}
+                          >
+                            {r.symbol} {r.timeframe}
+                          </span>
+                        </td>
+                        <td
+                          style={{ textAlign: 'right', padding: '4px 8px' }}
+                        >
+                          {r.alerts}
+                        </td>
+                        <td
+                          style={{ textAlign: 'right', padding: '4px 8px' }}
+                        >
+                          {r.bt_events}
+                        </td>
+                        <td
+                          style={{ textAlign: 'right', padding: '4px 8px' }}
+                        >
+                          {r.paired}
+                        </td>
+                        <td
+                          style={{ textAlign: 'right', padding: '4px 8px' }}
+                        >
+                          {r.phantom}
+                        </td>
+                        <td
+                          style={{ textAlign: 'right', padding: '4px 8px' }}
+                        >
+                          {r.missed}
+                        </td>
+                        <td
+                          style={{
+                            textAlign: 'right',
+                            padding: '4px 8px',
+                            ...pctCellColor(r.combined_pct),
+                          }}
+                        >
+                          {fmtPct(r.combined_pct)}
+                        </td>
+                        <td
+                          style={{
+                            textAlign: 'right',
+                            padding: '4px 8px',
+                            ...pctCellColor(r.alert_pair_pct),
+                          }}
+                        >
+                          {fmtPct(r.alert_pair_pct)}
+                        </td>
+                        <td
+                          style={{ textAlign: 'right', padding: '4px 8px' }}
+                        >
+                          {r.rank
+                            ? `${r.rank}/${r.rank_total}`
+                            : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}

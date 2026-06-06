@@ -1118,3 +1118,356 @@ def get_strategy_health_backlog(
         "max_rows": max_rows,
         "rows": out_rows,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# By-Hour Pair-Rate Endpoint (2026-06-06)
+# Backs the new Strategy Health "By Hour" tab. Mirrors the
+# `_fleet_hourly_may28_jun5.py` script: pairs alerts vs BT trade
+# events at ±5s, bins per hour per strategy, returns the cross-hour
+# KPI summary + per-hour drill-down data.
+# ─────────────────────────────────────────────────────────────────────
+
+import bisect as _bisect
+
+
+def _pair_events_5s(a_ts: list[float],
+                    b_ts: list[float],
+                    window_s: float = 5.0) -> tuple[list[bool], list[bool]]:
+    """Symmetric ±window pairing of two sorted timestamp arrays.
+    Same algorithm as src/_fleet_hourly_may28_jun5.py."""
+    a_paired = [False] * len(a_ts)
+    b_paired = [False] * len(b_ts)
+    if not a_ts or not b_ts:
+        return a_paired, b_paired
+    for i, t in enumerate(a_ts):
+        idx = _bisect.bisect_left(b_ts, t)
+        best = None
+        best_delta = window_s + 1
+        for j in (idx - 1, idx):
+            if 0 <= j < len(b_ts):
+                d = abs(b_ts[j] - t)
+                if d < best_delta:
+                    best_delta = d
+                    best = j
+        if best is not None and best_delta <= window_s:
+            a_paired[i] = True
+            b_paired[best] = True
+    for j, t in enumerate(b_ts):
+        if b_paired[j]:
+            continue
+        idx = _bisect.bisect_left(a_ts, t)
+        for i in (idx - 1, idx):
+            if 0 <= i < len(a_ts):
+                d = abs(a_ts[i] - t)
+                if d <= window_s:
+                    b_paired[j] = True
+                    a_paired[i] = True
+                    break
+    return a_paired, b_paired
+
+
+@router.get("/by-hour")
+def get_strategy_health_by_hour(
+    since: Optional[str] = Query(
+        None,
+        description="ISO timestamp (inclusive) for the start of the "
+                    "window. Default: 7 days ago."),
+    until: Optional[str] = Query(
+        None,
+        description="ISO timestamp (exclusive) for the end of the "
+                    "window. Default: now."),
+    pair_window_s: float = Query(
+        5.0,
+        description="Pair window in seconds for alert↔BT event matching. "
+                    "Default 5s (tight). The earlier strategy_health "
+                    "endpoint uses ±60s; this is intentionally stricter."),
+    user=Depends(get_current_user),  # noqa: ARG001 — admin guard
+) -> dict:
+    """Hour-by-hour combined pair-rate aggregation across the cohort.
+
+    Returns:
+      - hours: list of per-hour KPI rows (one per hour with activity)
+      - strategies_by_hour: nested dict {hour: [per-strategy rows...]}
+      - cohort: list of strategies covered
+
+    Computation mirrors src/_fleet_hourly_may28_jun5.py:
+      - For each (strategy, hour): count alerts, BT trade events, paired,
+        phantom, missed via ±5s pairing
+      - Combined % = paired / (paired + phantom + missed)
+      - Per-hour KPIs: avg / min / max combined % across "ranked"
+        strategies (alerts ≥ 1 AND bt_events ≥ 1)
+      - Per-hour ranks: cohort-wide rank by combined % within that hour
+        (rank 1 = cleanest)
+      - Cross-hour ranks: each hour ranked across all hours by
+        avg / max / min combined % (rank 1 = best)
+    """
+    from db import USE_DB, get_admin_client
+    from collections import defaultdict
+    if not USE_DB:
+        return {"error": "DB not configured"}
+    c = get_admin_client()
+
+    now = datetime.now(timezone.utc)
+    if since:
+        since_dt = _parse_iso(since)
+        if since_dt is None:
+            return {"error": f"could not parse since={since!r}"}
+    else:
+        since_dt = now - timedelta(days=7)
+    if until:
+        until_dt = _parse_iso(until)
+        if until_dt is None:
+            return {"error": f"could not parse until={until!r}"}
+    else:
+        until_dt = now
+    since_iso = since_dt.isoformat()
+    until_iso = until_dt.isoformat()
+
+    # Cohort = any strategy with at least one alert OR BT trade in window
+    sids_set = set()
+    s = 0
+    while True:
+        r = (c.table("alerts").select("strategy_id")
+             .gte("fill_ts", since_iso).lt("fill_ts", until_iso)
+             .range(s, s + 999).execute())
+        chunk = r.data or []
+        sids_set.update(a["strategy_id"] for a in chunk
+                        if a.get("strategy_id"))
+        if len(chunk) < 1000:
+            break
+        s += 1000
+    s = 0
+    while True:
+        r = (c.table("trades").select("strategy_id")
+             .like("data_source", "backtest_%")
+             .gte("entry_fill_ts", since_iso)
+             .lt("entry_fill_ts", until_iso)
+             .range(s, s + 999).execute())
+        chunk = r.data or []
+        sids_set.update(t["strategy_id"] for t in chunk
+                        if t.get("strategy_id"))
+        if len(chunk) < 1000:
+            break
+        s += 1000
+    cohort = sorted(sids_set)
+
+    # Pull strategy names
+    names = {}
+    if cohort:
+        # Batch in chunks of 500 sids
+        for i in range(0, len(cohort), 500):
+            batch = cohort[i:i + 500]
+            r = (c.table("strategies").select("id,name,symbol,timeframe")
+                 .in_("id", batch).execute())
+            for row in r.data or []:
+                names[row["id"]] = {
+                    "name": row.get("name"),
+                    "symbol": row.get("symbol"),
+                    "timeframe": row.get("timeframe"),
+                }
+
+    # Per-strategy: pull alerts + trades, do pairing, hour-bin
+    # hour_data[hour_str][sid] = {alerts, bt_events, paired, phantom, missed}
+    hour_data: dict = defaultdict(
+        lambda: defaultdict(
+            lambda: {"alerts": 0, "bt_events": 0, "paired": 0,
+                     "phantom": 0, "missed": 0}))
+
+    def _parse_ts(s):
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            return None
+
+    for sid in cohort:
+        # Alerts
+        alerts = []
+        s_ = 0
+        while True:
+            r = (c.table("alerts").select("fill_ts")
+                 .eq("strategy_id", sid)
+                 .gte("fill_ts", since_iso).lt("fill_ts", until_iso)
+                 .order("fill_ts").range(s_, s_ + 999).execute())
+            chunk = r.data or []
+            alerts.extend(chunk)
+            if len(chunk) < 1000:
+                break
+            s_ += 1000
+        # BT trades
+        trades = []
+        s_ = 0
+        while True:
+            r = (c.table("trades").select("entry_fill_ts,exit_fill_ts")
+                 .eq("strategy_id", sid).like("data_source", "backtest_%")
+                 .gte("entry_fill_ts", since_iso)
+                 .lt("entry_fill_ts", until_iso)
+                 .order("entry_fill_ts").range(s_, s_ + 999).execute())
+            chunk = r.data or []
+            trades.extend(chunk)
+            if len(chunk) < 1000:
+                break
+            s_ += 1000
+
+        # Build timestamp arrays
+        a_dts = []
+        a_orig = []
+        for a in alerts:
+            ts = _parse_ts(a.get("fill_ts"))
+            if ts is None:
+                continue
+            a_dts.append(ts.timestamp())
+            a_orig.append(a)
+        b_events = []
+        for t in trades:
+            ets = _parse_ts(t.get("entry_fill_ts"))
+            if ets is not None:
+                b_events.append((ets.timestamp(), "entry"))
+            xts = _parse_ts(t.get("exit_fill_ts"))
+            if xts is not None:
+                b_events.append((xts.timestamp(), "exit"))
+
+        # Sort, pair, map back
+        a_sorted_idx = sorted(range(len(a_dts)), key=lambda k: a_dts[k])
+        a_sorted_ts = [a_dts[k] for k in a_sorted_idx]
+        b_sorted = sorted(b_events, key=lambda x: x[0])
+        b_sorted_ts = [x[0] for x in b_sorted]
+        a_paired_s, b_paired_s = _pair_events_5s(
+            a_sorted_ts, b_sorted_ts, pair_window_s)
+        a_paired = [False] * len(a_dts)
+        for k, si in enumerate(a_sorted_idx):
+            a_paired[si] = a_paired_s[k]
+
+        # Hour-bin
+        for i, a in enumerate(a_orig):
+            ts = _parse_ts(a.get("fill_ts"))
+            if ts is None:
+                continue
+            h = ts.strftime("%Y-%m-%dT%H")
+            bucket = hour_data[h][sid]
+            bucket["alerts"] += 1
+            if a_paired[i]:
+                bucket["paired"] += 1
+            else:
+                bucket["phantom"] += 1
+        for k, (ts_sec, _kind) in enumerate(b_sorted):
+            ts = datetime.fromtimestamp(ts_sec, tz=timezone.utc)
+            h = ts.strftime("%Y-%m-%dT%H")
+            bucket = hour_data[h][sid]
+            bucket["bt_events"] += 1
+            if not b_paired_s[k]:
+                bucket["missed"] += 1
+
+    # Per-hour KPI aggregation + cross-hour ranking
+    hours_sorted = sorted(hour_data.keys())
+    per_hour_kpis = {}
+    for h in hours_sorted:
+        cpcts = []
+        for sid, b in hour_data[h].items():
+            if b["alerts"] >= 1 and b["bt_events"] >= 1:
+                denom = b["paired"] + b["phantom"] + b["missed"]
+                cpct = (100 * b["paired"] / denom) if denom > 0 else 0.0
+                cpcts.append(cpct)
+        if cpcts:
+            per_hour_kpis[h] = {
+                "n_ranked": len(cpcts),
+                "n_active": len(hour_data[h]),
+                "avg": sum(cpcts) / len(cpcts),
+                "max": max(cpcts),
+                "min": min(cpcts),
+            }
+        else:
+            per_hour_kpis[h] = {
+                "n_ranked": 0, "n_active": len(hour_data[h]),
+                "avg": None, "max": None, "min": None,
+            }
+
+    # Cross-hour ranks
+    with_data = [h for h in hours_sorted
+                 if per_hour_kpis[h]["avg"] is not None]
+    n_with = len(with_data)
+    avg_rank = {h: i + 1 for i, h in enumerate(
+        sorted(with_data, key=lambda h: -per_hour_kpis[h]["avg"]))}
+    max_rank = {h: i + 1 for i, h in enumerate(
+        sorted(with_data, key=lambda h: -per_hour_kpis[h]["max"]))}
+    min_rank = {h: i + 1 for i, h in enumerate(
+        sorted(with_data, key=lambda h: -per_hour_kpis[h]["min"]))}
+
+    # Build response shape
+    hours_out = []
+    for h in hours_sorted:
+        k = per_hour_kpis[h]
+        hours_out.append({
+            "hour_utc": h,
+            "n_active": k["n_active"],
+            "n_ranked": k["n_ranked"],
+            "avg_combined_pct": (round(k["avg"], 1)
+                                  if k["avg"] is not None else None),
+            "max_combined_pct": (round(k["max"], 1)
+                                  if k["max"] is not None else None),
+            "min_combined_pct": (round(k["min"], 1)
+                                  if k["min"] is not None else None),
+            "avg_rank": avg_rank.get(h),
+            "max_rank": max_rank.get(h),
+            "min_rank": min_rank.get(h),
+            "ranked_total": n_with,
+        })
+
+    # Per-hour, per-strategy rows (for drill-down)
+    strategies_by_hour: dict = {}
+    for h in hours_sorted:
+        rows = []
+        ranking_pool = []
+        for sid, b in hour_data[h].items():
+            denom = b["paired"] + b["phantom"] + b["missed"]
+            cpct = (100 * b["paired"] / denom) if denom > 0 else 0.0
+            a_denom = b["paired"] + b["phantom"]
+            apr = (100 * b["paired"] / a_denom) if a_denom > 0 else 0.0
+            rankable = (b["alerts"] >= 1 and b["bt_events"] >= 1)
+            row = {
+                "strategy_id": sid,
+                "name": names.get(sid, {}).get("name"),
+                "symbol": names.get(sid, {}).get("symbol"),
+                "timeframe": names.get(sid, {}).get("timeframe"),
+                "alerts": b["alerts"],
+                "bt_events": b["bt_events"],
+                "paired": b["paired"],
+                "phantom": b["phantom"],
+                "missed": b["missed"],
+                "combined_pct": round(cpct, 1),
+                "alert_pair_pct": round(apr, 1),
+                "rankable": rankable,
+            }
+            rows.append(row)
+            if rankable:
+                ranking_pool.append((sid, cpct, b["alerts"]))
+        # Rank within hour
+        ranking_pool.sort(key=lambda t: (-t[1], -t[2]))
+        rank_within = {sid: i + 1 for i, (sid, _, _) in
+                       enumerate(ranking_pool)}
+        for r in rows:
+            r["rank"] = rank_within.get(r["strategy_id"])
+            r["rank_total"] = len(ranking_pool)
+        rows.sort(key=lambda x: x["strategy_id"])
+        strategies_by_hour[h] = rows
+
+    return {
+        "now": now.isoformat(),
+        "since": since_iso,
+        "until": until_iso,
+        "pair_window_s": pair_window_s,
+        "cohort_size": len(cohort),
+        "hours_count": len(hours_sorted),
+        "hours_with_data": n_with,
+        "hours": hours_out,
+        "strategies_by_hour": strategies_by_hour,
+        "cohort": [
+            {"strategy_id": sid,
+             "name": names.get(sid, {}).get("name"),
+             "symbol": names.get(sid, {}).get("symbol"),
+             "timeframe": names.get(sid, {}).get("timeframe")}
+            for sid in cohort
+        ],
+    }

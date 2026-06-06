@@ -11,10 +11,12 @@
 import { useEffect, useState } from 'react';
 import V1 from './versions/V1';
 import V2 from './versions/V2';
+import V3 from './versions/V3';
 
 const TABS = [
   { id: 'overview', name: 'Health Overview', Component: V1 },
   { id: 'backlog', name: 'Divergence Backlog', Component: V2 },
+  { id: 'by-hour', name: 'By Hour', Component: V3 },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];

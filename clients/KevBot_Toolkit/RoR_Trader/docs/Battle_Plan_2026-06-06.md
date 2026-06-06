@@ -53,6 +53,19 @@
 | **Recreate/duplicate any canary strategy** | New strategies for the canary IDs would distort their state history |
 | **Run `gap_detector` followed by window-backfill on canaries** | Window-backfill changes the BT lane (and is buggy anyway) |
 
+### Weekend deploy window — UPDATED 2026-06-06
+
+**Saturday/Sunday daytime deploys to `dev` are safe** (markets closed → engine is idle → no active drift accumulation to protect). The test only requires no deploys during Monday RTH.
+
+**Specific timing:**
+- ✅ **Saturday all day UTC** — full green light
+- ✅ **Sunday before ~22:00 UTC** — safe (gives 15+ hours of stable runtime before Monday RTH)
+- 🟡 **Sunday after 22:00 UTC / Monday before 13:30 UTC** — borderline; avoid unless urgent
+- ❌ **Monday 13:30-20:00 UTC (during RTH)** — hard no; violates the test
+- ❌ **Canary strategy UAD any time** — still violates the test (wipes their BT reference baseline)
+
+This means dashboard/UI work on a feature branch OR direct to `dev` is fine this weekend as long as we respect the Monday window.
+
 ### 🟡 ASK FIRST — these are gray area; AI should flag and confirm
 
 | Action | Why it's gray |
