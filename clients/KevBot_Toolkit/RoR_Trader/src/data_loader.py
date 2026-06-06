@@ -479,6 +479,29 @@ def fetch_1s_bars_for_window(
     poly_ticker = _to_polygon_ticker(ticker)
     for d in dates_needed:
         cache_key = f"{poly_ticker}_{d.isoformat()}"
+        # Staleness check: Polygon's 1s aggregates settle with ~3-5min
+        # lag on recent bars. If the cache was populated mid-aggregation
+        # earlier in this container's lifetime, it can be missing bars
+        # that have since become available. Symptom (observed
+        # 2026-06-05): bulk UADs spanning >5 min leave the second-half
+        # strategies' Hi-Fi Pass 2 silently failing because the cache
+        # populated by the first strategy's fetch stops short of the
+        # later strategies' requested windows. Evict + re-fetch when
+        # we detect this.
+        if cache_key in _1s_cache:
+            cached = _1s_cache[cache_key]
+            if cached is not None and len(cached) > 0:
+                cached_max = cached.index.max()
+                needed_end_ts = pd.Timestamp(padded_end)
+                if needed_end_ts.tzinfo is None:
+                    needed_end_ts = needed_end_ts.tz_localize('UTC')
+                if needed_end_ts > cached_max:
+                    logger.info(
+                        "[HIFI] 1s cache stale for %s on %s "
+                        "(cached through %s, requested through %s) "
+                        "— evicting + re-fetching",
+                        ticker, d, cached_max, needed_end_ts)
+                    del _1s_cache[cache_key]
         if cache_key not in _1s_cache:
             from_str = d.isoformat()
             to_str = d.isoformat()
