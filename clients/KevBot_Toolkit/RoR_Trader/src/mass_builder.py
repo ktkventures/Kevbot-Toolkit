@@ -305,7 +305,7 @@ def build_strategy_config(
         'backtest_start_date': backtest_start_date,
         'backtest_end_date': backtest_end_date,
         'time_exit_config': time_exit_config,
-        'strategy_origin': 'standard',
+        'strategy_origin': 'standard_mass_builder',
     }
     if backtest_model:
         cfg['backtest_model'] = backtest_model

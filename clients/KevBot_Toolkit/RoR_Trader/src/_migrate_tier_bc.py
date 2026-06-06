@@ -239,7 +239,7 @@ def migrate_one(sid: int, dry_run: bool, run_backtest: bool) -> dict:
     duplicate['kpis'] = {}
     duplicate['data_source'] = 'rapid'
     duplicate['name'] = (original.get('name') or '') + f' [mirror {sid}]'
-    duplicate['strategy_origin'] = 'duplicate'
+    duplicate['strategy_origin'] = 'migration'
 
     saved = save_strategy_db(duplicate)
     new_sid = saved.get('id')

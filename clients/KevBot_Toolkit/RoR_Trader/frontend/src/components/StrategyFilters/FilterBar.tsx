@@ -17,6 +17,20 @@ import {
 } from './types';
 import { useFilterState } from './useFilterState';
 
+// Friendly display names for the strategy_origin dropdown. Raw DB values
+// are kept as-is to remain URL-bookmarkable; only the visible label changes.
+// See docs / memory for the full origin taxonomy.
+const ORIGIN_LABELS: Record<string, string> = {
+  standard_mass_builder: 'Mass Builder',
+  standard_mass_builder_legacy: 'Mass Builder (legacy)',
+  standard_pack_canary: 'Pack Canary',
+  standard_ai_sop: 'AI / SOP',
+  migration: 'Migration (copy)',
+  webhook_inbound: 'Webhook inbound',
+  standard: 'Standard (uncategorized)',
+};
+const originLabel = (v: string): string => ORIGIN_LABELS[v] ?? v;
+
 const PILL_STYLE: React.CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
@@ -206,7 +220,7 @@ export function FilterBar({ cohort }: FilterBarProps) {
       new Set(cohort.map((m) => m.origin).filter((s): s is string => !!s)),
     )
       .sort()
-      .map((s) => ({ value: s, label: s }));
+      .map((s) => ({ value: s, label: originLabel(s) }));
     const trigOpts = Array.from(
       new Set(
         cohort
@@ -386,7 +400,7 @@ export function FilterBar({ cohort }: FilterBarProps) {
           )}
           {filters.origins.length > 0 && (
             <span style={ACTIVE_PILL_STYLE}>
-              origin: {filters.origins.join(', ')}
+              origin: {filters.origins.map(originLabel).join(', ')}
               <span
                 style={CLEAR_BTN_STYLE}
                 onClick={() => setFilters({ ...filters, origins: [] })}

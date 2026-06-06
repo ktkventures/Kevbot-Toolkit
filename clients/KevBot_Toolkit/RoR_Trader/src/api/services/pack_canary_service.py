@@ -34,7 +34,7 @@ CANARY_PRIMARY_TF = '10Sec'
 CANARY_DIRECTION = 'LONG'
 CANARY_SESSION = 'Extended Hours'
 CANARY_GATE_TF_PREFIX = '2m'          # confluence-record TF prefix
-CANARY_ORIGIN = 'standard'
+CANARY_ORIGIN = 'standard_pack_canary'
 # Gate canary borrows a known-good, high-frequency entry trigger so the
 # pack-under-test is the only variable. ut_bot_v4 bull flip by default;
 # when the pack under test IS ut_bot_v4, fall back to a different pack.
