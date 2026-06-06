@@ -84,11 +84,26 @@ def build_hour_table(hour_utc: str, hour_data: dict, names: dict) -> str:
     rank_map = {r["sid"]: i + 1 for i, r in enumerate(rankable)}
     n_ranked = len(rankable)
 
+    # KPI line: avg / min / max combined % across RANKED strategies
+    # (those with alerts >=1 AND bt_events >=1 — meaningful pair attempt)
+    if rankable:
+        cpcts = [r["cpct"] for r in rankable]
+        kpi_avg = sum(cpcts) / len(cpcts)
+        kpi_min = min(cpcts)
+        kpi_max = max(cpcts)
+        kpi_line = (f"**KPIs (across {len(rankable)} ranked strategies):** "
+                    f"avg combined = **{kpi_avg:.1f}%** · "
+                    f"max = **{kpi_max:.1f}%** · "
+                    f"min = **{kpi_min:.1f}%**")
+    else:
+        kpi_line = "**KPIs:** no ranked strategies (no meaningful pair attempts)"
+
     # Output sorted by sid number
     out = []
     out.append(f"## Hour {hour_utc} UTC\n")
     out.append(f"_Strategies with activity this hour: {len(rows)}; "
                f"ranked (alerts≥1, BT≥1): {n_ranked}_\n")
+    out.append(kpi_line + "\n")
     out.append(f"| sid | Strategy name | Alerts | BT events | Paired | "
                f"Phantom | Missed | Combined % | Alert-pair % | Rank |")
     out.append(f"|---|---|---|---|---|---|---|---|---|---|")

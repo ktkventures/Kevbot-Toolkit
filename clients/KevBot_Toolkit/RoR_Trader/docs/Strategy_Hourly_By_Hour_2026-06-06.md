@@ -110,6 +110,8 @@
 
 _Strategies with activity this hour: 9; ranked (alerts≥1, BT≥1): 1_
 
+**KPIs (across 1 ranked strategies):** avg combined = **100.0%** · max = **100.0%** · min = **100.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 136 | SPY LONG - Mass #11 [mirror 50] | 2 | 2 | 2 | 0 | 0 | 100.0% | 100.0% | 1/1 |
@@ -127,6 +129,8 @@ _Strategies with activity this hour: 9; ranked (alerts≥1, BT≥1): 1_
 ## Hour 2026-05-28T14 UTC
 
 _Strategies with activity this hour: 11; ranked (alerts≥1, BT≥1): 0_
+
+**KPIs:** no ranked strategies (no meaningful pair attempts)
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -148,6 +152,8 @@ _Strategies with activity this hour: 11; ranked (alerts≥1, BT≥1): 0_
 
 _Strategies with activity this hour: 9; ranked (alerts≥1, BT≥1): 0_
 
+**KPIs:** no ranked strategies (no meaningful pair attempts)
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 174 | TSLA LONG 1Min Mass #2 | 4 | 0 | 0 | 4 | 0 | 0.0% | 0.0% | — |
@@ -165,6 +171,8 @@ _Strategies with activity this hour: 9; ranked (alerts≥1, BT≥1): 0_
 ## Hour 2026-05-28T16 UTC
 
 _Strategies with activity this hour: 11; ranked (alerts≥1, BT≥1): 1_
+
+**KPIs (across 1 ranked strategies):** avg combined = **100.0%** · max = **100.0%** · min = **100.0%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -185,6 +193,8 @@ _Strategies with activity this hour: 11; ranked (alerts≥1, BT≥1): 1_
 ## Hour 2026-05-28T17 UTC
 
 _Strategies with activity this hour: 12; ranked (alerts≥1, BT≥1): 2_
+
+**KPIs (across 2 ranked strategies):** avg combined = **41.7%** · max = **50.0%** · min = **33.3%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -207,6 +217,8 @@ _Strategies with activity this hour: 12; ranked (alerts≥1, BT≥1): 2_
 
 _Strategies with activity this hour: 11; ranked (alerts≥1, BT≥1): 0_
 
+**KPIs:** no ranked strategies (no meaningful pair attempts)
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 174 | TSLA LONG 1Min Mass #2 | 2 | 0 | 0 | 2 | 0 | 0.0% | 0.0% | — |
@@ -226,6 +238,8 @@ _Strategies with activity this hour: 11; ranked (alerts≥1, BT≥1): 0_
 ## Hour 2026-05-28T19 UTC
 
 _Strategies with activity this hour: 11; ranked (alerts≥1, BT≥1): 0_
+
+**KPIs:** no ranked strategies (no meaningful pair attempts)
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -247,6 +261,8 @@ _Strategies with activity this hour: 11; ranked (alerts≥1, BT≥1): 0_
 
 _Strategies with activity this hour: 3; ranked (alerts≥1, BT≥1): 0_
 
+**KPIs:** no ranked strategies (no meaningful pair attempts)
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 268 | SPY-CANARY-10s-NoConf | 0 | 1 | 0 | 0 | 1 | 0.0% | 0.0% | — |
@@ -258,6 +274,8 @@ _Strategies with activity this hour: 3; ranked (alerts≥1, BT≥1): 0_
 ## Hour 2026-05-29T13 UTC
 
 _Strategies with activity this hour: 8; ranked (alerts≥1, BT≥1): 0_
+
+**KPIs:** no ranked strategies (no meaningful pair attempts)
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -275,6 +293,8 @@ _Strategies with activity this hour: 8; ranked (alerts≥1, BT≥1): 0_
 ## Hour 2026-05-29T14 UTC
 
 _Strategies with activity this hour: 10; ranked (alerts≥1, BT≥1): 1_
+
+**KPIs (across 1 ranked strategies):** avg combined = **33.3%** · max = **33.3%** · min = **33.3%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -295,6 +315,8 @@ _Strategies with activity this hour: 10; ranked (alerts≥1, BT≥1): 1_
 
 _Strategies with activity this hour: 10; ranked (alerts≥1, BT≥1): 0_
 
+**KPIs:** no ranked strategies (no meaningful pair attempts)
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 174 | TSLA LONG 1Min Mass #2 | 3 | 0 | 0 | 3 | 0 | 0.0% | 0.0% | — |
@@ -313,6 +335,8 @@ _Strategies with activity this hour: 10; ranked (alerts≥1, BT≥1): 0_
 ## Hour 2026-05-29T16 UTC
 
 _Strategies with activity this hour: 13; ranked (alerts≥1, BT≥1): 2_
+
+**KPIs (across 2 ranked strategies):** avg combined = **15.0%** · max = **30.0%** · min = **0.0%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -336,6 +360,8 @@ _Strategies with activity this hour: 13; ranked (alerts≥1, BT≥1): 2_
 
 _Strategies with activity this hour: 13; ranked (alerts≥1, BT≥1): 3_
 
+**KPIs (across 3 ranked strategies):** avg combined = **43.9%** · max = **57.1%** · min = **24.4%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 174 | TSLA LONG 1Min Mass #2 | 2 | 0 | 0 | 2 | 0 | 0.0% | 0.0% | — |
@@ -358,6 +384,8 @@ _Strategies with activity this hour: 13; ranked (alerts≥1, BT≥1): 3_
 
 _Strategies with activity this hour: 10; ranked (alerts≥1, BT≥1): 5_
 
+**KPIs (across 5 ranked strategies):** avg combined = **65.4%** · max = **100.0%** · min = **25.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 174 | TSLA LONG 1Min Mass #2 | 8 | 0 | 0 | 8 | 0 | 0.0% | 0.0% | — |
@@ -376,6 +404,8 @@ _Strategies with activity this hour: 10; ranked (alerts≥1, BT≥1): 5_
 ## Hour 2026-05-29T19 UTC
 
 _Strategies with activity this hour: 10; ranked (alerts≥1, BT≥1): 4_
+
+**KPIs (across 4 ranked strategies):** avg combined = **69.3%** · max = **100.0%** · min = **35.3%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -396,6 +426,8 @@ _Strategies with activity this hour: 10; ranked (alerts≥1, BT≥1): 4_
 
 _Strategies with activity this hour: 1; ranked (alerts≥1, BT≥1): 0_
 
+**KPIs:** no ranked strategies (no meaningful pair attempts)
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 136 | SPY LONG - Mass #11 [mirror 50] | 2 | 0 | 0 | 2 | 0 | 0.0% | 0.0% | — |
@@ -405,6 +437,8 @@ _Strategies with activity this hour: 1; ranked (alerts≥1, BT≥1): 0_
 ## Hour 2026-06-01T08 UTC
 
 _Strategies with activity this hour: 27; ranked (alerts≥1, BT≥1): 0_
+
+**KPIs:** no ranked strategies (no meaningful pair attempts)
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -442,6 +476,8 @@ _Strategies with activity this hour: 27; ranked (alerts≥1, BT≥1): 0_
 
 _Strategies with activity this hour: 27; ranked (alerts≥1, BT≥1): 0_
 
+**KPIs:** no ranked strategies (no meaningful pair attempts)
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 0 | 1 | 0 | 0 | 1 | 0.0% | 0.0% | — |
@@ -477,6 +513,8 @@ _Strategies with activity this hour: 27; ranked (alerts≥1, BT≥1): 0_
 ## Hour 2026-06-01T10 UTC
 
 _Strategies with activity this hour: 29; ranked (alerts≥1, BT≥1): 0_
+
+**KPIs:** no ranked strategies (no meaningful pair attempts)
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -516,6 +554,8 @@ _Strategies with activity this hour: 29; ranked (alerts≥1, BT≥1): 0_
 
 _Strategies with activity this hour: 29; ranked (alerts≥1, BT≥1): 0_
 
+**KPIs:** no ranked strategies (no meaningful pair attempts)
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 0 | 8 | 0 | 0 | 8 | 0.0% | 0.0% | — |
@@ -554,6 +594,8 @@ _Strategies with activity this hour: 29; ranked (alerts≥1, BT≥1): 0_
 
 _Strategies with activity this hour: 23; ranked (alerts≥1, BT≥1): 0_
 
+**KPIs:** no ranked strategies (no meaningful pair attempts)
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 0 | 6 | 0 | 0 | 6 | 0.0% | 0.0% | — |
@@ -585,6 +627,8 @@ _Strategies with activity this hour: 23; ranked (alerts≥1, BT≥1): 0_
 ## Hour 2026-06-01T13 UTC
 
 _Strategies with activity this hour: 35; ranked (alerts≥1, BT≥1): 5_
+
+**KPIs (across 5 ranked strategies):** avg combined = **27.9%** · max = **45.9%** · min = **0.0%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -630,6 +674,8 @@ _Strategies with activity this hour: 35; ranked (alerts≥1, BT≥1): 5_
 
 _Strategies with activity this hour: 31; ranked (alerts≥1, BT≥1): 5_
 
+**KPIs (across 5 ranked strategies):** avg combined = **74.5%** · max = **79.3%** · min = **69.2%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 136 | SPY LONG - Mass #11 [mirror 50] | 4 | 0 | 0 | 4 | 0 | 0.0% | 0.0% | — |
@@ -669,6 +715,8 @@ _Strategies with activity this hour: 31; ranked (alerts≥1, BT≥1): 5_
 ## Hour 2026-06-01T15 UTC
 
 _Strategies with activity this hour: 40; ranked (alerts≥1, BT≥1): 5_
+
+**KPIs (across 5 ranked strategies):** avg combined = **65.0%** · max = **85.9%** · min = **33.3%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -719,6 +767,8 @@ _Strategies with activity this hour: 40; ranked (alerts≥1, BT≥1): 5_
 
 _Strategies with activity this hour: 40; ranked (alerts≥1, BT≥1): 5_
 
+**KPIs (across 5 ranked strategies):** avg combined = **28.6%** · max = **36.0%** · min = **10.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 136 | SPY LONG - Mass #11 [mirror 50] | 2 | 0 | 0 | 2 | 0 | 0.0% | 0.0% | — |
@@ -768,6 +818,8 @@ _Strategies with activity this hour: 40; ranked (alerts≥1, BT≥1): 5_
 
 _Strategies with activity this hour: 39; ranked (alerts≥1, BT≥1): 6_
 
+**KPIs (across 6 ranked strategies):** avg combined = **63.0%** · max = **80.0%** · min = **25.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 136 | SPY LONG - Mass #11 [mirror 50] | 0 | 2 | 0 | 0 | 2 | 0.0% | 0.0% | — |
@@ -816,6 +868,8 @@ _Strategies with activity this hour: 39; ranked (alerts≥1, BT≥1): 6_
 
 _Strategies with activity this hour: 37; ranked (alerts≥1, BT≥1): 6_
 
+**KPIs (across 6 ranked strategies):** avg combined = **75.3%** · max = **100.0%** · min = **25.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 136 | SPY LONG - Mass #11 [mirror 50] | 1 | 1 | 1 | 0 | 0 | 100.0% | 100.0% | 1/6 |
@@ -862,6 +916,8 @@ _Strategies with activity this hour: 37; ranked (alerts≥1, BT≥1): 6_
 
 _Strategies with activity this hour: 34; ranked (alerts≥1, BT≥1): 10_
 
+**KPIs (across 10 ranked strategies):** avg combined = **67.9%** · max = **84.1%** · min = **42.9%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 136 | SPY LONG - Mass #11 [mirror 50] | 5 | 5 | 3 | 2 | 2 | 42.9% | 60.0% | 10/10 |
@@ -905,6 +961,8 @@ _Strategies with activity this hour: 34; ranked (alerts≥1, BT≥1): 10_
 
 _Strategies with activity this hour: 26; ranked (alerts≥1, BT≥1): 0_
 
+**KPIs:** no ranked strategies (no meaningful pair attempts)
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 268 | SPY-CANARY-10s-NoConf | 0 | 1 | 0 | 0 | 1 | 0.0% | 0.0% | — |
@@ -940,6 +998,8 @@ _Strategies with activity this hour: 26; ranked (alerts≥1, BT≥1): 0_
 
 _Strategies with activity this hour: 19; ranked (alerts≥1, BT≥1): 0_
 
+**KPIs:** no ranked strategies (no meaningful pair attempts)
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 0 | 5 | 0 | 0 | 5 | 0.0% | 0.0% | — |
@@ -967,6 +1027,8 @@ _Strategies with activity this hour: 19; ranked (alerts≥1, BT≥1): 0_
 ## Hour 2026-06-01T22 UTC
 
 _Strategies with activity this hour: 23; ranked (alerts≥1, BT≥1): 0_
+
+**KPIs:** no ranked strategies (no meaningful pair attempts)
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1000,6 +1062,8 @@ _Strategies with activity this hour: 23; ranked (alerts≥1, BT≥1): 0_
 
 _Strategies with activity this hour: 21; ranked (alerts≥1, BT≥1): 0_
 
+**KPIs:** no ranked strategies (no meaningful pair attempts)
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 0 | 6 | 0 | 0 | 6 | 0.0% | 0.0% | — |
@@ -1030,6 +1094,8 @@ _Strategies with activity this hour: 21; ranked (alerts≥1, BT≥1): 0_
 
 _Strategies with activity this hour: 5; ranked (alerts≥1, BT≥1): 0_
 
+**KPIs:** no ranked strategies (no meaningful pair attempts)
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 278 | PACKTEST · EMA Price Position v3 · trigger | 0 | 1 | 0 | 0 | 1 | 0.0% | 0.0% | — |
@@ -1043,6 +1109,8 @@ _Strategies with activity this hour: 5; ranked (alerts≥1, BT≥1): 0_
 ## Hour 2026-06-02T08 UTC
 
 _Strategies with activity this hour: 29; ranked (alerts≥1, BT≥1): 0_
+
+**KPIs:** no ranked strategies (no meaningful pair attempts)
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1082,6 +1150,8 @@ _Strategies with activity this hour: 29; ranked (alerts≥1, BT≥1): 0_
 
 _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 0_
 
+**KPIs:** no ranked strategies (no meaningful pair attempts)
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 0 | 4 | 0 | 0 | 4 | 0.0% | 0.0% | — |
@@ -1116,6 +1186,8 @@ _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 0_
 
 _Strategies with activity this hour: 20; ranked (alerts≥1, BT≥1): 0_
 
+**KPIs:** no ranked strategies (no meaningful pair attempts)
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 0 | 2 | 0 | 0 | 2 | 0.0% | 0.0% | — |
@@ -1144,6 +1216,8 @@ _Strategies with activity this hour: 20; ranked (alerts≥1, BT≥1): 0_
 ## Hour 2026-06-02T11 UTC
 
 _Strategies with activity this hour: 24; ranked (alerts≥1, BT≥1): 0_
+
+**KPIs:** no ranked strategies (no meaningful pair attempts)
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1177,6 +1251,8 @@ _Strategies with activity this hour: 24; ranked (alerts≥1, BT≥1): 0_
 ## Hour 2026-06-02T12 UTC
 
 _Strategies with activity this hour: 28; ranked (alerts≥1, BT≥1): 0_
+
+**KPIs:** no ranked strategies (no meaningful pair attempts)
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1214,6 +1290,8 @@ _Strategies with activity this hour: 28; ranked (alerts≥1, BT≥1): 0_
 ## Hour 2026-06-02T13 UTC
 
 _Strategies with activity this hour: 41; ranked (alerts≥1, BT≥1): 10_
+
+**KPIs (across 10 ranked strategies):** avg combined = **29.2%** · max = **65.8%** · min = **0.0%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1264,6 +1342,8 @@ _Strategies with activity this hour: 41; ranked (alerts≥1, BT≥1): 10_
 ## Hour 2026-06-02T14 UTC
 
 _Strategies with activity this hour: 42; ranked (alerts≥1, BT≥1): 10_
+
+**KPIs (across 10 ranked strategies):** avg combined = **62.9%** · max = **100.0%** · min = **10.4%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1316,6 +1396,8 @@ _Strategies with activity this hour: 42; ranked (alerts≥1, BT≥1): 10_
 
 _Strategies with activity this hour: 38; ranked (alerts≥1, BT≥1): 8_
 
+**KPIs (across 8 ranked strategies):** avg combined = **24.2%** · max = **37.7%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 174 | TSLA LONG 1Min Mass #2 | 4 | 0 | 0 | 4 | 0 | 0.0% | 0.0% | — |
@@ -1363,6 +1445,8 @@ _Strategies with activity this hour: 38; ranked (alerts≥1, BT≥1): 8_
 
 _Strategies with activity this hour: 38; ranked (alerts≥1, BT≥1): 12_
 
+**KPIs (across 12 ranked strategies):** avg combined = **65.9%** · max = **93.2%** · min = **14.3%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 136 | SPY LONG - Mass #11 [mirror 50] | 6 | 2 | 1 | 5 | 1 | 14.3% | 16.7% | 12/12 |
@@ -1409,6 +1493,8 @@ _Strategies with activity this hour: 38; ranked (alerts≥1, BT≥1): 12_
 ## Hour 2026-06-02T17 UTC
 
 _Strategies with activity this hour: 40; ranked (alerts≥1, BT≥1): 26_
+
+**KPIs (across 26 ranked strategies):** avg combined = **40.9%** · max = **100.0%** · min = **1.3%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1459,6 +1545,8 @@ _Strategies with activity this hour: 40; ranked (alerts≥1, BT≥1): 26_
 
 _Strategies with activity this hour: 35; ranked (alerts≥1, BT≥1): 25_
 
+**KPIs (across 25 ranked strategies):** avg combined = **67.5%** · max = **100.0%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 136 | SPY LONG - Mass #11 [mirror 50] | 6 | 0 | 0 | 6 | 0 | 0.0% | 0.0% | — |
@@ -1502,6 +1590,8 @@ _Strategies with activity this hour: 35; ranked (alerts≥1, BT≥1): 25_
 ## Hour 2026-06-02T19 UTC
 
 _Strategies with activity this hour: 39; ranked (alerts≥1, BT≥1): 23_
+
+**KPIs (across 23 ranked strategies):** avg combined = **71.8%** · max = **100.0%** · min = **22.4%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1551,6 +1641,8 @@ _Strategies with activity this hour: 39; ranked (alerts≥1, BT≥1): 23_
 
 _Strategies with activity this hour: 33; ranked (alerts≥1, BT≥1): 13_
 
+**KPIs (across 13 ranked strategies):** avg combined = **33.2%** · max = **61.1%** · min = **8.7%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 263 | TSLA-CANARY-10s-NoConf | 0 | 1 | 0 | 0 | 1 | 0.0% | 0.0% | — |
@@ -1593,6 +1685,8 @@ _Strategies with activity this hour: 33; ranked (alerts≥1, BT≥1): 13_
 
 _Strategies with activity this hour: 27; ranked (alerts≥1, BT≥1): 15_
 
+**KPIs (across 15 ranked strategies):** avg combined = **27.8%** · max = **68.9%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 10 | 2 | 1 | 9 | 1 | 9.1% | 10.0% | 13/15 |
@@ -1628,6 +1722,8 @@ _Strategies with activity this hour: 27; ranked (alerts≥1, BT≥1): 15_
 ## Hour 2026-06-02T22 UTC
 
 _Strategies with activity this hour: 29; ranked (alerts≥1, BT≥1): 24_
+
+**KPIs (across 24 ranked strategies):** avg combined = **15.5%** · max = **61.8%** · min = **0.0%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1667,6 +1763,8 @@ _Strategies with activity this hour: 29; ranked (alerts≥1, BT≥1): 24_
 
 _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 25_
 
+**KPIs (across 25 ranked strategies):** avg combined = **28.9%** · max = **61.1%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 12 | 5 | 4 | 8 | 1 | 30.8% | 33.3% | 12/25 |
@@ -1700,6 +1798,8 @@ _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 25_
 ## Hour 2026-06-03T08 UTC
 
 _Strategies with activity this hour: 27; ranked (alerts≥1, BT≥1): 22_
+
+**KPIs (across 22 ranked strategies):** avg combined = **12.1%** · max = **60.8%** · min = **0.0%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1737,6 +1837,8 @@ _Strategies with activity this hour: 27; ranked (alerts≥1, BT≥1): 22_
 
 _Strategies with activity this hour: 24; ranked (alerts≥1, BT≥1): 18_
 
+**KPIs (across 18 ranked strategies):** avg combined = **23.2%** · max = **78.0%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 8 | 2 | 0 | 8 | 2 | 0.0% | 0.0% | 17/18 |
@@ -1770,6 +1872,8 @@ _Strategies with activity this hour: 24; ranked (alerts≥1, BT≥1): 18_
 
 _Strategies with activity this hour: 24; ranked (alerts≥1, BT≥1): 20_
 
+**KPIs (across 20 ranked strategies):** avg combined = **15.1%** · max = **56.5%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 12 | 5 | 2 | 10 | 3 | 13.3% | 16.7% | 10/20 |
@@ -1802,6 +1906,8 @@ _Strategies with activity this hour: 24; ranked (alerts≥1, BT≥1): 20_
 ## Hour 2026-06-03T11 UTC
 
 _Strategies with activity this hour: 28; ranked (alerts≥1, BT≥1): 26_
+
+**KPIs (across 26 ranked strategies):** avg combined = **25.9%** · max = **65.0%** · min = **0.0%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1840,6 +1946,8 @@ _Strategies with activity this hour: 28; ranked (alerts≥1, BT≥1): 26_
 
 _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 23_
 
+**KPIs (across 23 ranked strategies):** avg combined = **35.8%** · max = **81.8%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 10 | 6 | 3 | 7 | 3 | 23.1% | 30.0% | 20/23 |
@@ -1873,6 +1981,8 @@ _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 23_
 ## Hour 2026-06-03T13 UTC
 
 _Strategies with activity this hour: 37; ranked (alerts≥1, BT≥1): 31_
+
+**KPIs (across 31 ranked strategies):** avg combined = **25.3%** · max = **57.9%** · min = **0.0%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -1920,6 +2030,8 @@ _Strategies with activity this hour: 37; ranked (alerts≥1, BT≥1): 31_
 
 _Strategies with activity this hour: 35; ranked (alerts≥1, BT≥1): 28_
 
+**KPIs (across 28 ranked strategies):** avg combined = **62.4%** · max = **100.0%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 174 | TSLA LONG 1Min Mass #2 | 7 | 0 | 0 | 7 | 0 | 0.0% | 0.0% | — |
@@ -1964,6 +2076,8 @@ _Strategies with activity this hour: 35; ranked (alerts≥1, BT≥1): 28_
 
 _Strategies with activity this hour: 34; ranked (alerts≥1, BT≥1): 28_
 
+**KPIs (across 28 ranked strategies):** avg combined = **63.0%** · max = **100.0%** · min = **1.4%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 174 | TSLA LONG 1Min Mass #2 | 4 | 0 | 0 | 4 | 0 | 0.0% | 0.0% | — |
@@ -2007,6 +2121,8 @@ _Strategies with activity this hour: 34; ranked (alerts≥1, BT≥1): 28_
 
 _Strategies with activity this hour: 33; ranked (alerts≥1, BT≥1): 27_
 
+**KPIs (across 27 ranked strategies):** avg combined = **56.3%** · max = **84.0%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 174 | TSLA LONG 1Min Mass #2 | 8 | 0 | 0 | 8 | 0 | 0.0% | 0.0% | — |
@@ -2048,6 +2164,8 @@ _Strategies with activity this hour: 33; ranked (alerts≥1, BT≥1): 27_
 ## Hour 2026-06-03T17 UTC
 
 _Strategies with activity this hour: 37; ranked (alerts≥1, BT≥1): 35_
+
+**KPIs (across 35 ranked strategies):** avg combined = **70.1%** · max = **100.0%** · min = **4.9%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -2094,6 +2212,8 @@ _Strategies with activity this hour: 37; ranked (alerts≥1, BT≥1): 35_
 ## Hour 2026-06-03T18 UTC
 
 _Strategies with activity this hour: 40; ranked (alerts≥1, BT≥1): 36_
+
+**KPIs (across 36 ranked strategies):** avg combined = **53.7%** · max = **100.0%** · min = **5.4%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -2144,6 +2264,8 @@ _Strategies with activity this hour: 40; ranked (alerts≥1, BT≥1): 36_
 
 _Strategies with activity this hour: 40; ranked (alerts≥1, BT≥1): 36_
 
+**KPIs (across 36 ranked strategies):** avg combined = **43.6%** · max = **71.6%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 136 | SPY LONG - Mass #11 [mirror 50] | 4 | 4 | 2 | 2 | 2 | 33.3% | 50.0% | 23/36 |
@@ -2193,6 +2315,8 @@ _Strategies with activity this hour: 40; ranked (alerts≥1, BT≥1): 36_
 
 _Strategies with activity this hour: 32; ranked (alerts≥1, BT≥1): 18_
 
+**KPIs (across 18 ranked strategies):** avg combined = **29.7%** · max = **54.1%** · min = **5.6%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 266 | TSLA-CANARY-5m-Control | 0 | 1 | 0 | 0 | 1 | 0.0% | 0.0% | — |
@@ -2234,6 +2358,8 @@ _Strategies with activity this hour: 32; ranked (alerts≥1, BT≥1): 18_
 
 _Strategies with activity this hour: 21; ranked (alerts≥1, BT≥1): 18_
 
+**KPIs (across 18 ranked strategies):** avg combined = **42.8%** · max = **73.0%** · min = **6.5%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 12 | 11 | 7 | 5 | 4 | 43.8% | 58.3% | 10/18 |
@@ -2263,6 +2389,8 @@ _Strategies with activity this hour: 21; ranked (alerts≥1, BT≥1): 18_
 ## Hour 2026-06-03T22 UTC
 
 _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 20_
+
+**KPIs (across 20 ranked strategies):** avg combined = **24.9%** · max = **69.2%** · min = **0.0%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -2298,6 +2426,8 @@ _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 20_
 
 _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 21_
 
+**KPIs (across 21 ranked strategies):** avg combined = **20.7%** · max = **61.0%** · min = **4.8%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 12 | 9 | 2 | 10 | 7 | 10.5% | 16.7% | 18/21 |
@@ -2331,6 +2461,8 @@ _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 21_
 ## Hour 2026-06-04T08 UTC
 
 _Strategies with activity this hour: 28; ranked (alerts≥1, BT≥1): 21_
+
+**KPIs (across 21 ranked strategies):** avg combined = **23.9%** · max = **55.0%** · min = **0.0%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -2369,6 +2501,8 @@ _Strategies with activity this hour: 28; ranked (alerts≥1, BT≥1): 21_
 
 _Strategies with activity this hour: 27; ranked (alerts≥1, BT≥1): 24_
 
+**KPIs (across 24 ranked strategies):** avg combined = **33.2%** · max = **81.2%** · min = **6.7%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 15 | 11 | 7 | 8 | 4 | 36.8% | 46.7% | 11/24 |
@@ -2405,6 +2539,8 @@ _Strategies with activity this hour: 27; ranked (alerts≥1, BT≥1): 24_
 
 _Strategies with activity this hour: 26; ranked (alerts≥1, BT≥1): 20_
 
+**KPIs (across 20 ranked strategies):** avg combined = **25.9%** · max = **58.3%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 5 | 0 | 0 | 5 | 0 | 0.0% | 0.0% | — |
@@ -2440,6 +2576,8 @@ _Strategies with activity this hour: 26; ranked (alerts≥1, BT≥1): 20_
 
 _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 25_
 
+**KPIs (across 25 ranked strategies):** avg combined = **53.6%** · max = **100.0%** · min = **9.5%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 13 | 14 | 10 | 3 | 4 | 58.8% | 76.9% | 12/25 |
@@ -2473,6 +2611,8 @@ _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 25_
 ## Hour 2026-06-04T12 UTC
 
 _Strategies with activity this hour: 28; ranked (alerts≥1, BT≥1): 28_
+
+**KPIs (across 28 ranked strategies):** avg combined = **46.9%** · max = **67.4%** · min = **11.1%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -2510,6 +2650,8 @@ _Strategies with activity this hour: 28; ranked (alerts≥1, BT≥1): 28_
 ## Hour 2026-06-04T13 UTC
 
 _Strategies with activity this hour: 40; ranked (alerts≥1, BT≥1): 37_
+
+**KPIs (across 37 ranked strategies):** avg combined = **54.2%** · max = **100.0%** · min = **0.0%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -2559,6 +2701,8 @@ _Strategies with activity this hour: 40; ranked (alerts≥1, BT≥1): 37_
 ## Hour 2026-06-04T14 UTC
 
 _Strategies with activity this hour: 42; ranked (alerts≥1, BT≥1): 38_
+
+**KPIs (across 38 ranked strategies):** avg combined = **66.6%** · max = **100.0%** · min = **6.5%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -2611,6 +2755,8 @@ _Strategies with activity this hour: 42; ranked (alerts≥1, BT≥1): 38_
 
 _Strategies with activity this hour: 40; ranked (alerts≥1, BT≥1): 36_
 
+**KPIs (across 36 ranked strategies):** avg combined = **65.3%** · max = **100.0%** · min = **10.7%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 136 | SPY LONG - Mass #11 [mirror 50] | 1 | 0 | 0 | 1 | 0 | 0.0% | 0.0% | — |
@@ -2660,6 +2806,8 @@ _Strategies with activity this hour: 40; ranked (alerts≥1, BT≥1): 36_
 
 _Strategies with activity this hour: 36; ranked (alerts≥1, BT≥1): 34_
 
+**KPIs (across 34 ranked strategies):** avg combined = **74.1%** · max = **100.0%** · min = **16.7%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 174 | TSLA LONG 1Min Mass #2 | 10 | 0 | 0 | 10 | 0 | 0.0% | 0.0% | — |
@@ -2704,6 +2852,8 @@ _Strategies with activity this hour: 36; ranked (alerts≥1, BT≥1): 34_
 ## Hour 2026-06-04T17 UTC
 
 _Strategies with activity this hour: 40; ranked (alerts≥1, BT≥1): 37_
+
+**KPIs (across 37 ranked strategies):** avg combined = **65.8%** · max = **100.0%** · min = **5.1%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -2753,6 +2903,8 @@ _Strategies with activity this hour: 40; ranked (alerts≥1, BT≥1): 37_
 ## Hour 2026-06-04T18 UTC
 
 _Strategies with activity this hour: 41; ranked (alerts≥1, BT≥1): 36_
+
+**KPIs (across 36 ranked strategies):** avg combined = **59.4%** · max = **83.3%** · min = **12.5%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -2804,6 +2956,8 @@ _Strategies with activity this hour: 41; ranked (alerts≥1, BT≥1): 36_
 
 _Strategies with activity this hour: 39; ranked (alerts≥1, BT≥1): 37_
 
+**KPIs (across 37 ranked strategies):** avg combined = **59.5%** · max = **100.0%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 136 | SPY LONG - Mass #11 [mirror 50] | 2 | 2 | 0 | 2 | 2 | 0.0% | 0.0% | 37/37 |
@@ -2852,6 +3006,8 @@ _Strategies with activity this hour: 39; ranked (alerts≥1, BT≥1): 37_
 
 _Strategies with activity this hour: 23; ranked (alerts≥1, BT≥1): 18_
 
+**KPIs (across 18 ranked strategies):** avg combined = **28.7%** · max = **50.0%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 9 | 8 | 3 | 6 | 5 | 21.4% | 33.3% | 12/18 |
@@ -2884,6 +3040,8 @@ _Strategies with activity this hour: 23; ranked (alerts≥1, BT≥1): 18_
 
 _Strategies with activity this hour: 21; ranked (alerts≥1, BT≥1): 19_
 
+**KPIs (across 19 ranked strategies):** avg combined = **24.8%** · max = **63.3%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 12 | 2 | 2 | 10 | 0 | 16.7% | 16.7% | 13/19 |
@@ -2913,6 +3071,8 @@ _Strategies with activity this hour: 21; ranked (alerts≥1, BT≥1): 19_
 ## Hour 2026-06-04T22 UTC
 
 _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 23_
+
+**KPIs (across 23 ranked strategies):** avg combined = **17.9%** · max = **49.3%** · min = **0.0%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -2948,6 +3108,8 @@ _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 23_
 
 _Strategies with activity this hour: 23; ranked (alerts≥1, BT≥1): 19_
 
+**KPIs (across 19 ranked strategies):** avg combined = **15.7%** · max = **50.0%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 9 | 3 | 1 | 8 | 2 | 9.1% | 11.1% | 13/19 |
@@ -2980,6 +3142,8 @@ _Strategies with activity this hour: 23; ranked (alerts≥1, BT≥1): 19_
 
 _Strategies with activity this hour: 2; ranked (alerts≥1, BT≥1): 0_
 
+**KPIs:** no ranked strategies (no meaningful pair attempts)
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 284 | PACKTEST · MACD Histogram v2 · trigger | 0 | 1 | 0 | 0 | 1 | 0.0% | 0.0% | — |
@@ -2990,6 +3154,8 @@ _Strategies with activity this hour: 2; ranked (alerts≥1, BT≥1): 0_
 ## Hour 2026-06-05T08 UTC
 
 _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 23_
+
+**KPIs (across 23 ranked strategies):** avg combined = **18.4%** · max = **53.3%** · min = **0.0%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -3024,6 +3190,8 @@ _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 23_
 ## Hour 2026-06-05T09 UTC
 
 _Strategies with activity this hour: 26; ranked (alerts≥1, BT≥1): 21_
+
+**KPIs (across 21 ranked strategies):** avg combined = **17.6%** · max = **60.0%** · min = **0.0%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -3060,6 +3228,8 @@ _Strategies with activity this hour: 26; ranked (alerts≥1, BT≥1): 21_
 
 _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 25_
 
+**KPIs (across 25 ranked strategies):** avg combined = **20.0%** · max = **65.8%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 16 | 1 | 0 | 16 | 1 | 0.0% | 0.0% | 23/25 |
@@ -3093,6 +3263,8 @@ _Strategies with activity this hour: 25; ranked (alerts≥1, BT≥1): 25_
 ## Hour 2026-06-05T11 UTC
 
 _Strategies with activity this hour: 28; ranked (alerts≥1, BT≥1): 23_
+
+**KPIs (across 23 ranked strategies):** avg combined = **24.5%** · max = **58.3%** · min = **0.0%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -3131,6 +3303,8 @@ _Strategies with activity this hour: 28; ranked (alerts≥1, BT≥1): 23_
 
 _Strategies with activity this hour: 22; ranked (alerts≥1, BT≥1): 20_
 
+**KPIs (across 20 ranked strategies):** avg combined = **45.5%** · max = **70.6%** · min = **5.9%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 10 | 10 | 6 | 4 | 3 | 46.2% | 60.0% | 11/20 |
@@ -3161,6 +3335,8 @@ _Strategies with activity this hour: 22; ranked (alerts≥1, BT≥1): 20_
 ## Hour 2026-06-05T13 UTC
 
 _Strategies with activity this hour: 32; ranked (alerts≥1, BT≥1): 26_
+
+**KPIs (across 26 ranked strategies):** avg combined = **44.4%** · max = **84.6%** · min = **2.7%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -3202,6 +3378,8 @@ _Strategies with activity this hour: 32; ranked (alerts≥1, BT≥1): 26_
 ## Hour 2026-06-05T14 UTC
 
 _Strategies with activity this hour: 33; ranked (alerts≥1, BT≥1): 28_
+
+**KPIs (across 28 ranked strategies):** avg combined = **67.0%** · max = **100.0%** · min = **7.7%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -3245,6 +3423,8 @@ _Strategies with activity this hour: 33; ranked (alerts≥1, BT≥1): 28_
 
 _Strategies with activity this hour: 29; ranked (alerts≥1, BT≥1): 26_
 
+**KPIs (across 26 ranked strategies):** avg combined = **55.1%** · max = **90.0%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 174 | TSLA LONG 1Min Mass #2 | 7 | 0 | 0 | 7 | 0 | 0.0% | 0.0% | — |
@@ -3283,6 +3463,8 @@ _Strategies with activity this hour: 29; ranked (alerts≥1, BT≥1): 26_
 
 _Strategies with activity this hour: 27; ranked (alerts≥1, BT≥1): 25_
 
+**KPIs (across 25 ranked strategies):** avg combined = **64.1%** · max = **100.0%** · min = **7.7%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 174 | TSLA LONG 1Min Mass #2 | 2 | 0 | 0 | 2 | 0 | 0.0% | 0.0% | — |
@@ -3318,6 +3500,8 @@ _Strategies with activity this hour: 27; ranked (alerts≥1, BT≥1): 25_
 ## Hour 2026-06-05T17 UTC
 
 _Strategies with activity this hour: 32; ranked (alerts≥1, BT≥1): 29_
+
+**KPIs (across 29 ranked strategies):** avg combined = **57.0%** · max = **85.7%** · min = **0.0%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -3360,6 +3544,8 @@ _Strategies with activity this hour: 32; ranked (alerts≥1, BT≥1): 29_
 
 _Strategies with activity this hour: 30; ranked (alerts≥1, BT≥1): 29_
 
+**KPIs (across 29 ranked strategies):** avg combined = **54.8%** · max = **83.3%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 174 | TSLA LONG 1Min Mass #2 | 6 | 0 | 0 | 6 | 0 | 0.0% | 0.0% | — |
@@ -3398,6 +3584,8 @@ _Strategies with activity this hour: 30; ranked (alerts≥1, BT≥1): 29_
 ## Hour 2026-06-05T19 UTC
 
 _Strategies with activity this hour: 32; ranked (alerts≥1, BT≥1): 29_
+
+**KPIs (across 29 ranked strategies):** avg combined = **59.7%** · max = **100.0%** · min = **12.8%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -3440,6 +3628,8 @@ _Strategies with activity this hour: 32; ranked (alerts≥1, BT≥1): 29_
 
 _Strategies with activity this hour: 27; ranked (alerts≥1, BT≥1): 22_
 
+**KPIs (across 22 ranked strategies):** avg combined = **39.2%** · max = **90.7%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 266 | TSLA-CANARY-5m-Control | 0 | 1 | 0 | 0 | 1 | 0.0% | 0.0% | — |
@@ -3476,6 +3666,8 @@ _Strategies with activity this hour: 27; ranked (alerts≥1, BT≥1): 22_
 
 _Strategies with activity this hour: 24; ranked (alerts≥1, BT≥1): 20_
 
+**KPIs (across 20 ranked strategies):** avg combined = **38.9%** · max = **85.2%** · min = **0.0%**
+
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
 | 276 | PACKTEST · Bollinger Bands · trigger | 17 | 19 | 9 | 8 | 10 | 33.3% | 52.9% | 12/20 |
@@ -3508,6 +3700,8 @@ _Strategies with activity this hour: 24; ranked (alerts≥1, BT≥1): 20_
 ## Hour 2026-06-05T22 UTC
 
 _Strategies with activity this hour: 27; ranked (alerts≥1, BT≥1): 19_
+
+**KPIs (across 19 ranked strategies):** avg combined = **31.3%** · max = **60.0%** · min = **5.9%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
@@ -3544,6 +3738,8 @@ _Strategies with activity this hour: 27; ranked (alerts≥1, BT≥1): 19_
 ## Hour 2026-06-05T23 UTC
 
 _Strategies with activity this hour: 28; ranked (alerts≥1, BT≥1): 20_
+
+**KPIs (across 20 ranked strategies):** avg combined = **32.3%** · max = **57.6%** · min = **0.0%**
 
 | sid | Strategy name | Alerts | BT events | Paired | Phantom | Missed | Combined % | Alert-pair % | Rank |
 |---|---|---|---|---|---|---|---|---|---|
