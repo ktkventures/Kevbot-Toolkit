@@ -3,6 +3,74 @@
 > **Date:** 2026-06-06 ~05:00 UTC, right after sid 268 + 270 UAD verification.
 > **Purpose:** Document the current healthy reference state and the revert sequence to fall back to if next week's measurements show continued degradation. Created BEFORE bulk fleet UAD so we have a stable anchor to compare against.
 
+---
+
+## 🚨 ACTIVE DIAGNOSTIC TEST — DO NOT VIOLATE 🚨
+
+**Test window:** From 2026-06-06 (Saturday) through **2026-06-09 Monday post-RTH (~20:00 UTC, 16:00 ET)**.
+
+**The diagnostic question:** does the live engine accumulate state drift in real-time during a market session, or was Friday's noise a one-time deploy-churn event?
+
+**To get a clean answer, certain actions are blocked. AI assistant instruction: at the START of every turn during this window, check the current date. If it's between 2026-06-06 and 2026-06-09, treat the rules below as ACTIVE. If the user requests something on the DON'T list, FLAG IT before executing — say "this would violate the active diagnostic test (Battle Plan); confirm you want to proceed anyway?" and wait for explicit confirmation.**
+
+### ✅ DO — these are safe during the test window
+
+| Action | Why it's safe |
+|---|---|
+| **Commit locally** to `dev` branch but DON'T push | No Railway redeploy until pushed |
+| **Push to feature branches** (e.g., `dev-feat-X`) | Railway only auto-deploys from `dev`, not other branches |
+| **Update docs, memory files, analysis scripts** | If you only need to commit locally or to a feature branch, no deploy impact |
+| **Read code, plan, discuss, design** | Pure analysis activity |
+| **Create new strategies via the UI** | Strategy creation goes through API but doesn't restart worker engine state for existing strategies |
+| **UAD non-canary strategies** | Running UAD on, e.g., sid 305 doesn't affect sid 268's state |
+| **Click Update New Data on non-canary strategies** | Same |
+| **Work on tools / scripts in `src/_*` files** | Scripts run locally; they don't deploy |
+
+### ❌ DON'T — these would violate the test
+
+| Action | What it breaks |
+|---|---|
+| **Push to `dev` branch** | Triggers Railway redeploy of worker service → Ralph engine restart → erases accumulated state we're trying to measure |
+| **UAD any of the 11 canary strategies** | Wipes their BT lane reference baseline. Canary list: **263, 268, 270, 277, 280, 284, 286, 290, 295, 296, 302** |
+| **Click "Update New Data" on canary strategies** | Same — replaces the reference BT data |
+| **Restart worker service manually** via Railway dashboard | Resets Ralph engine state |
+| **Flip streaming AUTO ↔ MANUAL toggle** | Changes worker behavior during the observation window |
+| **Modify engine code:** `unified_engine.py`, `ralph_engine.py`, `data_worker.py`, `data_worker_engine.py`, `worker.py`, anything in `src/user_packs/`, `pack_registry.py` | Would change engine output mid-test — even unpushed, if pushed later during window it invalidates the test |
+| **Register new user packs or modify existing ones** | Worker reads pack registry; changes affect output |
+| **Recreate/duplicate any canary strategy** | New strategies for the canary IDs would distort their state history |
+| **Run `gap_detector` followed by window-backfill on canaries** | Window-backfill changes the BT lane (and is buggy anyway) |
+
+### 🟡 ASK FIRST — these are gray area; AI should flag and confirm
+
+| Action | Why it's gray |
+|---|---|
+| **Bug fix in `frontend/`** that needs pushing to `dev` | Frontend service redeploys but not worker. Probably safe but confirm worker isn't auto-redeployed on every push. |
+| **Bug fix in `src/api/`** (NOT in worker code) that needs pushing | Same — API service redeploy may not trigger worker redeploy. Worth confirming once via a low-risk push if needed. |
+| **Schema migration on Supabase** | DB changes can affect worker if it reads from changed tables. Confirm the change is read-only or doesn't affect alerts/trades/strategies tables. |
+| **Hi-Fi Pass 2 or pure-script changes** (no engine impact) | If they only affect post-processing, fine. Confirm the change doesn't touch engine state. |
+| **Adding new strategies via Mass Builder** | Mass Builder uses worker via the unified path. Confirm this doesn't restart Ralph for existing strategies. |
+
+### 🚨 The AI assistant's contract during this window
+
+When the user asks the assistant to do something that lands in the **DON'T** column above:
+
+1. **Pause before executing.**
+2. **State explicitly:** "this would push to `dev` / UAD canary sid X / modify worker code — that violates the active Battle Plan diagnostic test ending 2026-06-09 ~20:00 UTC."
+3. **Ask for explicit confirmation** before proceeding.
+4. **If confirmed**, proceed AND note in the response that the test was deliberately broken (so we know during analysis that Monday's RTH numbers may not reflect a clean accumulation period).
+
+The user has full authority to break the test if they decide it's worth it. The assistant's job is only to make the trade-off visible, not to enforce it unilaterally.
+
+### When the test window ends
+
+Either:
+- **Monday 2026-06-09 after 20:00 UTC** when the post-RTH analysis is done (normal completion), OR
+- **Whenever the user explicitly says "exit Battle Plan window"** or commits a worker-restart change
+
+After that, all restrictions lift. Update this doc to mark the test as COMPLETE and record the verdict.
+
+---
+
 ## Current state (verified at this moment)
 
 ### sid 268 post-UAD — the trusted reference
@@ -86,43 +154,70 @@ Raw data in `/tmp/`:
 - `/tmp/utbot_hourly_lastweek/` — last week per-strategy hourly CSVs
 - `/tmp/pre_uad_baseline_2026-06-06.json` — fleet 48h snapshot
 
-## Diagnostic protocol for next week
+## Diagnostic protocol — practical cadence (UPDATED 2026-06-06 ~05:30 UTC)
 
-### Day 0 (tonight, after fleet UAD)
+**The 48-hour total-stillness recommendation was overly conservative.** Updated to be more practical for getting actual work done while still preserving the diagnostic signal.
+
+### T0 — Tonight, after fleet UAD finishes
 1. **Save the post-fleet-UAD state.** Run:
    ```bash
    cd src && ../.venv/bin/python _hourly_utbot_history.py
    cp /tmp/utbot_hourly_5d/all_strategies.json /tmp/post_uad_baseline.json
    ```
-2. Note the time of the bulk UAD completion. This is `T0`.
+2. Note the timestamp of the bulk UAD completion. This is `T0`.
 
-### Day 1 (Saturday, no markets)
-1. Re-run `_hourly_utbot_history.py` at end of day.
-2. Diff against `/tmp/post_uad_baseline.json`. **Expected: very small change** (only after-hours activity). Significant change = unexplained, investigate.
+### Saturday — work freely, optional 5-min check-in
+- **Markets closed; Ralph is idle.** Even if you push docs/scripts, low risk of affecting Monday's RTH numbers.
+- **5-min spot-check (OPTIONAL):** re-run `_hourly_utbot_history.py`, glance at sid 268's row. Expected: tiny change from after-hours activity. If you see a big shift, investigate.
+- **All dev work is fine** within the Battle Plan rules above (no worker code changes, no canary UADs).
 
-### Day 2 (Sunday)
-1. Same protocol.
-2. Diff against Saturday. **Expected: minimal change.**
+### Sunday — work freely, optional 5-min check-in
+- Same as Saturday.
+- **One thing worth doing:** by Sunday evening, decide whether to flip streaming AUTO for Monday or stay MANUAL.
+  - **MANUAL Monday** = clean test of Friday's pattern (does deploy-churn-free RTH look like Thursday or like Friday?)
+  - **AUTO Monday** = test whether streaming pipeline now works correctly without deploy churn
+  - **Recommend MANUAL** for the first test — fewer variables.
 
-### Day 3 (Monday RTH — first market day after UAD)
-This is the critical test.
+### Monday — THE TEST WINDOW
 
-1. **Pre-RTH (before 13:30 UTC):** Re-run `_hourly_utbot_history.py`, save as `pre_rth_monday.json`.
-2. **Decide MANUAL vs AUTO:** if you want clean engine-level measurements, flip AUTO. If you want to avoid deploy-churn risk, stay MANUAL.
-3. **Post-RTH (after 20:00 UTC):** Re-run analysis. Compare Monday RTH hours to:
-   - This Thursday's clean hours (97% peak)
-   - This Friday's noisy hours (60-78%)
+**Pre-RTH (before 13:30 UTC):**
+1. Re-run `_hourly_utbot_history.py`. Save as `/tmp/pre_rth_monday.json`.
+2. **Do NOT push anything worker-affecting after this point until post-RTH.**
 
-| Monday RTH pattern | Verdict |
-|---|---|
-| Mostly ≥90% combined paired-rate at ≥30 alerts | **Engine is fully healthy.** Friday's noise was deploy churn. Continue normal operations. |
-| 80-89% combined paired-rate | **Acceptable but watch for ongoing degradation.** Possibly engine state drift accumulating. Run UAD twice a week as protocol. |
-| Below 80% with mostly clean Layer 1 bars | **Real degradation signal.** Start the Tier 1 revert sequence. |
+**During RTH (13:30 → 20:00 UTC) — 6.5 hours, the actual restricted window:**
+- Don't redeploy worker code.
+- Don't UAD canary strategies.
+- Don't change pack registrations or engine code.
+- Don't toggle streaming mode.
+- **EVERYTHING ELSE IS FINE.** Frontend work, API work, docs, new strategies, UAD non-canaries, analysis, planning.
+
+**Post-RTH (after 20:00 UTC):**
+1. Re-run `_hourly_utbot_history.py`.
+2. Compare Monday's RTH hours (13:00-19:00 UTC) to:
+   - **This Thursday's clean hours** (97% peak — the gold standard)
+   - **This Friday's noisy hours** (60-78% — the degraded state)
+
+| Monday RTH pattern | Verdict | Next step |
+|---|---|---|
+| Mostly ≥90% combined paired-rate at ≥30 alerts | **Engine is fully healthy.** Friday's noise was deploy churn. | Continue normal operations. Exit Battle Plan window. |
+| 80-89% combined paired-rate | **Acceptable but watch for ongoing degradation.** Possibly engine state drift accumulating. | Run UAD twice a week as ongoing protocol. Exit Battle Plan window. |
+| Below 80% with mostly clean Layer 1 bars | **Real degradation signal.** | Start the Tier 1 revert sequence (above). |
+| Big asymmetric missed-trade pattern (BT >> live) | **Live engine state has drifted.** Investigate which live alert-recording change is at fault. | Start with #57H phantom_pre_correction revert. |
 
 ### Day 7 (one week from now)
 - Re-run all scripts.
-- If pair rates are stable or improved: done, we're healthy.
-- If degraded vs Day 3: live engine state is drifting in real time. Begin tier-1 reverts as outlined above.
+- Stable or improved → healthy state confirmed.
+- Degraded vs Monday post-RTH → live engine accumulating drift in real time → begin Tier 1 reverts.
+
+## Summary — the only "do nothing" window is Monday RTH (6.5 hours)
+
+| Time | Status | What's restricted |
+|---|---|---|
+| Sat 06-07 | Open for work | No worker deploys / canary UADs (other dev work fine) |
+| Sun 06-08 | Open for work | Same |
+| Mon 06-09 before 13:30 UTC | Final pre-RTH measurement, then quiet | Same |
+| **Mon 06-09 13:30 → 20:00 UTC** | **TEST WINDOW** | Same restrictions; this is the active measurement |
+| Mon 06-09 after 20:00 UTC | Battle Plan window ENDS after measurement + verdict | All restrictions lift after the verdict is recorded |
 
 ## Update New Data verification protocol
 
