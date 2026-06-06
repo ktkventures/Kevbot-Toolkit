@@ -1,0 +1,475 @@
+{
+  "generated_at": "2026-06-06T18:34:02.744327+00:00",
+  "since": "2026-05-28",
+  "count": 78,
+  "commits": [
+    {
+      "sha": "031229f",
+      "full_sha": "031229f887ca56be719291a6ac4f50aa5ef75d32",
+      "timestamp_iso": "2026-06-06T10:26:06-06:00",
+      "subject": "feat: Strategy Health 'By Hour' tab \u2014 cross-hour KPIs + drill-down"
+    },
+    {
+      "sha": "d500d1f",
+      "full_sha": "d500d1f8c39e95fc4d4a8b9ead90b13f212c0292",
+      "timestamp_iso": "2026-06-06T09:57:18-06:00",
+      "subject": "docs: by-hour doc -- add cross-hour summary table at top"
+    },
+    {
+      "sha": "3f11887",
+      "full_sha": "3f11887e34b15c131ccc80dfd6b8221954515e16",
+      "timestamp_iso": "2026-06-06T09:47:56-06:00",
+      "subject": "docs: by-hour doc -- add KPI summary line per hour"
+    },
+    {
+      "sha": "07d7d59",
+      "full_sha": "07d7d59918d755ea7b65175a0dac63b864c11832",
+      "timestamp_iso": "2026-06-06T09:42:21-06:00",
+      "subject": "docs: hourly cohort tables (pivoted) \u2014 one table per hour"
+    },
+    {
+      "sha": "82a1a85",
+      "full_sha": "82a1a85f1aced8f51b158d1b8404b327f790d0cc",
+      "timestamp_iso": "2026-06-06T09:34:38-06:00",
+      "subject": "docs: per-strategy hourly tables for all 43 active strategies"
+    },
+    {
+      "sha": "82b2620",
+      "full_sha": "82b26202017f7e2e34f4d000cd9f184c46b4c5ab",
+      "timestamp_iso": "2026-06-06T09:21:22-06:00",
+      "subject": "docs: add Fleet Analysis clarification \u2014 individual vs cohort numbers"
+    },
+    {
+      "sha": "1662efb",
+      "full_sha": "1662efb152034c29d65632d7dfef5fd0d1fc89bf",
+      "timestamp_iso": "2026-06-06T09:08:25-06:00",
+      "subject": "docs: fleet hourly analysis 5/28-6/5 + smoking-gun finding"
+    },
+    {
+      "sha": "737d277",
+      "full_sha": "737d277c4cf03cf7bcde4973dab736e113a0468a",
+      "timestamp_iso": "2026-06-06T08:40:51-06:00",
+      "subject": "docs: Battle Plan -- record T0 = 2026-06-06T10:10:50 UTC"
+    },
+    {
+      "sha": "99f5b48",
+      "full_sha": "99f5b48319a834f5e096b065c676ee6a629d4d13",
+      "timestamp_iso": "2026-06-05T23:17:20-06:00",
+      "subject": "docs: Battle Plan -- add active-test-window contract + practical protocol"
+    },
+    {
+      "sha": "91f2379",
+      "full_sha": "91f2379b5df28158b8f5f89ea93abedfa64e2a09",
+      "timestamp_iso": "2026-06-05T23:07:14-06:00",
+      "subject": "docs: battle plan + revert sequence for next week"
+    },
+    {
+      "sha": "04ea1cc",
+      "full_sha": "04ea1ccfb69e41ba98b99ae066fee535602e150d",
+      "timestamp_iso": "2026-06-05T22:26:09-06:00",
+      "subject": "docs: UT Bot last-week-vs-this-week hourly comparison"
+    },
+    {
+      "sha": "f71ef87",
+      "full_sha": "f71ef87135e97f55e4a87bdbadf8ee6797d15d10",
+      "timestamp_iso": "2026-06-05T21:53:24-06:00",
+      "subject": "docs: hour-by-hour 5-day UT Bot analysis @ +/-5s pair window"
+    },
+    {
+      "sha": "06a4bec",
+      "full_sha": "06a4bec09dbe7cb6f500ae0f568ecd62498e663e",
+      "timestamp_iso": "2026-06-05T21:41:22-06:00",
+      "subject": "docs: pre-UAD baseline snapshot 2026-06-06 + comparison scripts"
+    },
+    {
+      "sha": "6a5ac25",
+      "full_sha": "6a5ac259f4a1c8a7783f96fafd708c5de278b374",
+      "timestamp_iso": "2026-06-05T20:43:53-06:00",
+      "subject": "useUpdateStrategyLanes: migrate to async /api/update-jobs path"
+    },
+    {
+      "sha": "6cdd7b3",
+      "full_sha": "6cdd7b317147c65bb6e0df124d44c950ada7f230",
+      "timestamp_iso": "2026-06-05T20:42:19-06:00",
+      "subject": "data_loader: 1s cache staleness fix \u2014 evict + re-fetch when incomplete"
+    },
+    {
+      "sha": "f9bc90d",
+      "full_sha": "f9bc90d9c48ae961702eec49f31b6eed68fe6f93",
+      "timestamp_iso": "2026-06-05T16:45:03-06:00",
+      "subject": "window-backfill: mark WIP / do not trust + Known_Bugs entry"
+    },
+    {
+      "sha": "a0c3faf",
+      "full_sha": "a0c3fafe425193fccfa1a061a58ce0733d8d8b24",
+      "timestamp_iso": "2026-06-05T15:56:50-06:00",
+      "subject": "window-backfill: UAD parity via snapshot resume + UAD-matched warmup"
+    },
+    {
+      "sha": "652834d",
+      "full_sha": "652834db1fce61b4298db7dd6fe2f05b19315ce0",
+      "timestamp_iso": "2026-06-05T15:39:47-06:00",
+      "subject": "migration: allow mode='window' on update_jobs CHECK constraint"
+    },
+    {
+      "sha": "cb4939c",
+      "full_sha": "cb4939cbbc7338b0b0bfe01051494734dfd86af4",
+      "timestamp_iso": "2026-06-05T15:25:54-06:00",
+      "subject": "Manual Window Backfill \u2014 BT-lane backfill over explicit [start, end)"
+    },
+    {
+      "sha": "80cbdda",
+      "full_sha": "80cbdda551273103c0e938ec10cba6a9d1f4be5a",
+      "timestamp_iso": "2026-06-05T14:31:27-06:00",
+      "subject": "gap_detector + probe CLI \u2014 find BT-lane gaps automatically"
+    },
+    {
+      "sha": "c66f4d7",
+      "full_sha": "c66f4d7ca5d936edfcb0a3119bab3fc2c412ac8d",
+      "timestamp_iso": "2026-06-05T14:29:11-06:00",
+      "subject": "docs: Roadmap update \u2014 96.7% pair rate achieved on sid 302"
+    },
+    {
+      "sha": "3429dce",
+      "full_sha": "3429dcef0902ca1e7e4d142ead740ed7f69c4ca1",
+      "timestamp_iso": "2026-06-05T12:23:40-06:00",
+      "subject": "#42: apply session filter to injected primary_df in services.py:264"
+    },
+    {
+      "sha": "c256900",
+      "full_sha": "c2569001370f18c2e52249a0ea4d411c90b1e755",
+      "timestamp_iso": "2026-06-05T12:10:42-06:00",
+      "subject": "#57H bugfix: reclass alert lookup \u2014 range query for L-type bar_time"
+    },
+    {
+      "sha": "0901baf",
+      "full_sha": "0901bafaab480d40e24fabcc89b77af9025b68be",
+      "timestamp_iso": "2026-06-05T12:01:04-06:00",
+      "subject": "#57H: post-hoc phantom_pre_correction reclassification"
+    },
+    {
+      "sha": "3c5861c",
+      "full_sha": "3c5861c0030977020a420aff8325f11920deecc1",
+      "timestamp_iso": "2026-06-05T11:38:14-06:00",
+      "subject": "#57G follow-up: emit live_corrected on K=1 fast-path splices too"
+    },
+    {
+      "sha": "b5f40c7",
+      "full_sha": "b5f40c7c074e6280543952257c5ba2ccc78e4d0b",
+      "timestamp_iso": "2026-06-05T11:31:03-06:00",
+      "subject": "#57G: bar_diagnostics \u2014 emit live_corrected rows after REST splice"
+    },
+    {
+      "sha": "5d634ae",
+      "full_sha": "5d634ae7d5b4af12ed440d70aba20858210f7ae4",
+      "timestamp_iso": "2026-06-05T10:09:15-06:00",
+      "subject": "#57E+F: per-bar REST verification with multi-pass settle detection"
+    },
+    {
+      "sha": "8f745a5",
+      "full_sha": "8f745a5a25e4b0e12870c282ef2e311cd3ba8696",
+      "timestamp_iso": "2026-06-05T09:24:33-06:00",
+      "subject": "_probe_bar_diagnostics: live vs backtest indicator-state divergence probe"
+    },
+    {
+      "sha": "c1cfb4b",
+      "full_sha": "c1cfb4b0a589ac13a639ca713dd833be44291de2",
+      "timestamp_iso": "2026-06-05T08:58:35-06:00",
+      "subject": "#57C: engine write hooks for bar_diagnostics (backtest + algo + live)"
+    },
+    {
+      "sha": "0b17f49",
+      "full_sha": "0b17f49140a668bc456e508b2d3e17d907eb08de",
+      "timestamp_iso": "2026-06-04T17:43:57-06:00",
+      "subject": "docs: Roadmap_Divergence_Hunting.md \u2014 single source of truth"
+    },
+    {
+      "sha": "b87f059",
+      "full_sha": "b87f0598ed50c46899609d6dc48810a11eb3b934",
+      "timestamp_iso": "2026-06-04T17:33:28-06:00",
+      "subject": "#57 A/B/D: bar_diagnostics schema + manifest contract + UT Bot V4 seed"
+    },
+    {
+      "sha": "7dba9ea",
+      "full_sha": "7dba9eae734a3eb019d0e07da53cd0868343f191",
+      "timestamp_iso": "2026-06-04T17:00:06-06:00",
+      "subject": "strategy_health: promote cross_exec_type_mismatch to auto-classifier"
+    },
+    {
+      "sha": "3322298",
+      "full_sha": "33222980e156a65e76ab512f9fdd1633a46a7ce4",
+      "timestamp_iso": "2026-06-04T15:27:16-06:00",
+      "subject": "ALGO-APPEND Hi-Fi: pass incremental=True (was missing \u2014 walks full history every run)"
+    },
+    {
+      "sha": "8fed13c",
+      "full_sha": "8fed13c7bf5be9f00f89da7af33470993d34f9d2",
+      "timestamp_iso": "2026-06-04T14:36:59-06:00",
+      "subject": "_verify_streaming_toggle.py \u2014 read-only toggle observability script"
+    },
+    {
+      "sha": "2fd0c10",
+      "full_sha": "2fd0c105c29eac15afb5ce7ad0de1c08f7861b33",
+      "timestamp_iso": "2026-06-04T14:08:15-06:00",
+      "subject": "Streaming mode toggle: DB-backed runtime switch (Auto/Manual)"
+    },
+    {
+      "sha": "768e353",
+      "full_sha": "768e353d2897f8ae4ab12abefb1594c9e50f0f65",
+      "timestamp_iso": "2026-06-04T14:00:53-06:00",
+      "subject": "Phase 2 frontend (Next.js): /admin/update-jobs page + button swap"
+    },
+    {
+      "sha": "f7eec9b",
+      "full_sha": "f7eec9bd154bea8b97898e67d35973d3991560ee",
+      "timestamp_iso": "2026-06-04T13:38:34-06:00",
+      "subject": "Phase 2 frontend: Streamlit wired to async update_jobs"
+    },
+    {
+      "sha": "4be824a",
+      "full_sha": "4be824aff3ba3b0d5538feee5752eb4b0cbbcb14",
+      "timestamp_iso": "2026-06-04T13:09:39-06:00",
+      "subject": "Phase 2 backend: streaming toggle + async on-demand UAD jobs"
+    },
+    {
+      "sha": "f061076",
+      "full_sha": "f061076a5f247d5bcccbe1315b874f883f07cb0b",
+      "timestamp_iso": "2026-06-04T12:33:13-06:00",
+      "subject": "_backfill_strategy_configs.py: idempotent migration to fill canonical fields"
+    },
+    {
+      "sha": "8c20122",
+      "full_sha": "8c20122454c464835ce7b7324e482d2435a8beb0",
+      "timestamp_iso": "2026-06-04T12:28:42-06:00",
+      "subject": "pack_canary_service: route canary creation through strategy_factory"
+    },
+    {
+      "sha": "abb6745",
+      "full_sha": "abb6745d6ba0c0527b722bfd92cdab376d6cdbf6",
+      "timestamp_iso": "2026-06-04T12:25:48-06:00",
+      "subject": "strategy_factory: unified config builder for all 4 creation paths"
+    },
+    {
+      "sha": "e52aba2",
+      "full_sha": "e52aba22ec6e27072c5f597b33c5cba627a23378",
+      "timestamp_iso": "2026-06-04T09:29:11-06:00",
+      "subject": "data_worker watchdog: guard STALE detection on is_market_window()"
+    },
+    {
+      "sha": "cc8179a",
+      "full_sha": "cc8179a3d55759f75c712f36c1166f7d8c6fd547",
+      "timestamp_iso": "2026-06-03T19:09:10-06:00",
+      "subject": "docs: EOD 2026-06-03 \u2014 Roadmap regression note + Plan for 2026-06-04 AM"
+    },
+    {
+      "sha": "b2387ff",
+      "full_sha": "b2387ff9287c5345208942c50bc25228632766dc",
+      "timestamp_iso": "2026-06-03T18:50:02-06:00",
+      "subject": "ralph_engine + worker: stamp resolved default live_model on alerts"
+    },
+    {
+      "sha": "fe70150",
+      "full_sha": "fe70150c6f15a5a2e14cfc1933463c41a91ae907",
+      "timestamp_iso": "2026-06-03T18:33:56-06:00",
+      "subject": "Known_Bugs: log alerts.live_model=NULL bug \u2014 90% of fleet skips REST verification"
+    },
+    {
+      "sha": "097a00d",
+      "full_sha": "097a00d12b2672ec87e6a2e10bc0ce8e27d0df08",
+      "timestamp_iso": "2026-06-03T18:13:20-06:00",
+      "subject": "Known_Bugs: log 2 more bugs surfaced 2026-06-03 EOD"
+    },
+    {
+      "sha": "5fa60ca",
+      "full_sha": "5fa60ca1470cc2cafddcd876a6ac805d6558f351",
+      "timestamp_iso": "2026-06-03T16:05:13-06:00",
+      "subject": "Known_Bugs: log silent-swing-stop strategies bug (EOD 2026-06-03)"
+    },
+    {
+      "sha": "69c3f7f",
+      "full_sha": "69c3f7f585d93ec16d36759dfe4281a6e17c3afc",
+      "timestamp_iso": "2026-06-03T15:51:13-06:00",
+      "subject": "stop_target_methods: remove silent ATR\u00d71.5 fallback in SwingStop + compute_stop"
+    },
+    {
+      "sha": "c871003",
+      "full_sha": "c871003a228cd19cd3bef90a5ae9b1a8ea22cd0b",
+      "timestamp_iso": "2026-06-03T15:01:36-06:00",
+      "subject": "admin tool: _remeasure_pair_rates_5s.py for \u00b15s fleet remeasure"
+    },
+    {
+      "sha": "f8a5349",
+      "full_sha": "f8a5349efc8c778f3d2100986af3e16865d53695",
+      "timestamp_iso": "2026-06-03T14:48:26-06:00",
+      "subject": "pack audit: surface triggers whose opposite_signal exit won't auto-resolve"
+    },
+    {
+      "sha": "e313e5d",
+      "full_sha": "e313e5df9c9015d11338bcce107934907d6b1cef",
+      "timestamp_iso": "2026-06-03T14:24:56-06:00",
+      "subject": "unified_engine: resolve 'opposite_signal' sentinel in exit_trigger_confluence_ids"
+    },
+    {
+      "sha": "0a1d158",
+      "full_sha": "0a1d15833304b0f6fb7e001d9f927b230381cf18",
+      "timestamp_iso": "2026-06-03T12:05:09-06:00",
+      "subject": "unified_engine: skip TRIGGER_PREFIX_TO_TEMPLATE inference for user-pack triggers"
+    },
+    {
+      "sha": "9db405e",
+      "full_sha": "9db405eae10ee1d58e046103e7ac471025dca71e",
+      "timestamp_iso": "2026-06-03T11:16:03-06:00",
+      "subject": "ema_pp_v3/v4 manifests: trigger_levels \u2192 trigger_levels_phase2"
+    },
+    {
+      "sha": "1dae0d1",
+      "full_sha": "1dae0d1a477f51da06b42a6a076270fe75aa73a0",
+      "timestamp_iso": "2026-06-03T10:42:01-06:00",
+      "subject": "watchdog phase 2: HTTP timeouts + auto-restart on persistent stale"
+    },
+    {
+      "sha": "ee7f246",
+      "full_sha": "ee7f246f5c8d1476812f584f609fc2f0081dbee0",
+      "timestamp_iso": "2026-06-03T10:35:07-06:00",
+      "subject": "data_worker: watchdog phase 1 \u2014 log reload_age + STALE flag in metrics line"
+    },
+    {
+      "sha": "f5891b0",
+      "full_sha": "f5891b018fc538385ef63007c39ca0b34e553865",
+      "timestamp_iso": "2026-06-02T16:19:18-06:00",
+      "subject": "docs: mark Phase 2 codec as shipped in Plan_Backtest_Snapshot_Fix"
+    },
+    {
+      "sha": "e3c3034",
+      "full_sha": "e3c303442b97296819a822d9e40554195764809b",
+      "timestamp_iso": "2026-06-02T16:06:27-06:00",
+      "subject": "User_Pack_Roadmap: identify EMA PP v3/v4 root cause as L-type batch-path gap"
+    },
+    {
+      "sha": "ac26fd4",
+      "full_sha": "ac26fd439ae82a33bf4924c7e7476638fb8b6564",
+      "timestamp_iso": "2026-06-02T16:04:55-06:00",
+      "subject": "gate-mode: remove GATE-DIAG instrumentation; recharacterize as stale-state bug"
+    },
+    {
+      "sha": "734e03e",
+      "full_sha": "734e03eea4c20acec26c7941909c7ed795b07547",
+      "timestamp_iso": "2026-06-02T15:54:31-06:00",
+      "subject": "ralph_engine: GATE-DIAG temporary logging for shadow-engine user-pack flow"
+    },
+    {
+      "sha": "d4e5dc8",
+      "full_sha": "d4e5dc8ea1d11dcd4dcf2558eeb6dd67fc430013",
+      "timestamp_iso": "2026-06-02T10:16:18-06:00",
+      "subject": "strategy_health: paginate trades queries + deterministic sort"
+    },
+    {
+      "sha": "f006937",
+      "full_sha": "f006937e526849a0be75a582c82c8f10c0d2c141",
+      "timestamp_iso": "2026-06-01T11:58:56-06:00",
+      "subject": "Phase 2 backtest snapshot fix \u2014 user-pack state codec"
+    },
+    {
+      "sha": "684265c",
+      "full_sha": "684265ca4efbd52510131d5435acaf76e29e5c64",
+      "timestamp_iso": "2026-06-01T10:07:40-06:00",
+      "subject": "data_worker_engine: Phase 1 warmup-window replay for backtest snapshot bug"
+    },
+    {
+      "sha": "d8ba188",
+      "full_sha": "d8ba188f58b40e2f8bc5d14cfc093ff9c359daa2",
+      "timestamp_iso": "2026-05-29T11:38:39-06:00",
+      "subject": "Known_Bugs: live fires through confluence whose shadow engine is missing"
+    },
+    {
+      "sha": "bfc7e2e",
+      "full_sha": "bfc7e2ecc352bccb8fe3a2af0f96d6992d99f720",
+      "timestamp_iso": "2026-05-29T11:08:32-06:00",
+      "subject": "Alert History: replace reverse() with explicit DESC sort"
+    },
+    {
+      "sha": "c812778",
+      "full_sha": "c812778ae6c724bd583eaed79d4a0ef3b6ee8ad2",
+      "timestamp_iso": "2026-05-29T10:59:13-06:00",
+      "subject": "Alert History pairing: LIFO (was FIFO) \u2014 fixes 30+min phantom holds"
+    },
+    {
+      "sha": "587f803",
+      "full_sha": "587f803bff192dfc302780818a36a1b051b87e44",
+      "timestamp_iso": "2026-05-29T10:40:59-06:00",
+      "subject": "Strategy Detail Alert History: bump fetch + 100 of N pagination"
+    },
+    {
+      "sha": "d9c07a9",
+      "full_sha": "d9c07a9d654fd38e28cc1bf7748da466575dfa8c",
+      "timestamp_iso": "2026-05-29T09:56:40-06:00",
+      "subject": "StopLoss + TakeProfit ParametersTab: wire onChange handler for draft mode"
+    },
+    {
+      "sha": "0ee2ee1",
+      "full_sha": "0ee2ee170659bb51d1082910461dedc34cf95dab",
+      "timestamp_iso": "2026-05-29T09:35:07-06:00",
+      "subject": "strategy-health UI: apples-to-apples now uses GLOBAL fair counts"
+    },
+    {
+      "sha": "0758187",
+      "full_sha": "0758187eac798a9e2884a3d1b760c6afdd8dec90",
+      "timestamp_iso": "2026-05-29T09:25:24-06:00",
+      "subject": "strategy_health: add global_fair counts; walkthrough defaults to them"
+    },
+    {
+      "sha": "ba7b628",
+      "full_sha": "ba7b628d54c39037bba69d9044fabbf46213bb40",
+      "timestamp_iso": "2026-05-28T17:14:38-06:00",
+      "subject": "docs: plan for 2026-05-29 RTH validation session"
+    },
+    {
+      "sha": "1ba3482",
+      "full_sha": "1ba3482b3a7cadc33d8eb52470cb9541aff0ef32",
+      "timestamp_iso": "2026-05-28T17:07:02-06:00",
+      "subject": "rest_verifier: distinct gap_fill_unverified status; Known_Bugs entry for live\u2194backtest gap-fill divergence"
+    },
+    {
+      "sha": "0f47daa",
+      "full_sha": "0f47daa593fdd61509070979d24d716f0b62ba9e",
+      "timestamp_iso": "2026-05-28T16:45:27-06:00",
+      "subject": "rest_verifier + apply_rest_correction: align L-type bar_time to bar boundary"
+    },
+    {
+      "sha": "45a3a12",
+      "full_sha": "45a3a12a3cbaad203ae3b4a6e5520ab559ae4b44",
+      "timestamp_iso": "2026-05-28T16:30:13-06:00",
+      "subject": "ws_rest_spliced Phases A+B+C: snapshot fidelity + multi-bar replay + per-second splice"
+    },
+    {
+      "sha": "cc2a9b2",
+      "full_sha": "cc2a9b25b35578dab20edd4cc166fdf381839042",
+      "timestamp_iso": "2026-05-28T15:37:08-06:00",
+      "subject": "docs: drift_uncorrected_cascade root cause + Known_Bugs entries"
+    },
+    {
+      "sha": "697fb9a",
+      "full_sha": "697fb9a639c9dcbe63c8e64cbb6402bc6437e5ef",
+      "timestamp_iso": "2026-05-28T15:29:15-06:00",
+      "subject": "docs: capture 2026-05-28 EOD baseline metrics post-M8"
+    },
+    {
+      "sha": "1bc4150",
+      "full_sha": "1bc415004472250450ec4d1df9aa5ce384d7cea8",
+      "timestamp_iso": "2026-05-28T15:12:55-06:00",
+      "subject": "docs: divergence investigation SOP + tool + first session log"
+    },
+    {
+      "sha": "70a449d",
+      "full_sha": "70a449d7db06e7ebb69c4265b6e346df28a6e60f",
+      "timestamp_iso": "2026-05-28T13:30:13-06:00",
+      "subject": "docs: mark rest_polled/B1 superseded; update WS coverage entry status"
+    },
+    {
+      "sha": "cb7eeaf",
+      "full_sha": "cb7eeaf2adc42d08af3e14e5b7db522379f465eb",
+      "timestamp_iso": "2026-05-28T12:51:38-06:00",
+      "subject": "M8: promote ws_rest_spliced to default, demote ws_agg_reconciled"
+    }
+  ]
+}
