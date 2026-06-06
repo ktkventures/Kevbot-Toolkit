@@ -202,6 +202,11 @@ export function FilterBar({ cohort }: FilterBarProps) {
     )
       .sort()
       .map((s) => ({ value: s, label: s }));
+    const originOpts = Array.from(
+      new Set(cohort.map((m) => m.origin).filter((s): s is string => !!s)),
+    )
+      .sort()
+      .map((s) => ({ value: s, label: s }));
     const trigOpts = Array.from(
       new Set(
         cohort
@@ -216,7 +221,15 @@ export function FilterBar({ cohort }: FilterBarProps) {
     )
       .sort()
       .map((s) => ({ value: s, label: s }));
-    return { sidOpts, symbolOpts, tfOpts, sessionOpts, trigOpts, gateOpts };
+    return {
+      sidOpts,
+      symbolOpts,
+      tfOpts,
+      sessionOpts,
+      originOpts,
+      trigOpts,
+      gateOpts,
+    };
   }, [cohort]);
 
   const setType = (t: StrategyType | null) => {
@@ -371,6 +384,17 @@ export function FilterBar({ cohort }: FilterBarProps) {
               </span>
             </span>
           )}
+          {filters.origins.length > 0 && (
+            <span style={ACTIVE_PILL_STYLE}>
+              origin: {filters.origins.join(', ')}
+              <span
+                style={CLEAR_BTN_STYLE}
+                onClick={() => setFilters({ ...filters, origins: [] })}
+              >
+                ×
+              </span>
+            </span>
+          )}
           {filters.triggerPacks.length > 0 && (
             <span style={ACTIVE_PILL_STYLE}>
               trigger: {filters.triggerPacks.join(', ')}
@@ -474,6 +498,12 @@ export function FilterBar({ cohort }: FilterBarProps) {
             options={options.sessionOpts}
             selected={filters.sessions}
             onChange={(vals) => setFilters({ ...filters, sessions: vals })}
+          />
+          <MultiSelect
+            label="Origin"
+            options={options.originOpts}
+            selected={filters.origins}
+            onChange={(vals) => setFilters({ ...filters, origins: vals })}
           />
           <MultiSelect
             label="Trigger pack"

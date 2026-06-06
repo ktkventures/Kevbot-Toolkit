@@ -50,6 +50,7 @@ export function useFilterState(): {
     symbols: parseCsv(searchParams.get('symbols')),
     timeframes: parseCsv(searchParams.get('tfs')),
     sessions: parseCsv(searchParams.get('sessions')),
+    origins: parseCsv(searchParams.get('origins')),
     triggerPacks: parseCsv(searchParams.get('trigger_packs')),
     gatePacks: parseCsv(searchParams.get('gate_packs')),
     type: parseType(searchParams.get('type')),
@@ -68,6 +69,7 @@ export function useFilterState(): {
       setOrDelete('symbols', f.symbols.join(','));
       setOrDelete('tfs', f.timeframes.join(','));
       setOrDelete('sessions', f.sessions.join(','));
+      setOrDelete('origins', f.origins.join(','));
       setOrDelete('trigger_packs', f.triggerPacks.join(','));
       setOrDelete('gate_packs', f.gatePacks.join(','));
       setOrDelete('type', f.type ?? '');

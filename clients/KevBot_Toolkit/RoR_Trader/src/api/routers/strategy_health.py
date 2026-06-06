@@ -1237,12 +1237,14 @@ def _confluence_to_packs(confluence: list | None) -> list[str]:
 
 def _build_strategy_metadata(c, cohort: list[int]) -> dict:
     """For each sid in cohort, return:
-      {sid: {name, symbol, timeframe, session, trigger_pack,
+      {sid: {name, symbol, timeframe, session, origin, trigger_pack,
              gate_packs[], strategy_type}}
     strategy_type: 'trigger' if entry_trigger pack and no other gate
                    packs in confluence; 'gate' if confluence has at
                    least one pack distinct from the entry pack;
                    'both' otherwise.
+    timeframe and strategy_origin live as top-level columns on the
+    strategies table — NOT inside config.
     """
     if not cohort:
         return {}
@@ -1251,7 +1253,8 @@ def _build_strategy_metadata(c, cohort: list[int]) -> dict:
     for i in range(0, len(cohort), 500):
         batch = cohort[i:i + 500]
         r = (c.table("strategies")
-             .select("id,name,symbol,config").in_("id", batch).execute())
+             .select("id,name,symbol,timeframe,direction,strategy_origin,config")
+             .in_("id", batch).execute())
         for row in r.data or []:
             sid = row["id"]
             cfg = row.get("config") or {}
@@ -1279,12 +1282,16 @@ def _build_strategy_metadata(c, cohort: list[int]) -> dict:
                 stype = "gate"
             else:
                 stype = "trigger"
+            # Prefer top-level columns; fall back to config for legacy
+            tf = row.get("timeframe") or cfg.get("timeframe")
             meta[sid] = {
                 "strategy_id": sid,
                 "name": name or None,
                 "symbol": row.get("symbol"),
-                "timeframe": cfg.get("timeframe"),
+                "timeframe": tf,
                 "session": cfg.get("trading_session"),
+                "direction": row.get("direction"),
+                "origin": row.get("strategy_origin"),
                 "trigger_pack": trigger_pack,
                 "gate_packs": gate_packs,
                 "strategy_type": stype,

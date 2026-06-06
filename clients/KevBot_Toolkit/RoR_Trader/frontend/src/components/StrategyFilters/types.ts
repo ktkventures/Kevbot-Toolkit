@@ -13,6 +13,8 @@ export interface StrategyMeta {
   symbol: string | null;
   timeframe: string | null;
   session: string | null;
+  direction: string | null;
+  origin: string | null;
   trigger_pack: string | null;
   gate_packs: string[];
   strategy_type: StrategyType;
@@ -23,6 +25,7 @@ export interface FilterState {
   symbols: string[];
   timeframes: string[];
   sessions: string[];
+  origins: string[];
   triggerPacks: string[];
   gatePacks: string[];
   type: StrategyType | null;
@@ -33,6 +36,7 @@ export const EMPTY_FILTERS: FilterState = {
   symbols: [],
   timeframes: [],
   sessions: [],
+  origins: [],
   triggerPacks: [],
   gatePacks: [],
   type: null,
@@ -44,6 +48,7 @@ export function isFilterEmpty(f: FilterState): boolean {
     f.symbols.length === 0 &&
     f.timeframes.length === 0 &&
     f.sessions.length === 0 &&
+    f.origins.length === 0 &&
     f.triggerPacks.length === 0 &&
     f.gatePacks.length === 0 &&
     f.type === null
@@ -66,6 +71,11 @@ export function passesFilters(m: StrategyMeta, f: FilterState): boolean {
   if (
     f.sessions.length > 0 &&
     (!m.session || !f.sessions.includes(m.session))
+  )
+    return false;
+  if (
+    f.origins.length > 0 &&
+    (!m.origin || !f.origins.includes(m.origin))
   )
     return false;
   if (
