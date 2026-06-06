@@ -8,6 +8,24 @@
 
 ## EXECUTIVE SUMMARY (read this first)
 
+### ⚠ CLARIFICATION before reading any numbers below
+
+This doc reports **TWO different views** that can confuse if not distinguished:
+
+1. **Individual strategy numbers** — what a single strategy hits per hour. sid 268 hits 70-97% on its clean hours. This is the same metric as the earlier UT Bot analysis (verified bit-identical for sid 268).
+2. **Cohort aggregate numbers** — sum-across-42-strategies. The 42 strategies include ~10 broken-gate strategies at 0-15%. So the COHORT AVERAGE is ~47% Friday, but that's NOT what any healthy individual strategy looks like.
+
+**Reference strategies (the canaries we ran tonight) are at 70-95% range — engine is healthy.** The 40-50% cohort aggregate is dragged down by broken-gate strategies. Don't read the cohort number and think "all strategies regressed to 40-50%" — they didn't.
+
+### Per-strategy Friday tier distribution (the truer per-strategy picture)
+
+| Tier | Strategies | Friday combined % |
+|---|---|---|
+| **Top healthy (≥60%)** | 263, 267, 268, 270, 273, 296, 300 (7 strategies) | 61-70% |
+| **Mid (40-60%)** | 278, 280, 282, 284, 286, 288, 290, 292, 294, 298, 301, 302 (12 strategies) | 41-59% |
+| **Low (15-40%)** | 265, 269, 276, 285, 287, 299, 303 (7 strategies) | 16-39% |
+| **Critical (<15%)** | 277, 279, 281, 283, 291, 293, 295, 297, 304, 305 (10 strategies) | 0-13% |
+
 After analyzing **9 days × 43 strategies × hour-by-hour** with tight ±5s pairing, the data tells a clear story:
 
 ### 1. There IS a real day-over-day pattern — but it's NOT a uniform engine regression
