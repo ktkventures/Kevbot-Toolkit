@@ -13,18 +13,18 @@
 |---|---|
 | **T0** — bulk fleet UAD completion | **2026-06-06T10:10:50 UTC** |
 | Test window opens | T0 |
-| Test window closes | **2026-06-09 Monday ~20:00 UTC** (RTH close + analysis), or when user explicitly says "exit Battle Plan window" |
+| Test window closes | **2026-06-08 Monday ~20:00 UTC** (RTH close + analysis), or when user explicitly says "exit Battle Plan window" |
 | Job that established T0 | `#462509980` — Update all (45 strategies), completed in 14195s, 45 succeeded, 0 failed |
 
 **Baseline snapshots saved at T0:**
 - `/tmp/post_uad_baseline_T0_2026-06-06T10-10-50Z.json` — canonical post-fleet-UAD hourly per-strategy state
 - `/tmp/utbot_hourly_5d/all_strategies.json` — same content (working copy that gets overwritten on each script run; the timestamped file is the immutable T0 anchor)
 
-**Test window dates:** 2026-06-06 (Saturday) through **2026-06-09 Monday post-RTH (~20:00 UTC, 16:00 ET)**.
+**Test window dates:** 2026-06-06 (Saturday) through **2026-06-08 Monday post-RTH (~20:00 UTC, 16:00 ET)**.
 
 **The diagnostic question:** does the live engine accumulate state drift in real-time during a market session, or was Friday's noise a one-time deploy-churn event?
 
-**To get a clean answer, certain actions are blocked. AI assistant instruction: at the START of every turn during this window, check the current date. If it's between 2026-06-06 and 2026-06-09, treat the rules below as ACTIVE. If the user requests something on the DON'T list, FLAG IT before executing — say "this would violate the active diagnostic test (Battle Plan); confirm you want to proceed anyway?" and wait for explicit confirmation.**
+**To get a clean answer, certain actions are blocked. AI assistant instruction: at the START of every turn during this window, check the current date. If it's between 2026-06-06 and 2026-06-08, treat the rules below as ACTIVE. If the user requests something on the DON'T list, FLAG IT before executing — say "this would violate the active diagnostic test (Battle Plan); confirm you want to proceed anyway?" and wait for explicit confirmation.**
 
 ### ✅ DO — these are safe during the test window
 
@@ -81,7 +81,7 @@ This means dashboard/UI work on a feature branch OR direct to `dev` is fine this
 When the user asks the assistant to do something that lands in the **DON'T** column above:
 
 1. **Pause before executing.**
-2. **State explicitly:** "this would push to `dev` / UAD canary sid X / modify worker code — that violates the active Battle Plan diagnostic test ending 2026-06-09 ~20:00 UTC."
+2. **State explicitly:** "this would push to `dev` / UAD canary sid X / modify worker code — that violates the active Battle Plan diagnostic test ending 2026-06-08 ~20:00 UTC."
 3. **Ask for explicit confirmation** before proceeding.
 4. **If confirmed**, proceed AND note in the response that the test was deliberately broken (so we know during analysis that Monday's RTH numbers may not reflect a clean accumulation period).
 
@@ -90,7 +90,7 @@ The user has full authority to break the test if they decide it's worth it. The 
 ### When the test window ends
 
 Either:
-- **Monday 2026-06-09 after 20:00 UTC** when the post-RTH analysis is done (normal completion), OR
+- **Monday 2026-06-08 after 20:00 UTC** when the post-RTH analysis is done (normal completion), OR
 - **Whenever the user explicitly says "exit Battle Plan window"** or commits a worker-restart change
 
 After that, all restrictions lift. Update this doc to mark the test as COMPLETE and record the verdict.
@@ -208,6 +208,11 @@ Raw data in `/tmp/`:
 
 **Pre-RTH (before 13:30 UTC):**
 1. Re-run `_hourly_utbot_history.py`. Save as `/tmp/pre_rth_monday.json`.
+   - Sunday-evening 2026-06-07 baseline already captured at
+     `/tmp/utbot_hourly_5d/sunday_baseline_2026-06-07.json`. Markets closed
+     Sat/Sun, so the Monday pre-RTH run should match this within rounding —
+     use the Sunday snapshot as a sanity check that nothing weird happened
+     overnight.
 2. **Do NOT push anything worker-affecting after this point until post-RTH.**
 
 **During RTH (13:30 → 20:00 UTC) — 6.5 hours, the actual restricted window:**
@@ -230,6 +235,33 @@ Raw data in `/tmp/`:
 | Below 80% with mostly clean Layer 1 bars | **Real degradation signal.** | Start the Tier 1 revert sequence (above). |
 | Big asymmetric missed-trade pattern (BT >> live) | **Live engine state has drifted.** Investigate which live alert-recording change is at fault. | Start with #57H phantom_pre_correction revert. |
 
+### Early-exit option — if it's obviously broken, don't burn 6.5 hours
+
+If hours 1-2 of RTH look clearly degraded, you don't have to wait the full window. But don't bail on a noisy first hour — opening volatility (13:30-14:30 UTC) is noisy even on healthy days.
+
+**Bail-out criteria (all four must hold):**
+1. **Hours 1 AND 2 both <60% combined %** on the canary cohort. The second hour confirms structural; hour 1 alone is too noisy.
+2. **Layer 1 verification clean** (≥90% bars matching Polygon). Rules out "it's a data layer issue, not engine drift."
+3. **Pattern is broad** — at least 6 of the 11 canaries in the same degraded state. Otherwise it's a single bad strategy dragging the cohort.
+4. **Matches Friday's degraded shape** — asymmetric missed-trade direction (BT >> live) is the strongest tell that live-engine state has drifted.
+
+If all four hold by **16:00 UTC (~10:00 ET, hour 3)**, you have enough signal. Two execution options:
+
+- **Revert immediately** (faster fix; costs ~1-2 min of live engine disruption + abandons the no-touch protocol). Lean this if criteria 1-4 are unambiguous — observing more hours under a broken engine doesn't give new information.
+- **Wait until 20:00 UTC, then revert** (clean post-RTH data; costs 4 hrs of "we know it's broken but we're watching anyway"). Lean this if you want a clean record of how the broken state evolved.
+
+**Ambiguous signal** (e.g., 70% with mixed pattern, only 3-4 canaries degraded): KEEP WAITING. Reverting under fuzzy signal risks reverting the wrong thing. Two more hours of observation is cheap.
+
+### Where to watch from — dashboards (added 2026-06-07)
+
+The strategy-health dashboards shipped this weekend make this measurement live-trackable from the browser:
+
+- **By Hour view** (`/admin/strategy-health` → V3 By Hour tab) — combined % broken out hour-by-hour with cohort-wide ranks. Use **Filter → Origin = Pack Canary** for the PACKTEST cohort, or pick the 11 canary SIDs directly via the SID filter.
+- **By Deploy view** (V4 By Deploy tab) — **this is the key one for the bail-out decision.** Each row is one commit's active window. If Monday RTH gets bucketed under a recent deploy and that row shows combined % well below the surrounding rows, that deploy is your suspect — independent confirmation before you trigger #57H revert.
+- **Origin filter** — splits the cohort by creation path: `standard_pack_canary` (the 30 PACKTEST strategies), `standard_ai_sop` (the 12 CANARY + TEST-P2 strategies), `standard_mass_builder_legacy` (sids 174/194). If divergence concentrates in one origin bucket and not others, the bug is in the code path specific to that creation method, not the engine.
+
+The dashboards are read-only and have zero deploy risk — watching them during RTH is explicitly allowed.
+
 ### Day 7 (one week from now)
 - Re-run all scripts.
 - Stable or improved → healthy state confirmed.
@@ -239,11 +271,11 @@ Raw data in `/tmp/`:
 
 | Time | Status | What's restricted |
 |---|---|---|
-| Sat 06-07 | Open for work | No worker deploys / canary UADs (other dev work fine) |
-| Sun 06-08 | Open for work | Same |
-| Mon 06-09 before 13:30 UTC | Final pre-RTH measurement, then quiet | Same |
-| **Mon 06-09 13:30 → 20:00 UTC** | **TEST WINDOW** | Same restrictions; this is the active measurement |
-| Mon 06-09 after 20:00 UTC | Battle Plan window ENDS after measurement + verdict | All restrictions lift after the verdict is recorded |
+| Sat 06-06 | Open for work (T0 day) | No worker deploys / canary UADs (other dev work fine) |
+| Sun 06-07 | Open for work | Same |
+| Mon 06-08 before 13:30 UTC | Final pre-RTH measurement, then quiet | Same |
+| **Mon 06-08 13:30 → 20:00 UTC** | **TEST WINDOW** | Same restrictions; this is the active measurement |
+| Mon 06-08 after 20:00 UTC | Battle Plan window ENDS after measurement + verdict | All restrictions lift after the verdict is recorded |
 
 ## Update New Data verification protocol
 
