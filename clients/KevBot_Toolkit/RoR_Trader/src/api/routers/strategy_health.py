@@ -1350,6 +1350,14 @@ def get_strategy_health_by_hour(
         description="Pair window in seconds for alert↔BT event matching. "
                     "Default 5s (tight). The earlier strategy_health "
                     "endpoint uses ±60s; this is intentionally stricter."),
+    stability_tail_minutes: float = Query(
+        15.0,
+        description="Clip the upper bound to (now - stability_tail_minutes) "
+                    "to exclude the BT-lane lag tail. The BT engine's "
+                    "lag_minutes setting holds it back from the most-recent "
+                    "bars; events in this window have artificially high "
+                    "phantom counts. Set to 0 to disable (shows partial "
+                    "current hour with low-confidence flag instead)."),
     user=Depends(get_current_user),  # noqa: ARG001 — admin guard
 ) -> dict:
     """Hour-by-hour combined pair-rate aggregation across the cohort.
@@ -1389,6 +1397,13 @@ def get_strategy_health_by_hour(
             return {"error": f"could not parse until={until!r}"}
     else:
         until_dt = now
+    # Apply stability tail — clip upper bound to (now - stability_tail_minutes)
+    # to exclude the BT-lane lag region where alerts have no possible BT pair
+    # yet (artificially inflates phantom counts).
+    if stability_tail_minutes > 0:
+        stable_until_dt = now - timedelta(minutes=stability_tail_minutes)
+        if until_dt > stable_until_dt:
+            until_dt = stable_until_dt
     since_iso = since_dt.isoformat()
     until_iso = until_dt.isoformat()
 
@@ -1629,6 +1644,7 @@ def get_strategy_health_by_hour(
         "since": since_iso,
         "until": until_iso,
         "pair_window_s": pair_window_s,
+        "stability_tail_minutes": stability_tail_minutes,
         "cohort_size": len(cohort),
         "hours_count": len(hours_sorted),
         "hours_with_data": n_with,
@@ -1690,6 +1706,19 @@ def get_strategy_health_by_deploy(
         description="ISO timestamp (exclusive) for end. Default: now."),
     pair_window_s: float = Query(
         5.0, description="Pair window in seconds. Default 5s."),
+    stability_tail_minutes: float = Query(
+        15.0,
+        description="Clip each deploy window's upper bound to "
+                    "(end - stability_tail_minutes) to exclude BT-lane lag. "
+                    "Applied to the newest deploy (whose end is 'now'). Set "
+                    "to 0 to disable."),
+    warmup_minutes: float = Query(
+        30.0,
+        description="Clip each deploy window's lower bound to "
+                    "(deploy_ts + warmup_minutes) to exclude worker warmup "
+                    "+ snapshot resume settling. Stateful stops (swing/ATR) "
+                    "need ~30 bars to populate buffers before generating "
+                    "trades. Set to 0 to disable."),
     user=Depends(get_current_user),  # noqa: ARG001
 ) -> dict:
     """Pair-rate aggregation bucketed by deploy window.
@@ -1748,20 +1777,55 @@ def get_strategy_health_by_deploy(
     # Build deploy windows
     windows = []
     for i, c_ in enumerate(in_window):
-        w_start = _parse_iso(c_["timestamp_iso"])
+        deploy_dt = _parse_iso(c_["timestamp_iso"])
         if i + 1 < len(in_window):
-            w_end = _parse_iso(in_window[i + 1]["timestamp_iso"])
+            raw_w_end = _parse_iso(in_window[i + 1]["timestamp_iso"])
         else:
-            w_end = until_dt
-        if w_start is None or w_end is None or w_end <= w_start:
+            raw_w_end = until_dt
+        if deploy_dt is None or raw_w_end is None or raw_w_end <= deploy_dt:
             continue
+        # Apply warmup clipping: skip first warmup_minutes after deploy
+        # (worker warmup + snapshot resume + stateful-stop buffer settle)
+        w_start = deploy_dt + timedelta(minutes=warmup_minutes)
+        # Apply stability tail clipping to the latest window only (where
+        # raw_w_end ~= now). Older windows ended at the next deploy, which
+        # is a hard boundary that BT had time to catch up to.
+        if i + 1 < len(in_window):
+            w_end = raw_w_end
+        else:
+            if stability_tail_minutes > 0:
+                stable_until = now - timedelta(minutes=stability_tail_minutes)
+                w_end = min(raw_w_end, stable_until)
+            else:
+                w_end = raw_w_end
+        if w_end <= w_start:
+            # Warmup consumed the whole window — record with zero stable
+            # duration so the UI can flag "no stable data" rather than
+            # silently dropping the deploy.
+            windows.append({
+                "sha": c_["sha"],
+                "subject": c_["subject"],
+                "timestamp_iso": c_["timestamp_iso"],
+                "window_start": w_start.isoformat(),
+                "window_end": w_start.isoformat(),
+                "duration_seconds": 0.0,
+                "stable_duration_seconds": 0.0,
+                "raw_duration_seconds": (raw_w_end - deploy_dt).total_seconds(),
+                "low_confidence": True,
+            })
+            continue
+        stable_duration = (w_end - w_start).total_seconds()
         windows.append({
             "sha": c_["sha"],
             "subject": c_["subject"],
             "timestamp_iso": c_["timestamp_iso"],
             "window_start": w_start.isoformat(),
             "window_end": w_end.isoformat(),
-            "duration_seconds": (w_end - w_start).total_seconds(),
+            "duration_seconds": stable_duration,
+            "stable_duration_seconds": stable_duration,
+            "raw_duration_seconds": (raw_w_end - deploy_dt).total_seconds(),
+            # Flag low-confidence when < 2 hours of stable data
+            "low_confidence": stable_duration < 2 * 3600,
         })
 
     if not windows:
@@ -1770,6 +1834,8 @@ def get_strategy_health_by_deploy(
             "since": since_dt.isoformat(),
             "until": until_dt.isoformat(),
             "pair_window_s": pair_window_s,
+            "stability_tail_minutes": stability_tail_minutes,
+            "warmup_minutes": warmup_minutes,
             "deploy_count": 0,
             "deploys": [],
             "note": "no deploys recorded in window (deploy_history.json "
@@ -1953,6 +2019,11 @@ def get_strategy_health_by_deploy(
             "window_start": w["window_start"],
             "window_end": w["window_end"],
             "duration_seconds": w["duration_seconds"],
+            "stable_duration_seconds": w.get("stable_duration_seconds",
+                                              w["duration_seconds"]),
+            "raw_duration_seconds": w.get("raw_duration_seconds",
+                                           w["duration_seconds"]),
+            "low_confidence": w.get("low_confidence", False),
             "alerts": tot_alerts,
             "bt_events": tot_bt,
             "paired": tot_paired,
@@ -1998,6 +2069,8 @@ def get_strategy_health_by_deploy(
         "since": since_dt.isoformat(),
         "until": until_dt.isoformat(),
         "pair_window_s": pair_window_s,
+        "stability_tail_minutes": stability_tail_minutes,
+        "warmup_minutes": warmup_minutes,
         "deploy_count": len(deploys_out),
         "deploys": deploys_out,
         "strategies_by_deploy": strategies_by_deploy,

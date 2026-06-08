@@ -61,10 +61,18 @@ function rankCell(rank: number | null, total: number): React.ReactNode {
   );
 }
 
+const TOLERANCE_PRESETS = [
+  { id: 5, label: '±5s', description: 'Tight — standard for engine fidelity' },
+  { id: 10, label: '±10s', description: 'Catches "almost-paired" cases' },
+  { id: 60, label: '±60s', description: 'Looser — useful for >1m timeframes' },
+] as const;
+
 export default function StrategyHealthByHourV3() {
   const [preset, setPreset] = useState<(typeof DATE_PRESETS)[number]['id']>(
     '7d',
   );
+  const [tolerance, setTolerance] = useState<5 | 10 | 60>(5);
+  const [stabilityTail, setStabilityTail] = useState<number>(15);
   const [selectedHour, setSelectedHour] = useState<string | null>(null);
 
   const sinceISO = useMemo(() => {
@@ -75,7 +83,8 @@ export default function StrategyHealthByHourV3() {
 
   const { data, isLoading, error } = useStrategyHealthByHour({
     since: sinceISO,
-    pairWindowS: 5,
+    pairWindowS: tolerance,
+    stabilityTailMinutes: stabilityTail,
   });
 
   const cohortMeta: StrategyMeta[] = data?.strategy_metadata ?? [];
@@ -211,8 +220,9 @@ export default function StrategyHealthByHourV3() {
           <div>
             <div style={{ fontSize: 14, fontWeight: 600 }}>Date range</div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-              ±5s pair window. Combined % = paired / (paired + phantom +
-              missed).
+              Combined % = paired / (paired + phantom + missed).
+              Stability tail clips the last {stabilityTail} min to exclude
+              BT-lane lag.
             </div>
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
@@ -243,6 +253,84 @@ export default function StrategyHealthByHourV3() {
                 {p.name}
               </button>
             ))}
+          </div>
+          {/* Tolerance selector */}
+          <div
+            style={{
+              display: 'flex',
+              gap: 6,
+              borderLeft: '1px solid var(--border)',
+              paddingLeft: 12,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 11,
+                color: 'var(--text-muted)',
+                alignSelf: 'center',
+                marginRight: 4,
+              }}
+            >
+              Tolerance:
+            </div>
+            {TOLERANCE_PRESETS.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => {
+                  setTolerance(t.id);
+                  setSelectedHour(null);
+                }}
+                title={t.description}
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 6,
+                  fontSize: 12,
+                  border: '1px solid var(--border)',
+                  background:
+                    tolerance === t.id
+                      ? 'var(--blue-muted, #1e40af44)'
+                      : 'var(--bg-input)',
+                  color:
+                    tolerance === t.id
+                      ? 'var(--blue, #3b82f6)'
+                      : 'var(--text-secondary)',
+                  fontWeight: tolerance === t.id ? 600 : 400,
+                  cursor: 'pointer',
+                }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          {/* Stability tail toggle */}
+          <div
+            style={{
+              display: 'flex',
+              gap: 6,
+              alignItems: 'center',
+              borderLeft: '1px solid var(--border)',
+              paddingLeft: 12,
+            }}
+          >
+            <label
+              style={{
+                fontSize: 11,
+                color: 'var(--text-muted)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                cursor: 'pointer',
+              }}
+              title="Clip the upper bound to (now - N min) to exclude BT-lane lag"
+            >
+              <input
+                type="checkbox"
+                checked={stabilityTail > 0}
+                onChange={(e) => setStabilityTail(e.target.checked ? 15 : 0)}
+                style={{ cursor: 'pointer' }}
+              />
+              Stability tail (15 min)
+            </label>
           </div>
           {data && (
             <div

@@ -37,6 +37,12 @@ const DATE_PRESETS = [
   { id: '30d', name: 'Last 30 days', days: 30 },
 ] as const;
 
+const TOLERANCE_PRESETS = [
+  { id: 5, label: '±5s', description: 'Tight — standard for engine fidelity' },
+  { id: 10, label: '±10s', description: 'Catches "almost-paired" cases' },
+  { id: 60, label: '±60s', description: 'Looser — useful for >1m timeframes' },
+] as const;
+
 function fmtPct(v: number | null): string {
   if (v === null || v === undefined) return '—';
   return `${v.toFixed(1)}%`;
@@ -78,6 +84,9 @@ export default function StrategyHealthByDeployV4() {
   const [preset, setPreset] = useState<(typeof DATE_PRESETS)[number]['id']>(
     '14d',
   );
+  const [tolerance, setTolerance] = useState<5 | 10 | 60>(5);
+  const [stabilityTail, setStabilityTail] = useState<number>(15);
+  const [warmup, setWarmup] = useState<number>(30);
 
   const sinceISO = useMemo(() => {
     const d = DATE_PRESETS.find((p) => p.id === preset)?.days ?? 14;
@@ -87,7 +96,9 @@ export default function StrategyHealthByDeployV4() {
 
   const { data, isLoading, error } = useStrategyHealthByDeploy({
     since: sinceISO,
-    pairWindowS: 5,
+    pairWindowS: tolerance,
+    stabilityTailMinutes: stabilityTail,
+    warmupMinutes: warmup,
   });
 
   const cohortMeta: StrategyMeta[] = data?.strategy_metadata ?? [];
@@ -153,9 +164,10 @@ export default function StrategyHealthByDeployV4() {
           <div>
             <div style={{ fontSize: 14, fontWeight: 600 }}>Date range</div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-              ±5s pair window. Each row = one commit&apos;s active period.
-              The Combined % column aggregates events across all strategies.
-              The Avg-Strategy % averages per-strategy combined % equally.
+              Each row = one commit&apos;s active period. Combined % aggregates
+              events across all strategies. Warmup ({warmup} min) clips the
+              start of each window; stability tail ({stabilityTail} min) clips
+              the end of the newest window — both exclude noise.
             </div>
           </div>
           <div style={{ display: 'flex', gap: 6 }}>
@@ -183,6 +195,88 @@ export default function StrategyHealthByDeployV4() {
                 {p.name}
               </button>
             ))}
+          </div>
+          {/* Tolerance selector */}
+          <div
+            style={{
+              display: 'flex',
+              gap: 6,
+              borderLeft: '1px solid var(--border)',
+              paddingLeft: 12,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 11,
+                color: 'var(--text-muted)',
+                alignSelf: 'center',
+                marginRight: 4,
+              }}
+            >
+              Tolerance:
+            </div>
+            {TOLERANCE_PRESETS.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setTolerance(t.id)}
+                title={t.description}
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 6,
+                  fontSize: 12,
+                  border: '1px solid var(--border)',
+                  background:
+                    tolerance === t.id
+                      ? 'var(--blue-muted, #1e40af44)'
+                      : 'var(--bg-input)',
+                  color:
+                    tolerance === t.id
+                      ? 'var(--blue, #3b82f6)'
+                      : 'var(--text-secondary)',
+                  fontWeight: tolerance === t.id ? 600 : 400,
+                  cursor: 'pointer',
+                }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          {/* Stability + warmup toggles */}
+          <div
+            style={{
+              display: 'flex',
+              gap: 12,
+              alignItems: 'center',
+              borderLeft: '1px solid var(--border)',
+              paddingLeft: 12,
+              fontSize: 11,
+              color: 'var(--text-muted)',
+            }}
+          >
+            <label
+              style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}
+              title="Clip the start of each deploy window by N min to exclude worker warmup"
+            >
+              <input
+                type="checkbox"
+                checked={warmup > 0}
+                onChange={(e) => setWarmup(e.target.checked ? 30 : 0)}
+                style={{ cursor: 'pointer' }}
+              />
+              Warmup (30 min)
+            </label>
+            <label
+              style={{ display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}
+              title="Clip the end of the newest window by N min to exclude BT-lane lag"
+            >
+              <input
+                type="checkbox"
+                checked={stabilityTail > 0}
+                onChange={(e) => setStabilityTail(e.target.checked ? 15 : 0)}
+                style={{ cursor: 'pointer' }}
+              />
+              Stability tail (15 min)
+            </label>
           </div>
           {data && (
             <div
@@ -295,7 +389,15 @@ export default function StrategyHealthByDeployV4() {
                       key={d.sha + d.timestamp_iso}
                       style={{
                         borderBottom: '1px solid var(--border-muted)',
+                        opacity: d.low_confidence ? 0.6 : 1,
                       }}
+                      title={
+                        d.low_confidence
+                          ? 'Low confidence: <2 hours of stable data ' +
+                            '(after warmup + before stability tail). ' +
+                            'Numbers may not be representative.'
+                          : undefined
+                      }
                     >
                       <td style={{ padding: '4px 8px' }}>
                         <code
@@ -307,6 +409,18 @@ export default function StrategyHealthByDeployV4() {
                         >
                           {d.sha}
                         </code>
+                        {d.low_confidence && (
+                          <span
+                            style={{
+                              marginLeft: 6,
+                              fontSize: 10,
+                              color: 'var(--orange, #f59e0b)',
+                            }}
+                            title="Low confidence (<2h stable data)"
+                          >
+                            ⚠
+                          </span>
+                        )}
                       </td>
                       <td
                         style={{

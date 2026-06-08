@@ -51,6 +51,7 @@ export interface StrategyHealthByHourResponse {
   since: string;
   until: string;
   pair_window_s: number;
+  stability_tail_minutes: number;
   cohort_size: number;
   hours_count: number;
   hours_with_data: number;
@@ -64,16 +65,29 @@ interface UseByHourOpts {
   since?: string;
   until?: string;
   pairWindowS?: number;
+  stabilityTailMinutes?: number;
 }
 
 export function useStrategyHealthByHour(opts: UseByHourOpts = {}) {
-  const { since, until, pairWindowS = 5 } = opts;
+  const {
+    since,
+    until,
+    pairWindowS = 5,
+    stabilityTailMinutes = 15,
+  } = opts;
   const params = new URLSearchParams();
   if (since) params.set('since', since);
   if (until) params.set('until', until);
   params.set('pair_window_s', String(pairWindowS));
+  params.set('stability_tail_minutes', String(stabilityTailMinutes));
   return useQuery({
-    queryKey: ['strategy-health-by-hour', since, until, pairWindowS],
+    queryKey: [
+      'strategy-health-by-hour',
+      since,
+      until,
+      pairWindowS,
+      stabilityTailMinutes,
+    ],
     queryFn: () =>
       apiFetch<StrategyHealthByHourResponse>(
         `/api/admin/strategy-health/by-hour?${params.toString()}`,
