@@ -1,12 +1,191 @@
 # Roadmap — Divergence Hunting (Live ↔ Backtest Pair-Rate to 95%+)
 
-**Last updated:** 2026-06-05 EOD
+**Last updated:** 2026-06-08 EOD
 **Goal:** Drive fleet-wide live↔backtest pair rate to 95%+ across the canary cohort.
-**Status (2026-06-05):** **96.7% achieved on sid 302.** Architectural work delivered.
-Remaining issue is OPERATIONAL (BT-lane backfill), not engine divergence.
+**Status (2026-06-08):** Battle Plan window completed; trigger-mode recovered to 70.2%
+(vs Friday 47.4%); 9 strategies hit 100% in ≥1 hour today. Engine capability proven.
+Next: pack-quality investigation + replay harness. See "Update 2026-06-08" below.
+**Status (2026-06-05):** 96.7% achieved on sid 302 immediately post-UAD. Architectural
+work delivered. Issue diagnosed as OPERATIONAL (BT-lane backfill), not engine divergence.
 
 This doc is the single source of truth for what's done, what's open, and where the
 related artifacts live. Update at each session's end.
+
+---
+
+## Update 2026-06-08 EOD — Battle Plan Results + Pack-Quality Path Forward
+
+### Battle Plan verdict: recovery confirmed, no revert
+
+Today's RTH (13:30-20:00 UTC) was the controlled measurement window — no deploys,
+MANUAL streaming, clean observation. Cohort numbers vs Friday baseline:
+
+| Mode | n | Friday combined % | Today combined % | Δ |
+|---|---|---|---|---|
+| Trigger | 26 | 47.4% | **70.2%** | +22.8 pts |
+| Gate | 15 | 15.2% | 20.3% | +5.1 pts |
+| Cohort total | 46 | ~35% | 48.8% | +13.8 pts |
+
+**Both modes improved.** Friday's degradation was deploy churn, not engine drift —
+hypothesis confirmed.
+
+**9 strategies hit 100% combined % in ≥1 hour today** with healthy alert volume:
+
+| sid | name | # 100% hours | best |
+|---|---|---|---|
+| 294 | PACKTEST · Stochastic Oscillator · trigger | 3 | 100% (31 alerts) |
+| 263, 267, 273 | TSLA UT Bot variants | 2 each | 100% (52 alerts) |
+| 282 | PACKTEST · EMA Stack v2 · trigger | 3 | 100% (20 alerts) |
+| 269 | SPY-CANARY-1m-Control | 2 | 100% |
+| 276, 298, 136 | Bollinger / SuperTrend / Mass mirror | 1 each | 100% |
+
+**The engine IS capable of 100% pairing.** Multiple packs proved it across 4 different
+creation paths (PACKTEST, CANARY, TEST-P2, mass-builder migration). Variance is in
+*which* strategies and *which* hours, not in the engine's fundamental capability.
+
+**Bail-out criteria NOT met** (per the Battle Plan early-exit table):
+- Asymmetry is phantom-heavy (live > BT), not the BT>>live direction the table linked
+  to #57H revert
+- Pattern is recovery, not degradation
+
+**Verdict recorded: do not revert. Battle Plan window closes.**
+
+### Pack-quality pattern (the new discovery)
+
+Cross-referenced today's combined % with `git log` on each `user_packs/` directory.
+Clean correlation:
+
+| Pack (trigger) | Today % | Last meaningful commit | Status |
+|---|---|---|---|
+| Stochastic | **93.6%** | 2026-05-07 phase2 markers | Clean migration, no hotfixes |
+| SuperTrend | 81.2% | 2026-04-27 FLIP fix | Clean |
+| Bollinger Bands | 79.4% | 2026-04-27 FLIP fix | Clean |
+| Swing 1-2-3 (both!) | 77.1% / 77.9% | 2026-04-27 | Clean (caveat: gate is permissive) |
+| EMA Stack v2 | 77.5% | 2026-05-07 | Clean |
+| UT Bot V4 (sid 302) | 73.7% | 2026-06-04 #57 manifest contract | Recently touched |
+| EMA PP v3 / v4 | 73.7% / 71.2% | 2026-06-03 phase2 migration | Recently touched |
+| RelVol v2 | 71.6% | 2026-04-27 | Clean but mid-tier |
+| RSI Zones 2 | 70.9% | 2026-05-07 | Clean |
+| Strat Assistant | 69.8% | 2026-04-27 | Clean |
+| MACD Histogram v2 | 68.9% | 2026-05-07 | Clean but mid-tier |
+| MACD Line v2 | 67.7% | 2026-05-07 | Clean but mid-tier |
+| **VWAP v2** | **43.1%** 🛑 | 2026-05-19 (TWO hotfixes) | "live exception storm" + "isinstance bug" |
+| **SR Channels** | **20.4%** 🛑 | 2026-04-26 | Migration commit says **"97% parity"** — never finished |
+
+**Working theory (Kevin's, validated by data):** packs that migrated cleanly to the
+modular pattern (single migration commit, optionally a follow-up FLIP/phase2 fix)
+perform well. Packs that needed live-side hotfixes (VWAP) or were marked incomplete
+at migration time (SR Channels) underperform — the migration WAS the validation,
+and incomplete migrations leave bugs in the field.
+
+**Swing 1-2-3 gate caveat:** the only working gate (77.9%) is likely working because
+Swing's gate logic is permissive most of the time (candles rarely in a Swing setup).
+Do NOT use Swing's gate as a template for fixing other gate packs — its 77.9% reflects
+"gate barely runs," not "gate logic is well-implemented."
+
+### Root cause hypothesis hierarchy
+
+| # | Hypothesis | Bug likely lives in | Test bucket | Confidence |
+|---|---|---|---|---|
+| H1 | Gate-mode systemic break — live emits alerts BT doesn't reproduce on 14/15 gates | Mostly BT model; possibly live emitting transient signals | A + C | **HIGH** — phantom-heavy across cohort |
+| H2 | Pack-specific bugs in VWAP v2 + SR Channels triggers | Pack code (BT + live both use it) | A | **HIGH** — git history shows incomplete migrations |
+| H3 | Mass Builder legacy config schema mismatch (sids 174, 194 at 1.5%) | BT model + legacy config fields | A | **HIGH** — clear lookup-failure shape |
+| H4 | Pack quality variance — why Stochastic 93% vs MACD Line 67% same batch | Pack code (interpreter cleanliness, state-transition shape) | A or C | Medium — needs pack-by-pack analysis |
+| H5 | Live engine over-firing on partial bars (transient ticks → alerts) | Live model | B | Medium — would explain phantom direction |
+| H6 | Afternoon engine drift (14-16 → 17-19 combined % gap) | Live engine state OR market behavior | B | Low-Medium — could be symptom not cause |
+| H7 | Hardware / Railway limits | Plumbing | B (instrumentation) | Low — 4000s UAD reflects engine compute, not infra |
+| H8 | Update New Data lag mechanics | UAD process | A | Already understood; addressed by 6/05 + today |
+
+### Validation buckets (testing methodology)
+
+**Bucket A — Update All Data-testable (fast, ~5-10 min per strategy):**
+
+For changes that affect BT trade generation. Workflow: change code → click UAD on
+canary → re-run hourly analysis script → compare before/after combined %.
+
+Covers: BT engine code, pack code, manifest fixes, interpreter changes, config schema
+fixes, anything in `src/` that touches BT lane.
+
+**Bucket B — Live-observation-required (slow, hours-to-day):**
+
+For changes that affect LIVE alert generation only. Workflow: deploy → wait for fresh
+alerts under new code → UAD BT lane → measure post-deploy window via By Deploy view.
+
+Covers: `worker.py` / `ralph_engine.py` changes, WebSocket handling, stream catchup,
+snapshot resume logic, anything that only runs in the live worker.
+
+**Bucket C — Faster alternatives (need to build harness first):**
+
+1. **Bar-replay harness (HIGHEST LEVERAGE):** record a representative RTH bar stream
+   (e.g., Monday 06-08 RTH), then run both engines through it offline. Deterministic,
+   ~minutes per iteration. Once built, converts Bucket B problems into Bucket A speed.
+2. **Pack Validation Sweep:** fixed golden window (e.g., Thursday 06-04 15:00-19:00
+   on SPY) → run every pack's trigger + gate through it → compare to stored reference.
+   Pre-deploy regression gate.
+3. **Cross-pack structural diff:** compare working pack code (Stochastic, Swing) vs
+   broken (VWAP, SR Channels) line-by-line in interpreter chain. Pure code review,
+   no execution.
+
+### Phase plan — Path to 95%+ across canary cohort
+
+Compressed timeline. Goal: work through these in **days, not weeks**.
+
+**Phase 1 (1-2 days) — Quick wins, Bucket A:**
+- Fix Mass Builder legacy configs (sids 174, 194) — read DB configs, diff vs
+  strategy_factory schema, update, UAD-validate. ~1 hour total.
+- Investigate Stochastic's structural lead — pick a 100% hour, trace why every alert
+  paired, document the pattern. Use as "golden child" template.
+- Apply Stochastic's pattern to SuperTrend (81.2% → push past 90%) and Bollinger
+  (79.4% → push past 90%). UAD-test each fix.
+
+**Phase 2 (2-3 days) — Build bar-replay harness, Bucket C-1:**
+- Record Monday RTH bar stream into a fixture file (`fixtures/replay_2026-06-08_rth.jsonl`)
+- Write harness `src/_replay_engines.py` that runs unified_engine + ralph_engine on
+  the fixture and emits trade lists + alert lists
+- Validate harness reproduces today's measured combined % per strategy within ~2 pts
+- This is the unlock: every subsequent hypothesis becomes minutes-iterable
+
+**Phase 3 (2-3 days, post-harness) — Gate-mode systemic break, H1:**
+- Pick Bollinger Bands gate (sid 277) as the test case
+- Take 10 phantom alerts from today's RTH
+- Replay each bar's context through both engines via the harness
+- Find the asymmetric step (likely confluence-record interpretation between live tick
+  handling and BT bar-close)
+- Fix → harness-test → UAD-validate on sid 277 → live-validate during next RTH
+- Apply same fix to other broken gates if the diagnosis is structural
+
+**Phase 4 (1-2 days, parallelizable with Phase 3) — Pack-specific cleanup, H2:**
+- VWAP v2: re-audit the 2026-05-19 hotfix code, look for residual issues
+- SR Channels: complete the "97% parity" migration
+- Both validated via UAD
+
+**Phase 5 (1 day, can defer) — Pack Validation Sweep, Bucket C-2:**
+- Define the golden window
+- Wire up sweep tool — runs all packs through golden window, compares to stored reference
+- Use as pre-deploy gate
+
+**Estimated total:** 5-8 days of focused work to get cohort to 90%+ on most strategies.
+Faster if Phases 3 and 4 can run in parallel (Kevin reviewing one while Claude works
+on the other).
+
+### Autonomous operations (RoR mode) — to discuss separately
+
+Kevin's request: define an autonomous protocol where Claude can iterate through these
+phases independently. Make changes → test via UAD → analyze results → declare success
+or pivot → move to next hypothesis.
+
+**To discuss in a follow-up session:**
+- Which actions Claude is authorized to execute autonomously (e.g., feature-branch
+  commits, UAD runs on non-canary strategies, doc updates)
+- Which require human-in-loop (push to dev during RTH, restart worker, modify pack
+  manifests, revert prior commits)
+- Standard "did this help" determination criteria — what numeric threshold + cohort
+  size constitutes "shipped fix" vs "needs more validation"
+- Escalation triggers — when to stop autonomous iteration and request review
+
+This will be its own document/SOP once defined. For now: status quo — Claude works
+on Kevin's explicit requests, surfaces analysis and proposed fixes for approval before
+touching code on dev branch.
 
 ---
 
@@ -167,6 +346,24 @@ This methodology update should be added to the SOP.
 ---
 
 ## Run-order for next session
+
+**Updated 2026-06-08 — supersedes the 2026-06-05 run-order below.** See "Phase plan"
+in the 2026-06-08 update above for full detail.
+
+1. **Phase 1 quick wins** — fix Mass Builder legacy configs (sids 174, 194), document
+   Stochastic's structural lead, apply pattern to SuperTrend + Bollinger
+2. **Phase 2 bar-replay harness** — build the offline replay tool (`src/_replay_engines.py`
+   + Monday RTH fixture). This is the unlock for fast iteration on every subsequent fix.
+3. **Phase 3 gate-mode break** — diagnose Bollinger gate (sid 277) via harness, fix,
+   propagate to other broken gates
+4. **Phase 4 pack-specific cleanup** — VWAP v2 hotfix audit + SR Channels migration
+   completion (parallelizable with Phase 3)
+5. **Phase 5 Pack Validation Sweep** — fixed golden window regression test as pre-deploy
+   gate
+6. **Define autonomous operations protocol** — separate discussion with Kevin; capture
+   in own SOP doc
+
+### Run-order from 2026-06-05 (carried over, lower priority)
 
 1. **Build smart gap-detection cron** — code the detector + action + cron wiring (~2 hrs)
 2. **Verify on one strategy** — run detector → backfill → compare to manual Update All Data
