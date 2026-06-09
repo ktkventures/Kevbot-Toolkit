@@ -1585,6 +1585,37 @@ class _ShadowIndicatorEngine:
 
         return self._current_confluence
 
+    def recompute_confluence(self, history_df: pd.DataFrame) -> Set[str]:
+        """Re-sync indicators from corrected history AND re-emit confluence
+        records — the rebroadcast-cascade counterpart to `on_bar_close`.
+
+        2026-06-09 (iter 0609a): the rebroadcast/duplicate path used to call
+        `indicators.recompute_from_history()` only, leaving the shadow's
+        `_current_confluence` (and therefore `SymbolHub._mtf_confluence[tf]`)
+        FROZEN at whatever state it held on the first real close after worker
+        start. For 2m+ secondary-TF gates whose closes are flagged duplicate
+        every bucket, that meant the cross-TF gate state never moved — it
+        passed (or blocked) forever based on the boot-time secondary state.
+        This recomputes indicators from the corrected history and then
+        re-derives the records so the gate stays live. Shadow records drive
+        only gating (no triggers/positions/alerts), so re-emitting is safe —
+        the original "don't re-emit" rule was inherited from the primary
+        own_records path, where re-emit could double-fire alerts.
+        """
+        self.indicators.recompute_from_history(history_df)
+        current = self.indicators.get_values()
+        prev = self.indicators.get_prev_values()
+
+        interps, _ = self.trigger_eval.evaluate_bar_close(
+            current, prev, self.indicators.state.prev2_macd_hist)
+
+        self._current_confluence = set()
+        for ikey, state_val in interps.items():
+            self._current_confluence.add(
+                f'{self._tf_short_label}-{ikey}-{state_val}')
+
+        return self._current_confluence
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ALERT DISPATCHER — save + enrich + webhook
@@ -2698,16 +2729,24 @@ class SymbolHub:
 
             if sec_was_duplicate:
                 # M8.7 (2026-05-02): rebroadcast cascade. Recompute shadow
-                # indicators from corrected history; don't re-emit
-                # confluence records.
+                # indicators from corrected history.
+                # 2026-06-09 (iter 0609a): ALSO re-emit confluence records.
+                # Previously this branch left `_mtf_confluence[sec_tf]`
+                # frozen at the boot-time state, so 2m+ cross-TF gates went
+                # stale (passed/blocked forever based on the secondary TF's
+                # state at the first close after worker start). See
+                # `_ShadowIndicatorEngine.recompute_confluence`.
                 try:
-                    shadow.indicators.recompute_from_history(sec_builder.history)
+                    self._mtf_confluence[sec_tf] = shadow.recompute_confluence(
+                        sec_builder.history)
                     logger.info(
-                        "Rebroadcast cascade: shadow %s/%ss recomputed (src=%s)",
-                        self.symbol, sec_tf, source_label)
+                        "Rebroadcast cascade: shadow %s/%ss recomputed, "
+                        "records refreshed=%s (src=%s)",
+                        self.symbol, sec_tf,
+                        self._mtf_confluence[sec_tf], source_label)
                 except Exception as e:
                     logger.warning(
-                        "shadow recompute_from_history failed (%ss): %s",
+                        "shadow recompute_confluence failed (%ss): %s",
                         sec_tf, e)
                 continue
 
