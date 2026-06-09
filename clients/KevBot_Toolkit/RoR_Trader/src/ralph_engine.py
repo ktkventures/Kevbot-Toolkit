@@ -1168,6 +1168,20 @@ class StrategyMonitor:
             confluence_records=self._current_confluence)
         if entry_sig:
             signals.append(entry_sig)
+            # GATE_DIAG (temporary, iter 0609a): when a GATED strategy fires
+            # an entry, record whether the gate was actually satisfied.
+            # subset_ok=0 => fired ungated (fail-open path); subset_ok=1 =>
+            # gate passed legitimately (=> live/BT shadow divergence, NOT
+            # fail-open). Remove after diagnosis.
+            if self.position.confluence_set:
+                _recs = self._current_confluence
+                _ok = self.position.confluence_set.issubset(_recs)
+                logger.info(
+                    "GATE_DIAG strat=%s fired entry; gate=%s subset_ok=%d "
+                    "records=%s mtf_keys=%s",
+                    self.strat_id, sorted(self.position.confluence_set),
+                    1 if _ok else 0, sorted(_recs),
+                    sorted(mtf_confluence.keys()) if mtf_confluence else None)
 
         # 7. Confirmation check for HM/HL entries made THIS bar
         if (self.position.state.status == 'IN_POSITION' and
