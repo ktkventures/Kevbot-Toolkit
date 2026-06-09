@@ -1,15 +1,129 @@
 # Roadmap — Divergence Hunting (Live ↔ Backtest Pair-Rate to 95%+)
 
-**Last updated:** 2026-06-08 EOD
+**Last updated:** 2026-06-08 (late — Phase 1 dig)
 **Goal:** Drive fleet-wide live↔backtest pair rate to 95%+ across the canary cohort.
-**Status (2026-06-08):** Battle Plan window completed; trigger-mode recovered to 70.2%
+**Status (2026-06-08 late):** Phase 1 (sid 174) executed. Surfaced the real "gating
+off-and-on" root cause: **confluence gates fail OPEN when records are empty**, and
+**2m cross-TF confluence records have not been produced in the live worker since ~06-03**,
+so every 2m-gated strategy floods ungated live while 15m/1M gates work. Fix scheduled for
+2026-06-09 during trading hours (so it can be validated live). See "Update 2026-06-08 (late)".
+**Status (2026-06-08 EOD):** Battle Plan window completed; trigger-mode recovered to 70.2%
 (vs Friday 47.4%); 9 strategies hit 100% in ≥1 hour today. Engine capability proven.
-Next: pack-quality investigation + replay harness. See "Update 2026-06-08" below.
 **Status (2026-06-05):** 96.7% achieved on sid 302 immediately post-UAD. Architectural
 work delivered. Issue diagnosed as OPERATIONAL (BT-lane backfill), not engine divergence.
 
 This doc is the single source of truth for what's done, what's open, and where the
 related artifacts live. Update at each session's end.
+
+---
+
+## Update 2026-06-08 (late) — Phase 1 dig: gate fail-open + 2m cross-TF live-record gap
+
+Phase 1 (fix Mass Builder legacy sids 174/194) was executed as the first autonomous test.
+The roadmap's **H3 hypothesis was wrong** — it is NOT a config schema mismatch, and the
+`_backfill_strategy_configs.py` path would have changed nothing. The dig instead found the
+mechanism behind the gate-mode break (H1) and the "gating works off and on" symptom.
+
+### What sid 174 actually was
+
+- 174 (TSLA LONG 1Min, gate `2m-SWING_123-BULL_C2` + `2m-SR_CHANNELS-BELOW_SUPPORT`) was
+  built 2026-05-15 on the **custom** pack `swing_123_test`.
+- Commit `32092e5` (2026-05-21) deleted `swing_123_test` from git, wrongly claiming "0
+  strategy users." 174 (+194) were never migrated — orphaned.
+- The standard replacement group `swing_123_default` (base_template `swing_123`) was left
+  **`enabled: false`**. Both `services.py:291` (backtest) and `ralph_engine.py:4807` (live)
+  run indicators only for `get_enabled_groups()`, so `calculate_swing_123` never ran →
+  the SWING_123 interpreter defaulted every bar to NEUTRAL → `BULL_C2` was unsatisfiable →
+  **0 backtest trades** (a from-scratch recompute confirmed 0). The indicator itself is fine
+  (direct run on TSLA 2m: BULL_C2 ×319/2535).
+- **Fix applied (DB only, reversible; backup `/tmp/cg_backup_19d47e46.json`):** enabled
+  `swing_123_default`, removed the dead `swing_123_test_default` group. Validated: UAD on 174
+  went **0 → 159 trades** (win 48.1%, daily_r 0.82).
+
+### THE BUG — gates fail OPEN when confluence records are empty
+
+The gate guard in `unified_engine.check_entry` (`unified_engine.py:2311` C-type; `:2729`
+L-type) — **one implementation, used by BOTH backtest and live** (the live worker imports
+`run_unified_backtest` from `unified_engine`):
+
+```python
+if self.confluence_set and confluence_records:   # ← short-circuits when records empty
+    if not self.confluence_set.issubset(confluence_records):
+        return None
+```
+
+When a bar has **zero** confluence records, `... and confluence_records` is False, the
+subset check is skipped, and the entry fires **as if ungated**. A gate with missing records
+does not block — it disappears.
+
+Why it manifests asymmetrically (live vs backtest):
+- **Backtest** always has records — `prepare_data_with_indicators` runs the interpreter even
+  when the indicator didn't, emitting a default state (e.g. `2m-SWING_123-NEUTRAL`). Records
+  present → gate evaluates → blocks correctly.
+- **Live** for **2m** secondary-TF gates produces **no records** → guard short-circuits →
+  ungated flood. (15m/1M cross-TF records DO flow live.)
+
+### Empirical proof — gate cohort splits by secondary timeframe
+
+| sid | gate | gate TF | BT/day | live entry/day | verdict |
+|---|---|---|---|---|---|
+| 136 | MACD H/L v2 | **15m / 1M** | ~9 | ~6 | ✅ gate works live |
+| 277 | Bollinger | 2m | ~14 | ~260 | ❌ fail-open (~18×) |
+| 293 | SR Channels | 2m | ~29 | ~296 | ❌ fail-open |
+| 299 | SuperTrend | 2m | ~35 | ~350 | ❌ fail-open (~10×) |
+| 303 | UT Bot v4 | 2m | ~23 | ~270 | ❌ fail-open |
+
+Daily entry-alert inflection on the 2m gates: 06-02 ~17/day → **06-03 ~180-230/day** and
+never recovered (per-hour rate jumped ~3.5× allowing for the 06-02 partial first day, created
+17:35 UTC mid-RTH). **136 (15m/1M) gates correctly live; every 2m gate floods.** This is the
+"gating off and on" Kevin remembered — it is **live-side and TF-specific**, since ~06-03.
+
+NOTE: this 2m fail-open is **separate from** the 174 swing issue — 277/293/299 use *enabled*
+packs and still fail open. So it is NOT a disabled-group problem; it is a **2m cross-TF live
+record-production gap** in the worker, cohort-wide.
+
+### Three distinct issues + fix plan (ORDER MATTERS)
+
+1. **174 BT** — disabled swing group → ✅ FIXED via migration (this session).
+2. **2m cross-TF live records not produced** (cohort-wide, since ~06-03) — the real "gating
+   broke" cause. **PRIMARY FIX.** Worker-side; needs market-hours instrumentation to see why
+   the 2m secondary-TF records aren't entering the live confluence buffer while 15m/1M are.
+   Suspects: cross-TF live regression (cf. `feedback_polygon_xtf_live_regression`, fixed
+   `ca57cac` for a similar gap), 2m TF not subscribed/aggregated in the worker, or required-TF
+   resolution dropping 2m.
+3. **Fail-open guard** (`unified_engine:2311`, `:2729`) — defense-in-depth. Change to fail
+   **closed**: `if self.confluence_set: if not self.confluence_set.issubset(confluence_records
+   or set()): return None`. **Do this ONLY AFTER #2** — applied first it silences all 2m gates
+   live (0 alerts) instead of flooding.
+
+### Plan for 2026-06-09 (during trading hours, to validate live)
+
+1. Pre-market / early: map the live 2m cross-TF record path in `data_worker_engine.py` /
+   `ralph_engine.py` (`_mtf_confluence` buffer, secondary-TF builder fan-out). Identify why
+   2m records aren't produced.
+2. During RTH: instrument one 2m gate (e.g. sid 277) — log `confluence_records` per entry in
+   the live worker; confirm they're empty for 2m and populated for a 15m/1M gate.
+3. Fix #2 (produce 2m records), deploy to dev, watch live: 2m gate entry rate should drop to
+   match BT (~10-35/day, not ~260).
+4. Then ship #3 (fail-closed guard) as the safety net.
+5. **Post-deploy cleanup (confirmed by Kevin 2026-06-08):**
+   - **Delete sid 174's alerts** AFTER the 2m fix deploys (so the clean slate isn't
+     re-polluted by ungated firing). Its BT is already correct (159 trades).
+   - **sids 267 & 301:** UAD their backtest to reflect the now-real `SWING_123-NEUTRAL` gate,
+     then decide alert/baseline reset — handle together with the live fix for consistency.
+
+### Data caveat from the migration (alerts/BT now on a different config basis)
+
+The migration (enable `swing_123_default`) affected the 3 SWING_123 referencers: **174, 267,
+301**.
+- **174** alerts (401) are MISLEADING — generated ungated (live fail-open) on the broken-gate
+  config. Post-fix pairing is 5.0% combined / **94.8% phantom** (380/401 unpaired). Recommend
+  **deleting 174's alerts**; its BT is freshly correct (159 trades). (Live will keep firing
+  ungated until fix #2 ships, so cleanest after the deploy.)
+- **267, 301** gate on `SWING_123-NEUTRAL`, which used to be always-true (every bar defaulted
+  NEUTRAL) → they were silently ungated. Their stored BT is now stale (overcounted); UAD needed
+  to reflect the real gate (~66% NEUTRAL). Their prior "100%" and the cohort "Swing gate works
+  77.9%" were ARTIFACTS of the broken gate. Canary-baseline decision pending Kevin.
 
 ---
 
@@ -131,28 +245,51 @@ snapshot resume logic, anything that only runs in the live worker.
 Compressed timeline. Goal: work through these in **days, not weeks**.
 
 **Phase 1 (1-2 days) — Quick wins, Bucket A:**
-- Fix Mass Builder legacy configs (sids 174, 194) — read DB configs, diff vs
-  strategy_factory schema, update, UAD-validate. ~1 hour total.
-- Investigate Stochastic's structural lead — pick a 100% hour, trace why every alert
-  paired, document the pattern. Use as "golden child" template.
-- Apply Stochastic's pattern to SuperTrend (81.2% → push past 90%) and Bollinger
-  (79.4% → push past 90%). UAD-test each fix.
+- ✅ **DONE (2026-06-08)** — sid 174 fixed (0→159 trades). Root cause was NOT a config
+  schema mismatch (H3 wrong); it was an orphaned custom pack + disabled replacement group.
+  See "Update 2026-06-08 (late)". sid 194 = separate live-sparsity issue, DEFERRED.
+- 🟡 **IN PROGRESS** — Stochastic structural lead. **Preliminary (2026-06-08, full-window
+  ±5s pairing — NOISY, includes broken/deploy-churn periods; needs stability-clipped hourly
+  view to confirm):**
+  - **Trigger frequency inversely tracks pairing.** Sparse/compound discrete-event triggers
+    pair best — Stochastic `k_cross_above_d_oversold` (crossover AND oversold zone → 1742
+    trades, 47.8%), SuperTrend `bull_flip` (1366, 48.1%), Bollinger `cross_upper` (983, 48.4%).
+    High-frequency single-condition triggers pair worse — MACD Hist `momentum_shift_up`
+    (7123, 40.9%), StratAssistant `bull_c2` (7837, 39.8%), RVOL `spike` (6595, 43.0%). More
+    events = more timing-jitter mismatch opportunities.
+  - **VWAP v2 is separately broken** — 26.8%, and BT(416) < alerts(513) = phantom-heavy → a
+    real pack bug, not just sparsity. Feeds Phase 4 (VWAP re-audit).
+  - **Hypothesis (golden child):** the best-pairing packs emit *infrequent, unambiguous,
+    bar-close-deterministic* events. To push SuperTrend/Bollinger past 90%, the lever is
+    likely timing determinism, not the trigger logic. CONFIRM via stability-clipped hourly
+    next, then apply to weaker packs (Bucket B, tomorrow).
+  - NOTE: manifest `type` field is "BOTH" for all (entry/exit flag, not a structural class) —
+    structural distinction comes from firing semantics + frequency, not metadata.
+- ⏳ **OPEN (needs live validation = tomorrow)** — Apply Stochastic's pattern to SuperTrend
+  (81.2% → past 90%) and Bollinger (79.4% → past 90%). UAD changes the BT lane, but
+  confirming the combined-% lift needs fresh live pairing → Bucket B.
 
-**Phase 2 (2-3 days) — Build bar-replay harness, Bucket C-1:**
-- Record Monday RTH bar stream into a fixture file (`fixtures/replay_2026-06-08_rth.jsonl`)
-- Write harness `src/_replay_engines.py` that runs unified_engine + ralph_engine on
-  the fixture and emits trade lists + alert lists
-- Validate harness reproduces today's measured combined % per strategy within ~2 pts
-- This is the unlock: every subsequent hypothesis becomes minutes-iterable
+**Phase 2 (2-3 days) — Bar-replay harness, Bucket C-1:**
+- 🟡 **MUCH OF THIS ALREADY EXISTS** (reconnaissance 2026-06-08). `src/parity_simulator.py`
+  already replays batch (BT) vs live paths and compares firing (`_replay_engine_bars`,
+  `_run_live_replay_path`). It is **V1**: single pack, single TF, **no confluence gating, no
+  cross-TF, no position-state composition**. The "V2 deferred" list in its docstring
+  (cross-TF, strategy-detail mode = multiple packs + PSM, mid-stream restart) is EXACTLY
+  what Phase 2/3 need. So Phase 2 = **extend parity_simulator to V2**, not build from scratch.
+- Also available: drill/probe scripts (`_probe_full_replay.py`, `_drill_parity_full.py`,
+  `_compare_cache_replay.py`) and frontend replay UI (`ChartReplayCard`, `ReplayableChart`,
+  `ScenarioReplayCard`, `TradeReplayModal`, `useScenarioReplay`, on StrategyDetailPage).
+- Remaining: V2 cross-TF + gating support; optionally a recorded RTH fixture for determinism.
 
-**Phase 3 (2-3 days, post-harness) — Gate-mode systemic break, H1:**
-- Pick Bollinger Bands gate (sid 277) as the test case
-- Take 10 phantom alerts from today's RTH
-- Replay each bar's context through both engines via the harness
-- Find the asymmetric step (likely confluence-record interpretation between live tick
-  handling and BT bar-close)
-- Fix → harness-test → UAD-validate on sid 277 → live-validate during next RTH
-- Apply same fix to other broken gates if the diagnosis is structural
+**Phase 3 (Gate-mode systemic break, H1) — DIAGNOSIS DONE 2026-06-08, ahead of the harness:**
+- The planned harness step ("find the asymmetric step — likely confluence-record
+  interpretation between live tick handling and BT bar-close") is **already found** without
+  the harness: it's the **fail-open gate guard** + **missing 2m cross-TF live records**.
+  Full writeup in "Update 2026-06-08 (late)".
+- What remains is the FIX, scheduled 2026-06-09 (live hours): produce 2m live records →
+  deploy → validate sid 277 entry rate drops to BT rate → then fail-closed guard.
+- The V2 parity_simulator (Phase 2) is still worth building as the regression gate so this
+  class of bug can't silently return.
 
 **Phase 4 (1-2 days, parallelizable with Phase 3) — Pack-specific cleanup, H2:**
 - VWAP v2: re-audit the 2026-05-19 hotfix code, look for residual issues
@@ -347,21 +484,33 @@ This methodology update should be added to the SOP.
 
 ## Run-order for next session
 
-**Updated 2026-06-08 — supersedes the 2026-06-05 run-order below.** See "Phase plan"
-in the 2026-06-08 update above for full detail.
+**Updated 2026-06-08 (late) — supersedes earlier run-orders.** See "Update 2026-06-08 (late)"
+and the Phase plan above for full detail. Phase 1 sid-174 ✅ done; Phase 3 diagnosis ✅ done.
 
-1. **Phase 1 quick wins** — fix Mass Builder legacy configs (sids 174, 194), document
-   Stochastic's structural lead, apply pattern to SuperTrend + Bollinger
-2. **Phase 2 bar-replay harness** — build the offline replay tool (`src/_replay_engines.py`
-   + Monday RTH fixture). This is the unlock for fast iteration on every subsequent fix.
-3. **Phase 3 gate-mode break** — diagnose Bollinger gate (sid 277) via harness, fix,
-   propagate to other broken gates
-4. **Phase 4 pack-specific cleanup** — VWAP v2 hotfix audit + SR Channels migration
-   completion (parallelizable with Phase 3)
-5. **Phase 5 Pack Validation Sweep** — fixed golden window regression test as pre-deploy
-   gate
-6. **Define autonomous operations protocol** — separate discussion with Kevin; capture
-   in own SOP doc
+### TOMORROW 2026-06-09 — DURING TRADING HOURS (the live-validatable work)
+
+1. **[PRIMARY] Fix the 2m cross-TF live-record gap** (Phase 3 fix / H1). Pre-market: map the
+   live 2m secondary-TF record path (`data_worker_engine.py` / `ralph_engine.py` `_mtf_confluence`
+   buffer + secondary-TF builder fan-out). RTH: instrument sid 277 — confirm `confluence_records`
+   empty for 2m, populated for a 15m/1M gate. Fix → deploy to dev → watch 2m gate entry rate
+   drop from ~260/day to ~BT rate. **Likely needs plan mode** (engine/worker change).
+2. **Then ship the fail-closed guard** (`unified_engine:2311`, `:2729`) as the safety net —
+   ONLY after #1, else 2m gates go silent.
+3. **Post-deploy cleanup:** delete sid 174's alerts (ungated/old-config, 94.8% phantom);
+   UAD sids 267 & 301 to reflect the now-real `SWING_123-NEUTRAL` gate + decide baseline reset.
+4. **Confirm + apply the Stochastic golden-child pattern** to SuperTrend/Bollinger (Bucket B —
+   live pairing validates the lift). See preliminary theory in the Phase 1 block above.
+
+### After the live fix (Bucket A / anytime)
+
+5. **Phase 2 — extend `parity_simulator.py` to V2** (cross-TF + gating + position-state
+   composition). NOT a from-scratch build. Becomes the pre-deploy regression gate so the
+   fail-open class can't silently return. Reuse existing frontend replay UI where useful.
+6. **Phase 4 — pack cleanup:** VWAP v2 (26.8%, phantom-heavy — confirmed laggard tonight) +
+   SR Channels migration completion.
+7. **Phase 5 — Pack Validation Sweep** (golden-window pre-deploy gate).
+8. **sid 274** (P3 carry-over) — genuinely silent live (BT 268 / 0 alerts) — investigate.
+9. **Define autonomous operations protocol** — separate discussion; own SOP doc.
 
 ### Run-order from 2026-06-05 (carried over, lower priority)
 
