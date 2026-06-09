@@ -423,6 +423,7 @@ const TABS = [
   'Equity & KPIs',
   'Chart & Trades',
   'Chart & Trades (Lab)',
+  'Gate Parity',
   'Confluence Analysis',
   'Configuration',
   'Alerts',
@@ -4306,6 +4307,103 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       </>
                     );
                   })()}
+                </Card>
+              </div>
+            )}
+
+            {/* =========================================================== */}
+            {/* GATE PARITY — Backtest vs Alert gate-state diagnostic        */}
+            {/* =========================================================== */}
+            {tab === 'Gate Parity' && (
+              <div>
+                {/* What you're looking at — nuance stated on-screen */}
+                <div
+                  className="mb-4 rounded-xl p-5"
+                  style={{ background: 'var(--accent-muted)', border: '1px solid var(--accent)' }}
+                >
+                  <h4 className="text-sm font-medium mb-2" style={{ color: 'var(--accent)' }}>
+                    Gate Parity — Backtest lens vs Alert lens
+                  </h4>
+                  <ul className="text-xs space-y-1.5" style={{ color: 'var(--text)', lineHeight: 1.5 }}>
+                    <li>
+                      <strong>Backtest lens (left)</strong> — REST bars + REST indicators + REST heatmap,
+                      evaluated <strong>at bar close</strong>. This is the reference truth.
+                    </li>
+                    <li>
+                      <strong>Alert lens (right)</strong> — what the live engine
+                      (<code>{(apiStrategy as any)?.live_model || 'ws_rest_spliced'}</code>) saw. <strong>First-write</strong> =
+                      decision-time (WS tip); <strong>Latest</strong> = after REST correction (converges to backtest).
+                    </li>
+                    <li>
+                      <strong>Gate:</strong>{' '}
+                      {strategyConfluence.length
+                        ? strategyConfluence.map((c: any) => (typeof c === 'string' ? c : c.id || c.label)).join(', ')
+                        : '(no confluence gate on this strategy)'}
+                      . Watch the <strong>confluence ribbon</strong> at the top of each chart — where the two lenses
+                      disagree on the gate state is where phantoms come from.
+                    </li>
+                    <li style={{ color: 'var(--text-muted)' }}>
+                      Shared: bars are ~identical (WS≈REST for liquid symbols). Differs: <strong>decision timing</strong>{' '}
+                      (live evaluates intra-bar at grace; backtest at bar close) and gate fidelity (PB).
+                      Theoretical two-engine replay + phantom surfacing are being layered onto this view next.
+                    </li>
+                  </ul>
+                </div>
+
+                <Card className="mb-4">
+                  <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                    <h4 className="text-sm font-medium">
+                      Gate Replay
+                      <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
+                        (Backtest REST · Alert live · shared scrub)
+                      </span>
+                    </h4>
+                    <div className="flex items-center gap-1 text-xs">
+                      <span style={{ color: 'var(--text-muted)' }}>Alert data:</span>
+                      {(['ws-first', 'ws-latest'] as const).map(opt => (
+                        <button
+                          key={opt}
+                          onClick={() => setLabDataSource(opt)}
+                          title={opt === 'ws-first'
+                            ? 'first_close — bar at first WS write (decision-time)'
+                            : 'close — bar after Polygon rebroadcast/REST corrections'}
+                          className="px-2 py-0.5 rounded transition-colors"
+                          style={{
+                            background: labDataSource === opt ? 'var(--accent)' : 'var(--bg-input)',
+                            color: labDataSource === opt ? 'white' : 'var(--text-muted)',
+                            border: labDataSource === opt ? 'none' : '1px solid var(--border)',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {opt === 'ws-first' ? 'First-write' : 'Latest'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {(!chartTabData.hasBars && !labChartTabData.hasBars) ? (
+                    <ChartPlaceholder
+                      label={stratSymbol ? `Loading ${stratSymbol}...` : 'OHLC chart'}
+                      height={350}
+                    />
+                  ) : (
+                    <LabReplayPanel
+                      algoPanes={chartTabData.chartPanes}
+                      alertPanes={labChartTabData.chartPanes}
+                      algoLabel="Backtest Lens (REST · bar-close)"
+                      alertLabel={`Alert Lens (live · ${labDataSource === 'ws-first' ? 'first-write' : 'latest'})`}
+                      alertFooter={labDataSource === 'ws-latest'
+                        ? `${labCacheLatest?.row_count ?? 0} bars (post-correction)`
+                        : `${labCacheFirst?.row_count ?? 0} bars (decision-time)`}
+                      upColor={chartPrefs.candleUp}
+                      downColor={chartPrefs.candleDown}
+                      upBorderColor={chartPrefs.candleUpBorder}
+                      gridLines={chartPrefs.gridLines}
+                      rightOffset={chartPrefs.rightOffset}
+                      timezone={chartPrefs.timezone}
+                      defaultIntervalSec={Math.max(1, Math.round((tfMs || 60000) / 1000))}
+                      height={350}
+                    />
+                  )}
                 </Card>
               </div>
             )}
