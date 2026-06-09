@@ -140,12 +140,97 @@ def classify(ctx: dict, window_hours: float, tol_sec: float = 5.0) -> dict:
     return {'rows': rows, 'live_n': len(live), 'bt_n': len(bt), 'want': want}
 
 
+# ── Live-model splice reconstruction ────────────────────────────────────────
+# Carbon-copy of ws_rest_spliced: at replay time `scrub_ts`, every closed bar
+# shows REST (latest, post-correction) values EXCEPT the WS tip — the forming
+# bar plus any bar whose close is within `grace_sec` of scrub_ts (not yet
+# REST-verified). Grace defaults are the live model's ACTUAL values:
+#   primary <60s   -> 4s alert-grace (rest_verifier.py:744, TF-aware; 10Sec=4s)
+#                     with a 5s per-bar backstop (ralph_engine.py:2516)
+#   secondary >=60s -> 30s per-bar drift grace (ralph_engine.py:2516)
+# Per-strategy `config.grace_seconds` overrides the primary alert-grace.
+LIVE_GRACE_DEFAULT = {'primary_10s': 4.0, 'primary_bar_backstop': 5.0, 'secondary': 30.0}
+
+
+def splice_alert_lens(symbol: str, tf_seconds: int, scrub_ts: datetime,
+                      grace_sec: float, day: Optional[str] = None) -> list:
+    """Reconstruct the live engine's bar history at replay time `scrub_ts`.
+
+    Pulls live_bars (WS first-write `first_*` + REST latest), and for each bar
+    with bar_start <= scrub_ts picks WS values if it's the WS tip (forming, or
+    closed < grace_sec ago) else REST. Returns dicts with a 'provenance' tag.
+    """
+    c = get_admin_client()
+    # Fetch the window ENDING at scrub_ts (most-recent bars first, then reverse)
+    # so the WS tip near scrub_ts is always included regardless of row caps.
+    rows = c.table('live_bars').select(
+        'bar_start,first_open,first_high,first_low,first_close,first_volume,'
+        'open,high,low,close,volume,source'
+    ).eq('symbol', symbol).eq('timeframe_seconds', tf_seconds)\
+     .lte('bar_start', scrub_ts.isoformat())\
+     .order('bar_start', desc=True).limit(500).execute().data
+    rows = list(reversed(rows))
+    out = []
+    for r in rows:
+        bs = _parse_iso(r['bar_start'])
+        if bs is None or bs > scrub_ts:
+            continue
+        bar_close = bs + timedelta(seconds=tf_seconds)
+        forming = bar_close > scrub_ts
+        is_ws = forming or (scrub_ts - bar_close).total_seconds() < grace_sec
+        pre = 'first_' if is_ws else ''
+        def g(k):
+            v = r.get(pre + k)
+            return float(v) if v is not None else (float(r.get(k)) if r.get(k) is not None else 0.0)
+        out.append({'bar_start': bs, 'open': g('open'), 'high': g('high'),
+                    'low': g('low'), 'close': g('close'), 'volume': g('volume'),
+                    'provenance': ('WS-forming' if forming else 'WS-tip') if is_ws else 'REST',
+                    'ws_close': r.get('first_close'), 'rest_close': r.get('close')})
+    return out
+
+
+def demo_splice(sid: int):
+    """Prove the splice on a real strategy: show the tip vs body at a scrub
+    time, and flag bars where WS != REST."""
+    ctx = load_context(sid)
+    sym = ctx['symbol']
+    # pick a scrub time: the latest live_bar for the primary TF today, minus a bit
+    c = get_admin_client()
+    from ralph_engine import _LABEL_TO_TF_SECONDS
+    prim = _LABEL_TO_TF_SECONDS.get(_row_to_strategy(
+        c.table('strategies').select('*').eq('id', sid).execute().data[0])['timeframe'].lower(), 10)
+    last = c.table('live_bars').select('bar_start').eq('symbol', sym)\
+        .eq('timeframe_seconds', prim).order('bar_start', desc=True).limit(1).execute().data
+    if not last:
+        print('no live_bars for', sym, prim); return
+    scrub = _parse_iso(last[0]['bar_start']) + timedelta(seconds=prim - 2)  # mid-forming
+    for tf, grace, lbl in [(prim, LIVE_GRACE_DEFAULT['primary_10s'], 'PRIMARY'),
+                           (ctx['sec_tf'], LIVE_GRACE_DEFAULT['secondary'], 'SECONDARY/gate')]:
+        bars = splice_alert_lens(sym, tf, scrub, grace)
+        ws = [b for b in bars if b['provenance'] != 'REST']
+        differ = [b for b in bars if b['ws_close'] is not None and b['rest_close'] is not None
+                  and abs(float(b['ws_close']) - float(b['rest_close'])) > 1e-9]
+        print(f"\n=== {lbl} {tf}s | scrub={scrub:%H:%M:%S} grace={grace}s ===")
+        print(f"  {len(bars)} bars <= scrub | WS-tip bars: {len(ws)} | bars where WS!=REST: {len(differ)}")
+        print("  last 6 bars (provenance / chosen close):")
+        for b in bars[-6:]:
+            tag = b['provenance']
+            print(f"    {b['bar_start']:%H:%M:%S}  {tag:<11} close={b['close']:.2f}"
+                  f"  (ws={b['ws_close']} rest={b['rest_close']})")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--sid', type=int, required=True)
     ap.add_argument('--window-hours', type=float, default=8.0)
     ap.add_argument('--tolerance', type=float, default=5.0)
+    ap.add_argument('--demo-splice', action='store_true',
+                    help='Demonstrate the ws_rest_spliced reconstruction on this strategy')
     args = ap.parse_args()
+
+    if args.demo_splice:
+        demo_splice(args.sid)
+        return
 
     ctx = load_context(args.sid)
     print(f"sid {ctx['sid']} {ctx['symbol']} | gate={ctx['gate']} | "
