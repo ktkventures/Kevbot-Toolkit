@@ -16,6 +16,7 @@ import { StrategyHealthBadge, StrategyHealthDrawer, StrategyFidelityBadges, type
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
 import { useLiveBar } from '@/hooks/queries/useLiveBar';
+import { useGateParity } from '@/hooks/queries/useGateParity';
 import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy, useSetForwardTestStart, useUpdateStrategyLanes } from '@/hooks/mutations/useStrategyMutations';
 import { useDisplayStore } from '@/providers/StoreProvider';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
@@ -610,6 +611,134 @@ const LANE_LABELS: Record<string, { label: string; color: string }> = {
   'live_only':  { label: 'Live only (phantom)', color: '#ef4444' },
   'empty':      { label: '—',             color: '#94a3b8' },
 };
+
+function GateParityTabContent({ strategyId }: { strategyId: number }) {
+  const [windowHours, setWindowHours] = useState(4);
+  const { data, isLoading, error } = useGateParity(strategyId, windowHours);
+
+  const WindowPicker = (
+    <div className="flex items-center gap-1 text-xs">
+      <span style={{ color: 'var(--text-muted)' }}>Window:</span>
+      {[2, 4, 8].map((h) => (
+        <button
+          key={h}
+          onClick={() => setWindowHours(h)}
+          className="px-2 py-0.5 rounded transition-colors"
+          style={{
+            background: windowHours === h ? 'var(--accent)' : 'var(--bg-input)',
+            color: windowHours === h ? 'white' : 'var(--text-muted)',
+            border: windowHours === h ? 'none' : '1px solid var(--border)',
+            cursor: 'pointer',
+          }}
+        >
+          {h}h
+        </button>
+      ))}
+    </div>
+  );
+
+  if (isLoading) {
+    return (
+      <Card className="mb-4">
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="text-sm font-medium">Gate Parity Analysis <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>(engine truth)</span></h4>
+          {WindowPicker}
+        </div>
+        <div className="text-sm py-4" style={{ color: 'var(--text-muted)' }}>Running the engine over the window…</div>
+      </Card>
+    );
+  }
+  if (error || !data) {
+    return (
+      <Card className="mb-4">
+        <div className="flex items-center justify-between mb-3">
+          <h4 className="text-sm font-medium">Gate Parity Analysis</h4>
+          {WindowPicker}
+        </div>
+        <div className="text-sm py-4" style={{ color: 'var(--red)' }}>
+          {error ? `Failed: ${String((error as any)?.message || error)}` : 'No data.'}
+        </div>
+      </Card>
+    );
+  }
+
+  const { meta, ribbon, entries, live_rows } = data;
+  const want = meta.want_state;
+  const phantoms = live_rows.filter((r) => !r.paired_bt);
+  const pbTotal = Object.values(ribbon.pb_dist).reduce((a, b) => a + b, 0) || 1;
+  const pbOpen = ribbon.pb_dist[want] || 0;
+  const cbTotal = Object.values(ribbon.cb_dist).reduce((a, b) => a + b, 0) || 1;
+  const cbOpen = ribbon.cb_dist[want] || 0;
+
+  const Stat = ({ label, value, sub }: { label: string; value: React.ReactNode; sub?: string }) => (
+    <div className="rounded-lg p-3" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
+      <div className="text-[10px] uppercase tracking-wide" style={{ color: 'var(--text-muted)' }}>{label}</div>
+      <div className="text-lg font-semibold" style={{ color: 'var(--text)' }}>{value}</div>
+      {sub && <div className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{sub}</div>}
+    </div>
+  );
+
+  return (
+    <Card className="mb-4">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <h4 className="text-sm font-medium">
+          Gate Parity Analysis
+          <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
+            (theoretical replay — engine truth, current logic)
+          </span>
+        </h4>
+        {WindowPicker}
+      </div>
+
+      <div className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+        Gate <code style={{ color: 'var(--text)' }}>{meta.gate}</code> · trigger <code>{meta.entry_trigger}</code> ·
+        {' '}live <code>{meta.live_model}</code> / bt <code>{meta.backtest_model}</code> · session {meta.session} ·
+        {' '}{meta.bars} bars
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
+        <Stat label="Theoretical BT entries" value={entries.theoretical_bt} sub="engine, fresh logic" />
+        <Stat label="Live entries (actual)" value={entries.live_actual} sub="historical alerts" />
+        <Stat label="Phantom (live, unpaired)" value={phantoms.length} sub={`of ${live_rows.length} live`} />
+        <Stat label={`Gate open (${want})`} value={`PB ${Math.round((100 * pbOpen) / pbTotal)}% · CB ${Math.round((100 * cbOpen) / cbTotal)}%`} sub="share of bars" />
+      </div>
+
+      <div className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+        Live entries — gate state at each (PB = what backtest gates on; CB = current bar). Phantoms (no paired BT) highlighted.
+      </div>
+      <div className="overflow-auto" style={{ maxHeight: 360 }}>
+        <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ color: 'var(--text-muted)', textAlign: 'left' }}>
+              <th className="py-1 pr-2">Time (UTC)</th>
+              <th className="py-1 pr-2">PB gate</th>
+              <th className="py-1 pr-2">CB gate</th>
+              <th className="py-1 pr-2">PB open?</th>
+              <th className="py-1 pr-2">CB open?</th>
+              <th className="py-1 pr-2">Paired BT?</th>
+            </tr>
+          </thead>
+          <tbody>
+            {live_rows.slice(0, 200).map((r, i) => (
+              <tr key={i} style={{ background: r.paired_bt ? 'transparent' : 'rgba(239,68,68,0.08)' }}>
+                <td className="py-1 pr-2 font-mono">{r.ts.slice(11, 19)}</td>
+                <td className="py-1 pr-2">{r.pb ?? '—'}</td>
+                <td className="py-1 pr-2">{r.cb ?? '—'}</td>
+                <td className="py-1 pr-2" style={{ color: r.pb_pass ? 'var(--green)' : 'var(--red)' }}>{r.pb_pass ? 'open' : 'blocked'}</td>
+                <td className="py-1 pr-2" style={{ color: r.cb_pass ? 'var(--green)' : 'var(--red)' }}>{r.cb_pass ? 'open' : 'blocked'}</td>
+                <td className="py-1 pr-2" style={{ color: r.paired_bt ? 'var(--green)' : 'var(--red)' }}>{r.paired_bt ? 'yes' : 'PHANTOM'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>
+        Note: live entries carry whatever code was live when they fired; theoretical BT is the current engine. Phantom = live entry with no
+        theoretical-BT entry within ±5s. A phantom where both PB and CB are &quot;blocked&quot; = live fired against a closed gate.
+      </div>
+    </Card>
+  );
+}
 
 function DivergenceTabContent({ strategyId }: { strategyId: number }) {
   const [forwardOnly, setForwardOnly] = useState(true);
@@ -4405,6 +4534,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     />
                   )}
                 </Card>
+
+                {/* Engine-truth analysis (theoretical replay) */}
+                <GateParityTabContent strategyId={strategyId} />
               </div>
             )}
 
