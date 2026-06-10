@@ -74,6 +74,8 @@ interface Props {
   upColor?: string;
   downColor?: string;
   timezone?: string | null;
+  hideSeriesTitles?: boolean;
+  rightOffset?: number;
 }
 
 export default function GateParityOneSec({
@@ -82,10 +84,12 @@ export default function GateParityOneSec({
   overlayLines,
   label,
   lookback = 120,
-  height = 150,
+  height = 240,
   upColor,
   downColor,
   timezone = null,
+  hideSeriesTitles = false,
+  rightOffset = 4,
 }: Props) {
   // Round the scrub head to the nearest 5s so scrubbing doesn't refetch on
   // every sub-second seek (day-cached anyway, but this trims churn).
@@ -128,6 +132,8 @@ export default function GateParityOneSec({
         upColor={upColor}
         downColor={downColor}
         timezone={timezone}
+        rightOffset={rightOffset}
+        hideSeriesTitles={hideSeriesTitles}
         currentTime={null}
         formingBar={null}
         formingIndicators={null}

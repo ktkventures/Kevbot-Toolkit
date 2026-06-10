@@ -214,6 +214,13 @@ interface LabReplayPanelProps {
   barCountNote?: ReactNode;
   /** A small on-screen caveat (e.g. the tip-indicator approximation). */
   tipNote?: ReactNode;
+
+  // ── Gate Parity polish (2026-06-10) ──
+  /** Hide the wordy series-title labels (e.g. "utv4 trailing stop previous")
+   *  that overlay the candles, on both lenses. Numeric price labels stay. */
+  hideSeriesTitles?: boolean;
+  /** When provided, renders a "Labels" toggle in the header. */
+  onToggleLabels?: () => void;
 }
 
 const PRESET_WINDOWS = [
@@ -249,6 +256,8 @@ export default function LabReplayPanel({
   oneSecAlert,
   barCountNote,
   tipNote,
+  hideSeriesTitles = false,
+  onToggleLabels,
 }: LabReplayPanelProps) {
   // Scrub head — Unix sec. (Declared before the spliced panes that depend on it.)
   const [currentTime, setCurrentTime] = useState<number>(0);
@@ -415,6 +424,23 @@ export default function LabReplayPanel({
               </button>
             </div>
           )}
+          {onToggleLabels && (
+            <button
+              onClick={onToggleLabels}
+              title={hideSeriesTitles
+                ? 'Show the indicator name labels'
+                : 'Hide the wordy indicator name labels that overlay the candles (price values stay)'}
+              className="px-2 py-0.5 rounded transition-colors"
+              style={{
+                background: hideSeriesTitles ? 'var(--accent)' : 'var(--bg-input)',
+                color: hideSeriesTitles ? 'white' : 'var(--text-muted)',
+                border: hideSeriesTitles ? 'none' : '1px solid var(--border)',
+                cursor: 'pointer',
+              }}
+            >
+              {hideSeriesTitles ? 'Labels hidden' : 'Hide labels'}
+            </button>
+          )}
           <div className="flex items-center gap-1">
             {PRESET_WINDOWS.map(p => (
               <button
@@ -523,6 +549,7 @@ export default function LabReplayPanel({
             rightOffset={rightOffset}
             timezone={timezone}
             currentTime={currentTime}
+            hideSeriesTitles={hideSeriesTitles}
             // Live updates explicitly suppressed in scrub mode
             formingBar={null}
             formingIndicators={null}
@@ -546,6 +573,7 @@ export default function LabReplayPanel({
             rightOffset={rightOffset}
             timezone={timezone}
             currentTime={currentTime}
+            hideSeriesTitles={hideSeriesTitles}
             formingBar={null}
             formingIndicators={null}
             formingStates={null}

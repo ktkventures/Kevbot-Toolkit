@@ -124,6 +124,11 @@ interface SyncedChartPaneProps {
    * truth for the rightmost edge.  Null/undefined = normal live mode (all
    * existing callers unaffected). */
   currentTime?: number | null;
+  /** Gate Parity (2026-06-10): when true, hide every series' TITLE label (the
+   * wordy "utv4 trailing stop previous" text anchored at the right edge that
+   * overlays the candles) via applyOptions — no rebuild (zoom/pan preserved).
+   * The numeric last-value (price) labels are left untouched. */
+  hideSeriesTitles?: boolean;
 }
 
 // Alias → IANA map matching StrategyDetailPage's TZ_MAP so everything
@@ -191,6 +196,7 @@ function SyncedChartPaneInner({
   formingStateCrossTf = null,
   timezone = null,
   currentTime = null,
+  hideSeriesTitles = false,
 }: SyncedChartPaneProps) {
   // Scrub mode is active when currentTime is a finite Unix-seconds number.
   const scrubActive = currentTime != null && isFinite(currentTime);
@@ -214,6 +220,12 @@ function SyncedChartPaneInner({
   // Candle count last pushed — lets the data effect detect a real data change
   // (vs a user pan) so it can re-fit a stale out-of-bounds visible range.
   const prevCandleCountRef = useRef<number>(-1);
+  // Signature of the candle data last pushed (count + last bar time). The
+  // out-of-bounds re-fit (squish guard) only fires when this CHANGES — i.e.
+  // genuinely new/refetched data arrived. A pure re-render (parent re-refs
+  // `panes` with identical content, e.g. overlay churn on the 1s pane) leaves
+  // the signature unchanged, so a user's manual pan is never snapped back.
+  const prevDataSigRef = useRef<string>('');
   // Keep the latest forming bar in a ref so the data effect can re-apply it
   // after setData overwrites the candle series. Without this, every panes
   // re-ref (alerts refetch, live pill timer, etc.) snaps the last candle
@@ -509,6 +521,30 @@ function SyncedChartPaneInner({
     };
   }, [paneStructureKey, upColor, downColor, upBorderColor, gridLines, rightOffset, getThemeColors, resolvedTz]);
 
+  // ---- SERIES-TITLE VISIBILITY EFFECT (2026-06-10) ----
+  // Toggles every series' TITLE label via applyOptions so the Gate Parity
+  // "Labels" toggle can clear the wordy indicator-name labels (e.g.
+  // "utv4 trailing stop previous") that anchor at the right edge and overlay
+  // the candles — WITHOUT a structure rebuild (zoom/pan preserved). The
+  // numeric last-value (price) labels are NOT touched. When re-enabled, each
+  // series restores its original `cfg.options.title`.
+  useEffect(() => {
+    const allSeries = seriesRef.current;
+    if (allSeries.length !== panes.length) return;
+    for (let pi = 0; pi < panes.length; pi++) {
+      const paneSeries = allSeries[pi];
+      if (!paneSeries) continue;
+      for (let si = 0; si < panes[pi].series.length; si++) {
+        const series = paneSeries[si];
+        if (!series) continue;
+        const cfg = panes[pi].series[si];
+        const originalTitle = (cfg.options?.title as string | undefined) ?? '';
+        try { (series as any).applyOptions({ title: hideSeriesTitles ? '' : originalTitle }); }
+        catch { /* ignore */ }
+      }
+    }
+  }, [hideSeriesTitles, panes, paneStructureKey]);
+
   // ---- DATA EFFECT ----
   // Runs whenever panes prop changes. Pushes data to existing series via
   // setData / setMarkers — does NOT recreate the chart, so user's zoom/scroll
@@ -625,11 +661,22 @@ function SyncedChartPaneInner({
     // rebuild) or fitContent (truly fresh chart). Subsequent data updates:
     // do nothing — LWC preserves the user's view + auto-tracks the right
     // edge naturally.
-    // Candle count in this data push (max across panes).
+    // Candle count + last bar time in this data push (max across panes).
+    // lastCandleTime lets us detect a real DATA change (vs a pure re-render
+    // that re-refs `panes` with identical content) for the squish guard.
     let candleCount = 0;
+    let lastCandleTime = 0;
     for (const p of panes) for (const s of p.series) {
-      if (s.type === 'Candlestick') candleCount = Math.max(candleCount, (s.data || []).length);
+      if (s.type !== 'Candlestick') continue;
+      const arr = s.data || [];
+      candleCount = Math.max(candleCount, arr.length);
+      if (arr.length) {
+        const lt = toUnixTime(arr[arr.length - 1].time ?? arr[arr.length - 1].timestamp);
+        if (isFinite(lt) && lt > lastCandleTime) lastCandleTime = lt;
+      }
     }
+    const dataSig = `${candleCount}:${lastCandleTime}`;
+    const dataContentChanged = dataSig !== prevDataSigRef.current;
 
     if (wasFirstLoad && charts[0]) {
       const savedRange = lastLogicalRangeRef.current;
@@ -649,13 +696,20 @@ function SyncedChartPaneInner({
       }
       hasRenderedInitialDataRef.current = true;
     } else if (charts[0] && candleCount > 0) {
-      // Stale-range guard (2026-06-09): re-fit when the candle COUNT changed
-      // OR the current visible range is out of bounds (scrolled past / wider
-      // than the data) — both squish the candles to one side (e.g. a sparse
-      // 1s pane showing range [0,20] over 8 bars). A user pan WITHIN the data
-      // never trips this, so panning is preserved.
+      // Stale-range guard (2026-06-09, refined 2026-06-10): re-fit when the
+      // candle COUNT changed, OR the data CONTENT changed and the current
+      // visible range is now out of bounds (scrolled past / wider than the
+      // data) — both squish the candles to one side (e.g. a sparse 1s pane
+      // showing range [0,20] over 8 bars).
+      //
+      // CRITICAL: the out-of-bounds re-fit is gated on `dataContentChanged`.
+      // The 1s pane re-refs `panes` on every parent re-render (overlay churn)
+      // with IDENTICAL content; without this gate, each re-render saw the
+      // user's pan as "out of bounds" and snapped the view back to the right
+      // edge every few seconds. Now a pure re-render leaves the pan untouched;
+      // only genuinely new/refetched data can trigger a squish-recovery fit.
       let needRefit = candleCount !== prevCandleCountRef.current;
-      if (!needRefit) {
+      if (!needRefit && dataContentChanged) {
         try {
           const r = charts[0].timeScale().getVisibleLogicalRange();
           if (r && (r.from < -2 || r.from >= candleCount - 0.5 || r.to > candleCount + 4)) needRefit = true;
@@ -664,6 +718,7 @@ function SyncedChartPaneInner({
       if (needRefit) { try { charts[0].timeScale().fitContent(); } catch { /* ignore */ } }
     }
     if (candleCount > 0) prevCandleCountRef.current = candleCount;
+    prevDataSigRef.current = dataSig;
     // M8.7 M5: also re-run when scrub head moves so data slices forward.
   }, [panes, currentTime, scrubActive]);
 

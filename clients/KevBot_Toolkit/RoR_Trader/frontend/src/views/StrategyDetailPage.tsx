@@ -18,6 +18,7 @@ import { useBars } from '@/hooks/queries/useMarketData';
 import { useLiveBar } from '@/hooks/queries/useLiveBar';
 import { useGateParity } from '@/hooks/queries/useGateParity';
 import GateParityOneSec, { extractOverlayLines } from '@/components/GateParityOneSec';
+import ParityDriftRibbon from '@/components/ParityDriftRibbon';
 import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy, useSetForwardTestStart, useUpdateStrategyLanes } from '@/hooks/mutations/useStrategyMutations';
 import { useDisplayStore } from '@/providers/StoreProvider';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
@@ -1657,6 +1658,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [activeTab, setActiveTab] = useState<string>(TABS[0]);
   const gateParityActive = activeTab === 'Gate Parity';
   const [gpMode, setGpMode] = useState<'replay' | 'live'>('replay');
+  // Gate Parity (2026-06-10): show/hide the crowded right-margin value labels.
+  const [gpShowLabels, setGpShowLabels] = useState<boolean>(true);
   // M8.7 M5 (2026-05-04): Replay scrub state moved into LabReplayPanel —
   // both lenses now share the renderer and one set of replay controls,
   // so a top-level toggle is no longer needed.
@@ -4552,9 +4555,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       downColor={chartPrefs.candleDown}
                       upBorderColor={chartPrefs.candleUpBorder}
                       gridLines={chartPrefs.gridLines}
-                      rightOffset={0}
+                      rightOffset={6}
                       timezone={chartPrefs.timezone}
                       defaultIntervalSec={Math.max(1, Math.round((tfMs || 60000) / 1000))}
+                      hideSeriesTitles={!gpShowLabels}
+                      onToggleLabels={() => setGpShowLabels((v) => !v)}
                       height={350}
                       oneSecBacktest={(sh) => (
                         <GateParityOneSec
@@ -4565,6 +4570,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           upColor={chartPrefs.candleUp}
                           downColor={chartPrefs.candleDown}
                           timezone={chartPrefs.timezone}
+                          hideSeriesTitles={!gpShowLabels}
                         />
                       )}
                       oneSecAlert={(sh) => (
@@ -4576,6 +4582,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                           upColor={chartPrefs.candleUp}
                           downColor={chartPrefs.candleDown}
                           timezone={chartPrefs.timezone}
+                          hideSeriesTitles={!gpShowLabels}
                         />
                       )}
                       barCountNote={
@@ -4591,6 +4598,26 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       }
                     />
                   )}
+                </Card>
+
+                {/* Per-bar parity drift microscope (backtest REST vs live cache) */}
+                <Card className="mb-4">
+                  <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                    <h4 className="text-sm font-medium">
+                      Per-Bar Parity Drift
+                      <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
+                        (Backtest REST vs Live cache · field-by-field · whole window)
+                      </span>
+                    </h4>
+                  </div>
+                  <ParityDriftRibbon
+                    backtestBars={chartDataResp?.chart_data || []}
+                    alertBars={(labChartDataCacheLatest as any)?.chart_data || labCacheLatest?.chart_data || []}
+                    overlayNames={(chartDataResp as any)?.overlay_indicators || []}
+                    oscNames={(chartDataResp as any)?.oscillator_indicators || []}
+                    heatmapConds={((chartDataResp as any)?.heatmap_conditions || []).filter((c: any) => c.has_data)}
+                    timezone={chartPrefs.timezone}
+                  />
                 </Card>
 
                 {/* Engine-truth analysis (theoretical replay) */}
