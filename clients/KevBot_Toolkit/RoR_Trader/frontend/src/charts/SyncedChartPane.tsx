@@ -472,7 +472,18 @@ function SyncedChartPaneInner({
     const handleResize = () => {
       if (!containerRef.current) return;
       const w = containerRef.current.clientWidth;
-      if (w > 0) for (const c of charts) c.applyOptions({ width: w });
+      if (w <= 0) return;
+      for (const c of charts) c.applyOptions({ width: w });
+      // Resizing preserves barSpacing + the right edge, which on small panes
+      // can push the left edge into empty space (negative logical range).
+      // Re-fit if the range is now out of bounds in either direction.
+      const cc = prevCandleCountRef.current;
+      if (cc > 0 && charts[0]) {
+        try {
+          const r = charts[0].timeScale().getVisibleLogicalRange();
+          if (r && (r.from < -2 || r.from >= cc - 0.5 || r.to > cc + 4)) charts[0].timeScale().fitContent();
+        } catch { /* ignore */ }
+      }
     };
     window.addEventListener('resize', handleResize);
 
@@ -647,7 +658,7 @@ function SyncedChartPaneInner({
       if (!needRefit) {
         try {
           const r = charts[0].timeScale().getVisibleLogicalRange();
-          if (r && (r.from >= candleCount - 0.5 || r.to > candleCount + 4)) needRefit = true;
+          if (r && (r.from < -2 || r.from >= candleCount - 0.5 || r.to > candleCount + 4)) needRefit = true;
         } catch { /* ignore */ }
       }
       if (needRefit) { try { charts[0].timeScale().fitContent(); } catch { /* ignore */ } }
