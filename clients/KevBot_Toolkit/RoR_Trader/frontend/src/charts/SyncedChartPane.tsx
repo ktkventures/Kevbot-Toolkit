@@ -211,6 +211,9 @@ function SyncedChartPaneInner({
   const lastMarkersRef = useRef<unknown[][]>([]);
   const syncingRef = useRef(false);
   const primaryCandleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  // Candle count last pushed — lets the data effect detect a real data change
+  // (vs a user pan) so it can re-fit a stale out-of-bounds visible range.
+  const prevCandleCountRef = useRef<number>(-1);
   // Keep the latest forming bar in a ref so the data effect can re-apply it
   // after setData overwrites the candle series. Without this, every panes
   // re-ref (alerts refetch, live pill timer, etc.) snaps the last candle
@@ -611,6 +614,12 @@ function SyncedChartPaneInner({
     // rebuild) or fitContent (truly fresh chart). Subsequent data updates:
     // do nothing — LWC preserves the user's view + auto-tracks the right
     // edge naturally.
+    // Candle count in this data push (max across panes).
+    let candleCount = 0;
+    for (const p of panes) for (const s of p.series) {
+      if (s.type === 'Candlestick') candleCount = Math.max(candleCount, (s.data || []).length);
+    }
+
     if (wasFirstLoad && charts[0]) {
       const savedRange = lastLogicalRangeRef.current;
       if (savedRange) {
@@ -620,7 +629,15 @@ function SyncedChartPaneInner({
         try { charts[0].timeScale().fitContent(); } catch { /* ignore */ }
       }
       hasRenderedInitialDataRef.current = true;
+    } else if (charts[0] && candleCount > 0 && candleCount !== prevCandleCountRef.current) {
+      // Stale-range guard (2026-06-09): the candle COUNT changed on a data
+      // update without a structure rebuild — e.g. the window recomputed as a
+      // sibling lens loaded. The preserved logical range can now be out of
+      // bounds (scrolled past the data), squishing the candles. Re-fit. A
+      // user pan never changes the count, so panning is preserved.
+      try { charts[0].timeScale().fitContent(); } catch { /* ignore */ }
     }
+    if (candleCount > 0) prevCandleCountRef.current = candleCount;
     // M8.7 M5: also re-run when scrub head moves so data slices forward.
   }, [panes, currentTime, scrubActive]);
 
