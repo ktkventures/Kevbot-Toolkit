@@ -1,6 +1,6 @@
 # Roadmap — Divergence Hunting (Live ↔ Backtest Pair-Rate to 95%+)
 
-**Last updated:** 2026-06-08 (late — Phase 1 dig)
+**Last updated:** 2026-06-09 EOD (diagnosis corrected + Gate Parity tool shipped)
 **Goal:** Drive fleet-wide live↔backtest pair rate to 95%+ across the canary cohort.
 **Status (2026-06-08 late):** Phase 1 (sid 174) executed. Surfaced the real "gating
 off-and-on" root cause: **confluence gates fail OPEN when records are empty**, and
@@ -14,6 +14,35 @@ work delivered. Issue diagnosed as OPERATIONAL (BT-lane backfill), not engine di
 
 This doc is the single source of truth for what's done, what's open, and where the
 related artifacts live. Update at each session's end.
+
+---
+
+## Update 2026-06-09 EOD — diagnosis CORRECTED + Gate Parity diagnostic tool SHIPPED
+
+The 06-08 "fail-open / 2m records missing" framing was **wrong** (corrected with live data):
+the 2m secondary builder IS alive; records were FROZEN by a rebroadcast-cascade bug (fixed,
+`recompute_confluence`, commit 93aebb4). But unfreezing didn't stop the gate-cohort flood, so a
+deeper dig (cross-validated via the crossed trigger/gate experiment + the correct `trades`-table
+lane) re-framed the **gate-mode break (H1)** as a **live↔backtest gate-state / decision-timing
+divergence — NOT fail-open**. The trigger pairs fine alone (65–70%); adding a 2m gate collapses
+it. Leading mechanism: live evaluates intra-bar/forming at grace while backtest is bar-close, and
+the cross-TF (2m) gate state the live engine sees diverges from backtest's PB-shifted state.
+
+**Built the diagnostic tool to nail this systematically — the "Gate Parity" tab** (strategy
+detail page), a thin renderer over engine-truth: dual-lens **Backtest (rest_hifi · bar-close)**
+vs **Alert (ws_rest_spliced)** replay, time-aligned, with 3 layers per lens (gate ribbon ·
+primary candles · 1s candles), a Replay/Live(soon) toggle, an engine-truth analysis card
+(PB/CB ribbons + theoretical-BT vs live entries + phantom classification), and a bar-set
+divergence note (REST `dropna` drops empty bars; live cache keeps them — itself a divergence).
+Backend: `src/gate_parity_harness.py` (`build_gate_parity_view`, `splice_alert_lens`) + routes
+`/gate-parity` and `/window-1s`. Frontend: `LabReplayPanel` extensions, `spliceAlertLens.ts`,
+`GateParityOneSec.tsx`, `useGateParity`/`useWindow1s`. All on dev, **squish fixed + verified
+live via Playwright** (see memory `project_gate_parity_diagnosis` + `reference_playwright_dev_access`).
+
+**Plan:** 2026-06-10 first thing during RTH — perfect the tool (visual polish + cross-lens
+time-lock, with dense market-hours data + live verification), THEN use it to drive the
+remaining autonomous divergence fixes (gate-timing alignment, Phase 4 pack cleanup, fail-closed
+guard defense). Plan file: `~/.claude/plans/partitioned-sniffing-pizza.md`.
 
 ---
 
@@ -484,8 +513,22 @@ This methodology update should be added to the SOP.
 
 ## Run-order for next session
 
-**Updated 2026-06-08 (late) — supersedes earlier run-orders.** See "Update 2026-06-08 (late)"
-and the Phase plan above for full detail. Phase 1 sid-174 ✅ done; Phase 3 diagnosis ✅ done.
+**Updated 2026-06-09 EOD — supersedes earlier run-orders.** See "Update 2026-06-09 EOD" above.
+
+### TOMORROW 2026-06-10 — first thing during RTH (Kevin's plan)
+1. **Perfect the Gate Parity tool** (with dense market-hours data + live Playwright verify):
+   the precise **cross-lens time-lock** (both lenses identical start/end), main-lens clean
+   full-fit (left-crop), and any visual polish Kevin flags. Tool is WORKING on dev; squish
+   fixed. Plan file `~/.claude/plans/partitioned-sniffing-pizza.md`; state in memory
+   `project_gate_parity_diagnosis`.
+2. **Use the tool to localize the gate-timing divergence** (theoretical-BT vs alert, PB/CB
+   ribbons, phantom classification) on the gate cohort (277/293/299/303 etc.) and fix the
+   live↔BT gate alignment.
+3. **Then autonomous fixes** per SOP where possible (Phase 4 pack cleanup: VWAP v2 / SR
+   Channels; fail-closed guard as defense-in-depth AFTER the timing fix).
+4. **Pending cleanup (carried):** delete sid 174 alerts; UAD 267 & 301 + baseline reset.
+
+### Earlier run-order (2026-06-08 late) — carried, lower priority now
 
 ### TOMORROW 2026-06-09 — DURING TRADING HOURS (the live-validatable work)
 
