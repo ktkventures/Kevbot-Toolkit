@@ -170,6 +170,15 @@ SECONDS_TO_TIMEFRAME = {v: k for k, v in TIMEFRAME_SECONDS.items()}
 # Execution Fidelity spec (`ws_agg_reconciled` live_model).
 SUBMINUTE_FORCE_CLOSE_GRACE_SEC = 5
 
+# Bar gap-fill (2026-06-10): when False, empty/no-trade periods produce NO bar
+# — matching the backtest's data_loader.resample_to_timeframe(...).dropna(
+# subset=['open']) (TradingView convention). Previously the live engine
+# carried forward flat zero-volume bars through empty periods (after-hours),
+# polluting incremental indicators and diverging from the backtest. Keep this
+# False; the constant exists only as a one-flip rollback during the first
+# market-hours observation window. Locked by test_ralph_bar_no_gapfill.py.
+BAR_GAP_FILL_ENABLED = False
+
 # Short TF labels → seconds (both cases for normalization)
 _LABEL_TO_TF_SECONDS = {}
 for _tf_name, _tf_sec in TIMEFRAME_SECONDS.items():
@@ -425,20 +434,25 @@ class BarBuilder:
                                  update_volume=update_volume)
             return None
         if period_start > self._partial.bar_start:
+            # Capture before close (close may clear the partial).
             fill_close = self._partial.close
             old_bar_end = self._partial.bar_start + timedelta(
                 seconds=self.tf_seconds)
             completed = self._close_bar()
-            gap_ts = old_bar_end
-            while gap_ts < period_start:
-                self._append_to_history({
-                    'timestamp': gap_ts.isoformat(),
-                    'open': fill_close, 'high': fill_close,
-                    'low': fill_close, 'close': fill_close,
-                    'volume': 0,
-                })
-                self._bar_count += 1
-                gap_ts += timedelta(seconds=self.tf_seconds)
+            # Gap-fill (2026-06-10): empty periods produce NO bar when
+            # BAR_GAP_FILL_ENABLED is False — matches backtest dropna. The
+            # flat carry-forward bars polluted incremental indicators.
+            if BAR_GAP_FILL_ENABLED:
+                gap_ts = old_bar_end
+                while gap_ts < period_start:
+                    self._append_to_history({
+                        'timestamp': gap_ts.isoformat(),
+                        'open': fill_close, 'high': fill_close,
+                        'low': fill_close, 'close': fill_close,
+                        'volume': 0,
+                    })
+                    self._bar_count += 1
+                    gap_ts += timedelta(seconds=self.tf_seconds)
             # Edge case: if first tick of new period is vol-only,
             # we have no real OHLC to seed. Skip starting a new
             # partial; next OHLC-eligible tick will start it.
@@ -657,8 +671,9 @@ class BarBuilder:
     def accept_bar(self, bar_dict: dict) -> dict:
         """Accept a pre-built bar (from Polygon WebSocket).
 
-        Appends to history, increments bar count, gap-fills missing bars.
-        Returns the bar dict for downstream consumption.
+        Appends to history, increments bar count. Empty periods produce NO
+        bar (no gap-fill) when BAR_GAP_FILL_ENABLED is False — matches the
+        backtest's resample().dropna(). Returns the bar dict for downstream.
 
         M8.7 rebroadcast handling (2026-05-02): if the incoming bar's
         bar_start matches the most recent history row's timestamp, this
@@ -702,8 +717,10 @@ class BarBuilder:
                     self.last_was_correction = False
                 return bar_dict
 
-        # Gap-fill if there are missing bars between last history and this bar
-        if len(self.history) > 0:
+        # Gap-fill (2026-06-10): only when explicitly enabled. Empty periods
+        # otherwise produce NO bar — matching backtest dropna. The flat
+        # carry-forward bars polluted the incremental indicators after-hours.
+        if BAR_GAP_FILL_ENABLED and len(self.history) > 0:
             last_ts = self.history.index[-1]
             if last_ts.tzinfo is None:
                 last_ts = last_ts.tz_localize('UTC')
@@ -747,7 +764,8 @@ class BarBuilder:
         Live Execution Fidelity spec (`ws_agg_reconciled` live_model).
 
         Returns the completed bar dict, or None if no bar was stale.
-        Gap-fills any missing intermediate bars (same logic as process_tick).
+        No gap-fill (2026-06-10): empty periods produce no bar (matches
+        backtest dropna) unless BAR_GAP_FILL_ENABLED.
         """
         if self._partial is None:
             return None
@@ -766,23 +784,28 @@ class BarBuilder:
             return None  # Bar still forming (or within sub-minute grace)
         fill_close = self._partial.close
         completed = self._close_bar()
-        # Fill gap bars between bar_end and current period
-        current_period = self._align_to_period(now)
-        gap_ts = bar_end
-        while gap_ts < current_period:
-            self._append_to_history({
-                'timestamp': gap_ts.isoformat(),
-                'open': fill_close, 'high': fill_close,
-                'low': fill_close, 'close': fill_close,
-                'volume': 0,
-            })
-            self._bar_count += 1
-            gap_ts += timedelta(seconds=self.tf_seconds)
-        # Start a new partial bar at the current period using last known
-        # close, so that arriving ticks will update it normally.
-        if current_period >= bar_end:
-            self._partial = PartialBar(fill_close, current_period,
-                                       self.tf_seconds)
+        if BAR_GAP_FILL_ENABLED:
+            # Fill gap bars between bar_end and current period
+            current_period = self._align_to_period(now)
+            gap_ts = bar_end
+            while gap_ts < current_period:
+                self._append_to_history({
+                    'timestamp': gap_ts.isoformat(),
+                    'open': fill_close, 'high': fill_close,
+                    'low': fill_close, 'close': fill_close,
+                    'volume': 0,
+                })
+                self._bar_count += 1
+                gap_ts += timedelta(seconds=self.tf_seconds)
+            # Start a new partial bar at the current period using last known
+            # close, so that arriving ticks will update it normally.
+            if current_period >= bar_end:
+                self._partial = PartialBar(fill_close, current_period,
+                                           self.tf_seconds)
+        else:
+            # No gap-fill: the real bar is closed; a fresh partial will be
+            # seeded by the next real per-second bar / tick at its own period.
+            self._partial = None
         return completed
 
 
