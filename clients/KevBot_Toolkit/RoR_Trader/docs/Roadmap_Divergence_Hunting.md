@@ -1,6 +1,6 @@
 # Roadmap — Divergence Hunting (Live ↔ Backtest Pair-Rate to 95%+)
 
-**Last updated:** 2026-06-09 EOD (diagnosis corrected + Gate Parity tool shipped)
+**Last updated:** 2026-06-10 (Gate Parity polish + Per-Bar Parity Drift v1/v2 shipped)
 **Goal:** Drive fleet-wide live↔backtest pair rate to 95%+ across the canary cohort.
 **Status (2026-06-08 late):** Phase 1 (sid 174) executed. Surfaced the real "gating
 off-and-on" root cause: **confluence gates fail OPEN when records are empty**, and
@@ -17,7 +17,45 @@ related artifacts live. Update at each session's end.
 
 ---
 
-## Update 2026-06-09 EOD — diagnosis CORRECTED + Gate Parity diagnostic tool SHIPPED
+## Update 2026-06-10 — Gate Parity tab polish + Per-Bar Parity Drift (v1 + v2)
+
+Shipped to dev (`c0116ea`, pushed live; backup branch `dev-backup-2026-06-10-gate-parity`):
+- **Polish:** fixed the 1s-pane drag "snap-back" (out-of-bounds re-fit now gated on a real
+  data-content change, not every re-render); a "Hide labels" toggle that clears the wordy
+  indicator-name labels overlaying candles (keeps numeric price labels); taller 1s panes (240px).
+- **Per-Bar Parity Drift (v1)** — new module between Gate Replay and the analysis card. Joins the
+  two enriched bar arrays (backtest REST `/chart-data` vs live cache `/chart-data-cache?latest`)
+  by timestamp and shows one ribbon per metric (bar-exists / OHLC / each indicator / each gate
+  state): green match · yellow minor · red major · gray n-a, with per-row match%. Frontend-only.
+  On sid 303 it instantly surfaced **gate state 71.6%**, **bar-exists 89.3%** (32 bt-only),
+  **Low 99.6%** — the drift we're hunting, quantified per bar.
+- **Per-Bar Parity Drift v2** — sibling module with a **`first` (decision-time WS) vs `latest`
+  (REST-corrected)** toggle on the live source (`live_bars.first_close` vs `close`, both already
+  persisted — no backend work). v1 left untouched as the `latest` reference.
+- **Replay lens:** added a tip-source `first`/`latest` toggle (tip-only; splice stays faithful).
+
+**Faithfulness note (verified):** both lenses run the IDENTICAL `prepare_data_with_indicators`
+pipeline; only the input bars differ (REST vs WS-cache). So prices/indicators/bar-exists are true
+parity. Caveats: the chart uses the BATCH pipeline while the live engine (`ralph_engine`) computes
+INCREMENTALLY — a bug living only in the incremental engine won't show on the chart; and the
+cross-TF gate `[PB]` is reconstructed (deterministic shift) vs ralph's emergent real-time PB.
+Authoritative gate truth remains the `alerts` table + the Gate Parity Analysis card (real engine).
+
+### FUTURE (discuss before building) — Live-Mode Ground-Truth Embedding
+Goal: a real-time "Live mode" on the Gate Parity tab that embeds the ACTUAL backtest and live
+engines with **no chart-side reconstruction**, so it's fully reliable.
+- **Why it's currently reconstructed, not embedded:** for any PAST moment the live engine's
+  real-time in-memory state (indicator values, gate decision, fidelity) was never persisted —
+  there's nothing to read back, so the chart re-derives it via the batch pipeline over the bars
+  the engine saw. `live_bars` stores OHLCV INPUTS (incl. `first_*` decision-time + corrected
+  `close`) — confirmed — but NOT the engine's per-bar COMPUTED state. `save_engine_state_db` is
+  positions/runtime recovery, not per-bar snapshots.
+- **What it needs:** a per-bar state-emission / telemetry layer on `ralph_engine` (the long-flagged
+  "explicit fidelity field both engines honor") that writes, each bar, what the live engine actually
+  computed + decided. Then: Live mode reads that ground truth directly; and any replay of periods
+  recorded after that point can use logged truth instead of reconstruction. Backtest side: read the
+  actual `unified_engine` per-bar state (instrument it to emit a state log) rather than the batch
+  recompute. Not impossible — just unbuilt plumbing. **Kevin wants to discuss scope/design first.**
 
 The 06-08 "fail-open / 2m records missing" framing was **wrong** (corrected with live data):
 the 2m secondary builder IS alive; records were FROZEN by a rebroadcast-cascade bug (fixed,

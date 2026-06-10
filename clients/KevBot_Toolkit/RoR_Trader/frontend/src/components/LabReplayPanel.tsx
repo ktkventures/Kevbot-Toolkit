@@ -221,6 +221,11 @@ interface LabReplayPanelProps {
   hideSeriesTitles?: boolean;
   /** When provided, renders a "Labels" toggle in the header. */
   onToggleLabels?: () => void;
+  /** Alert-lens WS-tip source: 'first' = decision-time (faithful default),
+   *  'latest' = REST-corrected (tip heals immediately). Tip-only. */
+  tipSource?: 'first' | 'latest';
+  /** When provided, renders a "Tip" first/latest toggle in the header. */
+  onTipSourceChange?: (s: 'first' | 'latest') => void;
 }
 
 const PRESET_WINDOWS = [
@@ -258,6 +263,8 @@ export default function LabReplayPanel({
   tipNote,
   hideSeriesTitles = false,
   onToggleLabels,
+  tipSource = 'first',
+  onTipSourceChange,
 }: LabReplayPanelProps) {
   // Scrub head — Unix sec. (Declared before the spliced panes that depend on it.)
   const [currentTime, setCurrentTime] = useState<number>(0);
@@ -269,8 +276,8 @@ export default function LabReplayPanel({
   const effectiveAlertPanes = useMemo<PaneConfig[]>(() => {
     if (!spliceActive) return alertPanes;
     if (mode === 'live') return alertLatestPanes!; // Live mode deferred — show latest as a stand-in
-    return spliceAlertPanes(alertFirstPanes!, alertLatestPanes!, currentTime, { gracePrimary, graceSecondary });
-  }, [spliceActive, alertPanes, alertFirstPanes, alertLatestPanes, mode, currentTime, gracePrimary, graceSecondary]);
+    return spliceAlertPanes(alertFirstPanes!, alertLatestPanes!, currentTime, { gracePrimary, graceSecondary, tipSource });
+  }, [spliceActive, alertPanes, alertFirstPanes, alertLatestPanes, mode, currentTime, gracePrimary, graceSecondary, tipSource]);
 
   // Full data extent across both lenses' candle series.
   const [fullStart, fullEnd] = useMemo(
@@ -422,6 +429,29 @@ export default function LabReplayPanel({
               >
                 Live (soon)
               </button>
+            </div>
+          )}
+          {onTipSourceChange && (
+            <div className="flex items-center gap-1">
+              <span style={{ color: 'var(--text-muted)' }}>Tip:</span>
+              {(['first', 'latest'] as const).map((s) => (
+                <button
+                  key={s}
+                  onClick={() => onTipSourceChange(s)}
+                  title={s === 'first'
+                    ? 'WS tip = decision-time values (what the live engine saw) — faithful default'
+                    : 'WS tip = REST-corrected (tip heals immediately; lens fully corrected)'}
+                  className="px-2 py-0.5 rounded transition-colors"
+                  style={{
+                    background: tipSource === s ? 'var(--accent)' : 'var(--bg-input)',
+                    color: tipSource === s ? 'white' : 'var(--text-muted)',
+                    border: tipSource === s ? 'none' : '1px solid var(--border)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {s}
+                </button>
+              ))}
             </div>
           )}
           {onToggleLabels && (

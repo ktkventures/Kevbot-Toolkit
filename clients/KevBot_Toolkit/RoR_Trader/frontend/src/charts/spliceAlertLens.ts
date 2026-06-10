@@ -32,6 +32,11 @@ export interface SpliceGrace {
   gracePrimary: number;
   /** WS-tip window for the cross-TF gate ribbon / heatmap (live: ~30s). */
   graceSecondary: number;
+  /** Which values the WS TIP shows (the body is always REST/latest):
+   *  'first' = decision-time WS (what the engine saw — faithful default);
+   *  'latest' = REST-corrected (tip heals immediately, so the lens is fully
+   *  corrected). Only the tip is affected; the splice is still tip-only. */
+  tipSource?: 'first' | 'latest';
 }
 
 /**
@@ -42,11 +47,13 @@ export function spliceAlertPanes(
   firstPanes: PaneConfig[],
   latestPanes: PaneConfig[],
   scrubHead: number,
-  { gracePrimary, graceSecondary }: SpliceGrace,
+  { gracePrimary, graceSecondary, tipSource = 'first' }: SpliceGrace,
 ): PaneConfig[] {
   if (!Array.isArray(latestPanes) || latestPanes.length === 0) return latestPanes;
   if (!Array.isArray(firstPanes) || firstPanes.length === 0) return latestPanes;
   if (!isFinite(scrubHead) || scrubHead <= 0) return latestPanes;
+  // 'latest' tip = no WS swap; the lens is fully REST-corrected.
+  if (tipSource === 'latest') return latestPanes;
 
   const firstById = new Map(firstPanes.map((p) => [p.id, p]));
 

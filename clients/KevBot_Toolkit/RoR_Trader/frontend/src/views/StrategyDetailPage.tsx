@@ -19,6 +19,7 @@ import { useLiveBar } from '@/hooks/queries/useLiveBar';
 import { useGateParity } from '@/hooks/queries/useGateParity';
 import GateParityOneSec, { extractOverlayLines } from '@/components/GateParityOneSec';
 import ParityDriftRibbon from '@/components/ParityDriftRibbon';
+import ParityDriftRibbonV2 from '@/components/ParityDriftRibbonV2';
 import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy, useSetForwardTestStart, useUpdateStrategyLanes } from '@/hooks/mutations/useStrategyMutations';
 import { useDisplayStore } from '@/providers/StoreProvider';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
@@ -1660,6 +1661,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [gpMode, setGpMode] = useState<'replay' | 'live'>('replay');
   // Gate Parity (2026-06-10): show/hide the crowded right-margin value labels.
   const [gpShowLabels, setGpShowLabels] = useState<boolean>(true);
+  // Gate Parity (2026-06-10): alert-lens WS-tip source (first = decision-time).
+  const [gpTipSource, setGpTipSource] = useState<'first' | 'latest'>('first');
   // M8.7 M5 (2026-05-04): Replay scrub state moved into LabReplayPanel —
   // both lenses now share the renderer and one set of replay controls,
   // so a top-level toggle is no longer needed.
@@ -4560,6 +4563,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       defaultIntervalSec={Math.max(1, Math.round((tfMs || 60000) / 1000))}
                       hideSeriesTitles={!gpShowLabels}
                       onToggleLabels={() => setGpShowLabels((v) => !v)}
+                      tipSource={gpTipSource}
+                      onTipSourceChange={setGpTipSource}
                       height={350}
                       oneSecBacktest={(sh) => (
                         <GateParityOneSec
@@ -4617,6 +4622,28 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     oscNames={(chartDataResp as any)?.oscillator_indicators || []}
                     heatmapConds={((chartDataResp as any)?.heatmap_conditions || []).filter((c: any) => c.has_data)}
                     timezone={chartPrefs.timezone}
+                  />
+                </Card>
+
+                {/* Per-bar parity drift v2 — first (decision-time) vs latest (corrected) toggle */}
+                <Card className="mb-4">
+                  <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                    <h4 className="text-sm font-medium">
+                      Per-Bar Parity Drift · v2
+                      <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
+                        (toggle live values: first = decision-time WS · latest = REST-corrected)
+                      </span>
+                    </h4>
+                  </div>
+                  <ParityDriftRibbonV2
+                    backtestBars={chartDataResp?.chart_data || []}
+                    alertFirstBars={(labChartDataCacheFirst as any)?.chart_data || []}
+                    alertLatestBars={(labChartDataCacheLatest as any)?.chart_data || []}
+                    overlayNames={(chartDataResp as any)?.overlay_indicators || []}
+                    oscNames={(chartDataResp as any)?.oscillator_indicators || []}
+                    heatmapConds={((chartDataResp as any)?.heatmap_conditions || []).filter((c: any) => c.has_data)}
+                    timezone={chartPrefs.timezone}
+                    defaultSource="first"
                   />
                 </Card>
 
