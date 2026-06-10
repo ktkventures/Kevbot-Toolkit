@@ -43,27 +43,25 @@ export function extractOverlayLines(panes: PaneConfig[]): OverlayLine[] {
     }));
 }
 
-/** Build a stepped line over [start,end] from sparse primary-bar points
- * (each primary bar's value held constant across its seconds). */
-function stepLine(points: any[], start: number, end: number): { time: number; value: number }[] {
+/** Sample the primary-TF overlay onto the EXACT 1s bar times (forward-filled:
+ * each bar gets the last primary value at or before it). Aligning to the bar
+ * times keeps the line on the same logical axis as the candles — otherwise
+ * primary-TF times that don't match a (sparse) 1s bar add extra logical slots
+ * and fitContent overshoots, squishing the pane. */
+function alignToBars(points: any[], barTimes: number[]): { time: number; value: number }[] {
   const pts = (points || [])
     .map((p) => ({ t: toUnixSec(p.time ?? p.timestamp), v: Number(p.value) }))
     .filter((p) => isFinite(p.t) && isFinite(p.v))
     .sort((a, b) => a.t - b.t);
-  if (!pts.length) return [];
-  let seed = pts[0].v;
-  for (const p of pts) { if (p.t <= start) seed = p.v; else break; }
-  const out: { time: number; value: number }[] = [{ time: start, value: seed }];
-  let cur = seed;
-  for (const p of pts) {
-    if (p.t < start || p.t > end) continue;
-    out.push({ time: p.t, value: cur }); // hold prior value up to the change
-    out.push({ time: p.t, value: p.v }); // step to new value
-    cur = p.v;
+  if (!pts.length || !barTimes.length) return [];
+  const out: { time: number; value: number }[] = [];
+  let i = 0;
+  let cur = pts[0].v;
+  for (const bt of barTimes) {
+    while (i < pts.length && pts[i].t <= bt) { cur = pts[i].v; i++; }
+    out.push({ time: bt, value: cur });
   }
-  out.push({ time: end, value: cur });
-  const seen = new Set<number>();
-  return out.filter((o) => (seen.has(o.time) ? false : (seen.add(o.time), true)));
+  return out;
 }
 
 interface Props {
@@ -100,11 +98,10 @@ export default function GateParityOneSec({
       time: toUnixSec(b.time), open: b.open, high: b.high, low: b.low, close: b.close,
     }));
     if (!bars.length) return [];
-    const start = bars[0].time;
-    const end = bars[bars.length - 1].time;
+    const barTimes = bars.map((b) => b.time);
     const lineSeries = (overlayLines || []).map((ol) => ({
       type: 'Line' as const,
-      data: stepLine(ol.data, start, end),
+      data: alignToBars(ol.data, barTimes),
       options: { color: ol.color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: ol.title },
     }));
     return [{
