@@ -22,11 +22,12 @@
  *   └───────────────────────────────────────────────────────────────┘
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
 import Card from '@/components/Card';
 import ReplayControls from '@/components/ReplayControls';
 import type { PaneConfig } from '@/charts/SyncedChartPane';
+import { spliceAlertPanes } from '@/charts/spliceAlertLens';
 
 const SyncedChartPane = dynamic(() => import('@/charts/SyncedChartPane'), { ssr: false });
 
@@ -175,7 +176,9 @@ function inputValueToUnixTz(s: string, tz: string): number {
 
 interface LabReplayPanelProps {
   algoPanes: PaneConfig[];
-  alertPanes: PaneConfig[];
+  /** Alert-lens panes (Lab tab path). Gate Parity passes the first/latest
+   *  pair below instead and lets this component splice them per scrub head. */
+  alertPanes?: PaneConfig[];
   algoLabel?: string;
   alertLabel?: string;
   algoFooter?: string;
@@ -191,6 +194,25 @@ interface LabReplayPanelProps {
   height?: number;
   /** Default scrub step in seconds (typically the strategy's primary TF). */
   defaultIntervalSec?: number;
+
+  // ── Gate Parity additions (all optional; Lab tab ignores them) ──
+  /** When BOTH are provided, the alert lens becomes the ws_rest_spliced view:
+   *  body = latest (REST), tip = first-write (WS) within grace of the scrub head. */
+  alertFirstPanes?: PaneConfig[];
+  alertLatestPanes?: PaneConfig[];
+  /** WS-tip grace windows (seconds). Defaults to live model values. */
+  gracePrimary?: number;
+  graceSecondary?: number;
+  /** Replay (historical splice) vs Live (real-time WS — deferred). */
+  mode?: 'replay' | 'live';
+  onModeChange?: (m: 'replay' | 'live') => void;
+  /** Optional 1-second panes rendered under each lens (scrub-aligned). */
+  oneSecBacktest?: ReactNode;
+  oneSecAlert?: ReactNode;
+  /** A short divergence note shown under the bar counts. */
+  barCountNote?: ReactNode;
+  /** A small on-screen caveat (e.g. the tip-indicator approximation). */
+  tipNote?: ReactNode;
 }
 
 const PRESET_WINDOWS = [
@@ -203,7 +225,7 @@ const PRESET_WINDOWS = [
 
 export default function LabReplayPanel({
   algoPanes,
-  alertPanes,
+  alertPanes = [],
   algoLabel = 'Algo Lens',
   alertLabel = 'Alert Lens',
   algoFooter,
@@ -216,11 +238,34 @@ export default function LabReplayPanel({
   timezone = null,
   height = 350,
   defaultIntervalSec = 60,
+  alertFirstPanes,
+  alertLatestPanes,
+  gracePrimary = 4,
+  graceSecondary = 30,
+  mode = 'replay',
+  onModeChange,
+  oneSecBacktest,
+  oneSecAlert,
+  barCountNote,
+  tipNote,
 }: LabReplayPanelProps) {
+  // Scrub head — Unix sec. (Declared before the spliced panes that depend on it.)
+  const [currentTime, setCurrentTime] = useState<number>(0);
+
+  // Gate Parity: when first/latest panes are supplied, the alert lens is the
+  // ws_rest_spliced view recomputed as the scrub head moves. Otherwise use the
+  // alertPanes prop (Lab tab path).
+  const spliceActive = Array.isArray(alertFirstPanes) && Array.isArray(alertLatestPanes);
+  const effectiveAlertPanes = useMemo<PaneConfig[]>(() => {
+    if (!spliceActive) return alertPanes;
+    if (mode === 'live') return alertLatestPanes!; // Live mode deferred — show latest as a stand-in
+    return spliceAlertPanes(alertFirstPanes!, alertLatestPanes!, currentTime, { gracePrimary, graceSecondary });
+  }, [spliceActive, alertPanes, alertFirstPanes, alertLatestPanes, mode, currentTime, gracePrimary, graceSecondary]);
+
   // Full data extent across both lenses' candle series.
   const [fullStart, fullEnd] = useMemo(
-    () => computeFullExtent(algoPanes, alertPanes),
-    [algoPanes, alertPanes],
+    () => computeFullExtent(algoPanes, effectiveAlertPanes),
+    [algoPanes, effectiveAlertPanes],
   );
 
   // User-selected window (Unix sec). Defaults to "Last 1h" of the data.
@@ -228,8 +273,6 @@ export default function LabReplayPanel({
   const [windowEnd, setWindowEnd] = useState<number>(0);
   const [windowPreset, setWindowPreset] = useState<string>('Last 1h');
 
-  // Scrub head — Unix sec.
-  const [currentTime, setCurrentTime] = useState<number>(0);
   const [interval, setIntervalState] = useState<number>(defaultIntervalSec);
 
   // Custom start/end input buffer.  Held separately so typing in the
@@ -291,8 +334,8 @@ export default function LabReplayPanel({
     [algoPanes, windowStart, windowEnd],
   );
   const alertWindowed = useMemo(
-    () => filterPanesByWindow(alertPanes, windowStart, windowEnd),
-    [alertPanes, windowStart, windowEnd],
+    () => filterPanesByWindow(effectiveAlertPanes, windowStart, windowEnd),
+    [effectiveAlertPanes, windowStart, windowEnd],
   );
 
   const isAtStart = currentTime <= windowStart;
@@ -307,7 +350,7 @@ export default function LabReplayPanel({
   // strategy 149 with first-write source on a symbol where cache hasn't
   // recorded first-write values) so the user knows WHY the chart is empty.
   const algoBars = useMemo(() => panesBarCount(algoPanes), [algoPanes]);
-  const alertBars = useMemo(() => panesBarCount(alertPanes), [alertPanes]);
+  const alertBars = useMemo(() => panesBarCount(effectiveAlertPanes), [effectiveAlertPanes]);
 
   if (fullEnd <= fullStart) {
     return (
@@ -337,24 +380,65 @@ export default function LabReplayPanel({
             Algo {algoBars} / Alert {alertBars} bars)
           </span>
         </h4>
-        <div className="flex items-center gap-1 text-xs">
-          {PRESET_WINDOWS.map(p => (
-            <button
-              key={p.label}
-              onClick={() => setWindowPreset(p.label)}
-              className="px-2 py-0.5 rounded transition-colors"
-              style={{
-                background: windowPreset === p.label ? 'var(--accent)' : 'var(--bg-input)',
-                color: windowPreset === p.label ? 'white' : 'var(--text-muted)',
-                border: windowPreset === p.label ? 'none' : '1px solid var(--border)',
-                cursor: 'pointer',
-              }}
-            >
-              {p.label}
-            </button>
-          ))}
+        <div className="flex items-center gap-2 text-xs flex-wrap">
+          {onModeChange && (
+            <div className="flex items-center gap-1">
+              <span style={{ color: 'var(--text-muted)' }}>Alert lens:</span>
+              <button
+                onClick={() => onModeChange('replay')}
+                title="Historical replay — ws_rest_spliced reconstruction (REST body + WS tip)"
+                className="px-2 py-0.5 rounded transition-colors"
+                style={{
+                  background: mode === 'replay' ? 'var(--accent)' : 'var(--bg-input)',
+                  color: mode === 'replay' ? 'white' : 'var(--text-muted)',
+                  border: mode === 'replay' ? 'none' : '1px solid var(--border)',
+                  cursor: 'pointer',
+                }}
+              >
+                Replay
+              </button>
+              <button
+                onClick={() => onModeChange('live')}
+                disabled
+                title="Live mode — pipes real-time WS data (coming soon)"
+                className="px-2 py-0.5 rounded"
+                style={{
+                  background: 'var(--bg-input)',
+                  color: 'var(--text-muted)',
+                  border: '1px dashed var(--border)',
+                  cursor: 'not-allowed',
+                  opacity: 0.6,
+                }}
+              >
+                Live (soon)
+              </button>
+            </div>
+          )}
+          <div className="flex items-center gap-1">
+            {PRESET_WINDOWS.map(p => (
+              <button
+                key={p.label}
+                onClick={() => setWindowPreset(p.label)}
+                className="px-2 py-0.5 rounded transition-colors"
+                style={{
+                  background: windowPreset === p.label ? 'var(--accent)' : 'var(--bg-input)',
+                  color: windowPreset === p.label ? 'white' : 'var(--text-muted)',
+                  border: windowPreset === p.label ? 'none' : '1px solid var(--border)',
+                  cursor: 'pointer',
+                }}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
+
+      {barCountNote && (
+        <div className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }}>
+          {barCountNote}
+        </div>
+      )}
 
       {/* Custom datetime picker — only visible when Custom preset is active. */}
       {windowPreset === 'Custom' && (
@@ -444,6 +528,7 @@ export default function LabReplayPanel({
             formingStates={null}
             formingStateCrossTf={null}
           />
+          {oneSecBacktest}
         </div>
         <div>
           <div className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
@@ -465,6 +550,7 @@ export default function LabReplayPanel({
             formingStates={null}
             formingStateCrossTf={null}
           />
+          {oneSecAlert}
         </div>
       </div>
 
@@ -491,6 +577,11 @@ export default function LabReplayPanel({
         oscillators, heatmap and trade markers render identically because both
         lenses use the same renderer.
       </p>
+      {tipNote && (
+        <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)', lineHeight: 1.5 }}>
+          {tipNote}
+        </p>
+      )}
     </Card>
   );
 }
