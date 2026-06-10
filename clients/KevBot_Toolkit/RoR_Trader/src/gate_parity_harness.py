@@ -240,7 +240,7 @@ def build_gate_parity_view(sid: int, hours: float = 4.0,
     strat = _row_to_strategy(row)
     conf = list(strat.get('confluence') or [])
     if not conf:
-        raise SystemExit(f'sid {sid} has no gate')
+        raise ValueError(f'sid {sid} has no confluence gate')
     gate = conf[0]
     tf_part = gate.split('-', 1)[0]      # '2m'
     interp = gate.split('-', 2)[1]       # 'UT_BOT_V4'
@@ -263,7 +263,7 @@ def build_gate_parity_view(sid: int, hours: float = 4.0,
     trig_col = f'trig_{entry_trigger}'
     for col in (pb_col, cb_col):
         if col not in df.columns:
-            raise SystemExit(f'expected ribbon column {col!r} not in enriched df')
+            raise ValueError(f'expected ribbon column {col!r} not in enriched df')
 
     # Theoretical BT entries (fresh, current logic) — the engine's own trades.
     trades_bt = svc.unified_trades(df, strat)

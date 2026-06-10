@@ -1184,6 +1184,27 @@ def run_parity(strategy_id: int, user=Depends(get_current_user)):
     return queue_parity_for_strategy(strategy_id, user_id)
 
 
+@router.get("/{strategy_id}/gate-parity")
+def gate_parity(strategy_id: int,
+                window_hours: float = Query(4.0, ge=0.5, le=24.0),
+                user=Depends(get_current_user)):
+    """Theoretical Gate Parity view (thin pass-through; frontend just renders).
+
+    Returns the engine's own PB/CB gate ribbons, theoretical backtest entries
+    (fresh, current logic), and per-live-entry gate classification — all
+    computed by the real engine in `gate_parity_harness.build_gate_parity_view`.
+    Synchronous; runs one backtest pass (~seconds) over the window.
+    """
+    _get_or_404(strategy_id, user)  # authorize ownership
+    try:
+        from gate_parity_harness import build_gate_parity_view
+        return build_gate_parity_view(strategy_id, hours=window_hours)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"gate-parity failed: {e}")
+
+
 @router.get("/{strategy_id}/grace-shadow-comparison")
 def grace_shadow_comparison(
     strategy_id: int,
