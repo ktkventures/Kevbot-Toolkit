@@ -1650,25 +1650,31 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   // The left side is always REST (Algo Lens); only the right side
   // (Alert Lens) is toggleable.
   const [labDataSource, setLabDataSource] = useState<'ws-latest' | 'ws-first'>('ws-first');
+  // Active tab (mirrored from TabBar) so the Gate Parity tab can enable BOTH
+  // cache lenses (first + latest) for the splice without fetching them on
+  // every detail-page view.
+  const [activeTab, setActiveTab] = useState<string>(TABS[0]);
+  const gateParityActive = activeTab === 'Gate Parity';
+  const [gpMode, setGpMode] = useState<'replay' | 'live'>('replay');
   // M8.7 M5 (2026-05-04): Replay scrub state moved into LabReplayPanel —
   // both lenses now share the renderer and one set of replay controls,
   // so a top-level toggle is no longer needed.
   // Phase 1 hooks — kept for the OHLCV-only path (still used as fallback
   // if the chart-data-cache fetch fails or returns no rows).
   const { data: labCacheLatest, isLoading: labCacheLatestLoading } = useStrategyCacheBars(
-    strategyId, 'latest', labDataSource === 'ws-latest'
+    strategyId, 'latest', labDataSource === 'ws-latest' || gateParityActive
   );
   const { data: labCacheFirst, isLoading: labCacheFirstLoading } = useStrategyCacheBars(
-    strategyId, 'first', labDataSource === 'ws-first'
+    strategyId, 'first', labDataSource === 'ws-first' || gateParityActive
   );
   // M8.7 Phase 2: full chart-data (with indicators + heatmap) computed
   // from cache bars. Replaces the Phase 1 caveat — Alert Lens now shows
   // what the live engine actually sees, not REST-derived overlays.
   const { data: labChartDataCacheLatest } = useStrategyChartDataCache(
-    strategyId, 'latest', labDataSource === 'ws-latest'
+    strategyId, 'latest', labDataSource === 'ws-latest' || gateParityActive
   );
   const { data: labChartDataCacheFirst } = useStrategyChartDataCache(
-    strategyId, 'first', labDataSource === 'ws-first'
+    strategyId, 'first', labDataSource === 'ws-first' || gateParityActive
   );
   const confluenceGroups = triggerAnalysis?.confluence_groups ?? EMPTY_CONFLUENCE_GROUPS;
   const confluenceTimeline = EMPTY_CONFLUENCE_TIMELINE; // State timeline requires backtest instrumentation
@@ -2637,6 +2643,43 @@ export default function StrategyDetailPage({ strategyId }: Props) {
     strategy?.direction,
   ]);
 
+  // Gate Parity: build BOTH first-write and latest cache pane sets so the
+  // alert lens can splice them (REST body + WS tip). Only computed when the
+  // Gate Parity tab is active (cache hooks are gated on gateParityActive).
+  const buildCachePanes = (cacheResp: any, cacheOhlcvOnly: any[]): PaneConfig[] => {
+    const rawBars: any[] = (cacheResp?.chart_data && cacheResp.chart_data.length > 0)
+      ? cacheResp.chart_data : (cacheOhlcvOnly || []);
+    const bars = candleCount > 0 && rawBars.length > candleCount ? rawBars.slice(-candleCount) : rawBars;
+    if (!bars || bars.length === 0) return [];
+    const fromCache = cacheResp && cacheResp.chart_data && cacheResp.chart_data.length > 0;
+    const sourceResp: any = fromCache ? cacheResp : chartDataResp;
+    const markerTrades = (btTrades.length > 0 || fwdTrades.length > 0)
+      ? [...btTrades, ...fwdTrades].map((t: any) => ({ ...t,
+          entry_fill_ts: t.entry_fill_ts ?? t.entryFillTs ?? t.entryTime,
+          exit_fill_ts: t.exit_fill_ts ?? t.exitFillTs ?? t.exitTime }))
+      : (apiStrategy?.stored_trades || []);
+    return buildStrategyChartPanes({
+      bars, trades: markerTrades, alerts: recentAlerts,
+      direction: strategy?.direction || 'LONG',
+      overlayNames: sourceResp?.overlay_indicators || [],
+      oscNames: sourceResp?.oscillator_indicators || [],
+      heatmapConds: (sourceResp?.heatmap_conditions || []).filter((c: any) => c.has_data),
+      showConditions, showTriggers, tfMs,
+      candleColorColumn: sourceResp?.candle_color_column || undefined,
+      chartPrefs,
+    });
+  };
+  const labFirstPanes = useMemo(
+    () => (gateParityActive ? buildCachePanes(labChartDataCacheFirst, labCacheFirst?.chart_data || []) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [gateParityActive, labChartDataCacheFirst, labCacheFirst, chartDataResp, btTrades, fwdTrades, apiStrategy, recentAlerts, candleCount, showConditions, showTriggers, tfMs, chartPrefs, strategy?.direction],
+  );
+  const labLatestPanes = useMemo(
+    () => (gateParityActive ? buildCachePanes(labChartDataCacheLatest, labCacheLatest?.chart_data || []) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [gateParityActive, labChartDataCacheLatest, labCacheLatest, chartDataResp, btTrades, fwdTrades, apiStrategy, recentAlerts, candleCount, showConditions, showTriggers, tfMs, chartPrefs, strategy?.direction],
+  );
+
   // Early returns after all hooks
   if (isLoading || !strategy) {
     return (
@@ -3194,7 +3237,7 @@ export default function StrategyDetailPage({ strategyId }: Props) {
       {/* TABS                                                                */}
       {/* ================================================================= */}
 
-      <TabBar tabs={TABS}>
+      <TabBar tabs={TABS} onTabChange={setActiveTab}>
         {(tab) => (
           <div>
             {/* =========================================================== */}
@@ -4484,53 +4527,45 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     <h4 className="text-sm font-medium">
                       Gate Replay
                       <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
-                        (Backtest REST · Alert live · shared scrub)
+                        (Backtest REST · bar-close · vs Alert = ws_rest_spliced · shared scrub)
                       </span>
                     </h4>
-                    <div className="flex items-center gap-1 text-xs">
-                      <span style={{ color: 'var(--text-muted)' }}>Alert data:</span>
-                      {(['ws-first', 'ws-latest'] as const).map(opt => (
-                        <button
-                          key={opt}
-                          onClick={() => setLabDataSource(opt)}
-                          title={opt === 'ws-first'
-                            ? 'first_close — bar at first WS write (decision-time)'
-                            : 'close — bar after Polygon rebroadcast/REST corrections'}
-                          className="px-2 py-0.5 rounded transition-colors"
-                          style={{
-                            background: labDataSource === opt ? 'var(--accent)' : 'var(--bg-input)',
-                            color: labDataSource === opt ? 'white' : 'var(--text-muted)',
-                            border: labDataSource === opt ? 'none' : '1px solid var(--border)',
-                            cursor: 'pointer',
-                          }}
-                        >
-                          {opt === 'ws-first' ? 'First-write' : 'Latest'}
-                        </button>
-                      ))}
-                    </div>
                   </div>
-                  {(!chartTabData.hasBars && !labChartTabData.hasBars) ? (
+                  {(!chartTabData.hasBars && labFirstPanes.length === 0 && labLatestPanes.length === 0) ? (
                     <ChartPlaceholder
-                      label={stratSymbol ? `Loading ${stratSymbol}...` : 'OHLC chart'}
+                      label={stratSymbol ? `Loading ${stratSymbol}... (running both cache lenses)` : 'OHLC chart'}
                       height={350}
                     />
                   ) : (
                     <LabReplayPanel
                       algoPanes={chartTabData.chartPanes}
-                      alertPanes={labChartTabData.chartPanes}
+                      alertFirstPanes={labFirstPanes}
+                      alertLatestPanes={labLatestPanes}
+                      gracePrimary={tfMs && tfMs < 60000 ? 4 : 2}
+                      graceSecondary={30}
+                      mode={gpMode}
+                      onModeChange={setGpMode}
                       algoLabel="Backtest Lens (REST · bar-close)"
-                      alertLabel={`Alert Lens (live · ${labDataSource === 'ws-first' ? 'first-write' : 'latest'})`}
-                      alertFooter={labDataSource === 'ws-latest'
-                        ? `${labCacheLatest?.row_count ?? 0} bars (post-correction)`
-                        : `${labCacheFirst?.row_count ?? 0} bars (decision-time)`}
+                      alertLabel="Alert Lens (live · ws_rest_spliced)"
                       upColor={chartPrefs.candleUp}
                       downColor={chartPrefs.candleDown}
                       upBorderColor={chartPrefs.candleUpBorder}
                       gridLines={chartPrefs.gridLines}
-                      rightOffset={chartPrefs.rightOffset}
+                      rightOffset={0}
                       timezone={chartPrefs.timezone}
                       defaultIntervalSec={Math.max(1, Math.round((tfMs || 60000) / 1000))}
                       height={350}
+                      barCountNote={
+                        <>Backtest (REST) drops empty/no-trade bars; the live cache keeps every WS-active
+                        period (incl. zero-volume), so the Alert lens often shows MORE bars — that bar-set
+                        difference is itself a real divergence.</>
+                      }
+                      tipNote={
+                        <>Alert lens = ws_rest_spliced: REST-corrected body + WS first-write &ldquo;tip&rdquo;
+                        (last ~4s on candles / 30s on the gate ribbon), healing to REST as you scrub forward.
+                        Tip indicator values are approximated (all-first-write computation, not a per-bar
+                        recompute) — negligible for liquid symbols; a fully-faithful backend recompute is deferred.</>
+                      }
                     />
                   )}
                 </Card>
