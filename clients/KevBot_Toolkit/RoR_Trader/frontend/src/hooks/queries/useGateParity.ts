@@ -51,3 +51,36 @@ export function useGateParity(strategyId: number | null, windowHours: number, en
     staleTime: 60_000,
   });
 }
+
+export interface Window1sBar {
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+export interface Window1sResponse {
+  symbol: string;
+  end: string;
+  lookback: number;
+  bars_1s: Window1sBar[];
+}
+
+/** 1-second bars for a right-aligned window ending at `endIso` (the scrub head). */
+export function useWindow1s(
+  strategyId: number | null,
+  endIso: string | null,
+  lookback = 120,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ['window-1s', strategyId, endIso, lookback],
+    queryFn: () =>
+      apiFetch<Window1sResponse>(
+        `/api/strategies/${strategyId}/window-1s?end=${encodeURIComponent(endIso || '')}&lookback=${lookback}`
+      ),
+    enabled: enabled && strategyId !== null && !!endIso,
+    staleTime: 60_000,
+  });
+}

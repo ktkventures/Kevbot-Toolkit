@@ -206,9 +206,10 @@ interface LabReplayPanelProps {
   /** Replay (historical splice) vs Live (real-time WS — deferred). */
   mode?: 'replay' | 'live';
   onModeChange?: (m: 'replay' | 'live') => void;
-  /** Optional 1-second panes rendered under each lens (scrub-aligned). */
-  oneSecBacktest?: ReactNode;
-  oneSecAlert?: ReactNode;
+  /** Optional 1-second panes rendered under each lens. Render-functions that
+   *  receive the current scrub head (Unix sec) so the 1s window can right-align. */
+  oneSecBacktest?: (scrubHead: number) => ReactNode;
+  oneSecAlert?: (scrubHead: number) => ReactNode;
   /** A short divergence note shown under the bar counts. */
   barCountNote?: ReactNode;
   /** A small on-screen caveat (e.g. the tip-indicator approximation). */
@@ -528,7 +529,7 @@ export default function LabReplayPanel({
             formingStates={null}
             formingStateCrossTf={null}
           />
-          {oneSecBacktest}
+          {oneSecBacktest?.(currentTime)}
         </div>
         <div>
           <div className="text-xs mb-1" style={{ color: 'var(--text-muted)' }}>
@@ -550,7 +551,7 @@ export default function LabReplayPanel({
             formingStates={null}
             formingStateCrossTf={null}
           />
-          {oneSecAlert}
+          {oneSecAlert?.(currentTime)}
         </div>
       </div>
 

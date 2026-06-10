@@ -1205,6 +1205,50 @@ def gate_parity(strategy_id: int,
         raise HTTPException(status_code=500, detail=f"gate-parity failed: {e}")
 
 
+@router.get("/{strategy_id}/window-1s")
+def window_1s(strategy_id: int,
+              end: str = Query(..., description="ISO end timestamp (scrub head)"),
+              lookback: int = Query(120, ge=10, le=1800),
+              user=Depends(get_current_user)):
+    """1-second OHLCV for a RIGHT-aligned window ending at `end` (the scrub
+    head), spanning `lookback` seconds back. Thin: returns just bars; the
+    frontend overlays the primary-TF indicators it already holds. Day-cached
+    via fetch_1s_bars_for_window so scrubbing is cheap after the first fetch.
+    """
+    strat = _get_or_404(strategy_id, user)
+    symbol = strat.get('symbol')
+    if not symbol:
+        raise HTTPException(status_code=400, detail="strategy has no symbol")
+    import pandas as pd
+    from datetime import datetime, timedelta, timezone
+    try:
+        end_dt = datetime.fromisoformat(end.replace('Z', '+00:00'))
+        if end_dt.tzinfo is None:
+            end_dt = end_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        raise HTTPException(status_code=400, detail="bad end timestamp")
+    start_dt = end_dt - timedelta(seconds=lookback)
+    try:
+        from data_loader import fetch_1s_bars_for_window
+        df = fetch_1s_bars_for_window(symbol, start_dt, end_dt, padding_seconds=5)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"1s fetch failed: {e}")
+    bars = []
+    if df is not None and len(df):
+        idx = df.index
+        idx = idx.tz_convert('UTC') if idx.tz is not None else idx.tz_localize('UTC')
+        mask = (idx >= pd.Timestamp(start_dt)) & (idx <= pd.Timestamp(end_dt))
+        for ts, r in df[mask].iterrows():
+            t = ts if getattr(ts, 'tzinfo', None) is not None else pd.Timestamp(ts).tz_localize('UTC')
+            bars.append({
+                'time': t.isoformat(),
+                'open': float(r['open']), 'high': float(r['high']),
+                'low': float(r['low']), 'close': float(r['close']),
+                'volume': float(r.get('volume', 0) or 0),
+            })
+    return {'symbol': symbol, 'end': end_dt.isoformat(), 'lookback': lookback, 'bars_1s': bars}
+
+
 @router.get("/{strategy_id}/grace-shadow-comparison")
 def grace_shadow_comparison(
     strategy_id: int,

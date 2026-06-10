@@ -17,6 +17,7 @@ import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
 import { useLiveBar } from '@/hooks/queries/useLiveBar';
 import { useGateParity } from '@/hooks/queries/useGateParity';
+import GateParityOneSec, { extractOverlayLines } from '@/components/GateParityOneSec';
 import { useDeleteStrategy, useDuplicateStrategy, useRefreshStrategy, useSetForwardTestStart, useUpdateStrategyLanes } from '@/hooks/mutations/useStrategyMutations';
 import { useDisplayStore } from '@/providers/StoreProvider';
 import { useChartPrefs } from '@/hooks/useChartPrefs';
@@ -4555,6 +4556,28 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       timezone={chartPrefs.timezone}
                       defaultIntervalSec={Math.max(1, Math.round((tfMs || 60000) / 1000))}
                       height={350}
+                      oneSecBacktest={(sh) => (
+                        <GateParityOneSec
+                          strategyId={strategyId}
+                          scrubHead={sh}
+                          overlayLines={extractOverlayLines(chartTabData.chartPanes)}
+                          label="Backtest (REST)"
+                          upColor={chartPrefs.candleUp}
+                          downColor={chartPrefs.candleDown}
+                          timezone={chartPrefs.timezone}
+                        />
+                      )}
+                      oneSecAlert={(sh) => (
+                        <GateParityOneSec
+                          strategyId={strategyId}
+                          scrubHead={sh}
+                          overlayLines={extractOverlayLines(labLatestPanes)}
+                          label="Alert (live)"
+                          upColor={chartPrefs.candleUp}
+                          downColor={chartPrefs.candleDown}
+                          timezone={chartPrefs.timezone}
+                        />
+                      )}
                       barCountNote={
                         <>Backtest (REST) drops empty/no-trade bars; the live cache keeps every WS-active
                         period (incl. zero-volume), so the Alert lens often shows MORE bars — that bar-set
