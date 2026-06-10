@@ -219,6 +219,120 @@ def demo_splice(sid: int):
                   f"  (ws={b['ws_close']} rest={b['rest_close']})")
 
 
+def build_gate_parity_view(sid: int, hours: float = 4.0,
+                           session: Optional[str] = None) -> dict:
+    """Theoretical, truth-reliable Gate Parity data for the detail-page tab.
+
+    Runs the REAL engine pipeline once (`prepare_data_with_indicators` +
+    `unified_trades`) for the backtest lens, extracting the engine's own
+    PB ribbon (`<interp>__<tf>`) and CB ribbon (`_spec_<interp>__<tf>`) for
+    the gate, the primary trigger fires, theoretical BT entries, and the
+    actual live entries. Per live entry it reports the gate state under PB/CB
+    (from the engine columns at that bar) and whether it pairs with a
+    theoretical BT entry. JSON-serializable; the FastAPI route is a thin
+    pass-through and the frontend only renders.
+    """
+    import services as svc
+    from db import set_admin_user_context
+    c = get_admin_client()
+    row = c.table('strategies').select('*').eq('id', sid).execute().data[0]
+    set_admin_user_context(row['user_id'])
+    strat = _row_to_strategy(row)
+    conf = list(strat.get('confluence') or [])
+    if not conf:
+        raise SystemExit(f'sid {sid} has no gate')
+    gate = conf[0]
+    tf_part = gate.split('-', 1)[0]      # '2m'
+    interp = gate.split('-', 2)[1]       # 'UT_BOT_V4'
+    want = gate.split('-', 2)[2]         # 'BULL_TREND'
+    sec_tf = _LABEL_TO_TF_SECONDS.get(tf_part, 0)
+    entry_trigger = strat.get('entry_trigger')
+    primary_tf = strat.get('timeframe')
+
+    # Use the strategy's ACTUAL session — not a hardcoded guess — so the
+    # theoretical backtest fires in the same window the live engine does.
+    session = session or strat.get('trading_session') or 'RTH'
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(hours=hours)
+    df = svc.prepare_data_with_indicators(
+        strat['symbol'], timeframe=primary_tf, secondary_tfs=(TF_LABEL[sec_tf],),
+        start_date=start, end_date=end, session=session, strat=strat)
+
+    pb_col = f'{interp}__{tf_part}'
+    cb_col = f'_spec_{interp}__{tf_part}'
+    trig_col = f'trig_{entry_trigger}'
+    for col in (pb_col, cb_col):
+        if col not in df.columns:
+            raise SystemExit(f'expected ribbon column {col!r} not in enriched df')
+
+    # Theoretical BT entries (fresh, current logic) — the engine's own trades.
+    trades_bt = svc.unified_trades(df, strat)
+    bt_entry_ts = sorted(_parse_iso(t) for t in
+                         (trades_bt['entry_time'] if 'entry_time' in trades_bt.columns
+                          else trades_bt.get('entry_fill_ts', [])) if _parse_iso(t)) \
+        if trades_bt is not None and len(trades_bt) else []
+
+    # Actual live entries (carry historical logic — labeled as such).
+    al = c.table('alerts').select('timestamp,fill_ts').eq('strategy_id', sid)\
+        .eq('trigger_id', entry_trigger).gte('timestamp', start.isoformat())\
+        .limit(5000).execute().data
+    live_ts = sorted(_parse_iso(a.get('fill_ts') or a.get('timestamp')) for a in al
+                     if _parse_iso(a.get('fill_ts') or a.get('timestamp')))
+
+    # Gate state at a timestamp from the engine's PB/CB columns (asof).
+    idx = df.index
+    def gate_at(ts):
+        pos = idx.searchsorted(pd.Timestamp(ts), side='right') - 1
+        if pos < 0:
+            return None, None
+        r = df.iloc[pos]
+        return r.get(pb_col), r.get(cb_col)
+
+    def paired(ts, pool, tol=5.0):
+        t = ts.timestamp()
+        return any(abs(p.timestamp() - t) <= tol for p in pool)
+
+    rows = []
+    for ts in live_ts:
+        pb, cb = gate_at(ts)
+        rows.append({'ts': ts.isoformat(), 'pb': pb, 'cb': cb,
+                     'pb_pass': pb == want, 'cb_pass': cb == want,
+                     'paired_bt': paired(ts, bt_entry_ts)})
+
+    return {
+        'meta': {'sid': sid, 'symbol': strat['symbol'], 'primary_tf': primary_tf,
+                 'gate': gate, 'want_state': want, 'entry_trigger': entry_trigger,
+                 'live_model': strat.get('live_model'), 'backtest_model': strat.get('backtest_model'),
+                 'session': session,
+                 'window': [start.isoformat(), end.isoformat()], 'bars': len(df)},
+        'ribbon': {'pb_dist': {str(k): int(v) for k, v in df[pb_col].value_counts().items()},
+                   'cb_dist': {str(k): int(v) for k, v in df[cb_col].value_counts().items()}},
+        'entries': {'theoretical_bt': len(bt_entry_ts), 'live_actual': len(live_ts)},
+        'live_rows': rows,
+    }
+
+
+def print_view(sid: int, hours: float):
+    v = build_gate_parity_view(sid, hours)
+    m = v['meta']
+    print(f"sid {m['sid']} {m['symbol']} {m['primary_tf']} | gate={m['gate']} "
+          f"| live={m['live_model']} bt={m['backtest_model']}")
+    print(f"window {m['window'][0][11:19]}–{m['window'][1][11:19]} | {m['bars']} bars")
+    print(f"\nGate ribbon (engine columns):")
+    print(f"  PB ({m['gate'].split('-',1)[1]}): {v['ribbon']['pb_dist']}")
+    print(f"  CB: {v['ribbon']['cb_dist']}")
+    print(f"\nEntries: theoretical-BT={v['entries']['theoretical_bt']}  "
+          f"live-actual={v['entries']['live_actual']}")
+    rows = v['live_rows']
+    ph = [r for r in rows if not r['paired_bt']]
+    print(f"\nLive entries vs theoretical BT: paired={len(rows)-len(ph)} phantom={len(ph)}")
+    print(f"  of {len(rows)} live entries: PB-pass={sum(r['pb_pass'] for r in rows)} "
+          f"CB-pass={sum(r['cb_pass'] for r in rows)}")
+    print(f"  of {len(ph)} phantoms:      PB-pass={sum(r['pb_pass'] for r in ph)} "
+          f"CB-pass={sum(r['cb_pass'] for r in ph)} "
+          f"CBpass&PBfail={sum(1 for r in ph if r['cb_pass'] and not r['pb_pass'])}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--sid', type=int, required=True)
@@ -226,10 +340,15 @@ def main():
     ap.add_argument('--tolerance', type=float, default=5.0)
     ap.add_argument('--demo-splice', action='store_true',
                     help='Demonstrate the ws_rest_spliced reconstruction on this strategy')
+    ap.add_argument('--view', action='store_true',
+                    help='Build + print the theoretical Gate Parity view (endpoint core)')
     args = ap.parse_args()
 
     if args.demo_splice:
         demo_splice(args.sid)
+        return
+    if args.view:
+        print_view(args.sid, args.window_hours)
         return
 
     ctx = load_context(args.sid)
