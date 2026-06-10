@@ -469,12 +469,23 @@ function SyncedChartPaneInner({
     const handleResize = () => {
       if (!containerRef.current) return;
       const w = containerRef.current.clientWidth;
-      for (const c of charts) c.applyOptions({ width: w });
+      if (w > 0) for (const c of charts) c.applyOptions({ width: w });
     };
     window.addEventListener('resize', handleResize);
 
+    // Observe CONTAINER size changes too — `window.resize` alone misses
+    // layout reflows (a sibling lens/1s pane mounting, a scrollbar toggling,
+    // a flex/grid column resizing). Without this, a chart created during a
+    // transient layout keeps its stale width and renders squished/tiny.
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && containerRef.current) {
+      ro = new ResizeObserver(() => handleResize());
+      ro.observe(containerRef.current);
+    }
+
     return () => {
       window.removeEventListener('resize', handleResize);
+      if (ro) { try { ro.disconnect(); } catch { /* ignore */ } }
       for (const c of charts) {
         try { c.remove(); } catch { /* ignore */ }
       }
