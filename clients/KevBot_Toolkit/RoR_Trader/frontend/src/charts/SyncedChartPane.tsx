@@ -637,13 +637,20 @@ function SyncedChartPaneInner({
         try { charts[0].timeScale().fitContent(); } catch { /* ignore */ }
       }
       hasRenderedInitialDataRef.current = true;
-    } else if (charts[0] && candleCount > 0 && candleCount !== prevCandleCountRef.current) {
-      // Stale-range guard (2026-06-09): the candle COUNT changed on a data
-      // update without a structure rebuild — e.g. the window recomputed as a
-      // sibling lens loaded. The preserved logical range can now be out of
-      // bounds (scrolled past the data), squishing the candles. Re-fit. A
-      // user pan never changes the count, so panning is preserved.
-      try { charts[0].timeScale().fitContent(); } catch { /* ignore */ }
+    } else if (charts[0] && candleCount > 0) {
+      // Stale-range guard (2026-06-09): re-fit when the candle COUNT changed
+      // OR the current visible range is out of bounds (scrolled past / wider
+      // than the data) — both squish the candles to one side (e.g. a sparse
+      // 1s pane showing range [0,20] over 8 bars). A user pan WITHIN the data
+      // never trips this, so panning is preserved.
+      let needRefit = candleCount !== prevCandleCountRef.current;
+      if (!needRefit) {
+        try {
+          const r = charts[0].timeScale().getVisibleLogicalRange();
+          if (r && (r.from >= candleCount - 0.5 || r.to > candleCount + 4)) needRefit = true;
+        } catch { /* ignore */ }
+      }
+      if (needRefit) { try { charts[0].timeScale().fitContent(); } catch { /* ignore */ } }
     }
     if (candleCount > 0) prevCandleCountRef.current = candleCount;
     // M8.7 M5: also re-run when scrub head moves so data slices forward.
