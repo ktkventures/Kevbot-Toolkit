@@ -622,7 +622,15 @@ function SyncedChartPaneInner({
 
     if (wasFirstLoad && charts[0]) {
       const savedRange = lastLogicalRangeRef.current;
-      if (savedRange) {
+      // Restore the saved range ONLY if it still fits the new data. A
+      // structure rebuild can arrive with a DIFFERENT bar count (the window
+      // recomputed as a sibling lens loaded). Restoring a stale range that's
+      // scrolled past / wider than the new data squishes the candles to one
+      // side — the exact Gate Parity squish. Otherwise fit to content.
+      const rangeFits = !!savedRange && candleCount > 0
+        && savedRange.from < candleCount - 0.5
+        && savedRange.to <= candleCount + 4;
+      if (savedRange && rangeFits) {
         try { charts[0].timeScale().setVisibleLogicalRange(savedRange); }
         catch { try { charts[0].timeScale().fitContent(); } catch { /* ignore */ } }
       } else {
