@@ -137,8 +137,9 @@ def _resolve_primary_df_for_backtest_model(
 
     Modular dispatch — adds new backtest models by extending this table:
       - 'rest_only', 'rest_hifi', None: REST default (return None, None)
-      - 'cache_locked':  fetch from cache, sources=['ws', 'ws_agg']
-                         (decision-time view of what live engine saw)
+      - 'cache_locked':  fetch from cache, sources=ENGINE_CONSUMED_SOURCES
+                         (ws/ws_agg/rest_correction/rest_insert — what
+                         the live engine actually consumed)
       - 'cache_corrected' (Phase D): fetch from cache, sources=None
                           (includes rest_backfill rows)
 
@@ -155,10 +156,14 @@ def _resolve_primary_df_for_backtest_model(
     if bt_model not in ('cache_locked', 'cache_corrected'):
         return None, None
 
-    sources = (['ws', 'ws_agg']
+    from data_loader import (
+        fetch_cache_as_df, TF_TO_SECONDS, ENGINE_CONSUMED_SOURCES)
+    # cache_locked = "what the live engine actually consumed":
+    # ws/ws_agg plus rest_correction/rest_insert (bars the engine
+    # spliced/inserted into its own history — see ENGINE_CONSUMED_SOURCES
+    # in data_loader.py). rest_backfill stays excluded (cosmetic).
+    sources = (ENGINE_CONSUMED_SOURCES
                if bt_model == 'cache_locked' else None)
-
-    from data_loader import fetch_cache_as_df, TF_TO_SECONDS
     tf_seconds = TF_TO_SECONDS.get(timeframe)
     if tf_seconds is None:
         # Unknown timeframe — bail to REST default

@@ -871,6 +871,20 @@ TF_TO_SECONDS = {
 }
 
 
+# Sources the LIVE ENGINE actually consumed into its in-memory bar
+# history (2026-06-11). 'rest_correction' rows are WS bars whose row was
+# upserted by apply_rest_correction AFTER the engine spliced the REST
+# values into builder.history — the engine consumed the corrected bar,
+# so faithful "what the engine saw" views must include them (the upsert
+# overwrites source, so filtering to ws/ws_agg silently DROPS every
+# corrected bar). 'rest_insert' rows are WS-missed bars healed by
+# gap_healer and inserted into builder.history. 'rest_backfill' stays
+# excluded everywhere: cosmetic cache patching the engine never consumes.
+# first_* decision-time columns survive both upserts via the
+# preserve-trigger in migrations/live_bars_first_values.sql.
+ENGINE_CONSUMED_SOURCES = ['ws', 'ws_agg', 'rest_correction', 'rest_insert']
+
+
 def fetch_cache_as_df(
     symbol: str,
     tf_seconds: int,

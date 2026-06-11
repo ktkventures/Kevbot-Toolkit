@@ -1,8 +1,182 @@
 {
-  "generated_at": "2026-06-06T18:34:02.744327+00:00",
+  "generated_at": "2026-06-11T14:12:53.083004+00:00",
   "since": "2026-05-28",
-  "count": 78,
+  "count": 119,
   "commits": [
+    {
+      "sha": "0d3affb",
+      "full_sha": "0d3affbf7d7084f2905d0adcc1c123c5c9d78f54",
+      "timestamp_iso": "2026-06-10T13:05:18-06:00",
+      "subject": "[claude-iter-0610c] ralph: remove flat-bar gap-fill (match backtest dropna)"
+    },
+    {
+      "sha": "a9c59fe",
+      "full_sha": "a9c59fe4c0a4f551f2dfadb8397ebfa23c6cedfc",
+      "timestamp_iso": "2026-06-10T12:16:09-06:00",
+      "subject": "[claude-iter-0610b] Per-Bar Parity Drift v2 (first/latest toggle) + lens tip toggle"
+    },
+    {
+      "sha": "c0116ea",
+      "full_sha": "c0116ea15cd1958d0cd82d051519c872160ff4a5",
+      "timestamp_iso": "2026-06-10T11:56:02-06:00",
+      "subject": "[claude-iter-0610a] Gate Parity polish + Per-Bar Parity Drift module"
+    },
+    {
+      "sha": "71ad0c3",
+      "full_sha": "71ad0c3bdbddf73b4b062cc81f274cd8dc68fb94",
+      "timestamp_iso": "2026-06-09T22:10:28-06:00",
+      "subject": "Roadmap_Divergence_Hunting: 2026-06-09 EOD \u2014 diagnosis corrected + Gate Parity tool shipped; 06-10 run-order"
+    },
+    {
+      "sha": "8d8dab7",
+      "full_sha": "8d8dab701984519d5fd5c9ea9a627391dc64e15c",
+      "timestamp_iso": "2026-06-09T21:39:38-06:00",
+      "subject": "[claude-iter-0609a] SyncedChartPane: re-fit on empty-left range + after resize (1s pane)"
+    },
+    {
+      "sha": "af342cb",
+      "full_sha": "af342cb3013eff38590931d9ee67cf43030c84d9",
+      "timestamp_iso": "2026-06-09T21:31:46-06:00",
+      "subject": "[claude-iter-0609a] GateParityOneSec: align overlay lines to 1s bar times (fix sparse 1s squish)"
+    },
+    {
+      "sha": "8525e95",
+      "full_sha": "8525e953e0aee6ff35d15f986ebd2c8039010322",
+      "timestamp_iso": "2026-06-09T21:23:26-06:00",
+      "subject": "[claude-iter-0609a] SyncedChartPane: re-fit on out-of-bounds range too (fix sparse 1s-pane squish)"
+    },
+    {
+      "sha": "ce8830f",
+      "full_sha": "ce8830fe59276d3cbca4093a4f34514df70638b8",
+      "timestamp_iso": "2026-06-09T21:15:03-06:00",
+      "subject": "[claude-iter-0609a] SyncedChartPane: don't restore an out-of-bounds saved range on rebuild (THE squish fix)"
+    },
+    {
+      "sha": "e8c503b",
+      "full_sha": "e8c503b2f5c7c255f4574b87f047ba65eed0640c",
+      "timestamp_iso": "2026-06-09T20:50:06-06:00",
+      "subject": "[claude-iter-0609a] SyncedChartPane: re-fit on candle-count change (fix stale-range squish)"
+    },
+    {
+      "sha": "8127203",
+      "full_sha": "812720393d33461caed5e147b44d674fcedf6ee2",
+      "timestamp_iso": "2026-06-09T20:22:00-06:00",
+      "subject": "[claude-iter-0609a] SyncedChartPane: ResizeObserver so charts re-measure on container reflow"
+    },
+    {
+      "sha": "270e663",
+      "full_sha": "270e66375044c8fcce1c13aa29fa38d0fc6296da",
+      "timestamp_iso": "2026-06-09T19:54:14-06:00",
+      "subject": "[claude-iter-0609a] Gate Parity: per-lens 1-second pane (3rd layer)"
+    },
+    {
+      "sha": "27c4801",
+      "full_sha": "27c4801438d6e44ff70dbaa500355825d943a685",
+      "timestamp_iso": "2026-06-09T19:30:15-06:00",
+      "subject": "[claude-iter-0609a] Wire splice into Gate Parity tab (faithful alert lens)"
+    },
+    {
+      "sha": "36b6bb3",
+      "full_sha": "36b6bb33b52e466027bbb3b885707cc58eaa0428",
+      "timestamp_iso": "2026-06-09T19:09:25-06:00",
+      "subject": "[claude-iter-0609a] Gate Parity: splice helper + LabReplayPanel extensions (foundation)"
+    },
+    {
+      "sha": "1faac48",
+      "full_sha": "1faac48b7172cb716d9c2afa693a8eedac3c0de9",
+      "timestamp_iso": "2026-06-09T18:09:29-06:00",
+      "subject": "[claude-iter-0609a] Gate Parity tab: render engine-truth analysis (thin)"
+    },
+    {
+      "sha": "eef7299",
+      "full_sha": "eef72991e03f7b094ce72eee690c2bc2b8005dda",
+      "timestamp_iso": "2026-06-09T18:03:28-06:00",
+      "subject": "[claude-iter-0609a] Add thin GET /api/strategies/{id}/gate-parity route"
+    },
+    {
+      "sha": "f9e403d",
+      "full_sha": "f9e403d33996dc8616a5a7fc9616d468c18e28dd",
+      "timestamp_iso": "2026-06-09T18:01:03-06:00",
+      "subject": "[claude-iter-0609a] gate_parity_harness: build_gate_parity_view endpoint core"
+    },
+    {
+      "sha": "9a24488",
+      "full_sha": "9a244887d681bc618db773948542dda03ed944e6",
+      "timestamp_iso": "2026-06-09T16:01:07-06:00",
+      "subject": "[claude-iter-0609a] gate_parity_harness: ws_rest_spliced splice/tip reconstruction"
+    },
+    {
+      "sha": "d813f6e",
+      "full_sha": "d813f6ede3b9acdcd478db0737ac1b1893f09e6c",
+      "timestamp_iso": "2026-06-09T15:26:28-06:00",
+      "subject": "[claude-iter-0609a] Add Gate Parity tab (strategy detail) + gate_parity_harness backend"
+    },
+    {
+      "sha": "57bf4dc",
+      "full_sha": "57bf4dc6bf232e7ca4ad2780ca77bcff5812a8f9",
+      "timestamp_iso": "2026-06-09T14:11:39-06:00",
+      "subject": "[claude-iter-0609a] GATE_DIAG: log gate subset_ok at live entry fire (temporary diagnostic)"
+    },
+    {
+      "sha": "f77d460",
+      "full_sha": "f77d460c4bee4d0f210888e9d7bd0859bc8ca4db",
+      "timestamp_iso": "2026-06-09T13:13:40-06:00",
+      "subject": "[claude-iter-0609a] Iteration log: live confirmation \u2014 gate unfrozen (UPPER\u2192MID), verdict improved, full entry-rate measure deferred to 06-10"
+    },
+    {
+      "sha": "93aebb4",
+      "full_sha": "93aebb401ffb7bac0bb4a9949dd5bda706d36ba4",
+      "timestamp_iso": "2026-06-09T12:39:04-06:00",
+      "subject": "[claude-iter-0609a] Fix 2m cross-TF gate fail-open: rebroadcast cascade froze confluence records"
+    },
+    {
+      "sha": "59b7f2b",
+      "full_sha": "59b7f2b45a7e7b00d91b465d859c5d6789ca6d23",
+      "timestamp_iso": "2026-06-08T19:38:13-06:00",
+      "subject": "Roadmap_Divergence_Hunting: Phase 1 (sid 174) done + gate fail-open/2m live-record diagnosis"
+    },
+    {
+      "sha": "e1f3902",
+      "full_sha": "e1f39023a0a12be3bb292f01ad02a2e9b9d7c3f2",
+      "timestamp_iso": "2026-06-08T16:53:05-06:00",
+      "subject": "Autonomous-iteration SOP + stability-window dashboards"
+    },
+    {
+      "sha": "0bb8145",
+      "full_sha": "0bb8145109112390e074e5324e78ff261c9c763d",
+      "timestamp_iso": "2026-06-08T16:23:32-06:00",
+      "subject": "Roadmap_Divergence_Hunting: 2026-06-08 update \u2014 Battle Plan results + pack-quality path"
+    },
+    {
+      "sha": "10df906",
+      "full_sha": "10df9067a4b60fcbc452c46d5245e2334f837994",
+      "timestamp_iso": "2026-06-07T21:35:04-06:00",
+      "subject": "Battle Plan: early-exit criteria + dashboard callouts + date fix"
+    },
+    {
+      "sha": "8c97a2d",
+      "full_sha": "8c97a2dc019b0f1aab392eaa717a6c8d2a620859",
+      "timestamp_iso": "2026-06-06T14:17:48-06:00",
+      "subject": "strategy_origin: split standard into mass_builder / pack_canary / ai_sop"
+    },
+    {
+      "sha": "dd7abc4",
+      "full_sha": "dd7abc45870de98b0081d448ba6c9493fbe4f300",
+      "timestamp_iso": "2026-06-06T13:27:34-06:00",
+      "subject": "fix: filter bar -- timeframe + add strategy origin filter"
+    },
+    {
+      "sha": "91080a4",
+      "full_sha": "91080a4928b5a50a96fa5bbf8f88bfe8fad48ea5",
+      "timestamp_iso": "2026-06-06T13:02:55-06:00",
+      "subject": "feat: filter system for By Hour + By Deploy tabs"
+    },
+    {
+      "sha": "66f9dc7",
+      "full_sha": "66f9dc7fbd1e6b633e68824c7160c70196217f73",
+      "timestamp_iso": "2026-06-06T12:37:27-06:00",
+      "subject": "feat: Strategy Health 'By Deploy' tab \u2014 pair rate per commit window"
+    },
     {
       "sha": "031229f",
       "full_sha": "031229f887ca56be719291a6ac4f50aa5ef75d32",
@@ -470,6 +644,78 @@
       "full_sha": "cb7eeaf2adc42d08af3e14e5b7db522379f465eb",
       "timestamp_iso": "2026-05-28T12:51:38-06:00",
       "subject": "M8: promote ws_rest_spliced to default, demote ws_agg_reconciled"
+    },
+    {
+      "sha": "f95aa64",
+      "full_sha": "f95aa6411b0ff7a5676c30d3749eb7b01c16b028",
+      "timestamp_iso": "2026-05-28T12:17:39-06:00",
+      "subject": "unified_engine: stamp exit's exec_type on _signal_exit, not entry's"
+    },
+    {
+      "sha": "440ec04",
+      "full_sha": "440ec04841f078fb8a1601015b35d19e987d6fe9",
+      "timestamp_iso": "2026-05-28T11:43:33-06:00",
+      "subject": "rest_verifier: diagnostic logging in _fetch_rest_bar empty-path"
+    },
+    {
+      "sha": "0b82c30",
+      "full_sha": "0b82c3051fc0b9f51bb373d9d8b5cc2bbf87ef32",
+      "timestamp_iso": "2026-05-28T11:19:03-06:00",
+      "subject": "rest_verifier: bypass data_loader's day cache for fresh REST fetches"
+    },
+    {
+      "sha": "596ac82",
+      "full_sha": "596ac820e88e143a3cc4cd728e200270d7de578f",
+      "timestamp_iso": "2026-05-28T11:02:14-06:00",
+      "subject": "rest_verifier: 120s max_wait + sweeper for REST settle tail"
+    },
+    {
+      "sha": "541d78c",
+      "full_sha": "541d78c044391096efa93f21204c1a326bdfcf02",
+      "timestamp_iso": "2026-05-28T10:38:04-06:00",
+      "subject": "rest_verifier: prefer signal_data.bar_time over fill_ts arithmetic"
+    },
+    {
+      "sha": "b323f35",
+      "full_sha": "b323f356abcf1d279e8636a6ae23c148d0f16ec2",
+      "timestamp_iso": "2026-05-28T10:27:29-06:00",
+      "subject": "ws_rest_spliced: drift_uncorrected status + snapshot warning dedupe"
+    },
+    {
+      "sha": "a0b7d54",
+      "full_sha": "a0b7d54a4be8d148d98da61747075f64f1192198",
+      "timestamp_iso": "2026-05-28T09:29:22-06:00",
+      "subject": "M6 ws_rest_spliced: apply_rest_correction + verifier callback wiring"
+    },
+    {
+      "sha": "a27cf26",
+      "full_sha": "a27cf268f7494b84de212ef506033871736cf38f",
+      "timestamp_iso": "2026-05-28T09:24:05-06:00",
+      "subject": "M5: Dispatch routing for ws_rest_spliced (mirrors ws_agg_reconciled)"
+    },
+    {
+      "sha": "4e8fe9a",
+      "full_sha": "4e8fe9aedeb6fbf9aa5699f56a77f2d57030ca69",
+      "timestamp_iso": "2026-05-28T09:22:37-06:00",
+      "subject": "M4: Wire rest_verifier hook into Ralph alert-fire dispatchers"
+    },
+    {
+      "sha": "6feae0d",
+      "full_sha": "6feae0d6a368fcd43906df4493d450665908d5d4",
+      "timestamp_iso": "2026-05-28T09:18:39-06:00",
+      "subject": "M3: REST verifier module"
+    },
+    {
+      "sha": "705384a",
+      "full_sha": "705384a45f51290160184d7db664e065c9885bfa",
+      "timestamp_iso": "2026-05-28T09:16:25-06:00",
+      "subject": "M2: Migration + ALERT_COLUMN_FIELDS for verification_* columns"
+    },
+    {
+      "sha": "bffdd1d",
+      "full_sha": "bffdd1d120826f3b06e9a38e3bd4d9727e2c5d72",
+      "timestamp_iso": "2026-05-28T09:14:58-06:00",
+      "subject": "M1: Register ws_rest_spliced live model + supersede rest_polled"
     }
   ]
 }

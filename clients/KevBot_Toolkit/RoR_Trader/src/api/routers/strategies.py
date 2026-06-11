@@ -2765,14 +2765,18 @@ def get_strategy_chart_data_from_cache(
         set_admin_user_context(user.get('id') or strat.get('user_id'))
 
         # Fetch primary cache as DataFrame.
-        # Lab tab "Alert Lens" semantics: ONLY ws + ws_agg sources —
-        # exclude rest_backfill rows (Phase D, future) so this view
-        # reflects what the LIVE engine actually saw, not what the
-        # cache was retroactively patched with.
+        # Lab tab "Alert Lens" semantics: engine-consumed sources only
+        # (ws, ws_agg, rest_correction, rest_insert) — exclude
+        # rest_backfill rows so this view reflects what the LIVE engine
+        # actually saw, not what the cache was retroactively patched
+        # with. rest_correction/rest_insert ARE engine-consumed: the
+        # engine spliced/inserted those bars into its own history before
+        # the row was tagged (2026-06-11 lens faithfulness fix — the old
+        # ['ws','ws_agg'] filter silently dropped every corrected bar).
         _t = _time.time()
         primary_df = fetch_cache_as_df(
             symbol, primary_tf_seconds, start_dt, end_dt, value_type,
-            sources=['ws', 'ws_agg'])
+            sources=ENGINE_CONSUMED_SOURCES)
         _phases["fetch_primary"] = _time.time() - _t
 
         if len(primary_df) == 0:
@@ -2794,7 +2798,7 @@ def get_strategy_chart_data_from_cache(
                 continue
             sec_df = fetch_cache_as_df(
                 symbol, sec_tf_seconds, start_dt, end_dt, value_type,
-                sources=['ws', 'ws_agg'])
+                sources=ENGINE_CONSUMED_SOURCES)
             if len(sec_df) > 0:
                 sec_tf_dfs[sec_tf] = sec_df
         _phases["fetch_secondary"] = _time.time() - _t
@@ -2848,7 +2852,7 @@ def get_strategy_chart_data_from_cache(
 # preview) so services.py can import without circular dep through
 # api.routers.strategies. Kept this re-export for any legacy import
 # inside the same module.
-from data_loader import fetch_cache_as_df  # noqa: F401
+from data_loader import fetch_cache_as_df, ENGINE_CONSUMED_SOURCES  # noqa: F401
 
 
 @router.get("/{strategy_id}/cache-bars")
