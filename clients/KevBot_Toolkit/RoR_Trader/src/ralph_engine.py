@@ -1640,6 +1640,15 @@ class _ShadowIndicatorEngine:
         own_records path, where re-emit could double-fire alerts.
         """
         self.indicators.recompute_from_history(history_df)
+        return self._derive_confluence_records()
+
+    def _derive_confluence_records(self) -> Set[str]:
+        """Re-derive `_current_confluence` from the indicators' CURRENT
+        state without touching indicator state itself. Factored out of
+        `recompute_confluence` (2026-06-11, gap healer) so callers that
+        already ran their own recompute (e.g. the insert-aware replay in
+        apply_rest_insert) can refresh the records without a second
+        indicator pass."""
         current = self.indicators.get_values()
         prev = self.indicators.get_prev_values()
 
@@ -2754,6 +2763,10 @@ class SymbolHub:
             if completed is None:
                 continue
             sec_was_duplicate = sec_builder.last_was_duplicate
+            if not sec_was_duplicate:
+                # Gap healer (2026-06-11): secondary builders (the 2m
+                # gate) gap-heal independently of the primary.
+                self._queue_gap_heal_if_gap(sec_tf, sec_builder)
             try:
                 from live_bars_writer import write_bar as _live_bars_write
                 _live_bars_write(
@@ -2862,6 +2875,9 @@ class SymbolHub:
                 continue
             primary_was_duplicate = builder.last_was_duplicate
             primary_was_correction = builder.last_was_correction
+            if not primary_was_duplicate:
+                # Gap healer (2026-06-11).
+                self._queue_gap_heal_if_gap(tf, builder)
             try:
                 from live_bars_writer import write_bar as _live_bars_write
                 _live_bars_write(
@@ -2941,6 +2957,10 @@ class SymbolHub:
         builder.accept_bar(bar_dict)
         was_duplicate = builder.last_was_duplicate
         was_correction = builder.last_was_correction
+        if not was_duplicate:
+            # Gap healer (2026-06-11): a fresh close is the cheapest
+            # moment to spot a hole between the last two history bars.
+            self._queue_gap_heal_if_gap(tf_seconds, builder)
 
         # M8.7: record the WS-aggregated bar to live_bars (fire-and-forget).
         # Always write — even on duplicate, since this is how cache.close
@@ -3336,6 +3356,257 @@ class SymbolHub:
                 offset_from_latest, path_label)
         return True
 
+    def apply_rest_insert(self, tf_seconds: int, rest_bar_dict: dict,
+                          rest_per_second_bars: list = None) -> str:
+        """Insert a WS-MISSED bar (real Polygon REST data) into
+        builder.history and recompute indicator state forward.
+
+        Gap healer (2026-06-11) — the sibling of apply_rest_correction
+        for bars the WebSocket never delivered at all (correction can
+        only fix values of bars already in history; ~14% of RTH 10s
+        windows were missing entirely, drifting incremental indicators
+        vs the backtest's REST series).
+
+        Returns: 'inserted' (snapshot-path replay) | 'inserted_full'
+        (full-replay fallback) | 'exists' | 'rejected_forming' |
+        'no_builder' | 'failed'.
+
+        Invoked off-thread by gap_healer; the caller holds the SAME
+        per-symbol mutex as rest_verifier corrections. INDICATOR STATE
+        ONLY: never calls on_bar_close/on_tick, so no alerts are fired
+        for the healed window and PositionStateMachine is untouched.
+        NEVER synthesizes bars — callers must pass real REST data.
+        """
+        builder = self.builders.get(tf_seconds)
+        if builder is None:
+            return 'no_builder'
+        rest_ts = pd.Timestamp(rest_bar_dict['timestamp'])
+        if rest_ts.tzinfo is None:
+            rest_ts = rest_ts.tz_localize('UTC')
+        try:
+            _aligned = builder._align_to_period(rest_ts.to_pydatetime())
+            rest_ts = pd.Timestamp(_aligned)
+            if rest_ts.tzinfo is None:
+                rest_ts = rest_ts.tz_localize('UTC')
+        except Exception:
+            pass
+
+        # Forming-bar guard: only heal bars strictly older than the
+        # previous fully-closed period (the live WS path owns the
+        # forming bar and the just-closed bar still inside grace).
+        now_utc = datetime.now(timezone.utc)
+        current_period = pd.Timestamp(
+            builder._align_to_period(now_utc))
+        if current_period.tzinfo is None:
+            current_period = current_period.tz_localize('UTC')
+        if rest_ts > current_period - pd.Timedelta(
+                seconds=2 * tf_seconds):
+            return 'rejected_forming'
+        if builder._partial is not None:
+            partial_start = pd.Timestamp(builder._partial.bar_start)
+            if partial_start.tzinfo is None:
+                partial_start = partial_start.tz_localize('UTC')
+            if rest_ts >= partial_start:
+                return 'rejected_forming'
+
+        def _norm(ts):
+            ts = pd.Timestamp(ts)
+            return ts.tz_localize('UTC') if ts.tzinfo is None else ts
+
+        def _in_history(target) -> bool:
+            for i in range(len(builder.history) - 1, -1, -1):
+                if _norm(builder.history.index[i]) == target:
+                    return True
+            return False
+
+        if len(builder.history) > 0 and _in_history(rest_ts):
+            # A late WS rebroadcast or a verifier pass got there first.
+            # Value corrections belong to the 4-pass verifier, not here.
+            return 'exists'
+
+        # Build the new row with the same column shape _append_to_history
+        # produces (extra seeded columns stay NaN, same as a WS append).
+        new_row = pd.DataFrame(
+            [{
+                'open': float(rest_bar_dict['open']),
+                'high': float(rest_bar_dict['high']),
+                'low': float(rest_bar_dict['low']),
+                'close': float(rest_bar_dict['close']),
+                'volume': float(rest_bar_dict.get('volume', 0)),
+            }],
+            index=pd.DatetimeIndex([rest_ts], name='timestamp'))
+
+        # Insert with one re-validation retry: the WS thread can append
+        # a new bar between our read and the ref swap (builder.history
+        # has no lock of its own — same exposure the correction path
+        # accepts). A lost update self-heals either way: a lost healed
+        # bar reverts to a detectable gap; a lost WS bar becomes a gap
+        # at the next close.
+        try:
+            for _attempt in (1, 2):
+                snapshot_last = (builder.history.index[-1]
+                                 if len(builder.history) else None)
+                merged = pd.concat([builder.history, new_row]).sort_index()
+                if len(merged) > MAX_HISTORY:
+                    merged = merged.iloc[-MAX_HISTORY:]
+                cur_last = (builder.history.index[-1]
+                            if len(builder.history) else None)
+                if (cur_last is None or snapshot_last is None
+                        or cur_last == snapshot_last):
+                    builder.history = merged
+                    break
+                if _attempt == 2:
+                    logger.warning(
+                        "gap_heal: history moved twice during insert "
+                        "sym=%s tf=%ss bar=%s — leaving for next sweep",
+                        self.symbol, tf_seconds, rest_ts.isoformat())
+                    return 'failed'
+            builder._bar_count += 1
+        except Exception as e:
+            logger.warning(
+                "gap_heal: history insert failed sym=%s tf=%ss bar=%s: %s",
+                self.symbol, tf_seconds, rest_ts.isoformat(), e)
+            return 'failed'
+
+        # Per-second history (sub-minute TFs): keep the REST per-second
+        # list so later verifier passes can splice this bar at sub-bar
+        # granularity. Rebuild sorted + re-cap — buckets evict in
+        # insertion order, and an out-of-order insert would corrupt the
+        # FIFO eviction.
+        if (tf_seconds < 60 and rest_per_second_bars
+                and hasattr(builder, '_per_second_history')):
+            try:
+                from collections import OrderedDict as _OD
+                psh = builder._per_second_history
+                psh[rest_ts] = list(rest_per_second_bars)
+                rebuilt = _OD(sorted(psh.items(), key=lambda kv: kv[0]))
+                cap = getattr(
+                    builder, '_per_second_history_max_buckets', 10)
+                while len(rebuilt) > cap:
+                    rebuilt.popitem(last=False)
+                builder._per_second_history = rebuilt
+            except Exception as e:
+                logger.warning(
+                    "gap_heal: per-second bucket insert failed sym=%s "
+                    "tf=%ss bar=%s: %s — bar-level only",
+                    self.symbol, tf_seconds, rest_ts.isoformat(), e)
+
+        # Indicator recompute — insert-aware replay, NEVER the plain
+        # recompute_from_history (its fast path re-applies only the
+        # last bar and would silently omit the inserted bar).
+        used_full = False
+        for monitor in self.monitors.values():
+            if monitor.tf_seconds != tf_seconds:
+                continue
+            try:
+                ok = monitor.indicators.apply_inserted_bar_replay(
+                    rest_ts, builder.history)
+                if not ok:
+                    monitor.indicators.recompute_from_history(
+                        builder.history, force_full=True)
+                    used_full = True
+            except Exception as e:
+                logger.warning(
+                    "gap_heal: monitor recompute failed sym=%s strat=%s "
+                    "tf=%ss: %s",
+                    self.symbol, monitor.strat_id, tf_seconds, e)
+        # Shadow engine (cross-TF confluence) — recompute AND re-derive
+        # records so _mtf_confluence reflects healed data (the gate
+        # must not stay frozen on pre-heal state; mirrors the 0609a
+        # rebroadcast-cascade fix).
+        shadow_self = self._shadow_engines.get(tf_seconds)
+        if shadow_self is not None:
+            try:
+                ok = shadow_self.indicators.apply_inserted_bar_replay(
+                    rest_ts, builder.history)
+                if not ok:
+                    shadow_self.indicators.recompute_from_history(
+                        builder.history, force_full=True)
+                    used_full = True
+                self._mtf_confluence[tf_seconds] = \
+                    shadow_self._derive_confluence_records()
+            except Exception as e:
+                logger.warning(
+                    "gap_heal: shadow recompute failed sym=%s tf=%ss: %s",
+                    self.symbol, tf_seconds, e)
+
+        # Persist to the live_bars cache with the engine-consumed
+        # 'rest_insert' source (NOT 'rest_backfill' — that one is
+        # cosmetic and excluded from faithful lens views).
+        try:
+            from live_bars_writer import write_bar as _live_bars_write
+            _live_bars_write(self.symbol, tf_seconds,
+                             dict(rest_bar_dict, timestamp=rest_ts),
+                             source='rest_insert')
+        except Exception:
+            pass
+
+        # Hand the healed bar to the normal verifier settle machinery
+        # (it's in history now, so passes 2-4 can correct late Polygon
+        # adjustments like any WS bar).
+        try:
+            from rest_verifier import (
+                queue_verify_for_bar, is_enabled as _rv_enabled)
+            if _rv_enabled():
+                queue_verify_for_bar(
+                    self.symbol, tf_seconds,
+                    rest_ts.to_pydatetime(),
+                    ws_close=float(rest_bar_dict['close']),
+                    grace_seconds=0.0, pass_num=2)
+        except Exception as e:
+            logger.warning(
+                "gap_heal: verifier handoff failed sym=%s tf=%ss: %s",
+                self.symbol, tf_seconds, e)
+
+        logger.info(
+            "gap_heal: INSERTED sym=%s tf=%ss bar=%s close=%.4f vol=%.0f "
+            "replay=%s monitors=%d shadow=%s — indicators recomputed, "
+            "no alerts re-fired",
+            self.symbol, tf_seconds, rest_ts.isoformat(),
+            float(rest_bar_dict['close']),
+            float(rest_bar_dict.get('volume', 0)),
+            'full' if used_full else 'snapshot',
+            sum(1 for m in self.monitors.values()
+                if m.tf_seconds == tf_seconds),
+            shadow_self is not None)
+        return 'inserted_full' if used_full else 'inserted'
+
+    def _queue_gap_heal_if_gap(self, tf_seconds: int,
+                               builder: 'BarBuilder') -> None:
+        """After a non-duplicate bar close lands in history: if there is
+        a hole between the last two bars, queue the missing boundaries
+        for healing. Cheap no-op when the healer is disabled. MUST never
+        break bar processing — fully exception-guarded."""
+        try:
+            import gap_healer
+            if not gap_healer.is_enabled():
+                return
+            if len(builder.history) < 2:
+                return
+            last_ts = builder.history.index[-1]
+            prev_ts = builder.history.index[-2]
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.tz_localize('UTC')
+            if prev_ts.tzinfo is None:
+                prev_ts = prev_ts.tz_localize('UTC')
+            delta = (last_ts - prev_ts).total_seconds()
+            if delta <= tf_seconds:
+                return
+            missing = []
+            cursor = prev_ts + pd.Timedelta(seconds=tf_seconds)
+            cap = gap_healer.GAP_HEAL_MAX_WINDOWS_PER_DETECT
+            while cursor < last_ts and len(missing) < cap:
+                missing.append(cursor.to_pydatetime())
+                cursor += pd.Timedelta(seconds=tf_seconds)
+            if missing:
+                gap_healer.queue_heal(
+                    self.symbol, tf_seconds, missing,
+                    detected_via='bar_close')
+        except Exception as e:
+            logger.warning(
+                "gap_heal: at-close detection failed sym=%s tf=%ss: %s",
+                self.symbol, tf_seconds, e)
+
     @_prof_fn('s_on_second_bar')
     def on_second_bar(self, bar_dict: dict,
                        alert_callback: Callable = None,
@@ -3546,6 +3817,10 @@ class SymbolHub:
                 continue
             sec_was_duplicate = sec_builder.last_was_duplicate
             sec_was_correction = sec_builder.last_was_correction
+            if not sec_was_duplicate:
+                # Gap healer (2026-06-11): sub-minute secondary builders
+                # gap-heal independently too.
+                self._queue_gap_heal_if_gap(sec_tf, sec_builder)
             # M8.7: record sub-minute secondary-TF bar to live_bars.
             try:
                 from live_bars_writer import write_bar as _live_bars_write
@@ -3611,6 +3886,10 @@ class SymbolHub:
                 if completed is not None:
                     primary_was_duplicate = b.last_was_duplicate
                     primary_was_correction = b.last_was_correction
+                    if not primary_was_duplicate:
+                        # Gap healer (2026-06-11): the sub-minute primary
+                        # (10s cohort) is where WS gaps hurt most.
+                        self._queue_gap_heal_if_gap(tf_seconds, b)
                     # M8.7: record sub-minute primary-TF bar to live_bars.
                     try:
                         from live_bars_writer import write_bar as _live_bars_write
@@ -3846,6 +4125,94 @@ class RalphEngine:
         return hub.apply_rest_correction(
             tf_seconds, rest_bar_dict,
             rest_per_second_bars=rest_per_second_bars)
+
+    def rest_insert_callback(self, symbol: str, tf_seconds: int,
+                             rest_bar_dict: dict,
+                             rest_per_second_bars: list = None) -> str:
+        # Gap healer (2026-06-11): module-level callback registered with
+        # gap_healer at worker startup. Routes the insert of a WS-missed
+        # bar to the SymbolHub that owns BarBuilders for this symbol.
+        hub = self.hubs.get(symbol)
+        if hub is None:
+            return 'no_hub'
+        return hub.apply_rest_insert(
+            tf_seconds, rest_bar_dict,
+            rest_per_second_bars=rest_per_second_bars)
+
+    def scan_gap_candidates(self, lookback_seconds: int = None,
+                            max_windows_per_builder: int = None) -> list:
+        """Gap healer sweeper provider (2026-06-11). Read-only walk of
+        every hub's builders; returns [(symbol, tf_seconds,
+        [missing_bar_start_dt])]. Two gap classes per builder:
+          (a) interior gaps — consecutive history index deltas > tf
+              within the lookback window;
+          (b) tail gaps — no forming partial and the last close is more
+              than 2*tf+grace stale (WS silent / force_close path).
+        Bounded by lookback + per-builder cap. Same no-lock read posture
+        as the verifier; a torn read at worst yields a candidate that
+        apply_rest_insert later rejects ('exists'/'rejected_forming')."""
+        import gap_healer as _gh
+        lookback = lookback_seconds or _gh.GAP_HEAL_LOOKBACK_SEC
+        cap = max_windows_per_builder or _gh.GAP_HEAL_MAX_WINDOWS_PER_DETECT
+        now = datetime.now(timezone.utc)
+        floor_ts = pd.Timestamp(now - timedelta(seconds=lookback))
+        out: list = []
+        for symbol, hub in self.hubs.items():
+            for tf_seconds, builder in hub.builders.items():
+                try:
+                    hist = builder.history
+                    if hist is None or len(hist) < 1:
+                        continue
+                    missing: list = []
+                    # (a) interior gaps within the lookback window.
+                    if len(hist) >= 2:
+                        idx = hist.index
+                        for i in range(len(idx) - 1, 0, -1):
+                            cur = idx[i]
+                            prev = idx[i - 1]
+                            if cur.tzinfo is None:
+                                cur = cur.tz_localize('UTC')
+                            if prev.tzinfo is None:
+                                prev = prev.tz_localize('UTC')
+                            if cur < floor_ts:
+                                break
+                            delta = (cur - prev).total_seconds()
+                            if delta <= tf_seconds:
+                                continue
+                            cursor = prev + pd.Timedelta(seconds=tf_seconds)
+                            while (cursor < cur
+                                   and len(missing) < cap):
+                                if cursor >= floor_ts:
+                                    missing.append(cursor.to_pydatetime())
+                                cursor += pd.Timedelta(seconds=tf_seconds)
+                            if len(missing) >= cap:
+                                break
+                    # (b) tail gap: builder idle past 2*tf + grace.
+                    if builder._partial is None and len(missing) < cap:
+                        last_ts = hist.index[-1]
+                        if last_ts.tzinfo is None:
+                            last_ts = last_ts.tz_localize('UTC')
+                        grace = getattr(builder, 'grace_sec_override',
+                                        None) or 5
+                        stale_after = 2 * tf_seconds + grace
+                        if (pd.Timestamp(now) - last_ts).total_seconds() \
+                                > stale_after:
+                            cursor = last_ts + pd.Timedelta(
+                                seconds=tf_seconds)
+                            edge = pd.Timestamp(now) - pd.Timedelta(
+                                seconds=2 * tf_seconds)
+                            while (cursor < edge
+                                   and len(missing) < cap):
+                                if cursor >= floor_ts:
+                                    missing.append(cursor.to_pydatetime())
+                                cursor += pd.Timedelta(seconds=tf_seconds)
+                    if missing:
+                        out.append((symbol, tf_seconds, sorted(missing)))
+                except Exception as e:
+                    logger.warning(
+                        "gap_heal: scan failed sym=%s tf=%ss: %s",
+                        symbol, tf_seconds, e)
+        return out
 
     def start(self, strategies: list, config: dict):
         """Start the engine (blocking — runs the async event loop)."""

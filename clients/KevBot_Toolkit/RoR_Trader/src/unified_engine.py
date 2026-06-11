@@ -1060,7 +1060,118 @@ class IncrementalIndicatorEngine:
                         _cb_e)
         return True
 
-    def recompute_from_history(self, df: pd.DataFrame) -> None:
+    def apply_inserted_bar_replay(self, first_inserted_ts,
+                                  df: pd.DataFrame,
+                                  replay_callback=None) -> bool:
+        # Gap-heal recompute (2026-06-11). One or more bars were INSERTED
+        # into df at/after first_inserted_ts — bars this engine never
+        # processed, so unlike apply_bar_correction there is NO snapshot
+        # keyed at the inserted timestamp. The correct rewind point is the
+        # pre-bar snapshot of the first bar the engine DID process after
+        # the gap: that snapshot is exactly "state after everything before
+        # the gap". Restore it, then replay df forward from the inserted
+        # bar so the new bar(s) and every later bar re-process in order.
+        #
+        # Tail-append case (inserted ts newer than every processed bar —
+        # WS-silent heal): no rewind needed; replay only the unprocessed
+        # tail on top of current state.
+        #
+        # Returns False when no suitable snapshot exists (gap older than
+        # the buffer window, or cold start). Caller MUST then fall back to
+        # recompute_from_history(df, force_full=True) — the plain call's
+        # fast path re-applies only df.iloc[-1] and would silently omit
+        # the inserted bar's contribution.
+        import pandas as _pd
+        if df is None or len(df) == 0:
+            return False
+        try:
+            _target = _pd.Timestamp(first_inserted_ts)
+            if _target.tzinfo is None:
+                _target = _target.tz_localize('UTC')
+        except Exception:
+            return False
+        # Locate the inserted bar in df before touching state.
+        idx_loc = None
+        for i in range(len(df) - 1, -1, -1):
+            ts = df.index[i]
+            if ts.tzinfo is None:
+                ts = ts.tz_localize('UTC')
+            if ts == _target:
+                idx_loc = i
+                break
+        if idx_loc is None:
+            return False
+        if not self._snapshot_buffer:
+            return False
+        newest_snap_ts = self._snapshot_buffer[-1][0]
+        if _target > newest_snap_ts:
+            # Tail-append: inserted bar is newer than every processed
+            # bar. Current state already reflects everything processed —
+            # replay only df rows after the newest processed bar.
+            start_loc = None
+            for i in range(len(df)):
+                ts = df.index[i]
+                if ts.tzinfo is None:
+                    ts = ts.tz_localize('UTC')
+                if ts > newest_snap_ts:
+                    start_loc = i
+                    break
+            if start_loc is None:
+                return False
+        else:
+            # Interior insert. The ONLY valid rewind point is the
+            # pre-bar snapshot of the inserted bar's immediate SUCCESSOR
+            # in df: that snapshot is "state after everything before the
+            # gap". Any LATER snapshot already contains bars after the
+            # gap — restoring it and replaying from the inserted bar
+            # would double-count everything in between. If the successor
+            # snapshot has aged out of the buffer, the gap is too old:
+            # report False so the caller full-replays.
+            if idx_loc + 1 >= len(df):
+                return False
+            successor_ts = df.index[idx_loc + 1]
+            if successor_ts.tzinfo is None:
+                successor_ts = successor_ts.tz_localize('UTC')
+            rewind = None
+            for ts, s in self._snapshot_buffer:
+                if ts == successor_ts:
+                    rewind = (ts, s)
+                    break
+            if rewind is None:
+                return False
+            self.restore_state(rewind[1])
+            # Drop buffer entries at/after the rewind point — the replay
+            # below re-pushes them (same contract as apply_bar_correction).
+            kept = [(ts, s) for (ts, s) in self._snapshot_buffer
+                    if ts < _target]
+            self._snapshot_buffer.clear()
+            for entry in kept:
+                self._snapshot_buffer.append(entry)
+            start_loc = idx_loc
+        for i in range(start_loc, len(df)):
+            row = df.iloc[i]
+            ts = df.index[i]
+            if ts.tzinfo is None:
+                ts = ts.tz_localize('UTC')
+            vals = self.update_bar({
+                'open': float(row['open']),
+                'high': float(row['high']),
+                'low': float(row['low']),
+                'close': float(row['close']),
+                'volume': float(row.get('volume', 0)),
+                'timestamp': ts,
+            })
+            if replay_callback is not None:
+                try:
+                    replay_callback(ts, vals)
+                except Exception as _cb_e:
+                    logger.warning(
+                        "apply_inserted_bar_replay replay_callback "
+                        "raised: %s", _cb_e)
+        return True
+
+    def recompute_from_history(self, df: pd.DataFrame,
+                               force_full: bool = False) -> None:
         """Re-sync indicator state after a Polygon WS rebroadcast corrected
         the most-recent history bar.
 
@@ -1072,16 +1183,24 @@ class IncrementalIndicatorEngine:
         Fallback: full reset + replay of df (cold start, or no snapshot
         yet) — equivalent to discarding self, building a fresh engine with
         the same required_indicators+params, and warming it up against df.
+
+        force_full (2026-06-11, gap healer): skip the fast path and go
+        straight to the full replay. REQUIRED after a bar INSERT whose
+        insert-aware replay (apply_inserted_bar_replay) failed — the fast
+        path re-applies only df.iloc[-1] from the pre-bar snapshot, so it
+        would return success while silently omitting an inserted bar that
+        is not the last row.
         """
         import time as _t
         _t0 = _t.perf_counter()
         fast = False
-        try:
-            fast = self.apply_last_bar_correction(df)
-        except Exception as e:
-            logger.warning("apply_last_bar_correction failed, falling "
-                            "back to full replay: %s", e)
-            fast = False
+        if not force_full:
+            try:
+                fast = self.apply_last_bar_correction(df)
+            except Exception as e:
+                logger.warning("apply_last_bar_correction failed, falling "
+                                "back to full replay: %s", e)
+                fast = False
         if not fast:
             # Full O(N) replay. Preserve _snapshot_enabled across the
             # __init__ reset so the engine keeps snapshotting afterwards.

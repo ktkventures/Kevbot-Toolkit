@@ -767,6 +767,22 @@ class DBRalphEngine:
         except Exception as e:
             logger.warning("rest_verifier setup failed: %s", e)
 
+        # Gap healer (2026-06-11): register the engine's insert callback
+        # + sweeper scan provider. Detects WS-missed bar windows (at the
+        # next bar close + this sweeper backstop), fetches the REAL bars
+        # from Polygon REST, inserts them into builder history and
+        # recomputes indicators forward — closing the ~14% RTH 10s WS
+        # coverage gap that drifted live indicator state vs backtest.
+        # No-op when GAP_HEAL_ENABLED=false (default on).
+        try:
+            import gap_healer
+            gap_healer.configure(
+                insert_callback=engine.rest_insert_callback,
+                scan_provider=engine.scan_gap_candidates)
+            gap_healer.start_sweeper(interval_seconds=120)
+        except Exception as e:
+            logger.warning("gap_healer setup failed: %s", e)
+
         # Bar-close recompute hook is OFF. stored_trades is now appended
         # atomically by DBAlertDispatcher.dispatch on exit signals (see
         # docs/Alert_Recovery_Plan_2026-04-17.md, Phase 1). The
