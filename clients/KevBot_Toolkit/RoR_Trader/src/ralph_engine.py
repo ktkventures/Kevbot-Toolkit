@@ -2406,6 +2406,14 @@ class SymbolHub:
             if completed is None:
                 continue
 
+            # Gap healer (2026-06-11): force-close is the DOMINANT close
+            # path for thin symbols (sparse per-second arrivals rarely
+            # cross close_on_boundary at the right moment) — without this
+            # hook their gaps only heal via the 120s sweeper. Found via
+            # the KO canary: 26 ws closes / 12 min, zero at-close
+            # detections.
+            self._queue_gap_heal_if_gap(tf_seconds, builder)
+
             # M8.7 hotfix #2 (2026-05-01): only write SUB-MINUTE bars
             # from the flush path. For tf >= 60, the canonical write
             # comes from on_polygon_bar (primary AM) or its secondary
