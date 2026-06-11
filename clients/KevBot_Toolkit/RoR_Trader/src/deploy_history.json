@@ -1,8 +1,20 @@
 {
-  "generated_at": "2026-06-11T15:25:26.295026+00:00",
+  "generated_at": "2026-06-11T16:27:28.062323+00:00",
   "since": "2026-05-28",
-  "count": 120,
+  "count": 121,
   "commits": [
+    {
+      "sha": "3964eab",
+      "full_sha": "3964eabcc464a27c08f218ed66fd77ec128942d6",
+      "timestamp_iso": "2026-06-11T09:50:42-06:00",
+      "subject": "[claude-iter-0611a] warmup_seed cache reconcile: heal deploy/restart holes in live_bars"
+    },
+    {
+      "sha": "412c5b3",
+      "full_sha": "412c5b355b1a83371a867947e694f3853fae872a",
+      "timestamp_iso": "2026-06-11T09:25:26-06:00",
+      "subject": "[claude-iter-0611a] deploy_history: add flush-hook SHA"
+    },
     {
       "sha": "700ca74",
       "full_sha": "700ca7415b2da3d549c89bad2bd12b61b8bf258a",
@@ -716,12 +728,6 @@
       "full_sha": "b323f356abcf1d279e8636a6ae23c148d0f16ec2",
       "timestamp_iso": "2026-05-28T10:27:29-06:00",
       "subject": "ws_rest_spliced: drift_uncorrected status + snapshot warning dedupe"
-    },
-    {
-      "sha": "a0b7d54",
-      "full_sha": "a0b7d54a4be8d148d98da61747075f64f1192198",
-      "timestamp_iso": "2026-05-28T09:29:22-06:00",
-      "subject": "M6 ws_rest_spliced: apply_rest_correction + verifier callback wiring"
     }
   ]
 }
