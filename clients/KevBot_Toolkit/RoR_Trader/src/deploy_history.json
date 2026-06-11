@@ -1,8 +1,20 @@
 {
-  "generated_at": "2026-06-11T14:36:49.231565+00:00",
+  "generated_at": "2026-06-11T15:25:26.295026+00:00",
   "since": "2026-05-28",
-  "count": 123,
+  "count": 120,
   "commits": [
+    {
+      "sha": "700ca74",
+      "full_sha": "700ca7415b2da3d549c89bad2bd12b61b8bf258a",
+      "timestamp_iso": "2026-06-11T08:47:00-06:00",
+      "subject": "[claude-iter-0611a] gap heal hook at flush_stale_bars (6th close site) + coverage tool + iter log"
+    },
+    {
+      "sha": "1cfbd12",
+      "full_sha": "1cfbd1263c40391335b226668d69cc4fbc50babb",
+      "timestamp_iso": "2026-06-11T08:36:56-06:00",
+      "subject": "[claude-iter-0611a] deploy_history: include today's gap-healer SHAs for by-deploy bucketing"
+    },
     {
       "sha": "f723af8",
       "full_sha": "f723af80a90f695d432485a9136d7cb024427977",
@@ -710,36 +722,6 @@
       "full_sha": "a0b7d54a4be8d148d98da61747075f64f1192198",
       "timestamp_iso": "2026-05-28T09:29:22-06:00",
       "subject": "M6 ws_rest_spliced: apply_rest_correction + verifier callback wiring"
-    },
-    {
-      "sha": "a27cf26",
-      "full_sha": "a27cf268f7494b84de212ef506033871736cf38f",
-      "timestamp_iso": "2026-05-28T09:24:05-06:00",
-      "subject": "M5: Dispatch routing for ws_rest_spliced (mirrors ws_agg_reconciled)"
-    },
-    {
-      "sha": "4e8fe9a",
-      "full_sha": "4e8fe9aedeb6fbf9aa5699f56a77f2d57030ca69",
-      "timestamp_iso": "2026-05-28T09:22:37-06:00",
-      "subject": "M4: Wire rest_verifier hook into Ralph alert-fire dispatchers"
-    },
-    {
-      "sha": "6feae0d",
-      "full_sha": "6feae0d6a368fcd43906df4493d450665908d5d4",
-      "timestamp_iso": "2026-05-28T09:18:39-06:00",
-      "subject": "M3: REST verifier module"
-    },
-    {
-      "sha": "705384a",
-      "full_sha": "705384a45f51290160184d7db664e065c9885bfa",
-      "timestamp_iso": "2026-05-28T09:16:25-06:00",
-      "subject": "M2: Migration + ALERT_COLUMN_FIELDS for verification_* columns"
-    },
-    {
-      "sha": "bffdd1d",
-      "full_sha": "bffdd1d120826f3b06e9a38e3bd4d9727e2c5d72",
-      "timestamp_iso": "2026-05-28T09:14:58-06:00",
-      "subject": "M1: Register ws_rest_spliced live model + supersede rest_polled"
     }
   ]
 }
