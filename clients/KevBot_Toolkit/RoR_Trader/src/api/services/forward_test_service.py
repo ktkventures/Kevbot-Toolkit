@@ -580,6 +580,63 @@ def _serialize_trades(trades_df) -> list[dict]:
 _ALGO_HISTORY_LAG_MINUTES = int(
     os.environ.get('ALGO_HISTORY_LAG_MINUTES', '15'))
 
+# ── Snapshot lineage guard (2026-06-11, iter 0611a) ─────────────────────
+# Appends resume from persisted engine snapshots (engine_snapshot_b64 /
+# _algo); FULL recompute (Update All Data) never rewrites them. So
+# path-dependent indicator state that diverged in the past (e.g. UT Bot
+# trail computed over pre-gap-healer polluted bars) is FOSSILIZED: every
+# append inherits it, re-saves it, and the lineage never heals — stored
+# backtest trades miss flips the engine's own batch data confirms
+# (sid 302 case, 2026-06-11: append-created trades exited via stop while
+# a fresh run + the live engine both exited via utv4_bear_flip).
+#
+# Fix: a snapshot may be resumed ONLY when its lineage was anchored
+# (started fresh, with no snapshot resume) at/after this epoch. When the
+# guard refuses, the run takes the warmup-windowed path — slower but it
+# recomputes path-dependent state from bars and converges to truth — and
+# the NEW snapshot it persists gets anchored `now`, so the strategy
+# self-heals on its first post-deploy append, full UAD not required.
+# Bump the epoch whenever a data/engine fix invalidates historical
+# indicator state.
+SNAPSHOT_LINEAGE_EPOCH = '2026-06-11T16:28:00+00:00'
+
+
+def _snapshot_lineage_key(lane: str) -> str:
+    return ('snapshot_lineage_anchor_at_algo' if lane == 'algo'
+            else 'snapshot_lineage_anchor_at')
+
+
+def _snapshot_lineage_ok(cfg: dict, lane: str) -> bool:
+    anchor = cfg.get(_snapshot_lineage_key(lane))
+    return bool(anchor) and str(anchor) >= SNAPSHOT_LINEAGE_EPOCH
+
+
+def _guarded_snapshot(cfg: dict, lane: str, snapshot_key: str,
+                      strategy_id) -> 'Optional[str]':
+    """Return the persisted snapshot only if its lineage is anchored at/
+    after SNAPSHOT_LINEAGE_EPOCH; else None (warmup-windowed fallback)."""
+    snap = cfg.get(snapshot_key)
+    if not snap:
+        return None
+    if _snapshot_lineage_ok(cfg, lane):
+        return snap
+    logger.info(
+        "[SNAPSHOT-LINEAGE] sid=%s lane=%s: refusing snapshot resume — "
+        "lineage anchor %r predates epoch %s; falling back to "
+        "warmup-windowed (state re-converges, new lineage anchors fresh)",
+        strategy_id, lane, cfg.get(_snapshot_lineage_key(lane)),
+        SNAPSHOT_LINEAGE_EPOCH)
+    return None
+
+
+def _stamp_lineage_on_persist(cfg: dict, lane: str,
+                              resumed_from_b64) -> None:
+    """Call when persisting a NEW snapshot: a fresh (non-resumed) run
+    anchors the lineage `now`; a resumed run keeps its existing anchor."""
+    if resumed_from_b64 is None:
+        cfg[_snapshot_lineage_key(lane)] = datetime.now(
+            timezone.utc).isoformat()
+
 
 def _algo_history_cron_enabled() -> bool:
     val = os.environ.get('ALGO_HISTORY_CRON_ENABLED', '').strip().lower()
@@ -848,7 +905,8 @@ def append_new_trades_for_strategy(
         # models and produce different indicator-state trajectories.
         from unified_engine import compute_backtest_fingerprint
         algo_model = cfg.get('algo_model') or cfg.get('backtest_model')
-        algo_snapshot_b64 = cfg.get('engine_snapshot_b64_algo')
+        algo_snapshot_b64 = _guarded_snapshot(
+            cfg, 'algo', 'engine_snapshot_b64_algo', strategy_id)
         algo_fingerprint = compute_backtest_fingerprint(strat)
         new_algo_snapshot_b64 = None
 
@@ -891,6 +949,7 @@ def append_new_trades_for_strategy(
                 and new_algo_snapshot_b64 != algo_snapshot_b64):
             cfg['engine_snapshot_b64_algo'] = new_algo_snapshot_b64
             cfg['engine_snapshot_at_algo'] = now_iso
+            _stamp_lineage_on_persist(cfg, 'algo', algo_snapshot_b64)
 
         if all_trades_df is None or len(all_trades_df) == 0:
             # Stamp last_recompute_until_ts so we don't re-run engine
@@ -1374,7 +1433,8 @@ def append_new_backtest_trades_for_strategy(
     # algo lane). Fingerprint + model_id are validated in the deserialize
     # path — any mismatch silently falls back to warmup-windowed.
     from unified_engine import compute_backtest_fingerprint
-    bt_snapshot_b64 = cfg.get('engine_snapshot_b64')
+    bt_snapshot_b64 = _guarded_snapshot(
+        cfg, 'bt', 'engine_snapshot_b64', strategy_id)
     bt_fingerprint = compute_backtest_fingerprint(strat)
 
     try:
@@ -1403,6 +1463,7 @@ def append_new_backtest_trades_for_strategy(
         if new_bt_snapshot_b64 is not None and new_bt_snapshot_b64 != bt_snapshot_b64:
             cfg['engine_snapshot_b64'] = new_bt_snapshot_b64
             cfg['engine_snapshot_at'] = now_iso
+            _stamp_lineage_on_persist(cfg, 'bt', bt_snapshot_b64)
 
         if all_trades_df is None or len(all_trades_df) == 0:
             cfg['last_recompute_until_ts'] = now_iso
@@ -1700,7 +1761,8 @@ def append_windowed_backtest_trades_for_strategy(
         resume_fingerprint = None
         resume_model_id = None
 
-        bt_snapshot_b64 = cfg.get('engine_snapshot_b64')
+        bt_snapshot_b64 = _guarded_snapshot(
+            cfg, 'bt', 'engine_snapshot_b64', strategy_id)
         snapshot_last_ts = None
         if bt_snapshot_b64:
             try:
@@ -1904,6 +1966,7 @@ def append_windowed_backtest_trades_for_strategy(
                 cfg['engine_snapshot_b64'] = new_bt_snapshot_b64
                 cfg['engine_snapshot_at'] = datetime.now(
                     timezone.utc).isoformat()
+                _stamp_lineage_on_persist(cfg, 'bt', bt_snapshot_b64)
                 _stamp_config(strategy_id, user_id, cfg)
             except Exception as e:
                 logger.warning(
