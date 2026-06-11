@@ -80,7 +80,12 @@ interface Props {
   timezone?: string | null;
   /** Initial live-values lens (default 'first' — decision-time). */
   defaultSource?: 'first' | 'latest';
+  /** Optional custom window (Unix sec) — same semantics as v1. */
+  startUtc?: number | null;
+  endUtc?: number | null;
 }
+
+const CUSTOM_MAX_BARS = 2600;
 
 export default function ParityDriftRibbonV2({
   backtestBars,
@@ -91,6 +96,8 @@ export default function ParityDriftRibbonV2({
   heatmapConds = [],
   timezone = null,
   defaultSource = 'first',
+  startUtc = null,
+  endUtc = null,
 }: Props) {
   const [liveSource, setLiveSource] = useState<'first' | 'latest'>(defaultSource);
   const alertBars = liveSource === 'first' ? alertFirstBars : alertLatestBars;
@@ -116,9 +123,15 @@ export default function ParityDriftRibbonV2({
     btIdx.forEach((_, t) => timeSet.add(t));
     alIdx.forEach((_, t) => timeSet.add(t));
     let allTimes = Array.from(timeSet).filter((t) => isFinite(t)).sort((a, b) => a - b);
-    if (lo <= hi) allTimes = allTimes.filter((t) => t >= lo && t <= hi);
-    const truncated = allTimes.length > MAX_BARS;
-    const times = truncated ? allTimes.slice(-MAX_BARS) : allTimes;
+    const customWindow = startUtc != null && endUtc != null && startUtc < endUtc;
+    if (customWindow) {
+      allTimes = allTimes.filter((t) => t >= (startUtc as number) && t <= (endUtc as number));
+    } else if (lo <= hi) {
+      allTimes = allTimes.filter((t) => t >= lo && t <= hi);
+    }
+    const cap = customWindow ? CUSTOM_MAX_BARS : MAX_BARS;
+    const truncated = allTimes.length > cap;
+    const times = truncated ? allTimes.slice(-cap) : allTimes;
 
     let common = 0, btOnly = 0, alOnly = 0;
     for (const t of times) {
@@ -206,7 +219,7 @@ export default function ParityDriftRibbonV2({
     });
 
     return { rows, times, truncated, common, btOnly, alOnly, total: allTimes.length };
-  }, [backtestBars, alertBars, liveSource, overlayNames, oscNames, heatmapConds, timezone]);
+  }, [backtestBars, alertBars, liveSource, overlayNames, oscNames, heatmapConds, timezone, startUtc, endUtc]);
 
   const [hover, setHover] = useState<string | null>(null);
 

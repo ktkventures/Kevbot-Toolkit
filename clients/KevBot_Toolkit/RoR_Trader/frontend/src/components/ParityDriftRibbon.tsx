@@ -105,7 +105,16 @@ interface Props {
   oscNames?: string[];
   heatmapConds?: any[]; // [{ column, needed_state, fidelity, label, has_data }]
   timezone?: string | null;
+  /** Optional custom window (Unix sec). When both set, the ribbon restricts to
+   *  [startUtc, endUtc] (overriding the default recent-overlap clip) and raises
+   *  the bar cap so a full session renders. Defaults preserve prior behavior. */
+  startUtc?: number | null;
+  endUtc?: number | null;
 }
+
+// Raised cap when a custom window is selected (e.g. a full RTH 10s session ≈
+// 6.5h × 360 bars/h = ~2340). Default recent view still uses MAX_BARS.
+const CUSTOM_MAX_BARS = 2600;
 
 export default function ParityDriftRibbon({
   backtestBars,
@@ -114,6 +123,8 @@ export default function ParityDriftRibbon({
   oscNames = [],
   heatmapConds = [],
   timezone = null,
+  startUtc = null,
+  endUtc = null,
 }: Props) {
   const result = useMemo(() => {
     const bt = (backtestBars || []).filter((b) => b && b.timestamp != null);
@@ -150,9 +161,17 @@ export default function ParityDriftRibbon({
     btIdx.forEach((_, t) => timeSet.add(t));
     alIdx.forEach((_, t) => timeSet.add(t));
     let allTimes = Array.from(timeSet).filter((t) => isFinite(t)).sort((a, b) => a - b);
-    if (lo <= hi) allTimes = allTimes.filter((t) => t >= lo && t <= hi);
-    const truncated = allTimes.length > MAX_BARS;
-    const times = truncated ? allTimes.slice(-MAX_BARS) : allTimes;
+    // Custom window (explicit start/end) overrides the recent-overlap clip so
+    // a specific session (e.g. RTH) can be inspected; otherwise clip to overlap.
+    const customWindow = startUtc != null && endUtc != null && startUtc < endUtc;
+    if (customWindow) {
+      allTimes = allTimes.filter((t) => t >= (startUtc as number) && t <= (endUtc as number));
+    } else if (lo <= hi) {
+      allTimes = allTimes.filter((t) => t >= lo && t <= hi);
+    }
+    const cap = customWindow ? CUSTOM_MAX_BARS : MAX_BARS;
+    const truncated = allTimes.length > cap;
+    const times = truncated ? allTimes.slice(-cap) : allTimes;
 
     // Bar-set summary.
     let common = 0, btOnly = 0, alOnly = 0;
@@ -260,7 +279,7 @@ export default function ParityDriftRibbon({
     });
 
     return { rows, times, truncated, common, btOnly, alOnly, total: allTimes.length };
-  }, [backtestBars, alertBars, overlayNames, oscNames, heatmapConds, timezone]);
+  }, [backtestBars, alertBars, overlayNames, oscNames, heatmapConds, timezone, startUtc, endUtc]);
 
   const [hover, setHover] = useState<string | null>(null);
 

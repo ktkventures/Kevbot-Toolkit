@@ -34,6 +34,29 @@ const LabReplayPanel = dynamic(() => import('@/components/LabReplayPanel'), { ss
 
 import { buildStrategyChartPanes } from '@/charts/buildStrategyChartPanes';
 
+/** Parse a <input type="datetime-local"> value ("YYYY-MM-DDTHH:MM[:SS]")
+ *  interpreted as wall-clock time in `tz`, returning Unix seconds. Used by the
+ *  Per-Bar Parity Drift custom-window picker so the range matches the ribbon's
+ *  tz-formatted tooltips. */
+function _localInputToUnixSec(s: string, tz: string): number | null {
+  if (!s) return null;
+  const asUtcMs = Date.parse((s.length === 16 ? s + ':00' : s) + 'Z');
+  if (!isFinite(asUtcMs)) return null;
+  try {
+    const dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hour12: false, year: 'numeric', month: '2-digit',
+      day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    const parts = dtf.formatToParts(new Date(asUtcMs));
+    const g = (t: string) => parseInt(parts.find((p) => p.type === t)?.value || '0', 10);
+    const asTzUtc = Date.UTC(g('year'), g('month') - 1, g('day'), g('hour'), g('minute'), g('second'));
+    const offset = asTzUtc - asUtcMs;
+    return Math.floor((asUtcMs - offset) / 1000);
+  } catch {
+    return Math.floor(asUtcMs / 1000);
+  }
+}
+
 type PaneConfig = import('@/charts/SyncedChartPane').PaneConfig;
 type SeriesConfig = import('@/charts/SyncedChartPane').SeriesConfig;
 
@@ -1663,6 +1686,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [gpShowLabels, setGpShowLabels] = useState<boolean>(true);
   // Gate Parity (2026-06-10): alert-lens WS-tip source (first = decision-time).
   const [gpTipSource, setGpTipSource] = useState<'first' | 'latest'>('first');
+  // Per-Bar Parity Drift custom window (Unix sec; null = default recent view).
+  const [gpDriftStart, setGpDriftStart] = useState<number | null>(null);
+  const [gpDriftEnd, setGpDriftEnd] = useState<number | null>(null);
+  const [gpDriftStartIn, setGpDriftStartIn] = useState<string>('');
+  const [gpDriftEndIn, setGpDriftEndIn] = useState<string>('');
   // M8.7 M5 (2026-05-04): Replay scrub state moved into LabReplayPanel —
   // both lenses now share the renderer and one set of replay controls,
   // so a top-level toggle is no longer needed.
@@ -4611,9 +4639,34 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     <h4 className="text-sm font-medium">
                       Per-Bar Parity Drift
                       <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
-                        (Backtest REST vs Live cache · field-by-field · whole window)
+                        (Backtest REST vs Live cache · field-by-field ·{' '}
+                        {gpDriftStart && gpDriftEnd ? 'custom window' : 'recent window'})
                       </span>
                     </h4>
+                    {/* Shared custom-window picker — drives both v1 and v2 ribbons. */}
+                    <div className="flex items-center gap-1 text-[11px] flex-wrap" style={{ color: 'var(--text-muted)' }}>
+                      <span>Window:</span>
+                      <input type="datetime-local" step="1" value={gpDriftStartIn}
+                        onChange={(e) => setGpDriftStartIn(e.target.value)}
+                        className="px-1 py-0.5 rounded" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: '11px' }} />
+                      <span>→</span>
+                      <input type="datetime-local" step="1" value={gpDriftEndIn}
+                        onChange={(e) => setGpDriftEndIn(e.target.value)}
+                        className="px-1 py-0.5 rounded" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)', fontSize: '11px' }} />
+                      <button
+                        onClick={() => {
+                          const tz = chartPrefs.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+                          setGpDriftStart(_localInputToUnixSec(gpDriftStartIn, tz));
+                          setGpDriftEnd(_localInputToUnixSec(gpDriftEndIn, tz));
+                        }}
+                        className="px-2 py-0.5 rounded" style={{ background: 'var(--accent)', color: 'white', cursor: 'pointer' }}>Apply</button>
+                      {(gpDriftStart || gpDriftEnd) && (
+                        <button
+                          onClick={() => { setGpDriftStart(null); setGpDriftEnd(null); setGpDriftStartIn(''); setGpDriftEndIn(''); }}
+                          className="px-2 py-0.5 rounded" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer' }}>Clear</button>
+                      )}
+                      <span className="ml-1">({chartPrefs.timezone || 'local'})</span>
+                    </div>
                   </div>
                   <ParityDriftRibbon
                     backtestBars={chartDataResp?.chart_data || []}
@@ -4622,6 +4675,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     oscNames={(chartDataResp as any)?.oscillator_indicators || []}
                     heatmapConds={((chartDataResp as any)?.heatmap_conditions || []).filter((c: any) => c.has_data)}
                     timezone={chartPrefs.timezone}
+                    startUtc={gpDriftStart}
+                    endUtc={gpDriftEnd}
                   />
                 </Card>
 
@@ -4644,6 +4699,8 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     heatmapConds={((chartDataResp as any)?.heatmap_conditions || []).filter((c: any) => c.has_data)}
                     timezone={chartPrefs.timezone}
                     defaultSource="first"
+                    startUtc={gpDriftStart}
+                    endUtc={gpDriftEnd}
                   />
                 </Card>
 
