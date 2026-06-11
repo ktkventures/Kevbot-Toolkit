@@ -1,8 +1,32 @@
 {
-  "generated_at": "2026-06-11T14:12:53.083004+00:00",
+  "generated_at": "2026-06-11T14:36:49.231565+00:00",
   "since": "2026-05-28",
-  "count": 119,
+  "count": 123,
   "commits": [
+    {
+      "sha": "f723af8",
+      "full_sha": "f723af80a90f695d432485a9136d7cb024427977",
+      "timestamp_iso": "2026-06-11T08:31:14-06:00",
+      "subject": "[claude-iter-0611a] gap healer: insert WS-missed bars into the live engine (approach A)"
+    },
+    {
+      "sha": "d679968",
+      "full_sha": "d679968a23b5d162ac77cb2a7e4af88d3d0b3937",
+      "timestamp_iso": "2026-06-11T08:13:14-06:00",
+      "subject": "[claude-iter-0611a] lens faithfulness: include engine-consumed rest_correction/rest_insert sources"
+    },
+    {
+      "sha": "38481a5",
+      "full_sha": "38481a55bb8b43858fb0a9b2cd974432cb041511",
+      "timestamp_iso": "2026-06-10T19:05:53-06:00",
+      "subject": "docs: post-mortem of the 2026-06-04 combined% cliff"
+    },
+    {
+      "sha": "638efab",
+      "full_sha": "638efabfd08c9bc7e65f7ee9c3c3204d9a63532b",
+      "timestamp_iso": "2026-06-10T18:34:51-06:00",
+      "subject": "[claude-iter-0610e] parity-drift custom-window picker + evening diagnosis"
+    },
     {
       "sha": "0d3affb",
       "full_sha": "0d3affbf7d7084f2905d0adcc1c123c5c9d78f54",
