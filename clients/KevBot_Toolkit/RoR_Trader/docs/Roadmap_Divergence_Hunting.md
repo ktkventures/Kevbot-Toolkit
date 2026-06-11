@@ -601,3 +601,50 @@ This methodology update should be added to the SOP.
 4. **Re-measure pair rate fleet-wide** — should be 95%+ across all canaries with gap-detection running
 5. **Investigate #60 dead algo lane** — separate latent bug, ~30 min
 6. **Update SOP** with measurement methodology + new operational patterns
+
+## 2026-06-11 EOD — post-gap-healer additions
+
+### NEW TOOL (Kevin-approved, build ~2026-06-12): Backtest-reference toggle on Gate Parity
+
+Add a selector on the Gate Parity tab choosing what the "backtest" side of the
+Per-Bar Parity Drift ribbon / Gate Replay lens / Analysis card compares against:
+
+- **"Fresh REST replay" (current behavior):** recompute on demand via
+  `prepare_data_with_indicators` + `unified_trades` — answers "what SHOULD the
+  backtest say with current code + data".
+- **"Stored backtest lane" (new):** the `trades` table rows the UAD/append lane
+  last WROTE — answers "what does the system actually believe".
+
+WHY: the two are synonymous only right after a fresh full UAD. Daylight between
+them = stale or fossilized stored lane — exactly the 2026-06-11 snapshot-lineage
+bug (sid 302: ribbon 100% green while stored trades carried wrong stop exits).
+The toggle turns that whole bug class into a glance-level diagnostic.
+
+Implementation sketch: backend — extend the gate-parity/ribbon endpoints to
+optionally source backtest edges/series from the trades table (entry/exit
+fill_ts + exit_reason markers; no indicator series for stored mode, so the
+ribbon's stored mode compares TRADE EDGES not per-bar values — a third
+"trade-edge parity" row group). Frontend — toggle like the first/latest one on
+ParityDriftRibbonV2.
+
+### Bug landscape after iter 0611a/b (for UAD-timing decisions)
+
+- B1 snapshot lineage fossilization — FIXED by guard 5b6f7a9 (deploy pending
+  2026-06-11 night). Appends self-heal post-deploy; full UAD only needed to
+  rewrite HISTORICAL stored trades.
+- B2 live-edge writes: full UAD writes trades up to "now" with unsettled REST
+  (sid 303's 15:26:30 trade diverged at the data edge during a deploy window);
+  appends are lag-protected (15 min) but never REWRITE a wrong edge trade once
+  stored. Candidate fix: clip full-UAD writes at now-15min (mirror append lag)
+  and/or re-verify the last N stored trades on each append. SMALL, not urgent.
+- B3 decision-time vs settled marginal crosses (~8% corrected bars;
+  would_fire_post_correction stamps these) — irreducible at sub-5s latency;
+  measure, don't chase.
+- B4 forming-bar/grace C-type evaluation — possible small residual; re-measure
+  post-guard before investing.
+- B5 gated-cohort phantom round-trips / position-desync stints — likely mostly
+  B1's downstream; re-measure on healed lanes before treating as separate.
+- B6 parked small items: GATE_DIAG log flood strip, apply_rest_correction
+  shadow branch doesn't re-derive confluence records, warmup-vs-update_bar
+  `*_prev` one-bar transient, full-history flat-row cleanup (159k), 267 TSLA
+  flats not cleaned.
