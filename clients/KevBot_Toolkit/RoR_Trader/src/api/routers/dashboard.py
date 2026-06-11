@@ -49,7 +49,10 @@ def get_dashboard_summary(user=Depends(get_current_user)):
     monitored_count = 0
 
     for s in strategies:
-        kpis = s.get('kpis', {})
+        # `or {}`: freshly created strategies (no backtest yet) have
+        # kpis=None, not a missing key — .get default doesn't apply.
+        # Surfaced 2026-06-11 by canaries 306/307 500ing /summary.
+        kpis = s.get('kpis') or {}
         total_r += kpis.get('total_r', 0)
         trades = kpis.get('total_trades', 0)
         total_trades += trades
