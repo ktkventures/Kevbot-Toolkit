@@ -542,6 +542,87 @@ def test_scan_gap_candidates_finds_interior_gap():
     assert full.index[hole].to_pydatetime() in by_key[('TEST', TF)]
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 15. warmup_seed cache reconcile (deploy/restart hole — 2026-06-11 PM)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class _FakeQuery:
+    def __init__(self, store):
+        self.store = store
+        self._filters = {}
+
+    def select(self, *_): return self
+    def eq(self, k, v): self._filters[k] = v; return self
+    def gte(self, *_): return self
+    def lt(self, *_): return self
+    def order(self, *_): return self
+    def range(self, *_): return self
+
+    def upsert(self, payload, on_conflict=None, ignore_duplicates=None):
+        assert ignore_duplicates is True, "must be ON CONFLICT DO NOTHING"
+        self.store['inserted'].extend(payload)
+        return self
+
+    def execute(self):
+        class R:
+            data = self.store['existing']
+        return R()
+
+
+class _FakeClient:
+    def __init__(self, store):
+        self.store = store
+
+    def table(self, name):
+        assert name == 'live_bars'
+        return _FakeQuery(self.store)
+
+
+def test_warmup_seed_reconcile_fills_only_missing(monkeypatch):
+    """The reconcile must insert ONLY cache-missing seeded bars, tagged
+    source='warmup_seed', never touching existing rows (deploy-hole fix:
+    engine warmup consumed these REST bars; the cache missed them)."""
+    import live_bars_writer as lbw
+    import db as db_mod
+
+    now = datetime.now(timezone.utc)
+    epoch = int(now.timestamp())
+    cur = datetime.fromtimestamp(epoch - epoch % TF, tz=timezone.utc)
+    start = pd.Timestamp(cur) - pd.Timedelta(seconds=TF * 20)
+    df = make_bars(20, start=pd.Timestamp(start))
+
+    # Cache already has every bar EXCEPT indices 10-12 (the "deploy hole")
+    existing = [{'bar_start': df.index[i].isoformat()}
+                for i in range(20) if i not in (10, 11, 12)]
+    store = {'existing': existing, 'inserted': []}
+    monkeypatch.setattr(db_mod, 'get_admin_client',
+                        lambda: _FakeClient(store))
+    monkeypatch.setenv('LIVE_BAR_CACHE_WRITE_ENABLED', 'true')
+
+    rows = [(df.index[i].isoformat(),
+             float(df['open'].iloc[i]), float(df['high'].iloc[i]),
+             float(df['low'].iloc[i]), float(df['close'].iloc[i]),
+             float(df['volume'].iloc[i])) for i in range(20)]
+    n = lbw._reconcile_seed_sync(
+        'TEST', TF, rows,
+        (now - timedelta(hours=2)).isoformat(), now.isoformat())
+
+    assert n == 3
+    assert len(store['inserted']) == 3
+    inserted_ts = {p['bar_start'][:19] for p in store['inserted']}
+    assert inserted_ts == {df.index[i].isoformat()[:19] for i in (10, 11, 12)}
+    assert all(p['source'] == 'warmup_seed' for p in store['inserted'])
+    assert float(store['inserted'][0]['close']) == float(df['close'].iloc[10])
+
+
+def test_warmup_seed_source_in_engine_consumed():
+    from data_loader import ENGINE_CONSUMED_SOURCES
+    assert 'warmup_seed' in ENGINE_CONSUMED_SOURCES
+    assert 'rest_insert' in ENGINE_CONSUMED_SOURCES
+    assert 'rest_correction' in ENGINE_CONSUMED_SOURCES
+    assert 'rest_backfill' not in ENGINE_CONSUMED_SOURCES  # cosmetic
+
+
 if __name__ == '__main__':
     import pytest as _pytest
     raise SystemExit(_pytest.main([__file__, '-v']))

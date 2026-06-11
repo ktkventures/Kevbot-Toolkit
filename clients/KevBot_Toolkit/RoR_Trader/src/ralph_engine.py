@@ -2257,6 +2257,19 @@ class SymbolHub:
         builder = self.builders.get(tf_seconds)
         if builder:
             builder.seed_history(df)
+            # Cache reconcile (2026-06-11): worker restarts leave a
+            # ~1-3 min hole in live_bars (engine history is whole via
+            # this REST seed, but nothing wrote the cache during the
+            # switchover). Backfill the recent window with the seeded
+            # bars as source='warmup_seed' — engine-consumed, so the
+            # alert lens / parity ribbon stay faithful across deploys.
+            try:
+                from live_bars_writer import reconcile_seeded_history
+                reconcile_seeded_history(self.symbol, tf_seconds, df)
+            except Exception as e:
+                logger.warning(
+                    "seed_history cache reconcile failed sym=%s tf=%ss: %s",
+                    self.symbol, tf_seconds, e)
 
     def on_tick(self, price: float, volume: int, timestamp: datetime,
                 alert_callback: Callable = None, config: dict = None,
