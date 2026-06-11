@@ -825,6 +825,19 @@ def _hifi_resolve_trades(
             continue
         if exit_reason == 'target' and target_et != 'L':
             continue
+        # 2026-06-11 (iter 0611b): the stop/target walker is ONLY for
+        # refining stop/target fills. Signal / time / bar-count exits
+        # must never enter it: the position was ALREADY CLOSED by the
+        # engine at exit_time, and the walker's window (exit bar +
+        # padding) extends past that moment — it would "find" the stop
+        # crossing AFTER the exit and rewrite a correct signal exit
+        # into a stop_loss (reason, price, fill_ts, r_multiple).
+        # Confirmed on sid 302: Pass 1 exits utv4_bear_flip @14:48:00,
+        # Pass 2 rewrote to stop_loss @14:48:15 — while the live engine
+        # correctly exited on the flip. Live↔backtest divergence on
+        # every signal exit where price kept running after the close.
+        if exit_reason not in ('stop_loss', 'stop', 'target'):
+            continue
 
         try:
             exit_dt = _parse_dt(exit_time_str)
