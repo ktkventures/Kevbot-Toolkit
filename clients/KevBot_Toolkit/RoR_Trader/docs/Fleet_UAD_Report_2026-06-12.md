@@ -615,3 +615,23 @@ the dedup). WEEKEND: caller-level repro (drive on_polygon_bar + on_second_bar wi
 realistic per-second + AM streams over a seeded hub). ALSO FOUND: telemetry writes
 silently rejected by `bar_diagnostics_source_check` (table CHECK allows only
 live/live_corrected/backtest/algo) — needs Kevin to run one SQL line.
+
+### 20:55Z — Gate telemetry LIVE (constraint fixed by Kevin, validated)
+
+Kevin extended `bar_diagnostics_source_check` to allow `live_gate` at ~20:48Z.
+Validation (direct DB read):
+
+- **Rows flowing**: every SPY-cohort sid (277–303) writing one `live_gate` row per
+  2m bar (20:48, 20:50, 20:52), written 1–37s after bar close by the flush loop.
+- **Content is healthy**: exactly ONE state per interpreter (15 records for the
+  15-interpreter 2m group) — no accumulation, no cross-TF pollution. This is the
+  B5 fix visible in ground truth: pre-fix this set would have grown unboundedly.
+- **States actually change bar-to-bar** (proves it's live, not fossilized):
+  RSI_ZONES NEUTRAL_BULLISH→NEUTRAL_BEARISH at 20:50, RVOL MINIMAL→HIGH at 20:52,
+  STRAT_ASSISTANT TWO_UP→TWO_DOWN at 20:50.
+- All sids share identical record sets per bar — expected (same SPY 2m shadow engine).
+
+**What this unlocks**: Monday RTH we have a per-bar record of what the live gates
+actually saw, queryable against the backtest lens — phantom/missed diagnosis goes
+from inference to direct comparison. Weekend item: Alert-lens "Live mode" frontend
+reads these rows.
