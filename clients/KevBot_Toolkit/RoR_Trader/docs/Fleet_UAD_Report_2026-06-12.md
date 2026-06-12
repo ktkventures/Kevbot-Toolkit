@@ -678,3 +678,50 @@ so deletion is safe and self-healing.)
 
 Verification watcher armed: 2m write flow + volume-vs-constituent-1Min parity
 + gate telemetry liveness.
+
+### 21:45Z — B4 TRUE MECHANISM FOUND (investigation; fix is a weekend item, not tonight)
+
+Direct measurement on sid 265 (TSLA 1Min canary) reframes B4:
+
+- **Live anchoring is already correct**: alert `fill_ts` lands at exactly :00 —
+  the signal bar's close boundary. Backtest stamps the same convention
+  (trig=fill=:00). The −30s median was a mix of 0s and −60s (one-bar-early)
+  pairs, not a uniform grace offset.
+- **The real defect**: 1Min+ monitors fire from `flush_stale_bars` force-closing
+  the chart-visual partial (zero grace for ≥60s, flush wins the race vs
+  canonical ws_agg/AM minutes by seconds). That partial is built from
+  per-second WS ticks with `skip_volume=True` — so 1Min+ C-type evaluation runs
+  on (a) WS-tick prices that can differ from the canonical minute within
+  microstructure noise (occasionally flipping UTV4 a bar early/late), and
+  (b) **volume = 0** — any volume-based trigger/interpreter on a 1Min+ PRIMARY
+  timeframe (RVOL_V2, VWAP_V2) evaluates zero-volume bars on most fires.
+- Current fleet exposure is limited: production is mostly 10Sec primaries
+  (unaffected — sub-minute path is canonical per-second aggregation), and the
+  1Min canaries use UT Bot (price-only). But every future 1Min+ strategy
+  inherits this.
+
+**B4 fix design (weekend)**: 1Min+ C-type triggers must evaluate on the
+CANONICAL closed bar (ws_agg/AM), per Kevin's wait-for-close decision. Naive
+"skip monitor fires in flush for ≥60s" breaks the case where canonical feeds
+die (flush is the liveness fallback) AND the duplicate path (flush already
+closed the bar → canonical arrival hits the merge branch → pipeline currently
+skips duplicates). Needs: canonical-first dispatch with flush as a delayed
+fallback (e.g., flush defers ≥60s monitor fires for ~5-10s grace, fires only
+if no canonical bar arrived), plus the merge-branch correction path re-firing
+suppressed-but-changed signals is explicitly OUT (no double-fires — alerts are
+final). Tests first; not rushing this into the last hour of live data.
+
+### 22:05Z — Merge fix verified on first post-deploy bars + cache scrubbed
+
+- First post-deploy 2m bar (21:18Z): volume **exactly matches** the constituent
+  1Min sum (180/180). Watcher continuing to accumulate cycles.
+- **Cache scrub EXECUTED**: ~49,321 contaminated ≥120s ws/ws_agg rows deleted
+  (all pre-21:15Z — every one was a replace-branch write). Discovery during
+  scoping: the alert lens AND the cache_locked backtest lane read ≥120s rows
+  DIRECTLY when present (only falling back to clean sub-minute resample when
+  absent) — both lanes had been consuming clobbered 2m bars. The scrub heals
+  them retroactively; post-fix rows are written correct.
+- by-deploy TBD classification shipped (mirrors by-hour).
+- Note for Monday: gate-parity / per-bar drift numbers for PRE-21:15Z windows
+  will now read differently (cleaner) after the next UAD — the 2m lens input
+  changed from clobbered rows to resampled sub-minute truth.
