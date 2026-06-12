@@ -626,3 +626,76 @@ def test_warmup_seed_source_in_engine_consumed():
 if __name__ == '__main__':
     import pytest as _pytest
     raise SystemExit(_pytest.main([__file__, '-v']))
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 16. B5 prime suspect: gate records must refresh after a REST CORRECTION
+#     touches a secondary-TF bar (2026-06-12 overnight — the gate-flood fix)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_gate_records_refresh_after_rest_correction():
+    """apply_rest_correction on a secondary TF recomputed the shadow's
+    INDICATORS but never re-derived its confluence records, leaving
+    SymbolHub._mtf_confluence (the live gate) STALE for up to a full
+    secondary period after every correction (~23 corrections/window on
+    SPY). Dose-response fleet evidence 2026-06-12: gated phantom ratio
+    tracks gate flip-frequency (INSIDE 11% < UT_BOT 42% < SWING 63% <
+    SUPERTREND 73% < ungated ~91-97%) with matched pairs ~100%.
+
+    This test feeds a 2m shadow a bullish series (MACD records bullish),
+    then delivers a REST correction that crashes the last bar hard
+    enough to flip MACD bearish — and asserts the hub's gate records
+    reflect the corrected (bearish) state immediately."""
+    tf_sec = 120
+    # Strongly RISING series → MACD bullish (M>S) pre-correction, so the
+    # crash correction genuinely FLIPS the state (a flat/random series
+    # could already be bearish, hiding staleness).
+    idx = pd.date_range(T0, periods=40, freq=f'{tf_sec}s', tz='UTC')
+    close = pd.Series(100.0 + np.arange(40) * 0.8, index=idx)
+    full = pd.DataFrame({'open': close - 0.1, 'high': close + 0.2,
+                         'low': close - 0.2, 'close': close,
+                         'volume': [1000.0] * 40}, index=idx)
+    hub = SymbolHub('TEST')
+    builder = BarBuilder(tf_seconds=tf_sec)
+    hub.builders[tf_sec] = builder
+    shadow = _ShadowIndicatorEngine(
+        tf_sec, set(REQUIRED), {'MACD_LINE'}, dict(PARAMS))
+    shadow.indicators._snapshot_enabled = True
+    hub._shadow_engines[tf_sec] = shadow
+
+    for i in range(len(full)):
+        builder.accept_bar(bar_dict(full, i))
+        hub._mtf_confluence[tf_sec] = shadow.on_bar_close({
+            'open': float(full['open'].iloc[i]),
+            'high': float(full['high'].iloc[i]),
+            'low': float(full['low'].iloc[i]),
+            'close': float(full['close'].iloc[i]),
+            'volume': float(full['volume'].iloc[i]),
+            'timestamp': full.index[i],
+        })
+
+    # REST correction: crash the final bar far below everything — flips
+    # MACD line below signal (M<S records).
+    crash = float(full['low'].min()) - 5.0
+    corrected = {
+        'timestamp': full.index[-1],
+        'open': float(full['open'].iloc[-1]),
+        'high': float(full['high'].iloc[-1]),
+        'low': crash - 0.5,
+        'close': crash,
+        'volume': float(full['volume'].iloc[-1]),
+    }
+    pre_records = set(hub._mtf_confluence[tf_sec])
+    assert any('M>S' in r for r in pre_records), (
+        "test setup: rising series should be MACD-bullish pre-correction")
+    ok = hub.apply_rest_correction(tf_sec, corrected)
+    assert ok is True
+
+    # Ground truth: what the records SHOULD be on corrected state.
+    expected = shadow._derive_confluence_records()
+    assert any('M<S' in r for r in expected), (
+        "test setup: the crash bar should flip MACD bearish")
+    assert hub._mtf_confluence[tf_sec] == expected, (
+        "GATE RECORDS STALE after REST correction — _mtf_confluence was "
+        "not re-derived; the live gate keeps trading on pre-correction "
+        "state (the B5 gate-flood mechanism)")

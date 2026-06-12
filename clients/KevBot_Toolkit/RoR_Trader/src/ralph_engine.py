@@ -3356,6 +3356,20 @@ class SymbolHub:
                 if not ok:
                     shadow_self.indicators.recompute_from_history(
                         builder.history)
+                # 2026-06-12 (B5 gate-flood fix): re-derive the gate
+                # records from the CORRECTED state. This branch recomputed
+                # the shadow's indicators but left `_mtf_confluence[tf]`
+                # frozen on pre-correction state for up to a full
+                # secondary period after EVERY REST correction (~23/window
+                # on SPY) — the live gate kept passing/blocking entries on
+                # stale state while the backtest used corrected bars.
+                # Fleet evidence 2026-06-12: gated phantom ratio tracks
+                # gate flip-frequency (INSIDE 11% < UT_BOT 42% < SWING 63%
+                # < SUPERTREND 73% < ungated ~91-97%) with matched pairs
+                # ~100%. Mirrors the 0609a fan-out rebroadcast fix, which
+                # never reached this path.
+                self._mtf_confluence[tf_seconds] = \
+                    shadow_self._derive_confluence_records()
             except Exception as e:
                 logger.warning(
                     "REST correction shadow recompute failed sym=%s "
