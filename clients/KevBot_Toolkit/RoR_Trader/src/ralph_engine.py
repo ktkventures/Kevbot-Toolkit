@@ -341,6 +341,20 @@ class BarBuilder:
             'BARBUILDER_PER_SEC_HISTORY_K', '10'))
         self._per_second_history: '_OD[pd.Timestamp, list]' = _OD()
         self._per_second_history_max_buckets = max(_per_sec_k, 1)
+        # 2026-06-12 (clobber merge fix): constituent bookkeeping for the
+        # most recently CLOSED bar, retained at _close_bar time from
+        # _partial_seen_subbars. Lets a late sub-bar (a 1Min fan-out
+        # delivery arriving after flush_stale_bars already closed the
+        # >=120s period — flush has zero grace for 1Min+ and almost
+        # always wins the close race) MERGE into the closed row with
+        # volume deduped and open/close attributed by constituent order,
+        # instead of wholesale-replacing the row (the 2m clobber: volume
+        # 0.50x REST, range collapsed to one minute). None when the last
+        # close had no constituent info (e.g., REST-seeded history row).
+        self._closed_seen_subbars: Optional[set] = None
+        self._closed_min_subbar_ts: Optional[pd.Timestamp] = None
+        self._closed_max_subbar_ts: Optional[pd.Timestamp] = None
+        self._closed_period_start: Optional[pd.Timestamp] = None
 
     def seed_history(self, df: pd.DataFrame):
         """Seed builder history from a DataFrame.
@@ -471,7 +485,8 @@ class BarBuilder:
     @_prof_fn('b_accept_second')
     def accept_second_bar(self, bar_dict: dict,
                           close_on_boundary: bool = True,
-                          skip_volume: bool = False) -> Optional[dict]:
+                          skip_volume: bool = False,
+                          full_period_input: bool = True) -> Optional[dict]:
         """Aggregate a per-second OHLCV bar into the current period's partial.
 
         M8.5 Phase B+: enables sub-minute primary-TF aggregation AND forming-bar
@@ -561,8 +576,74 @@ class BarBuilder:
             if last_ts.tzinfo is None:
                 last_ts = last_ts.tz_localize('UTC')
             if last_ts == pd.Timestamp(period_start):
-                # Replace history row with corrected aggregation values.
-                # The CALLER (on_polygon_bar fan-out / on_second_bar
+                # 2026-06-12 (clobber merge fix): a SUB-PERIOD input (a
+                # single 1Min bar from the AM/ws_agg fan-out into a
+                # >=120s builder) must MERGE into the closed row, never
+                # replace it. flush_stale_bars (zero grace for 1Min+)
+                # almost always closes the period before its final minute
+                # can be delivered; that late minute lands here. The old
+                # wholesale replace was the 2m clobber (volume 0.50x
+                # REST, range collapsed to one minute); the 247afec/
+                # 0d767d9 drop-guard starved live_bars writes instead
+                # (the "freeze" — this branch's return was the only
+                # >=120s write path). Merge keeps both correct.
+                if not full_period_input:
+                    row_idx = self.history.index[-1]
+                    row = self.history.iloc[-1]
+                    _sub_ts = pd.Timestamp(ts)
+                    _same_period = (self._closed_period_start is not None
+                                    and self._closed_period_start
+                                    == pd.Timestamp(period_start))
+                    _seen = (self._closed_seen_subbars
+                             if _same_period else None)
+                    _hi = max(float(row['high']), sec_high)
+                    _lo = min(float(row['low']), sec_low)
+                    _open = float(row['open'])
+                    _close = float(row['close'])
+                    _vol = float(row['volume'])
+                    if _seen is not None:
+                        # constituent-ordered open/close attribution
+                        if _sub_ts <= self._closed_min_subbar_ts:
+                            _open = sec_open
+                            self._closed_min_subbar_ts = _sub_ts
+                        if _sub_ts >= self._closed_max_subbar_ts:
+                            _close = sec_close
+                            self._closed_max_subbar_ts = _sub_ts
+                        if not skip_volume and _sub_ts not in _seen:
+                            _vol += sec_volume
+                        _seen.add(_sub_ts)
+                    # else: no constituent info for this row (REST-seeded
+                    # or post-restart) — REST values are full-period
+                    # truth; merge prices conservatively, never volume.
+                    _vals = [_open, _hi, _lo, _close, _vol]
+                    _old = [float(row[c]) for c in
+                            ('open', 'high', 'low', 'close', 'volume')]
+                    _changed = any(a != b for a, b in zip(_vals, _old))
+                    if _changed:
+                        self.history.loc[
+                            row_idx,
+                            ['open', 'high', 'low', 'close', 'volume']
+                        ] = _vals
+                    self.last_was_duplicate = True
+                    # Recompute at most once per bucket, and only when
+                    # the merge actually changed values (lag-spiral
+                    # protection, 2026-05-19).
+                    _bts = pd.Timestamp(period_start)
+                    if (_changed
+                            and (self._last_rebroadcast_recompute_ts is None
+                                 or _bts >= self._last_rebroadcast_recompute_ts)):
+                        self._last_rebroadcast_recompute_ts = _bts
+                        self.last_was_correction = True
+                    else:
+                        self.last_was_correction = False
+                    return {
+                        'timestamp': period_start.isoformat(),
+                        'open': _vals[0], 'high': _vals[1],
+                        'low': _vals[2], 'close': _vals[3],
+                        'volume': _vals[4],
+                    }
+                # Full-period input: replace history row with corrected
+                # aggregation values. The CALLER (on_second_bar sub-minute
                 # primary) is feeding the post-correction full-period
                 # aggregation; we trust those values.
                 #
@@ -611,11 +692,16 @@ class BarBuilder:
             # read EXTREME near-constantly → sid 291 at 1.0%).
             self._partial.volume = 0.0 if skip_volume else sec_volume
             self._partial.tick_count = 1
-            # Track which sub-bar timestamps have contributed volume to
+            # Track which sub-bar timestamps have contributed VOLUME to
             # THIS partial, so the same sub-bar delivered twice (AM and
             # ws_agg fan-outs both feed the same minute into >=120s
-            # builders) counts its volume exactly once.
-            self._partial_seen_subbars = {pd.Timestamp(ts)}
+            # builders) counts its volume exactly once. skip_volume
+            # callers (per-second chart-visual on 1Min+ primaries) must
+            # NOT register — their :00 second's ts collides with the
+            # fan-out minute's ts and would silently drop the minute's
+            # volume (2026-06-12).
+            self._partial_seen_subbars = (
+                set() if skip_volume else {pd.Timestamp(ts)})
             self.last_was_duplicate = False
             return completed
 
@@ -642,9 +728,13 @@ class BarBuilder:
         _sub_ts = pd.Timestamp(ts)
         if not hasattr(self, '_partial_seen_subbars'):
             self._partial_seen_subbars = set()
-        if not skip_volume and _sub_ts not in self._partial_seen_subbars:
-            self._partial.volume += sec_volume
-        self._partial_seen_subbars.add(_sub_ts)
+        if not skip_volume:
+            if _sub_ts not in self._partial_seen_subbars:
+                self._partial.volume += sec_volume
+            # Only volume-contributing callers register: skip_volume
+            # (chart-visual seconds) polluting the set dropped the
+            # colliding :00 fan-out minute's volume (2026-06-12).
+            self._partial_seen_subbars.add(_sub_ts)
         self._partial.tick_count += 1
         self.last_was_duplicate = False
         return None
@@ -673,6 +763,19 @@ class BarBuilder:
         bar = self._partial.to_dict()
         self._append_to_history(bar)
         self._bar_count += 1
+        # Retain constituent bookkeeping so late sub-bar deliveries for
+        # this just-closed period can merge with correct volume dedup and
+        # open/close attribution (see __init__ note, 2026-06-12).
+        seen = getattr(self, '_partial_seen_subbars', None)
+        if seen:
+            self._closed_seen_subbars = set(seen)
+            self._closed_min_subbar_ts = min(seen)
+            self._closed_max_subbar_ts = max(seen)
+        else:
+            self._closed_seen_subbars = None
+            self._closed_min_subbar_ts = None
+            self._closed_max_subbar_ts = None
+        self._closed_period_start = pd.Timestamp(bar['timestamp'])
         return bar
 
     def _append_to_history(self, bar_dict: dict):
@@ -2541,6 +2644,26 @@ class SymbolHub:
                                      source='ws')
                 except Exception:
                     pass
+            elif (tf_seconds in self._shadow_engines
+                  and tf_seconds not in
+                  {m.tf_seconds for m in self.monitors.values()}):
+                # 2026-06-12 (clobber merge fix): PURE-SECONDARY >=60s
+                # builders (the 2m gate) are fed ONLY by fan-out minutes
+                # — their partial is canonical, so the flush close is
+                # writable. Without this, the only >=120s live_bars
+                # write path was the rebroadcast-replace branch (i.e.
+                # the clobber itself): flush wins the close race nearly
+                # always (zero grace for 1Min+), and once the clobber
+                # was guarded, 2m rows stopped entirely (the 0612
+                # "freeze" — write starvation, not close starvation).
+                # Primary >=60s builders stay excluded (hotfix #2): their
+                # partial carries per-second chart-visual price updates.
+                try:
+                    from live_bars_writer import write_bar as _live_bars_write
+                    _live_bars_write(self.symbol, tf_seconds, completed,
+                                     source='ws')
+                except Exception:
+                    pass
 
             # Update shared confluence buffer first (shadow or real monitor)
             shadow = self._shadow_engines.get(tf_seconds)
@@ -2882,7 +3005,8 @@ class SymbolHub:
                 continue
             try:
                 completed = sec_builder.accept_second_bar(
-                    bar_dict, close_on_boundary=True)
+                    bar_dict, close_on_boundary=True,
+                    full_period_input=False)
             except Exception as e:
                 logger.warning(
                     "secondary-TF aggregation failed (%ss, src=%s): %s",
@@ -2993,7 +3117,8 @@ class SymbolHub:
                 continue
             try:
                 completed = builder.accept_second_bar(
-                    completed_min, close_on_boundary=True)
+                    completed_min, close_on_boundary=True,
+                    full_period_input=False)
             except Exception as e:
                 logger.warning(
                     "primary >60s aggregation failed (%ss, src=ws_agg): %s",
