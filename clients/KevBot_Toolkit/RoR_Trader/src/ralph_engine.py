@@ -471,8 +471,7 @@ class BarBuilder:
     @_prof_fn('b_accept_second')
     def accept_second_bar(self, bar_dict: dict,
                           close_on_boundary: bool = True,
-                          skip_volume: bool = False,
-                          full_period_input: bool = True) -> Optional[dict]:
+                          skip_volume: bool = False) -> Optional[dict]:
         """Aggregate a per-second OHLCV bar into the current period's partial.
 
         M8.5 Phase B+: enables sub-minute primary-TF aggregation AND forming-bar
@@ -562,21 +561,6 @@ class BarBuilder:
             if last_ts.tzinfo is None:
                 last_ts = last_ts.tz_localize('UTC')
             if last_ts == pd.Timestamp(period_start):
-                # 2026-06-12 (2m clobber fix): a SUB-BAR input (a single
-                # 1Min bar from the AM/ws_agg fan-out) must NEVER replace
-                # a closed multi-sub-bar period. In production ws_agg
-                # closed each 2m bar first; AM redelivered its minutes
-                # seconds later and this branch replaced the WHOLE 2m bar
-                # with one minute's OHLCV — volume measured at exactly
-                # 0.50x REST (median, n=45) and high/low collapsed to a
-                # single minute's range, corrupting every >=120s gate
-                # indicator state. Full-period callers (the sub-minute
-                # primary path re-aggregates the whole bucket) keep the
-                # replace semantics.
-                if not full_period_input:
-                    self.last_was_duplicate = True
-                    self.last_was_correction = False
-                    return None
                 # Replace history row with corrected aggregation values.
                 # The CALLER (on_polygon_bar fan-out / on_second_bar
                 # primary) is feeding the post-correction full-period
@@ -2840,8 +2824,7 @@ class SymbolHub:
                 continue
             try:
                 completed = sec_builder.accept_second_bar(
-                    bar_dict, close_on_boundary=True,
-                    full_period_input=False)
+                    bar_dict, close_on_boundary=True)
             except Exception as e:
                 logger.warning(
                     "secondary-TF aggregation failed (%ss, src=%s): %s",
@@ -2952,8 +2935,7 @@ class SymbolHub:
                 continue
             try:
                 completed = builder.accept_second_bar(
-                    completed_min, close_on_boundary=True,
-                    full_period_input=False)
+                    completed_min, close_on_boundary=True)
             except Exception as e:
                 logger.warning(
                     "primary >60s aggregation failed (%ss, src=ws_agg): %s",
