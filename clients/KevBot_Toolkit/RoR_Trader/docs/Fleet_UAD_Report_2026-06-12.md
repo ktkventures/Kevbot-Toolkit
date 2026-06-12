@@ -635,3 +635,46 @@ Validation (direct DB read):
 actually saw, queryable against the backtest lens — phantom/missed diagnosis goes
 from inference to direct comparison. Weekend item: Alert-lens "Live mode" frontend
 reads these rows.
+
+### 21:25Z — CLOBBER ROOT CAUSE SOLVED + REAL FIX DEPLOYED (dc3f3bb)
+
+The "freeze" was never a freeze. Full mechanism, finally proven by reading the
+close/write paths end-to-end:
+
+1. **`flush_stale_bars` closes ≥120s bars with ZERO grace** (every ~2s,
+   wall-clock). The ws_agg minute that completes a 2m period can only be
+   delivered AFTER that period ends — so flush almost always closes the bar
+   first, **missing its final minute**.
+2. **Flush never wrote ≥60s rows to live_bars** (an old hotfix). So the ONLY
+   thing that ever wrote a 2m row was the late fan-out minute hitting the
+   rebroadcast-replace branch — which wholesale-replaced the closed 2m bar
+   with that single minute's OHLCV. **The clobber and the write path were
+   the same line of code.** Every 2m row we've ever measured came from it.
+3. The drop-guard (247afec/0d767d9) killed the clobber → killed the writes →
+   watcher saw 0 rows → "freeze" → revert. **In-memory closes and gate
+   updates never stopped** (flush kept closing; telemetry would have shown
+   gates updating had it been recording then).
+
+**The fix (dc3f3bb)** — merge, don't drop or replace:
+- Late sub-bars now MERGE into the closed row: max-high/min-low, open/close
+  attributed by constituent order, volume deduped. Values converge within
+  seconds of the late minute arriving; the existing rebroadcast cascade
+  recomputes shadow indicators + gate records when values change.
+- flush_stale_bars now writes pure-secondary ≥60s closes to live_bars — a
+  genuine write path independent of redeliveries.
+- Bonus latent bug fixed: chart-visual seconds (skip_volume) were polluting
+  the volume-dedup set; on ≥60s PRIMARY builders (TSLA 5Min) the :00 second
+  collided with the fan-out minute and silently dropped its volume.
+
+Caller-level repro rewritten (`test_clobber_repro.py`, tf-parameterized
+120/300 per Kevin's multi-TF gates direction): reproduces the flush race the
+old repro lacked; gates closes + writes + value convergence. 67 tests green.
+
+**Implication for historical data:** every ≥120s ws/ws_agg cache row written
+before dc3f3bb is clobber-contaminated (single-minute OHLCV). The weekend
+cache-scrub item upgrades from "nice to have" to REQUIRED before any 2m-lens
+comparison. (Lens currently falls back to 10s resample when rows are absent,
+so deletion is safe and self-healing.)
+
+Verification watcher armed: 2m write flow + volume-vs-constituent-1Min parity
++ gate telemetry liveness.
