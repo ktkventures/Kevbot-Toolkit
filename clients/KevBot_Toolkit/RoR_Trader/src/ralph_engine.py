@@ -2380,9 +2380,25 @@ class SymbolHub:
                         not self._shadow_engines.get(tf_seconds):
                     for m in self.monitors.values():
                         if m.tf_seconds == tf_seconds:
-                            # Use interpreter-only records (exclude GEN-)
+                            # 2026-06-12 (B5 TRUE root cause): publish
+                            # ONLY the monitor's OWN-TF records. The
+                            # monitor's _current_confluence also carries
+                            # records MERGED from every other TF (its own
+                            # gating input, step 3c) — publishing the
+                            # whole set re-broadcast stale copies of
+                            # other TFs' states; round-trips accumulated
+                            # until _mtf_confluence held ALL states of
+                            # ALL interpreters (observed live: GATE_DIAG
+                            # records carried all four 2M-UT_BOT states
+                            # at once) → every gate's subset check passed
+                            # → gates permanently open → the fleet-wide
+                            # phantom-flood ladder of 2026-06-12.
+                            _lbl = SECONDS_TO_TIMEFRAME.get(
+                                tf_seconds, '1Min').replace(
+                                'Min', 'M').replace('Hour', 'H').replace(
+                                'Day', 'D').replace('Week', 'W')
                             own_records = {r for r in m._current_confluence
-                                           if not r.startswith('GEN-')}
+                                           if r.startswith(_lbl + '-')}
                             self._mtf_confluence[tf_seconds] = own_records
                             break
 
@@ -2519,8 +2535,14 @@ class SymbolHub:
             if not self._shadow_engines.get(tf_seconds):
                 for m in self.monitors.values():
                     if m.tf_seconds == tf_seconds:
+                        # B5 own-TF filter (2026-06-12) — see the
+                        # on_polygon_bar site for the full story.
+                        _lbl = SECONDS_TO_TIMEFRAME.get(
+                            tf_seconds, '1Min').replace(
+                            'Min', 'M').replace('Hour', 'H').replace(
+                            'Day', 'D').replace('Week', 'W')
                         own_records = {r for r in m._current_confluence
-                                       if not r.startswith('GEN-')}
+                                       if r.startswith(_lbl + '-')}
                         self._mtf_confluence[tf_seconds] = own_records
                         break
 
@@ -2708,8 +2730,14 @@ class SymbolHub:
         if not self._shadow_engines.get(tf_seconds):
             for m in self.monitors.values():
                 if m.tf_seconds == tf_seconds:
+                    # B5 own-TF filter (2026-06-12) — see the
+                    # on_polygon_bar site for the full story.
+                    _lbl = SECONDS_TO_TIMEFRAME.get(
+                        tf_seconds, '1Min').replace(
+                        'Min', 'M').replace('Hour', 'H').replace(
+                        'Day', 'D').replace('Week', 'W')
                     own_records = {r for r in m._current_confluence
-                                   if not r.startswith('GEN-')}
+                                   if r.startswith(_lbl + '-')}
                     self._mtf_confluence[tf_seconds] = own_records
                     break
 

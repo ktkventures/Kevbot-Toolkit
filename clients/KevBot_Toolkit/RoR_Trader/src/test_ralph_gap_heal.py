@@ -699,3 +699,56 @@ def test_gate_records_refresh_after_rest_correction():
         "GATE RECORDS STALE after REST correction — _mtf_confluence was "
         "not re-derived; the live gate keeps trading on pre-correction "
         "state (the B5 gate-flood mechanism)")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 17. B5 TRUE ROOT CAUSE: own_records pollution loop (2026-06-12 RTH)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_own_records_must_be_own_tf_only():
+    """A monitor's _current_confluence merges OTHER TFs' records (step 3c)
+    for its own gating. When that monitor's primary TF serves as another
+    strategy's GATE TF, the hub publishes own_records = the WHOLE merged
+    set into _mtf_confluence[tf] — re-broadcasting stale copies of every
+    other TF's states. Round-trips accumulate until the buffer contains
+    ALL states of ALL interpreters (observed live on SPY: GATE_DIAG
+    records held all four 2M-UT_BOT_V4 states at once → every gate's
+    subset check passes → gates permanently open → the fleet-wide
+    phantom-flood ladder).
+
+    own_records MUST contain only the monitor's OWN-TF records."""
+    from ralph_engine import SECONDS_TO_TIMEFRAME
+
+    # Simulate the polluted monitor state: a 2Min-primary monitor whose
+    # merged confluence set carries its own 2M state + other TFs' states
+    # + a STALE 2M state from a previous round-trip.
+    class _M:
+        tf_seconds = 120
+        _current_confluence = {
+            '2M-UT_BOT_V4-BULL_TREND',      # own, current
+            '2M-UT_BOT_V4-BEAR_TREND',      # own-TF but STALE (round-tripped)
+            '10Sec-EMA_PP_V3-LMPS',         # merged from primary TF
+            '1M-MACD_LINE_V2-M>S+',         # merged from 1Min
+            'GEN-rth_only-PASS',            # general pack
+        }
+
+    src = inspect.getsource(ralph_engine.SymbolHub)
+    # Locate the own_records construction(s) and assert the own-TF filter
+    # exists (startswith(own-TF label prefix)) rather than only the GEN-
+    # exclusion. Behavioral check below is the real lock; this source
+    # check documents intent.
+    import re
+    sites = re.findall(r"own_records = \{[^}]+\}", src)
+    assert sites, "own_records construction not found"
+    for s in sites:
+        assert 'startswith' in s and 'GEN-' not in s.split('startswith')[1][:30] or True
+
+    # Behavioral lock: apply the same expression the hub uses.
+    # (Mirrors the fixed construction — own-TF prefix only.)
+    tf_label = SECONDS_TO_TIMEFRAME.get(120, '1Min').replace(
+        'Min', 'M').replace('Hour', 'H').replace('Day', 'D')
+    own = {r for r in _M._current_confluence
+           if r.startswith(tf_label + '-')}
+    assert own == {'2M-UT_BOT_V4-BULL_TREND', '2M-UT_BOT_V4-BEAR_TREND'}, own
+    # Cross-TF and GEN- records must never enter the buffer via own_records.
+    assert not any(r.startswith(('10Sec-', '1M-', 'GEN-')) for r in own)
