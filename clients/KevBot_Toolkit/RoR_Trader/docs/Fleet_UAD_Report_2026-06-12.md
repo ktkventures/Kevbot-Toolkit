@@ -744,3 +744,28 @@ phantom emergency (freeze #1, freeze #2, this alert).
 **FINAL Friday state: clobber fixed+verified, cache scrubbed+rehealed, telemetry
 recording, all gates updating. Weekend: B4 + B2 designs, lens Live mode, pack
 parity. Monday: clean-foundation verification day.**
+
+### 23:15Z — POST-FIX UAD VERDICTS (302/303 rebuilt by Kevin 21:55Z)
+
+| sid | pre-UAD baseline | post-UAD full-day | post-fix slice (21:25→) |
+|-----|------------------|-------------------|--------------------------|
+| 302 (control) | 47.8% | **78.6%** (+30.8) | 66.7% raw → **~78%** TBD-adjusted |
+| 303 (gated)   | 43.1% | **52.8%** (+9.7)  | 16.7% (n tiny, see below) |
+
+- **The UAD rebuild on scrubbed cache + post-fix code is worth ~+30 points on the
+  control** — fossils and clobber contamination washed exactly as predicted.
+- All pairing medians remain +0.0s across entries/signal-exits/stop-exits.
+- 302's post-fix-slice "orphans" (22:44-22:58) are TBD-class (newer than lane
+  coverage at append time) — they'll pair on the next append.
+- 303 full-day residuals: unmatched BT clusters at 19:22-19:48 + 20:19 = the freeze
+  and bisection windows (live couldn't fire; permanent history), 14:56 = flood era.
+- **303 phantom cluster 21:45-21:49 — FIRST REAL USE OF GATE TELEMETRY**: live gate
+  recorded 2M-UT_BOT_V4-BULL_TREND (open) through the cluster, sane state, flips at
+  21:50/21:54. Gate infrastructure CLEARED by direct evidence. Remaining suspect:
+  10s primary trigger (eppv3 cross) firing on WS bars where REST disagrees —
+  thin-extended-hours-tape microstructure, the known trigger-level class. Weekend
+  parity-sim V2 (cross-TF + user packs) is the tool to quantify it; Monday RTH
+  gives the liquid-tape read.
+- NOTHING NEW SURFACED: every post-fix residual maps to a known class (TBD lag,
+  deploy holes, thin-tape trigger divergence). No gate, bar, lane, or write-path
+  anomalies in 2h of post-fix live data.
