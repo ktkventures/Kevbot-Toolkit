@@ -470,7 +470,8 @@ class BarBuilder:
 
     @_prof_fn('b_accept_second')
     def accept_second_bar(self, bar_dict: dict,
-                          close_on_boundary: bool = True) -> Optional[dict]:
+                          close_on_boundary: bool = True,
+                          skip_volume: bool = False) -> Optional[dict]:
         """Aggregate a per-second OHLCV bar into the current period's partial.
 
         M8.5 Phase B+: enables sub-minute primary-TF aggregation AND forming-bar
@@ -602,8 +603,19 @@ class BarBuilder:
             self._partial.high = sec_high
             self._partial.low = sec_low
             self._partial.close = sec_close
-            self._partial.volume = sec_volume
+            # Volume integrity (2026-06-12): skip_volume callers (the
+            # 1Min+ per-second chart-visual path) must never contribute
+            # volume — the AM/ws_agg fan-out is the canonical volume
+            # source, and double-feeding inflated every >60s bar ~2x
+            # (the documented VWAP_V2/RVOL_V2 caveat; live RVOL gate
+            # read EXTREME near-constantly → sid 291 at 1.0%).
+            self._partial.volume = 0.0 if skip_volume else sec_volume
             self._partial.tick_count = 1
+            # Track which sub-bar timestamps have contributed volume to
+            # THIS partial, so the same sub-bar delivered twice (AM and
+            # ws_agg fan-outs both feed the same minute into >=120s
+            # builders) counts its volume exactly once.
+            self._partial_seen_subbars = {pd.Timestamp(ts)}
             self.last_was_duplicate = False
             return completed
 
@@ -623,7 +635,16 @@ class BarBuilder:
         self._partial.high = max(self._partial.high, sec_high)
         self._partial.low = min(self._partial.low, sec_low)
         self._partial.close = sec_close
-        self._partial.volume += sec_volume
+        # Volume integrity (2026-06-12): count each sub-bar's volume at
+        # most once per partial (AM + ws_agg fan-outs deliver the SAME
+        # minute to >=120s builders), and never from skip_volume callers
+        # (per-second chart-visual on 1Min+ primaries).
+        _sub_ts = pd.Timestamp(ts)
+        if not hasattr(self, '_partial_seen_subbars'):
+            self._partial_seen_subbars = set()
+        if not skip_volume and _sub_ts not in self._partial_seen_subbars:
+            self._partial.volume += sec_volume
+        self._partial_seen_subbars.add(_sub_ts)
         self._partial.tick_count += 1
         self.last_was_duplicate = False
         return None
@@ -4017,8 +4038,12 @@ class SymbolHub:
             else:
                 # 1Min+: AM channel is canonical. Use per-second only to
                 # update the partial for chart visual. NEVER appends to
-                # history. NEVER runs monitors here.
-                b.accept_second_bar(bar_dict, close_on_boundary=False)
+                # history. NEVER runs monitors here. skip_volume: the
+                # fan-out minutes are the canonical volume source —
+                # per-second contributions double-counted it (2026-06-12
+                # volume-integrity fix).
+                b.accept_second_bar(bar_dict, close_on_boundary=False,
+                                    skip_volume=True)
                 if b._partial is not None:
                     partial_dict = b._partial.to_dict()
                     extras = self._gather_tentative_state(
