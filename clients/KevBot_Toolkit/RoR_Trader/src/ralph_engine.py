@@ -2441,6 +2441,64 @@ class SymbolHub:
                     for sig in signals:
                         self._fire_alert(sig, monitor, config, alert_callback)
 
+    def emit_gate_telemetry(self, now: datetime) -> None:
+        """Gate-state telemetry (2026-06-12, Kevin's 'show me what the
+        engine actually sees'). Periodically snapshot `_mtf_confluence`
+        for every TF that any gated monitor on this hub depends on, and
+        persist CHANGES to bar_diagnostics (source='live_gate', one row
+        per gated strategy per change) — recorded ground truth of the
+        live gate, the thing every lens until now only RECONSTRUCTED.
+
+        Also the freeze alarm: if a depended-on TF's records haven't
+        changed in > 3 periods while the engine is processing, WARN —
+        the silent >=120s close freeze (247afec, reverted 2026-06-12)
+        would have surfaced in minutes instead of via a manual cache
+        audit. Called from the periodic flush loop; cheap (set compares).
+        """
+        try:
+            if not hasattr(self, '_gate_telemetry_state'):
+                self._gate_telemetry_state = {}   # tf -> (records, ts)
+            needed: dict = {}
+            for m in self.monitors.values():
+                for sec in getattr(m, '_required_secondary_tf', ()):
+                    needed.setdefault(sec, []).append(m.strat_id)
+            if not needed:
+                return
+            rows = []
+            for tf, sids in needed.items():
+                cur = frozenset(self._mtf_confluence.get(tf, set()))
+                prev, prev_ts = self._gate_telemetry_state.get(
+                    tf, (None, None))
+                if cur != prev:
+                    self._gate_telemetry_state[tf] = (cur, now)
+                    bar_iso = datetime.fromtimestamp(
+                        int(now.timestamp()) - int(now.timestamp()) % tf,
+                        tz=timezone.utc).isoformat()
+                    for sid in sids:
+                        rows.append({
+                            'strategy_id': sid,
+                            'bar_ts': bar_iso,
+                            'source': 'live_gate',
+                            'values': {'tf': tf,
+                                       'records': sorted(cur)},
+                        })
+                elif prev_ts is not None:
+                    age = (now - prev_ts).total_seconds()
+                    if age > 3 * tf and self.tick_count > 0:
+                        logger.warning(
+                            "GATE-FREEZE? sym=%s tf=%ss records unchanged "
+                            "for %.0fs (>3 periods) — secondary closes may "
+                            "have stopped (cf. 2026-06-12 247afec freeze)",
+                            self.symbol, tf, age)
+                        # re-arm so the warning fires once per stale period
+                        self._gate_telemetry_state[tf] = (prev, now)
+            if rows:
+                from live_bars_writer import _get_executor
+                from db import save_bar_diagnostics_batch
+                _get_executor().submit(save_bar_diagnostics_batch, rows)
+        except Exception as e:
+            logger.debug("gate telemetry emit failed: %s", e)
+
     def flush_stale_bars(self, now: datetime,
                          alert_callback: Callable = None,
                          config: dict = None,
@@ -5258,6 +5316,9 @@ class RalphEngine:
                             config=self._config,
                             auditor=self.auditor,
                         )
+                        # Gate-state telemetry + freeze alarm
+                        # (2026-06-12) — change-detected, cheap.
+                        hub.emit_gate_telemetry(utc_now)
                 except Exception as e:
                     logger.debug("Stale bar flush error: %s", e)
 

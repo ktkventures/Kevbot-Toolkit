@@ -752,3 +752,51 @@ def test_own_records_must_be_own_tf_only():
     assert own == {'2M-UT_BOT_V4-BULL_TREND', '2M-UT_BOT_V4-BEAR_TREND'}, own
     # Cross-TF and GEN- records must never enter the buffer via own_records.
     assert not any(r.startswith(('10Sec-', '1M-', 'GEN-')) for r in own)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 18. Gate-state telemetry + freeze alarm (2026-06-12 evening)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_gate_telemetry_emits_on_change_and_warns_on_freeze(monkeypatch):
+    import live_bars_writer as lbw
+    written = []
+    class _Exec:
+        def submit(self, fn, rows): written.extend(rows)
+    monkeypatch.setattr(lbw, '_get_executor', lambda: _Exec())
+
+    hub = SymbolHub('TEST')
+    hub.tick_count = 100
+    class _M:
+        strat_id = 303
+        _required_secondary_tf = {120}
+    hub.monitors[303] = _M()
+    now = datetime(2026, 6, 12, 20, 0, 0, tzinfo=timezone.utc)
+
+    # 1. first snapshot emits
+    hub._mtf_confluence[120] = {'2M-UT_BOT_V4-BULL_TREND'}
+    hub.emit_gate_telemetry(now)
+    assert len(written) == 1
+    assert written[0]['source'] == 'live_gate'
+    assert written[0]['values']['records'] == ['2M-UT_BOT_V4-BULL_TREND']
+
+    # 2. unchanged -> no new row
+    hub.emit_gate_telemetry(now + timedelta(seconds=30))
+    assert len(written) == 1
+
+    # 3. change -> emits
+    hub._mtf_confluence[120] = {'2M-UT_BOT_V4-BEAR_TREND'}
+    hub.emit_gate_telemetry(now + timedelta(seconds=60))
+    assert len(written) == 2
+
+    # 4. freeze alarm: unchanged for >3 periods -> warning logged
+    import logging
+    records = []
+    class _H(logging.Handler):
+        def emit(self, r): records.append(r.getMessage())
+    h = _H(); ralph_engine.logger.addHandler(h)
+    try:
+        hub.emit_gate_telemetry(now + timedelta(seconds=60 + 7 * 120))
+    finally:
+        ralph_engine.logger.removeHandler(h)
+    assert any('GATE-FREEZE' in m for m in records), records
