@@ -725,3 +725,22 @@ final). Tests first; not rushing this into the last hour of live data.
 - Note for Monday: gate-parity / per-bar drift numbers for PRE-21:15Z windows
   will now read differently (cleaner) after the next UAD — the 2m lens input
   changed from clobbered rows to resampled sub-minute truth.
+
+### 22:30Z — Watcher "starvation alert" = false alarm (filter artifact); final state CONFIRMED HEALTHY
+
+The watcher alerted on zero ws/ws_agg 2m rows at 21:27-21:29 — but the full-source
+query shows every 2m bar present: the gap healer re-healed the window from REST
+after the worker restarts (deploys at 21:15 + 21:22), upserting `rest_insert` rows
+over the WS-side writes. REST-grade values on every bar (e.g. 21:18: vol 307 full
+REST truth vs 180 WS-visible; both "correct" for what each source saw). The lens
+consumes rest_insert (yesterday's lens fix), so coverage AND values are now the
+best either pipeline can produce. The merge-fix write path is also independently
+confirmed (fresh `ws` row at 21:26 within seconds of close).
+
+Lesson encoded for future watchers: filter by ENGINE_CONSUMED_SOURCES, not
+ws/ws_agg — this is the THIRD time a source-filtered measurement created a
+phantom emergency (freeze #1, freeze #2, this alert).
+
+**FINAL Friday state: clobber fixed+verified, cache scrubbed+rehealed, telemetry
+recording, all gates updating. Weekend: B4 + B2 designs, lens Live mode, pack
+parity. Monday: clean-foundation verification day.**
