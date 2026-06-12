@@ -1,8 +1,50 @@
 {
-  "generated_at": "2026-06-11T16:27:28.062323+00:00",
+  "generated_at": "2026-06-12T07:52:57.803431+00:00",
   "since": "2026-05-28",
-  "count": 121,
+  "count": 134,
   "commits": [
+    {
+      "sha": "02dab4c",
+      "full_sha": "02dab4c98064fddd9c99c9a65bb71a10dcf0f9da",
+      "timestamp_iso": "2026-06-12T01:52:32-06:00",
+      "subject": "[claude-iter-0612a] fleet UAD overnight report (48 strategies analyzed)"
+    },
+    {
+      "sha": "d6a9be8",
+      "full_sha": "d6a9be8466d58c1f5efc3268f92c10b0bdf701af",
+      "timestamp_iso": "2026-06-11T20:56:12-06:00",
+      "subject": "[claude-iter-0612a] B5 gate-flood fix: re-derive gate records after REST corrections"
+    },
+    {
+      "sha": "cf633fb",
+      "full_sha": "cf633fb0223415cd76ca0c247b4e9123d14c40f6",
+      "timestamp_iso": "2026-06-11T17:32:35-06:00",
+      "subject": "[claude-iter-0611b] EOD docs: roadmap (BT-reference toggle + bug landscape) + iteration log"
+    },
+    {
+      "sha": "3016abb",
+      "full_sha": "3016abb510844e5bc2bd77b87a5188d763a8b6fb",
+      "timestamp_iso": "2026-06-11T15:33:18-06:00",
+      "subject": "[claude-iter-0611b] HiFi Pass 2: never rewrite signal exits via the stop/target walker"
+    },
+    {
+      "sha": "5b6f7a9",
+      "full_sha": "5b6f7a983b2b09712be41f8ba881fec703732963",
+      "timestamp_iso": "2026-06-11T15:02:37-06:00",
+      "subject": "[claude-iter-0611b] snapshot lineage guard: stop appends resuming fossilized engine state"
+    },
+    {
+      "sha": "74b4826",
+      "full_sha": "74b4826e98820e10eb312cefe7c75e99b44684dc",
+      "timestamp_iso": "2026-06-11T14:34:08-06:00",
+      "subject": "[claude-iter-0611a] EOD: dashboard null-kpis guard + health report + decision-divergence findings"
+    },
+    {
+      "sha": "1d77665",
+      "full_sha": "1d77665709f4e0a703932e9b2801b283aefa9175",
+      "timestamp_iso": "2026-06-11T10:27:28-06:00",
+      "subject": "[claude-iter-0611a] deploy_history: add warmup_seed reconcile SHA"
+    },
     {
       "sha": "3964eab",
       "full_sha": "3964eabcc464a27c08f218ed66fd77ec128942d6",
@@ -728,6 +770,42 @@
       "full_sha": "b323f356abcf1d279e8636a6ae23c148d0f16ec2",
       "timestamp_iso": "2026-05-28T10:27:29-06:00",
       "subject": "ws_rest_spliced: drift_uncorrected status + snapshot warning dedupe"
+    },
+    {
+      "sha": "a0b7d54",
+      "full_sha": "a0b7d54a4be8d148d98da61747075f64f1192198",
+      "timestamp_iso": "2026-05-28T09:29:22-06:00",
+      "subject": "M6 ws_rest_spliced: apply_rest_correction + verifier callback wiring"
+    },
+    {
+      "sha": "a27cf26",
+      "full_sha": "a27cf268f7494b84de212ef506033871736cf38f",
+      "timestamp_iso": "2026-05-28T09:24:05-06:00",
+      "subject": "M5: Dispatch routing for ws_rest_spliced (mirrors ws_agg_reconciled)"
+    },
+    {
+      "sha": "4e8fe9a",
+      "full_sha": "4e8fe9aedeb6fbf9aa5699f56a77f2d57030ca69",
+      "timestamp_iso": "2026-05-28T09:22:37-06:00",
+      "subject": "M4: Wire rest_verifier hook into Ralph alert-fire dispatchers"
+    },
+    {
+      "sha": "6feae0d",
+      "full_sha": "6feae0d6a368fcd43906df4493d450665908d5d4",
+      "timestamp_iso": "2026-05-28T09:18:39-06:00",
+      "subject": "M3: REST verifier module"
+    },
+    {
+      "sha": "705384a",
+      "full_sha": "705384a45f51290160184d7db664e065c9885bfa",
+      "timestamp_iso": "2026-05-28T09:16:25-06:00",
+      "subject": "M2: Migration + ALERT_COLUMN_FIELDS for verification_* columns"
+    },
+    {
+      "sha": "bffdd1d",
+      "full_sha": "bffdd1d120826f3b06e9a38e3bd4d9727e2c5d72",
+      "timestamp_iso": "2026-05-28T09:14:58-06:00",
+      "subject": "M1: Register ws_rest_spliced live model + supersede rest_polled"
     }
   ]
 }
