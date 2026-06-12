@@ -1918,8 +1918,24 @@ def get_strategy_health_by_deploy(
     window_data: dict = defaultdict(
         lambda: defaultdict(lambda: {
             "alerts": 0, "bt_events": 0, "paired": 0,
-            "phantom": 0, "missed": 0,
+            "phantom": 0, "missed": 0, "tbd": 0,
         }))
+
+    # TBD classification (2026-06-12, mirrors by-hour): an unpaired alert
+    # NEWER than the strategy's backtest-lane coverage isn't a phantom —
+    # the reference doesn't exist yet. Excluded from combined%; converts
+    # on the next append (computed at query time).
+    _cov_end: dict = {}
+    try:
+        _cfg_rows = (c.table("strategies").select("id,config")
+                     .in_("id", cohort).execute().data or [])
+        for _r in _cfg_rows:
+            _ts = (_r.get("config") or {}).get("last_recompute_until_ts")
+            _dt = _parse_iso(_ts) if _ts else None
+            if _dt is not None:
+                _cov_end[_r["id"]] = _dt.timestamp()
+    except Exception:
+        pass
 
     # Build window boundary arrays for fast bucket lookup
     w_starts = [_parse_iso(w["window_start"]).timestamp()
@@ -2005,7 +2021,13 @@ def get_strategy_health_by_deploy(
             if a_paired[i]:
                 bucket["paired"] += 1
             else:
-                bucket["phantom"] += 1
+                _cov = _cov_end.get(sid)
+                if b_sorted_ts:
+                    _cov = max(_cov or 0, b_sorted_ts[-1])
+                if _cov is None or ts.timestamp() > _cov:
+                    bucket["tbd"] += 1
+                else:
+                    bucket["phantom"] += 1
         for k, (ts_sec, _kind) in enumerate(b_sorted):
             w = _which_window(ts_sec)
             if w is None:
@@ -2024,6 +2046,7 @@ def get_strategy_health_by_deploy(
         tot_paired = sum(b["paired"] for b in by_sid.values())
         tot_phantom = sum(b["phantom"] for b in by_sid.values())
         tot_missed = sum(b["missed"] for b in by_sid.values())
+        tot_tbd = sum(b.get("tbd", 0) for b in by_sid.values())
         denom = tot_paired + tot_phantom + tot_missed
         combined_pct = (100 * tot_paired / denom) if denom > 0 else None
         # Per-strategy combined % for the avg-across-strategies KPI
@@ -2054,6 +2077,7 @@ def get_strategy_health_by_deploy(
             "paired": tot_paired,
             "phantom": tot_phantom,
             "missed": tot_missed,
+            "tbd": tot_tbd,
             "combined_pct": (round(combined_pct, 1)
                               if combined_pct is not None else None),
             "avg_strategy_combined_pct": (round(avg_cpct, 1)
@@ -2078,6 +2102,7 @@ def get_strategy_health_by_deploy(
                 "paired": b["paired"],
                 "phantom": b["phantom"],
                 "missed": b["missed"],
+                "tbd": b.get("tbd", 0),
                 "combined_pct": round(cpct, 1),
                 "rankable": b["alerts"] >= 1 and b["bt_events"] >= 1,
             })
