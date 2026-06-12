@@ -602,3 +602,16 @@ snapshot lineage, gate corrections-staleness, gate own-records pollution); one
 characterized with fix pending re-land (2m clobber). Ungated price strategies:
 90–97% at ±5s. Gated strategies: flood eliminated, residuals mapped to the clobber.
 Measurement integrity: TBD class + coverage clipping + benign-pattern taxonomy.
+
+### 🔬 LIVE BISECTION RESULT (20:19–20:30Z): freeze is DETERMINISTIC under the guard
+Re-landed 247afec's guard under telemetry: 1Min rows flowed (9), 2m rows = ZERO for
+10+ min → reverted again (36dc2df). FACTS BANKED: (a) freeze reproduces 2-for-2 under
+the guard, recovers 2-for-2 on revert; (b) ≥120s-specific (1Min healthy — not warmup,
+not feed); (c) the faithful fan-out-level repro PASSES with the guard — the freezing
+ingredient lives in the CALLER layer (on_polygon_bar / on_second_bar / seed overlap),
+not in accept_second_bar itself; (d) the clobber repro stands as the re-land gate
+(reproduces 0.50x exactly; clobber was DESIGNED double-count "healing", obsoleted by
+the dedup). WEEKEND: caller-level repro (drive on_polygon_bar + on_second_bar with
+realistic per-second + AM streams over a seeded hub). ALSO FOUND: telemetry writes
+silently rejected by `bar_diagnostics_source_check` (table CHECK allows only
+live/live_corrected/backtest/algo) — needs Kevin to run one SQL line.
