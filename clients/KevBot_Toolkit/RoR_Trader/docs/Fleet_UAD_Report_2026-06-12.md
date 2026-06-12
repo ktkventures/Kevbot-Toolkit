@@ -452,3 +452,46 @@ strategies inherit BOTH confirmed bugs.
 - 1Min + dual gate: early-fire medians (−60s/−120s) + flood — both confirmed bugs stacked.
 Production 1Min Mass strategies = the most-affected class; should benefit most from
 tomorrow's fixes.
+
+---
+# ☀️ MORNING SUMMARY (compiled ~08:15Z)
+
+## Fleet table (RTH 06-11 14:45–20:00Z, ±5s combined%)
+
+| band | strategies | range |
+|---|---|---|
+| ✅ Ungated, price-based (10s) | 296: **96.6** · 282: **96.5** · 280/278: **95.4** · 284: **95.2** · 288: **94.3** · 286: 92.4 · 270/268: 92.3 · 302: 92.0 · 273/263: 91.2 · 300: 90.9 · 276: 89.9 · 294: 82.2 · 298: 68.8(n=20) | **~90–97%** |
+| 🟡 Gated (B5 flood, by gate flip-rate) | 299: 73.2 · 301: 63.0 · 267: 61.9 · 283: 54.6 · 293: 45.6 · 275: 45.1 · 287: 42.6 · 303: 41.7 · 272: 40.5 · 281/279: 37.0 · 277: 35.4 · 285: 30.4 | 30–73% |
+| 🔴 Rare-state / dual gates | 295: 17.0 · 297: 11.0 · 271: 9.0 · 136: 8.6 · 289: 5.9 · 291: 1.0 · 174: 0.0 | 0–17% |
+| 🔴 Laggard packs (any config) | VWAP: 304: 22.2 / 305: 18.1 · SR Channels: 292: 13.5 | known pre-existing |
+| 🟠 1Min (B4 early-fire) | 269: 21.4 · 265: 17.2 (medians −30/−60s, early-ONLY) | confirmed bug |
+| ⚪ Special | 307(KO): 77.0 · 306(DIA): 54.3 (canary-birth) · 266: n=4 · 194: n=1 · 274: dead-live (known) | — |
+
+## Ranked residual bugs (after tonight's fixes)
+
+1. **B5 gate-state flood — FIXED overnight (d6a9be8, deployed 08:01Z).** Stale
+   `_mtf_confluence` after REST corrections; reproduced via unit test; dose-response
+   evidence across 17 gated strategies. **VERDICT = TODAY'S RTH:** gated phantom
+   ratios should collapse toward the ungated band. If residual remains → Gate Parity
+   Analysis card decomposition + the gate-state telemetry instrument (build today).
+2. **Volume integrity (≥60s fan-out double-count)** — localized precisely (RVOL
+   trigger 87% vs RVOL gate 1%; VWAP cumulative-anchor sensitivity). Fix: skip_volume
+   in fan-out accept_second_bar + volume in REST corrections. Today.
+3. **B4 1Min+ early-fire** — confirmed, quantified (−30/−60s medians). DESIGN DECISION
+   for Kevin: wait-for-close on 1Min+ C-type (recommended) vs keep grace-fires.
+4. **Bulk-UAD silent truncation** (302, one-off so far) — coverage assertion in UAD.
+5. **Pack cleanup:** VWAP v2 + SR Channels incremental parity (pre-existing Phase 4).
+6. Minor: thin-tape stop-fill late-lean (≤10s); sid 274 dead-live; after-hours sweep
+   lookback widening.
+
+## Overnight ops log
+- Fleet UAD: 47 strategies, 00:11→07:44Z, one truncation (302, re-healed 08:0xZ post-fix).
+- B5 fix: reproduced → fixed → 44 tests green → deployed 08:01Z pre-market.
+- All lanes now rebuilt on post-HiFi-fix code with clean snapshot lineages.
+- TODAY'S PLAN: (1) watch gated cohort live vs ungated post-open — B5 verdict;
+  (2) volume fix (small, test like gap-healer); (3) Kevin decides B4 policy;
+  (4) gate-state telemetry + lens Live mode; (5) backtest-reference toggle.
+
+### sid 302 — RE-HEALED ✅ (08:16Z): lane covers through 08:01Z, numbers BYTE-IDENTICAL to the
+gold standard (92.0% / 94.3%, paired=229/7/13). Truncation fully recovered; remains a
+one-off. All 47 fleet lanes now verified-fresh on post-fix code.
