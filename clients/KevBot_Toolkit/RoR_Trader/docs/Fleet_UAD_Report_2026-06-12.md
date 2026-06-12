@@ -495,3 +495,110 @@ tomorrow's fixes.
 ### sid 302 — RE-HEALED ✅ (08:16Z): lane covers through 08:01Z, numbers BYTE-IDENTICAL to the
 gold standard (92.0% / 94.3%, paired=229/7/13). Truncation fully recovered; remains a
 one-off. All 47 fleet lanes now verified-fresh on post-fix code.
+
+---
+# 🎯 B5 VERDICT TRACKING (today's RTH, gate fix live since 08:01Z)
+
+### 307 (KO · gated) — TODAY 13:45–15:05Z: **91.7%** (was 77.0% yesterday)
+- 100% on ALL categories (11E/7sig/4stop) · 2 phantoms in 80 min · stop late-lean GONE
+- First gated strategy reading in the ungated band. n=24 events — direction unmistakable.
+
+### 306 (DIA · gated) — TODAY: **84.8%** (was 54.3% yesterday; canary-birth artifacts gone)
+- 100% deltas everywhere · 3 phantoms / 2 missed in 80 min on a thin gated symbol
+
+### 305/304 (VWAP pair) — TODAY: tiny n (quiet +2σ morning); 304 trigger 62.5%/85.7% ±10s (n=8).
+VWAP verdict belongs to the VOLUME fix (this afternoon), not the gate fix — don't read these yet.
+
+---
+# 🔧 TRUE B5 ROOT CAUSE — FIXED & DEPLOYED 15:35Z (711e72b)
+
+303's verdict measurement exposed it: 27.7% today (canaries 84-92%) → probe showed
+21/29 live entries fired with the batch PB gate CLOSED → GATE_DIAG records carried
+ALL FOUR 2M-UT_BOT states simultaneously → **own_records pollution loop**: monitors
+publish their WHOLE merged confluence set (own states + every other TF's records)
+into _mtf_confluence when their primary TF serves as a gate TF; round-trips
+accumulate until the buffer holds all states of everything → subset checks always
+pass → gates permanently open on multi-strategy hubs (SPY). Lone-canary hubs (KO/DIA)
+have pure shadows → clean → why they improved and SPY didn't. Fix: own-TF-prefix
+filter at all 3 publish sites. The d6a9be8 correction-staleness fix stands but was
+minor. **A/B verdict: window A 13:45–15:30Z (pre-fix) vs window B 15:45Z→close
+(post-fix), same day, same market.** Re-append job 1014679494 extends lanes.
+
+### ⚡ EARLY TELL (16:05Z, 25 min post-fix): gated alert RATES collapsed at the deploy
+Pre-fix (13:45-15:30Z) vs post-fix first 15 min, ENTRY alerts: 277: 46→0 · 279: 28→0 ·
+267: 40→1 · 272: 33→4. Gates are CLOSING for the first time. (Post-fix pairing reads
+0% right now purely because appended lanes lag 15 min — no BT reference yet; formal
+A/B at 17:10Z after the next append.) Re-append progressing fast: 266-280 done by 16:02.
+
+### 🎯 B5 A/B INTERIM (17:12Z measurement)
+- **303: PRE 28% (23/58/2) → POST 75% (6/0/2) — ZERO PHANTOMS post-fix** on the worst offender
+- 307: 86→82% steady · 306: 50% (n=4) · 297: 0/4/2 tiny-n (watch — flippiest gate)
+- Controls untouched: 302 95% · 296 90% · 284 100%
+- Most cohort slots ended pre-15:45 (no post-fix coverage yet) → append round 3 fired
+  (1020424457); full verdict at ~18:00Z with 2h+ post-fix windows.
+
+### 🏆 B5 FINAL A/B (18:08Z): GATED 40.3% → 69.0%, phantoms 577 → 44 (~10x rate drop)
+285: 16→100% · 277: 38→100% · 287: 60→91% · 303: 28→89% (0 phantoms) · 267: 54→85% ·
+283: 82→78% · 281/279: 68→57% (n small). RESIDUAL WATCH (EOD): 297 INSIDE 0% (n=8),
+272 10m-gate 21% (n=19), 307 over-close? (7 missed). CONTROL DIP in the same later
+window (302: 95→72) = time-correlated NOT fix-correlated (ungated paths untouched) —
+suspect append-edge/regime artifacts 16:30-17:10Z; re-measure on settled EOD data.
+VERDICT: own-records pollution loop was THE gate bug. Next: volume fan-out fix.
+
+# 🔧 VOLUME-INTEGRITY FIX DEPLOYED 18:11Z (48e07ee)
+Sub-bar volume dedup (AM+ws_agg same-minute double-feed into >=120s builders) +
+skip_volume on the per-second chart-visual path. RVOL/VWAP A/B: pre-fix windows today
+vs post-18:15Z. Watch sids 291 (RVOL gate, was 1.0%), 305/304 (VWAP), 290 (control,
+RVOL trigger — should stay ~87%). Append round 4 running (1024021332). Verdict at EOD.
+
+### 📐 18:55Z INTERIM + NEW FINDING: B2 PROMOTED (append-edge fossilization)
+Extended-window reads softened FLEET-WIDE incl. CONTROLS (302/296/284: 95-100% →
+74-78%) — controls touch neither fix, so the afternoon pollution is measurement-side:
+each same-day append round writes unsettled-REST edge trades that are NEVER rewritten
+(insert-only dedup) → 4 rounds today = 4 fossilized edge bands. Gate-fix verdict
+STANDS (pre-fix baselines far below current reads; 17:10 clean snapshot 89-100%).
+297 = genuine residual (0%, n=14, consistent). Volume cohort n=0 yet.
+FIXES QUEUED: B2 — append should re-verify/replace its last edge band each run;
+tonight's full UAD washes today's fossils; tomorrow = single-append cadence clean day.
+
+---
+# 🌆 END-OF-DAY WRAP (Friday 2026-06-12, written 19:50Z)
+
+## What happened today, in order
+1. **09:35 MT — B5 TRUE fix deployed** (own-records pollution): gated cohort 40.3%→69.0%
+   on clean windows; 285/277 → 100%, 287 → 91%, 303 → 89% w/ zero phantoms. VERIFIED.
+2. **12:11 MT — volume dedup + skip_volume** (defense-in-depth; the 2x theory was wrong
+   in detail — kept as guard).
+3. Mechanical audit found the REAL ≥120s corruption: **single-minute clobbering of
+   closed 2m bars** (volume 0.50x exactly, ranges collapsed) — explains the post-gate-fix
+   residuals (285's 11:04/11:07 phantoms — Kevin-spotted, verified genuine — plus 297, 272).
+4. **13:03 MT — clobber fix deployed… and silently stopped ≥120s closes in prod**
+   (passed 40 unit tests; production seeded-history/dual-feed path differs). Caught via
+   the cache audit within ~40 min; **REVERTED 13:50 MT** (92c9528). Gates back on
+   clobbered-but-live 2m bars — known-bad beats frozen.
+5. **TBD classification shipped** (Kevin's design) in by-hour: uncovered alerts no longer
+   count as phantoms; auto-convert on append. Kills the afternoon sag artifact.
+
+## Contaminated windows today (for any retro analysis)
+- 19:03–19:50Z: frozen ≥120s gate buffers (clobber-fix deploy → revert).
+- Append-edge fossil bands at ~15:39/16:53/17:14/18:25Z (B2).
+- Pre-09:35 MT: gate-flood era. 09:35–13:03 MT: cleanest gate-fix windows.
+
+## WEEKEND QUEUE (markets closed Sat/Sun — all offline-buildable, Monday verifies)
+1. **Clobber re-fix with faithful repro** (seeded builder + dual AM/ws_agg feed sim —
+   find why prod ≥120s closes stopped; unit tests passed, prod didn't). TOP PRIORITY.
+2. **Gate-state telemetry + lens Live mode** — would have caught today's freeze in
+   minutes; the "show me what the engine sees" instrument.
+3. B4 wait-for-close on 1Min+ C-type (approved).
+4. B2 append edge-band re-verify.
+5. by-deploy TBD (same change as by-hour).
+6. Cache cleanup: delete corrupted ≥120s ws/ws_agg rows (lens falls back to clean 10s
+   resample) — fixes historical red ribbon rows on 2m lines.
+7. Pack parity (VWAP/SR) via parity simulator.
+
+## The week's scoreboard
+Six confirmed root causes found; five fixed-and-verified (WS gaps, HiFi rewriter,
+snapshot lineage, gate corrections-staleness, gate own-records pollution); one
+characterized with fix pending re-land (2m clobber). Ungated price strategies:
+90–97% at ±5s. Gated strategies: flood eliminated, residuals mapped to the clobber.
+Measurement integrity: TBD class + coverage clipping + benign-pattern taxonomy.
