@@ -1455,7 +1455,25 @@ def get_strategy_health_by_hour(
     hour_data: dict = defaultdict(
         lambda: defaultdict(
             lambda: {"alerts": 0, "bt_events": 0, "paired": 0,
-                     "phantom": 0, "missed": 0}))
+                     "phantom": 0, "missed": 0, "tbd": 0}))
+
+    # TBD classification (2026-06-12, Kevin's ask): an unpaired alert
+    # NEWER than the strategy's backtest-lane coverage isn't a phantom —
+    # the reference doesn't exist yet. Classify TBD, exclude from
+    # combined%, converts automatically on the next append (computed at
+    # query time). Coverage = config.last_recompute_until_ts, fallback
+    # to the newest in-window BT edge.
+    _cov_end: dict = {}
+    try:
+        _cfg_rows = (c.table("strategies").select("id,config")
+                     .in_("id", cohort).execute().data or [])
+        for _r in _cfg_rows:
+            _ts = (_r.get("config") or {}).get("last_recompute_until_ts")
+            _dt = _parse_iso(_ts) if _ts else None
+            if _dt is not None:
+                _cov_end[_r["id"]] = _dt.timestamp()
+    except Exception:
+        pass
 
     def _parse_ts(s):
         if not s:
@@ -1534,7 +1552,13 @@ def get_strategy_health_by_hour(
             if a_paired[i]:
                 bucket["paired"] += 1
             else:
-                bucket["phantom"] += 1
+                _cov = _cov_end.get(sid)
+                if b_sorted_ts:
+                    _cov = max(_cov or 0, b_sorted_ts[-1])
+                if _cov is None or ts.timestamp() > _cov:
+                    bucket["tbd"] += 1
+                else:
+                    bucket["phantom"] += 1
         for k, (ts_sec, _kind) in enumerate(b_sorted):
             ts = datetime.fromtimestamp(ts_sec, tz=timezone.utc)
             h = ts.strftime("%Y-%m-%dT%H")
@@ -1619,6 +1643,7 @@ def get_strategy_health_by_hour(
                 "paired": b["paired"],
                 "phantom": b["phantom"],
                 "missed": b["missed"],
+                "tbd": b.get("tbd", 0),
                 "combined_pct": round(cpct, 1),
                 "alert_pair_pct": round(apr, 1),
                 "rankable": rankable,
