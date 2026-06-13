@@ -57,9 +57,13 @@ def _parse_dt(s: str):
 
 
 def load_tv_csv(path: str, tf_seconds: int, tz_off_min: int):
-    """Return list of TV entries: {entry_ts(UTC, fill=bar close), price, exit_ts,
-    exit_price, signal/reason}. TV labels bars by OPEN time, so fill = open+tf."""
-    with open(path, newline='') as f:
+    """Return list of TV trades: {entry_ts(UTC, fill=bar close), entry_price,
+    exit_ts, exit_price, exit_sig}. TV labels bars by OPEN time → fill=open+tf.
+
+    Handles the TradingView "List of Trades" export: rows grouped by trade
+    number, with the Exit row appearing BEFORE the Entry row within a trade.
+    """
+    with open(path, newline='', encoding='utf-8-sig') as f:
         rows = list(csv.DictReader(f))
     if not rows:
         return []
@@ -70,31 +74,48 @@ def load_tv_csv(path: str, tf_seconds: int, tz_off_min: int):
             if c in keys:
                 return keys[c]
         return None
+    c_num = col('trade number', 'trade #', 'trade')
     c_type = col('type')
-    c_dt = col('date/time', 'date', 'datetime', 'time')
+    c_dt = col('date and time', 'date/time', 'datetime', 'date', 'time')
     c_price = col('price usd', 'price', 'price ($)')
     c_signal = col('signal', 'comment')
-    trades = []
-    cur = None
-    for r in rows:
-        typ = (r.get(c_type, '') or '').lower()
+
+    def price_of(r):
+        try:
+            return float((r.get(c_price, '') or '').replace(',', ''))
+        except ValueError:
+            return None
+
+    def fill_of(r):
         dt = _parse_dt(r.get(c_dt, '') or '')
         if dt is None:
-            continue
-        dt = dt + timedelta(minutes=tz_off_min)
-        fill = dt + timedelta(seconds=tf_seconds)  # bar-open label -> bar-close fill
-        price = None
-        try:
-            price = float((r.get(c_price, '') or '').replace(',', ''))
-        except ValueError:
-            pass
-        sig = (r.get(c_signal, '') or '').strip()
+            return None
+        return dt + timedelta(minutes=tz_off_min) + timedelta(seconds=tf_seconds)
+
+    # Group rows by trade number; classify by Type.
+    by_num: dict = {}
+    for r in rows:
+        num = (r.get(c_num, '') or '').strip()
+        by_num.setdefault(num, {'entry': None, 'exit': None})
+        typ = (r.get(c_type, '') or '').lower()
         if 'entry' in typ:
-            cur = {'entry_ts': fill, 'entry_price': price, 'entry_sig': sig}
-        elif 'exit' in typ and cur is not None:
-            cur.update({'exit_ts': fill, 'exit_price': price, 'exit_sig': sig})
-            trades.append(cur)
-            cur = None
+            by_num[num]['entry'] = r
+        elif 'exit' in typ:
+            by_num[num]['exit'] = r
+    trades = []
+    for num, pair in by_num.items():
+        en, ex = pair['entry'], pair['exit']
+        if en is None:
+            continue
+        trades.append({
+            'entry_ts': fill_of(en), 'entry_price': price_of(en),
+            'entry_sig': (en.get(c_signal, '') or '').strip(),
+            'exit_ts': fill_of(ex) if ex is not None else None,
+            'exit_price': price_of(ex) if ex is not None else None,
+            'exit_sig': (ex.get(c_signal, '') or '').strip() if ex is not None else '',
+        })
+    trades = [t for t in trades if t['entry_ts'] is not None]
+    trades.sort(key=lambda t: t['entry_ts'])
     return trades
 
 

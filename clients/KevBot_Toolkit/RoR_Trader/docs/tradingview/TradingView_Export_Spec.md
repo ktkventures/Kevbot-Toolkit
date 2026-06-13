@@ -126,3 +126,18 @@ Tool: src/_tv_bar_parity.py.
 NEXT: paste Checkpoint C (sid303_checkpointC.pine — full: gate-fix + ATR stop),
 re-export BOTH chart-data (recheck gate timing post-[1]-fix) AND "List of Trades"
 (trade-by-trade incl. stop exits) → run _tv_parity_compare.py for full trade parity.
+
+## FULL-STRATEGY trade parity (2026-06-13, Checkpoint C vs sid 303 backtest)
+TV "List of Trades" export (gate-fix + ATR stop), 2026-06-08→06-13 (~5 days,
+TV gave more seconds history than expected). Tool: _tv_parity_compare.py.
+- TV trades=673, our backtest=657. **MATCHED entries ±15s = 626 (~93%).**
+- Entry price |Δ|: avg 0.0004 / max 0.04. → fills near-identical.
+- Exit reason (stop vs signal cross) agree: 583/626 = **93%**.
+- Mismatch breakdown (nearest-neighbor):
+  TV-only 47 = 9 near(15-60s) + 15 loose(60-300s) + 23 absent(>300s).
+  BT-only 31 = 9 near + 13 loose + 9 absent.
+  → ~93% exact, ~3% same-trade-shifted (thin-tape entry-bar diffs), ~5%
+    genuinely one-sided (thin-tape bar/gate/stop-cascade). Consistent with the
+    data-axis divergence quantified earlier; NOT a port-fidelity problem
+    (indicator math is exact, backtest data ≈ TV bar-for-bar).
+VERDICT: sid 303 port is FAITHFUL. Ready to generalize → generator + tab.
