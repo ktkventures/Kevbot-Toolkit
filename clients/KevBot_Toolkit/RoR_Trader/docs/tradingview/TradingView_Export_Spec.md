@@ -152,3 +152,18 @@ CONCLUSION: full-window 93% vs RTH 98.6% → the entire residual was thin
 extended-hours tape, not a logic/port issue. In liquid hours the TradingView
 port is ESSENTIALLY EXACT. Strong external validation of our backtest.
 NEXT (Kevin go-ahead): build the generator + export tab so any strategy ports.
+
+## GENERATOR SHIPPED (2026-06-13)
+- src/pine_generator.py: modular Pine v6 generator. EMITTERS registry
+  (ema_pp_v3, ut_bot_v4); per-pack indicator/trigger/gate-state emitters +
+  stop emitter + orchestrator. Regenerates the validated sid 303 Checkpoint C
+  exactly (86 lines). Extension = add one PineEmitter subclass to EMITTERS.
+- GET /api/strategies/{id}/pine-export → {ok, pine, error, caveats}; ok=false
+  names the missing pack emitter. VERIFIED live on deployed API.
+- Frontend: 'TradingView Export' tab on Strategy Detail (usePineExport hook,
+  copy button, caveats, paste instructions). Awaiting Kevin visual QA.
+- Pack coverage so far: ema_pp_v3 (triggers), ut_bot_v4 (gate states). Other
+  packs raise a clear "add an emitter for <pack>" until implemented — the UI
+  surfaces exactly which one to add next based on the strategies you try.
+- VERIFY: pick a 1Min+ strategy in the app → TradingView Export tab → paste →
+  deep TV backtest (months of history) → compare to our backtest.
