@@ -69,6 +69,24 @@ From `user_packs/ema_pp_v3` + `user_packs/ut_bot_v4` + 303 config:
   column seeding. OPEN: confirm ATR period of our 'atr' column (likely 14).
 - Then: generalize into the generator + endpoint + tab (#15/#16/#17).
 
+## Human-in-loop findings (Kevin, 2026-06-13) + resolutions
+- **Entries ALIGN.** Apparent 170930-vs-170940 gap = TV labels bars by OPEN time;
+  a 10s bar `17:09:30` fills at its close 17:09:40 = our timestamp. Same event.
+  Ours (fill time) is the more honest label. NOT a divergence.
+- **Gate lagged ~1.5min on TV → FIXED.** The `[1]`+lookahead_off double-shift
+  pushed TV's gate back an extra 2m bar. Dropped the `[1]` in B and C
+  (lookahead_off alone = last closed bar = our semantics). Re-test expected to
+  align the gate.
+- **"Gate changes mid-candle / sub-minute" puzzle**: the gate VALUE only changes
+  at 2m boundaries (even minutes), but it's forward-filled onto 10s bars, so the
+  visual change appears on the FIRST PRESENT 10s bar after the boundary. On thin
+  extended-hours tape, the :00/:10 bars right after a 2m close are often MISSING,
+  so the change first shows at :20 etc. — looks sub-minute but isn't. It's a
+  missing-bar rendering artifact, not real sub-minute gating. The CSV will
+  confirm (check whether the 10s bars at the boundary exist).
+- **Intrabar stop CONFIRMED possible on TV**: strategy.exit(stop=) fills mid-bar
+  in the backtester → apples-to-apples with our L-type stop. Used in Checkpoint C.
+
 ## Validation status
 A and B are pasteable; awaiting human-in-loop TV test (paste → compare entry/
 exit bars + counts vs sid 303 backtest on a recent day). The #1 thing to watch

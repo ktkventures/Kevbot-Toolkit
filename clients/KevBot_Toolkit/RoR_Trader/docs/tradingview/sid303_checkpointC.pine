@@ -1,0 +1,113 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+// RoR Trader → TradingView port — Strategy 303, CHECKPOINT C (FULL strategy)
+// Checkpoint B (EMA core + 2m gate) + ATR×1.5 fixed-at-entry STOP (intrabar)
+// This is the complete sid 303 port.
+// ═══════════════════════════════════════════════════════════════════════════
+// Adds the stop. Confirmed semantics from triggers.py:75-118:
+//   • method=atr, atr_mult=1.5, FIXED AT ENTRY (not trailing):
+//       stop_price = entry_price − 1.5 × atr(at entry bar)   [LONG]
+//   • exec_type "L" = resting/intrabar fill → strategy.exit(stop=...).
+//   • The 'atr' column = EMA of True Range, span=14 (α=2/15), seeded at first
+//     TR (indicators.py calculate_atr: tr.ewm(span=14, adjust=False)). This is
+//     STANDARD EMA, NOT Wilder — the UT Bot's internal ATR is Wilder, but the
+//     STOP's ATR is not. Hand-rolled below to match.  (CONFIRM atr period=14
+//     against the strategy's actual ATR indicator config.)
+//
+// Exits now: (a) intrabar ATR stop, OR (b) mid-EMA cross on bar close —
+// whichever hits first. Matches our engine (L-type stop can fill intrabar;
+// signal exit fires at bar close). This is the apples-to-apples version.
+//
+// HOW TO TEST: SPY 10s chart, Extended Hours. Compare the Strategy Tester trade
+// list to sid 303's backtest for a recent day — entries, exits, exit reasons
+// (stop vs cross), and counts should now line up closely.
+// ═══════════════════════════════════════════════════════════════════════════
+
+strategy("RoR 303 — Checkpoint C (full: core + gate + ATR stop)", overlay=true,
+     default_qty_type=strategy.fixed, default_qty_value=1,
+     process_orders_on_close=true, calc_on_every_tick=false, pyramiding=0)
+
+// ── EMA Price-Position v3 ──
+shortLen = input.int(8,  "Short EMA period")
+midLen   = input.int(21, "Mid EMA period")
+
+rorEma(float src, int period) =>
+    var float e = na
+    a = 2.0 / (period + 1)
+    e := na(e) ? src : a * src + (1.0 - a) * e
+    e
+
+emaShort = rorEma(close, shortLen)
+emaMid   = rorEma(close, midLen)
+
+entrySig = close > emaShort and close[1] <= emaShort[1]   // eppv3_cross_short_up
+exitSig  = close < emaMid   and close[1] >= emaMid[1]      // eppv3_cross_mid_down
+
+// ── UT Bot V4 (2m gate) ──
+gateTf = input.timeframe("2", "Gate timeframe")
+utAtr  = input.int(10,  "UT Bot ATR period")
+utKey  = input.float(1.0, "UT Bot key value")
+
+f_utbot_bulltrend(int atrPeriod, float key) =>
+    var float atr  = na
+    var float stop = na
+    var float pc   = na
+    bool bullFlip = false
+    if na(stop)
+        tr = high - low
+        atr  := tr
+        stop := close - key * tr
+        pc   := close
+    else
+        tr = math.max(high - low, math.abs(high - pc), math.abs(low - pc))
+        atr := atr + (1.0 / atrPeriod) * (tr - atr)
+        nLoss = key * atr
+        ps = stop
+        float ns = na
+        if close > ps and pc > ps
+            ns := math.max(ps, close - nLoss)
+        else if close < ps and pc < ps
+            ns := math.min(ps, close + nLoss)
+        else if close > ps
+            ns := close - nLoss
+        else
+            ns := close + nLoss
+        bullFlip := pc <= ps and close > ns
+        stop := ns
+        pc   := close
+    (close > stop) and not bullFlip
+
+gateOpen = request.security(syminfo.tickerid, gateTf,
+     f_utbot_bulltrend(utAtr, utKey), lookahead=barmerge.lookahead_off)
+
+// ── Stop ATR: standard EMA of True Range, span=14, seeded at first TR ──
+stopAtrLen = input.int(14,  "Stop ATR period")
+stopMult   = input.float(1.5, "Stop ATR multiplier")
+trueRange  = na(close[1]) ? (high - low)
+     : math.max(high - low, math.abs(high - close[1]), math.abs(low - close[1]))
+atrStop = rorEma(trueRange, stopAtrLen)
+
+// ── Orders ──
+entryGated = entrySig and gateOpen
+var float stopLevel = na
+if entryGated and strategy.position_size == 0
+    strategy.entry("L", strategy.long)
+    // Entry fills at this bar's close (process_orders_on_close); snapshot the
+    // fixed stop = entry − mult×ATR using THIS bar's ATR. Held for the trade.
+    stopLevel := close - stopMult * atrStop
+
+// Resting intrabar stop (L-type) — fills mid-bar if price trades through it.
+if strategy.position_size > 0 and not na(stopLevel)
+    strategy.exit("stop", from_entry="L", stop=stopLevel, comment="stop_loss")
+// Signal exit on bar close (C-type) — mid-EMA cross.
+if exitSig and strategy.position_size > 0
+    strategy.close("L", comment="eppv3_cross_mid_down")
+
+// ── Visuals ──
+plot(emaShort, "EMA short", color.new(color.aqua, 0),   1)
+plot(emaMid,   "EMA mid",   color.new(color.orange, 0), 1)
+plot(strategy.position_size > 0 ? stopLevel : na, "stop", color.new(color.red, 0),
+     1, plot.style_linebr)
+bgcolor(gateOpen ? color.new(color.green, 90) : na, title="2m gate open")
+plotshape(entryGated and strategy.position_size == 0, "entry", shape.triangleup,
+     location.belowbar, color.new(color.green, 0), size=size.tiny)

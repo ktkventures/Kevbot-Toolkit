@@ -83,9 +83,13 @@ f_utbot_bulltrend(int atrPeriod, float key) =>
     // BULL_TREND state = above stop AND not the flip-up bar (which is BULL_FLIP)
     (close > stop) and not bullFlip
 
-// Previous CLOSED 2m bar's BULL_TREND, non-repainting.
+// Last CLOSED 2m bar's BULL_TREND, non-repainting.
+// FIX (2026-06-13, confirmed by Kevin's TV test): lookahead_off ALREADY returns
+// the last *confirmed/closed* 2m bar during the forming bar — that's our
+// "previous closed bar" semantics. The earlier `[1]` double-shifted it back an
+// extra 2m bar, making TV's gate lag ~1.5min behind ours. Dropped the [1].
 gateOpen = request.security(syminfo.tickerid, gateTf,
-     f_utbot_bulltrend(atrLen, keyVal)[1], lookahead=barmerge.lookahead_off)
+     f_utbot_bulltrend(atrLen, keyVal), lookahead=barmerge.lookahead_off)
 
 // ── Orders: entry gated by the 2m BULL_TREND ──
 entryGated = entrySig and gateOpen
