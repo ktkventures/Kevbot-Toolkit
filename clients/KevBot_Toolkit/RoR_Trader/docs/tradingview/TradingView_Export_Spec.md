@@ -141,3 +141,14 @@ TV gave more seconds history than expected). Tool: _tv_parity_compare.py.
     data-axis divergence quantified earlier; NOT a port-fidelity problem
     (indicator math is exact, backtest data ≈ TV bar-for-bar).
 VERDICT: sid 303 port is FAITHFUL. Ready to generalize → generator + tab.
+
+## RTH-ONLY trade parity (2026-06-13) — the clean read
+Same Checkpoint C export, filtered to 13:30-20:00 UTC (9:30-16:00 ET, liquid):
+- TV entries=328, backtest=327. **MATCHED ±15s = 323 (98.5% of TV / 98.8% BT).**
+- Entry price |Δ|: avg 0.0003 / max 0.0050.
+- **ZERO genuinely-absent trades** (no >300s one-sided). All 5 TV-only / 4 BT-only
+  are the SAME trade shifted a few seconds (tiny bar diffs).
+CONCLUSION: full-window 93% vs RTH 98.6% → the entire residual was thin
+extended-hours tape, not a logic/port issue. In liquid hours the TradingView
+port is ESSENTIALLY EXACT. Strong external validation of our backtest.
+NEXT (Kevin go-ahead): build the generator + export tab so any strategy ports.
