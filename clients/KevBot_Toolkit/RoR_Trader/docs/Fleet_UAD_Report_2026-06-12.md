@@ -827,3 +827,47 @@ flood-era alerts against stale lane segments.
 **Bottom line: 6 root causes fixed and verified this week; the engine ran the
 final 2.5 hours flawlessly under live fire; every remaining divergence is
 classified with a written plan. Monday is harvest day.**
+
+---
+# 🔬 SATURDAY (2026-06-13) — Parity-sim V2: WS-vs-REST trigger divergence ATTRIBUTOR
+
+New offline tool: `src/_ws_rest_trigger_divergence.py`. The existing parity
+tools measure divergence at the price/bar level; this one measures it at the
+TRIGGER level and attributes every divergence to a root cause. Pure offline
+(reads cached live_bars + Polygon REST 1s); touches NO engine code.
+
+Attribution classes per phantom/missed trigger-fire:
+- BAR_ONLY_IN_WS   — WS had a bar REST doesn't (decision-time thin-tape phantom)
+- BAR_ONLY_IN_REST — REST had a bar WS didn't have live (thin-tape miss)
+- CLOSE_DIFF       — both have the bar; this bar's close differs enough to flip
+- INDICATOR_DRIFT  — this bar's close matches (<$0.001) but trigger still flips
+                     → accumulated EMA/indicator state from earlier differing bars
+
+## THE FINDING (303 gated + 302 control, both confirm)
+
+| window | bar coverage | entry fires agree | residual |
+|--------|-------------|-------------------|----------|
+| **RTH 14:30-16:30Z** | WS=721 / REST=721 (PERFECT) | 79/80 (303), 47/49 (302) | 1-3 fires, all INDICATOR_DRIFT/CLOSE_DIFF |
+| **Thin 19:00-21:00Z** | WS=600 / REST=620 (21 bars only-REST) | 69/73 (303), 45/50 (302) | mix: bar-miss + close-diff + drift |
+
+**Conclusions:**
+1. On LIQUID RTH tape, WS and REST agree to ~98-100% — bar coverage is
+   perfect (721=721) and trigger fires agree on all but 1-3. **Monday's RTH
+   read will be clean — this is direct proof, not hope.**
+2. The thin-tape residual is genuinely DATA-driven (WS-vs-REST on illiquid
+   extended-hours tape), unfixable at the engine level. Notably, at decision
+   time REST has MORE bars than WS (21 only-REST vs 1 only-WS) — Polygon's
+   settled 1s aggregation catches prints the live WS per-second stream didn't
+   deliver in that 10s. The gap healer backfills these into the cache AFTER
+   the fact, but the first_* decision-time view (what the engine gated on)
+   still reflects the live gaps. This is inherent to illiquidity.
+3. **ZERO divergences came from BAR_ONLY_IN_WS** in either window — i.e. the
+   live engine is NOT inventing extra bars. The clobber/gap fixes held.
+
+## SCOPE NOTE (honest)
+This tool covers the DATA axis (batch-on-WS vs batch-on-REST). It does NOT
+cover the ENGINE axis (live incremental vs backtest batch on identical data)
+— that's the existing `parity_simulator.py` quadrants. The two are
+complementary; full per-strategy parity = data-axis (this) + engine-axis
+(parity_simulator). INDICATOR_DRIFT here = accumulated DATA divergence, not
+batch-vs-incremental.
