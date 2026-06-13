@@ -871,3 +871,27 @@ cover the ENGINE axis (live incremental vs backtest batch on identical data)
 complementary; full per-strategy parity = data-axis (this) + engine-axis
 (parity_simulator). INDICATOR_DRIFT here = accumulated DATA divergence, not
 batch-vs-incremental.
+
+### 2026-06-13 (Sat) — Alert Lens "Live mode" shipped to dev (visual QA Monday)
+
+Backend: `GET /api/strategies/{id}/live-gate-telemetry` (strategies.py) — reads
+bar_diagnostics source='live_gate' for a window, returns per-bar {bar_ts, tf,
+records, written_at}. Read-only, no engine code. VERIFIED live on deployed API
+(303: 13 rows, tf=120, real records).
+
+Frontend: `useLiveGateTelemetry` hook + collapsible "Live mode" panel at the
+bottom of the Gate Parity tab (StrategyDetailPage). Shows the gate state the
+live engine ACTUALLY recorded per bar — highlights this strategy's gate, marks
+open/blocked — so a phantom in the table above can be checked against ground
+truth (did the live gate genuinely pass, or fire against a closed gate?).
+Window mirrors the Gate Parity analysis above it.
+
+How to QA Monday: open a strategy → Gate Parity tab → expand "▸ Live mode" →
+set window to cover a period with known phantoms (e.g. 303 Fri afternoon).
+Collapsed by default; only populates for windows ≥ 2026-06-12.
+
+## Weekend status (both safe items DONE; B4/B2 correctly deferred to Monday)
+- ✅ parity-sim V2 (WS-vs-REST attributor) — 1931db2, finding banked above
+- ✅ Alert Lens Live mode — dcede9a, backend verified, frontend awaits visual QA
+- ⏸️ B4 (1Min+ wait-for-close) — Monday, needs live verification
+- ⏸️ B2 (append edge re-verify) — Monday, nothing to act on until new appends
