@@ -1,0 +1,68 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+// RoR Trader → TradingView port — Strategy 303, CHECKPOINT A
+// SPY 10Sec · EMA Price-Position v3 · C-type bar-close · NO gate · NO stop
+// ═══════════════════════════════════════════════════════════════════════════
+// This is the ISOLATED CORE: EMA-cross entry/exit only, so we can verify the
+// indicator math + cross detection + bar-close fills match our backtest
+// BEFORE adding the 2m cross-TF gate (Checkpoint B) and the ATR stop
+// (Checkpoint C). Hand-rolled EMA (seeded at first close) to match our
+// engine exactly — Pine's built-in ta.ema seeds with an SMA and would drift.
+//
+// Our engine logic being reproduced (user_packs/ema_pp_v3):
+//   ema = (first bar) close ; else a*close + (1-a)*ema ,  a = 2/(period+1)
+//   entry  eppv3_cross_short_up = close>emaShort and prevClose<=prevEmaShort
+//   exit   eppv3_cross_mid_down = close<emaMid   and prevClose>=prevEmaMid
+//
+// HOW TO TEST (human-in-loop):
+//   1. Open SPY on a 10-second chart, set chart session to Extended Hours.
+//   2. Pine Editor → paste this → Add to chart.
+//   3. Strategy Tester → compare entry/exit timestamps + count against our
+//      backtest for sid 303 over the SAME recent window (seconds history on
+//      TradingView is only a few days — use a recent day).
+//   4. Expect: entries/exits to line up bar-for-bar on the EMA crosses.
+//      (303's real strategy ALSO has a 2m gate + ATR stop — those come next,
+//       so this checkpoint will show MORE trades than the gated strategy.
+//       The point here is only: do the crosses fire on the same bars.)
+// ═══════════════════════════════════════════════════════════════════════════
+
+strategy("RoR 303 — Checkpoint A (EMA cross core)", overlay=true,
+     default_qty_type=strategy.fixed, default_qty_value=1,
+     process_orders_on_close=true, calc_on_every_tick=false,
+     pyramiding=0)
+
+// ── Params (ema_pp_v3 defaults — confirm against the strategy's confluence
+//    group if it overrides) ──
+shortLen = input.int(8,  "Short EMA period")
+midLen   = input.int(21, "Mid EMA period")
+longLen  = input.int(50, "Long EMA period")
+
+// ── Hand-rolled EMA matching our engine's seeding (first value = first close) ──
+rorEma(float src, int period) =>
+    var float e = na
+    a = 2.0 / (period + 1)
+    e := na(e) ? src : a * src + (1.0 - a) * e
+    e
+
+emaShort = rorEma(close, shortLen)
+emaMid   = rorEma(close, midLen)
+emaLong  = rorEma(close, longLen)
+
+// ── Triggers (identical to eppv3 cross definitions) ──
+entrySig = close > emaShort and close[1] <= emaShort[1]   // eppv3_cross_short_up
+exitSig  = close < emaMid   and close[1] >= emaMid[1]      // eppv3_cross_mid_down
+
+// ── Orders (C-type: fill on the signal bar's close via process_orders_on_close) ──
+if entrySig and strategy.position_size == 0
+    strategy.entry("L", strategy.long)
+if exitSig and strategy.position_size > 0
+    strategy.close("L", comment="eppv3_cross_mid_down")
+
+// ── Visuals ──
+plot(emaShort, "EMA short", color.new(color.aqua, 0),   1)
+plot(emaMid,   "EMA mid",   color.new(color.orange, 0), 1)
+plot(emaLong,  "EMA long",  color.new(color.purple, 0), 1)
+plotshape(entrySig and strategy.position_size == 0, "entry", shape.triangleup,
+     location.belowbar, color.new(color.green, 0), size=size.tiny)
+plotshape(exitSig and strategy.position_size > 0, "exit", shape.triangledown,
+     location.abovebar, color.new(color.red, 0), size=size.tiny)
