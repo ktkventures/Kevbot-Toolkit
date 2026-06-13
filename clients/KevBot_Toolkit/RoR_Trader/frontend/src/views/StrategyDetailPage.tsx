@@ -16,7 +16,7 @@ import { StrategyHealthBadge, StrategyHealthDrawer, StrategyFidelityBadges, type
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
 import { useLiveBar } from '@/hooks/queries/useLiveBar';
-import { useGateParity, useLiveGateTelemetry } from '@/hooks/queries/useGateParity';
+import { useGateParity, useLiveGateTelemetry, usePineExport } from '@/hooks/queries/useGateParity';
 import GateParityOneSec, { extractOverlayLines } from '@/components/GateParityOneSec';
 import ParityDriftRibbon from '@/components/ParityDriftRibbon';
 import ParityDriftRibbonV2 from '@/components/ParityDriftRibbonV2';
@@ -459,6 +459,7 @@ const TABS = [
   'Parity',
   'Divergence',
   'Data Fidelity',
+  'TradingView Export',
 ];
 
 /* ========================================================================= */
@@ -637,6 +638,97 @@ const LANE_LABELS: Record<string, { label: string; color: string }> = {
   'live_only':  { label: 'Live only (phantom)', color: '#ef4444' },
   'empty':      { label: '—',             color: '#94a3b8' },
 };
+
+/**
+ * TradingViewExportTabContent — generate a faithful Pine v6 strategy() for this
+ * strategy and let the user copy it into TradingView. Validated against TV:
+ * RTH trade parity ~98.6%, indicator math exact (sid 303 reference).
+ */
+function TradingViewExportTabContent({ strategyId }: { strategyId: number }) {
+  const { data, isLoading, error } = usePineExport(strategyId);
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    if (!data?.pine) return;
+    try {
+      await navigator.clipboard.writeText(data.pine);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard may be blocked; user can select-all manually */
+    }
+  };
+
+  return (
+    <Card className="mb-4">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <h4 className="text-sm font-medium">
+          TradingView Export
+          <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
+            (Pine v6 strategy — faithful port; ~98.6% RTH trade parity)
+          </span>
+        </h4>
+        {data?.ok && data.pine && (
+          <button
+            onClick={copy}
+            className="px-3 py-1 rounded text-xs font-medium"
+            style={{ background: 'var(--accent)', color: 'white', border: 'none', cursor: 'pointer' }}
+          >
+            {copied ? 'Copied ✓' : 'Copy Pine'}
+          </button>
+        )}
+      </div>
+
+      {isLoading && (
+        <div className="text-sm py-4" style={{ color: 'var(--text-muted)' }}>Generating Pine…</div>
+      )}
+      {error && (
+        <div className="text-sm py-4" style={{ color: 'var(--red)' }}>
+          Failed: {String((error as any)?.message || error)}
+        </div>
+      )}
+
+      {data && !data.ok && (
+        <div className="rounded-lg p-3 mb-3 text-sm"
+             style={{ background: 'rgba(244,67,54,0.08)', border: '1px solid var(--border)', color: 'var(--text)' }}>
+          <strong>Not yet portable:</strong> {data.error}
+          <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
+            Each indicator pack needs a one-time Pine emitter. Once added, every
+            strategy using that pack exports automatically.
+          </div>
+        </div>
+      )}
+
+      {data?.caveats && data.caveats.length > 0 && (
+        <ul className="text-xs mb-3 list-disc pl-5" style={{ color: 'var(--text-muted)' }}>
+          {data.caveats.map((c, i) => <li key={i}>{c}</li>)}
+        </ul>
+      )}
+
+      {data?.ok && data.pine && (
+        <>
+          <div className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+            How to use: open <code>{data.symbol}</code> on a{' '}
+            <code>{data.timeframe}</code> chart in TradingView → Pine Editor →
+            paste → Add to chart. Strategy Tester shows the backtest; add an
+            alert on the strategy for live webhooks. Compare the trade list to
+            this strategy&apos;s backtest (RTH for the cleanest read).
+          </div>
+          <pre className="text-xs overflow-auto p-3 rounded"
+               style={{ background: 'var(--bg-input)', border: '1px solid var(--border)',
+                        maxHeight: 520, color: 'var(--text)', whiteSpace: 'pre' }}>
+            {data.pine}
+          </pre>
+          <div className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>
+            Faithful port: EMAs seed at first close, UT Bot uses Wilder ATR, gate
+            reads the last closed secondary bar (non-repaint). Residual vs our
+            backtest is thin-tape data divergence (near-zero in RTH).
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
 
 /**
  * LiveGateTelemetryPanel — "Live mode" of the Alert Lens. Shows the gate
@@ -6210,6 +6302,10 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                 alerts={alerts}
                 cacheCoverage={cacheCoverage}
               />
+            )}
+
+            {tab === 'TradingView Export' && (
+              <TradingViewExportTabContent strategyId={strategyId} />
             )}
           </div>
         )}

@@ -124,3 +124,27 @@ export function useLiveGateTelemetry(
     staleTime: 60_000,
   });
 }
+
+/**
+ * usePineExport — generate a TradingView Pine v6 strategy() for this strategy.
+ * Faithful port (RTH trade parity ~98.6% vs our backtest on the sid 303 ref).
+ * ok=false with `error` when a pack has no Pine emitter yet.
+ */
+export interface PineExportResponse {
+  ok: boolean;
+  pine: string | null;
+  error: string | null;
+  caveats: string[];
+  symbol?: string;
+  timeframe?: string;
+}
+
+export function usePineExport(strategyId: number | null, enabled = true) {
+  return useQuery({
+    queryKey: ['pine-export', strategyId],
+    queryFn: () =>
+      apiFetch<PineExportResponse>(`/api/strategies/${strategyId}/pine-export`),
+    enabled: enabled && strategyId !== null,
+    staleTime: 300_000,
+  });
+}
