@@ -16,7 +16,7 @@ import { StrategyHealthBadge, StrategyHealthDrawer, StrategyFidelityBadges, type
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
 import { useLiveBar } from '@/hooks/queries/useLiveBar';
-import { useGateParity } from '@/hooks/queries/useGateParity';
+import { useGateParity, useLiveGateTelemetry } from '@/hooks/queries/useGateParity';
 import GateParityOneSec, { extractOverlayLines } from '@/components/GateParityOneSec';
 import ParityDriftRibbon from '@/components/ParityDriftRibbon';
 import ParityDriftRibbonV2 from '@/components/ParityDriftRibbonV2';
@@ -638,8 +638,107 @@ const LANE_LABELS: Record<string, { label: string; color: string }> = {
   'empty':      { label: '—',             color: '#94a3b8' },
 };
 
+/**
+ * LiveGateTelemetryPanel — "Live mode" of the Alert Lens. Shows the gate
+ * records the live engine ACTUALLY emitted per secondary-TF bar close
+ * (bar_diagnostics source='live_gate'), so you can see exactly what the
+ * live gates saw rather than inferring it from the bar cache. Separate
+ * child component so its data-dependent hook obeys the hooks-before-return
+ * rule. Window mirrors the Gate Parity analysis above it.
+ */
+function LiveGateTelemetryPanel({
+  strategyId, start, end, gate,
+}: { strategyId: number; start: string; end: string; gate: string }) {
+  const { data, isLoading, error } = useLiveGateTelemetry(strategyId, start, end);
+
+  // The gate string is like "2M-UT_BOT_V4-BULL_TREND"; the prefix
+  // "2M-UT_BOT_V4-" identifies the interpreter we care about so we can
+  // highlight the live state for THIS strategy's gate among all records.
+  const gatePrefix = useMemo(() => {
+    const parts = (gate || '').split('-');
+    return parts.length >= 2 ? `${parts[0]}-${parts.slice(1, -1).join('-')}-` : '';
+  }, [gate]);
+
+  if (isLoading) {
+    return (
+      <div className="text-xs py-3" style={{ color: 'var(--text-muted)' }}>
+        Loading recorded live gate telemetry…
+      </div>
+    );
+  }
+  if (error || !data) {
+    return (
+      <div className="text-xs py-3" style={{ color: 'var(--text-muted)' }}>
+        No recorded live gate telemetry for this window (telemetry began
+        2026-06-12; older windows have none).
+      </div>
+    );
+  }
+  if (!data.rows.length) {
+    return (
+      <div className="text-xs py-3" style={{ color: 'var(--text-muted)' }}>
+        No live_gate rows in this window. Telemetry records on each
+        secondary-TF bar close while the worker is running.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+        Recorded LIVE gate state per bar — ground truth from the engine
+        (source=<code>live_gate</code>). The state matching this strategy&apos;s
+        gate <code style={{ color: 'var(--text)' }}>{gate}</code> is highlighted;
+        green = gate was OPEN that bar. {data.count} bars · tf {data.timeframes.join(', ')}s.
+      </div>
+      <div className="overflow-auto" style={{ maxHeight: 360 }}>
+        <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ color: 'var(--text-muted)', textAlign: 'left' }}>
+              <th className="py-1 pr-2">Time (UTC)</th>
+              <th className="py-1 pr-2">TF</th>
+              <th className="py-1 pr-2">Gate state (this strategy)</th>
+              <th className="py-1 pr-2">Open?</th>
+              <th className="py-1 pr-2"># records</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.rows.slice(-300).reverse().map((r, i) => {
+              const mine = gatePrefix
+                ? r.records.find((x) => x.startsWith(gatePrefix))
+                : undefined;
+              const open = mine === gate;
+              const empty = r.records.length === 0;
+              return (
+                <tr key={i} style={{ background: open ? 'rgba(34,197,94,0.08)' : 'transparent' }}>
+                  <td className="py-1 pr-2 font-mono">{r.bar_ts.slice(11, 19)}</td>
+                  <td className="py-1 pr-2">{r.tf ?? '—'}s</td>
+                  <td className="py-1 pr-2 font-mono" style={{ color: empty ? 'var(--text-muted)' : 'var(--text)' }}>
+                    {empty ? '(warmup — no records)' : (mine ?? '—')}
+                  </td>
+                  <td className="py-1 pr-2" style={{ color: open ? 'var(--green)' : 'var(--text-muted)' }}>
+                    {empty ? '—' : open ? 'open' : 'blocked'}
+                  </td>
+                  <td className="py-1 pr-2" style={{ color: 'var(--text-muted)' }}>{r.records.length}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>
+        This is what the live engine recorded — not a replay. A phantom in the
+        table above whose live gate state here shows &quot;open&quot; means the
+        gate genuinely passed live; if it shows &quot;blocked&quot; the live
+        fire happened against a closed gate (a real divergence to chase).
+      </div>
+    </div>
+  );
+}
+
 function GateParityTabContent({ strategyId }: { strategyId: number }) {
   const [windowHours, setWindowHours] = useState(4);
+  const [showLive, setShowLive] = useState(false);
   const { data, isLoading, error } = useGateParity(strategyId, windowHours);
 
   const WindowPicker = (
@@ -761,6 +860,26 @@ function GateParityTabContent({ strategyId }: { strategyId: number }) {
       <div className="text-[10px] mt-2" style={{ color: 'var(--text-muted)' }}>
         Note: live entries carry whatever code was live when they fired; theoretical BT is the current engine. Phantom = live entry with no
         theoretical-BT entry within ±5s. A phantom where both PB and CB are &quot;blocked&quot; = live fired against a closed gate.
+      </div>
+
+      <div className="mt-4 pt-3" style={{ borderTop: '1px solid var(--border)' }}>
+        <button
+          onClick={() => setShowLive((v) => !v)}
+          className="text-xs font-medium flex items-center gap-1"
+          style={{ color: 'var(--accent)', cursor: 'pointer', background: 'none', border: 'none', padding: 0 }}
+        >
+          {showLive ? '▾' : '▸'} Live mode — recorded gate telemetry (ground truth)
+        </button>
+        {showLive && (
+          <div className="mt-2">
+            <LiveGateTelemetryPanel
+              strategyId={strategyId}
+              start={meta.window[0]}
+              end={meta.window[1]}
+              gate={meta.gate}
+            />
+          </div>
+        )}
       </div>
     </Card>
   );

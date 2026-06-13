@@ -84,3 +84,43 @@ export function useWindow1s(
     staleTime: 60_000,
   });
 }
+
+/**
+ * useLiveGateTelemetry — per-bar LIVE gate-state records the engine actually
+ * emitted (bar_diagnostics source='live_gate'). Ground truth for "what the
+ * live gates saw", as opposed to inferring gate state from the bar cache.
+ * Each row: { bar_ts, tf, records:[confluence strings], written_at }.
+ */
+export interface LiveGateTelemetryRow {
+  bar_ts: string;
+  tf: number | null;
+  records: string[];
+  written_at: string | null;
+}
+export interface LiveGateTelemetryResponse {
+  strategy_id: number;
+  start: string;
+  end: string;
+  timeframes: number[];
+  count: number;
+  rows: LiveGateTelemetryRow[];
+}
+
+export function useLiveGateTelemetry(
+  strategyId: number | null,
+  startIso: string | null,
+  endIso: string | null,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: ['live-gate-telemetry', strategyId, startIso, endIso],
+    queryFn: () =>
+      apiFetch<LiveGateTelemetryResponse>(
+        `/api/strategies/${strategyId}/live-gate-telemetry` +
+          `?start=${encodeURIComponent(startIso || '')}` +
+          `&end=${encodeURIComponent(endIso || '')}`
+      ),
+    enabled: enabled && strategyId !== null && !!startIso && !!endIso,
+    staleTime: 60_000,
+  });
+}

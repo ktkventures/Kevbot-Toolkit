@@ -1249,6 +1249,63 @@ def window_1s(strategy_id: int,
     return {'symbol': symbol, 'end': end_dt.isoformat(), 'lookback': lookback, 'bars_1s': bars}
 
 
+@router.get("/{strategy_id}/live-gate-telemetry")
+def live_gate_telemetry(strategy_id: int,
+                        start: str = Query(..., description="ISO start (inclusive)"),
+                        end: str = Query(..., description="ISO end (inclusive)"),
+                        user=Depends(get_current_user)):
+    """Per-bar LIVE gate-state telemetry (Alert Lens 'Live mode').
+
+    Reads the gate records the live engine actually emitted per secondary-TF
+    bar close — written to `bar_diagnostics` with source='live_gate' by
+    ralph_engine's flush loop (each row: values={tf, records:[...]}). This is
+    ground truth for "what the live gates saw", letting the lens show the
+    actual live gate state rather than inferring it from the bar cache.
+
+    Thin pass-through: returns rows shaped for the frontend, newest-last,
+    grouped-ready by tf. Read-only; touches no engine code.
+    """
+    _get_or_404(strategy_id, user)  # authorize ownership
+    from datetime import datetime, timezone
+    def _norm(s: str) -> str:
+        d = datetime.fromisoformat(s.replace('Z', '+00:00'))
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        return d.isoformat()
+    try:
+        start_iso, end_iso = _norm(start), _norm(end)
+    except Exception:
+        raise HTTPException(status_code=400, detail="bad start/end timestamp")
+    try:
+        from db import load_bar_diagnostics
+        rows = load_bar_diagnostics(
+            strategy_id, start_ts=start_iso, end_ts=end_iso,
+            source='live_gate', limit=20000)
+    except Exception as e:
+        raise HTTPException(status_code=500,
+                            detail=f"live-gate-telemetry failed: {e}")
+    out = []
+    tfs = set()
+    for r in rows:
+        vals = r.get('values') or {}
+        tf = vals.get('tf')
+        if tf is not None:
+            tfs.add(tf)
+        out.append({
+            'bar_ts': r.get('bar_ts'),
+            'tf': tf,
+            'records': sorted(vals.get('records') or []),
+            'written_at': r.get('created_at'),
+        })
+    return {
+        'strategy_id': strategy_id,
+        'start': start_iso, 'end': end_iso,
+        'timeframes': sorted(tfs),
+        'count': len(out),
+        'rows': out,
+    }
+
+
 @router.get("/{strategy_id}/grace-shadow-comparison")
 def grace_shadow_comparison(
     strategy_id: int,
