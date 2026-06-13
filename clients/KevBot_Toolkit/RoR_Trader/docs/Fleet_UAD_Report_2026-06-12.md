@@ -769,3 +769,61 @@ parity. Monday: clean-foundation verification day.**
 - NOTHING NEW SURFACED: every post-fix residual maps to a known class (TBD lag,
   deploy holes, thin-tape trigger divergence). No gate, bar, lane, or write-path
   anomalies in 2h of post-fix live data.
+
+---
+# 🌃 END-OF-DAY REPORT — Friday 2026-06-12 (written 00:30Z Sat)
+
+## What shipped and verified today (all live on dev)
+1. **Clobber root-cause fix** (dc3f3bb) — merge-don't-replace + flush writes for
+   ≥120s gate bars. Verified: exact volume parity on every post-fix bar; the
+   two prior "freezes" explained as write starvation (measurement artifact).
+2. **Cache scrub** — 49,321 contaminated ≥120s rows deleted; lens + cache_locked
+   lane healed retroactively; gap healer re-filled recent windows from REST.
+3. **Gate telemetry LIVE** (Kevin's SQL + 92b3d07) — first real uses tonight
+   cleared the gate infrastructure on two phantom/missed clusters by direct
+   evidence (303 21:45Z cluster: gate provably open; 285 22:40Z miss: FLIP-vs-
+   TREND transition-bar class, known).
+4. **TBD classification** by-hour AND by-deploy; volume dedup hygiene fix
+   (1Min+ primary :00 collision); B4 true mechanism found + designed (weekend).
+
+## Fleet by-hour (avg combined %, 46 strategies, TBD-aware)
+13h:52.8 → 14h:59.3 → 15h:64.0 → 16h:65.2 → 17h:59.0 → 18h:70.7 →
+19h:51.1 (freeze windows) → 20h:49.1 (bisection) → 21h:39.7 (deploys+thin tape)
+→ **22h:71.3 (best hour of the day — post-fix + fresh lanes)** → 23h:43.9 (thin
+tape + TBD still converting)
+
+The 19-21h dip is permanent live history from today's surgery (freeze windows,
+bisection, deploy holes). 22h = first clean post-fix hour = best fleet-wide
+result of the day.
+
+## Key strategies, full day (13:30→00:10Z)
+| sid | combined ±5s | lane state | note |
+|-----|-------------|-----------|------|
+| 302 control | **78.6%** | FULL UAD rebuild | +30.8 vs stale lane; medians +0.0s |
+| 303 gated   | **52.0%** | FULL UAD rebuild | residuals = freeze windows + thin-tape triggers |
+| 285 gated   | 32.7% | append-only (STALE morning segment) | clean-window reads were 100%; needs full UAD |
+| 277 gated   | 40.7% | append-only (STALE morning segment) | same — needs full UAD |
+
+**The 302-vs-285 spread is the UAD-freshness effect, not strategy health.** Only
+302/303 got full rebuilds today; everyone else's full-day number still counts
+flood-era alerts against stale lane segments.
+
+## Residual classes (NOTHING NEW SURFACED today)
+1. Thin-tape WS-vs-REST trigger divergence (10s strategies, extended hours
+   only) — dominant residual after 20:00Z; vanishes on liquid RTH tape.
+   Three-way lane agreement (live=algo=BT to the second) wherever data agrees.
+2. FLIP-vs-TREND transition-bar gate states (285 22:40Z, telemetry-confirmed).
+3. TBD lag (converts on every append — working as designed).
+4. B4 1Min+ flush-fire (designed, weekend); B2 append-edge (designed, weekend).
+
+## Asks for Kevin
+- **Tonight/overnight: full fleet UAD** (all 46) — puts every lane on post-fix
+  code + scrubbed cache. Include 174. Monday's by-hour table on top of that is
+  the true verdict.
+- Weekend (Claude): B4 canonical-first dispatch, B2 edge re-verify, lens Live
+  mode frontend, parity-sim V2 (user packs + cross-TF), freeze-watcher source
+  hygiene already encoded.
+
+**Bottom line: 6 root causes fixed and verified this week; the engine ran the
+final 2.5 hours flawlessly under live fire; every remaining divergence is
+classified with a written plan. Monday is harvest day.**
