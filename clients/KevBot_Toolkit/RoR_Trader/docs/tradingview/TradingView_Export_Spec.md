@@ -109,3 +109,20 @@ request.security — lookahead_off already returns last-confirmed).
   group overrides.
 - ATR stop: fixed-at-entry distance vs trailing? (read stop method impl).
 - Verify Premium exposes 10S bars + how much history.
+
+## Bar-by-bar parity results (2026-06-13, Checkpoint B chart export vs engine)
+CSV: docs/reference_images/AMEX_SPY, 10S (35).csv (961 bars, 18:49-23:59Z Fri).
+Tool: src/_tv_bar_parity.py.
+- (A) MATH parity (our ema_pp_v3 on TV's own closes vs TV EMA cols):
+  EMA short Δ avg/max = 0.00000/0.00000; EMA mid = 0.00001/0.00099. → port math
+  is exact. Entry: our raw cross=120, TV gated=43, 43⊂120, TV-only=0 (gate
+  cleanly filters 120→43).
+- (B) DATA parity:
+  TV vs REST(backtest): 961 vs 962 bars, shared 961, TV-only=0, close Δ
+    avg 0.00003 / max 0.0304. → backtest data ≈ TV bar-for-bar.
+  TV vs CACHE(live): 961 vs 929, TV-only=33 (thin-tape live-WS gaps), ours-only=1,
+    close Δ avg 0.0015 / max 0.28. → live feed slightly less complete than TV on
+    thin tape (known class); settled REST matches.
+NEXT: paste Checkpoint C (sid303_checkpointC.pine — full: gate-fix + ATR stop),
+re-export BOTH chart-data (recheck gate timing post-[1]-fix) AND "List of Trades"
+(trade-by-trade incl. stop exits) → run _tv_parity_compare.py for full trade parity.
