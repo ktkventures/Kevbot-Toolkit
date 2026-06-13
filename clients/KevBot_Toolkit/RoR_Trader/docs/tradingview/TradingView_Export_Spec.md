@@ -55,12 +55,25 @@ From `user_packs/ema_pp_v3` + `user_packs/ut_bot_v4` + 303 config:
   L-type (intrabar) — the one non-C element; Checkpoint C.
 - Session = Extended Hours. risk/trade $100, start $10k.
 
-## Checkpoints (within 303)
+## Checkpoints (within 303) — sequence A→B→C (Kevin, 2026-06-13)
 - **A** (DONE, `sid303_checkpointA.pine`): EMAs + C-type entry/exit, no gate, no
   stop. Proves indicator/cross/seeding + bar-close fill parity in isolation.
-- **B**: add 2m UT_BOT_V4 BULL_TREND gate (request.security lookahead_off).
-- **C**: add ATR×1.5 stop (the L-type element) + alerts/webhook.
-- Then: generalize into the generator + endpoint + tab.
+- **B** (DONE, `sid303_checkpointB.pine`): + 2m UT_BOT_V4 BULL_TREND gate via
+  request.security(lookahead_off, prev-bar). Fidelity catch: BULL_TREND =
+  (close>stop AND not bullFlip) — the flip-up bar is BULL_FLIP, not BULL_TREND.
+  Gate-state shown as bgcolor + corner table (first heatmap analog).
+- **C** (NEXT, after A/B validated in TV): + ATR stop. CONFIRMED semantics
+  (triggers.py:75-118): **fixed-at-entry**, `stop = entry − atr_mult×ATR` at the
+  entry bar (NOT trailing), atr_mult=1.5, exec_type L (resting/intrabar fill).
+  Pine: strategy.exit(stop=...). Hand-roll ATR (Wilder) to match our 'atr'
+  column seeding. OPEN: confirm ATR period of our 'atr' column (likely 14).
+- Then: generalize into the generator + endpoint + tab (#15/#16/#17).
+
+## Validation status
+A and B are pasteable; awaiting human-in-loop TV test (paste → compare entry/
+exit bars + counts vs sid 303 backtest on a recent day). The #1 thing to watch
+in B: whether entries are shifted one 2m bar (if so, drop the [1] in the gate's
+request.security — lookahead_off already returns last-confirmed).
 
 ## Divergence risks (honest)
 1. Cross-TF repaint/look-ahead (request.security) — must use lookahead_off +

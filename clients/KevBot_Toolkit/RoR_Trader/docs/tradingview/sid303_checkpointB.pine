@@ -1,0 +1,111 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+// RoR Trader → TradingView port — Strategy 303, CHECKPOINT B
+// Checkpoint A (EMA cross core) + 2m UT_BOT_V4 BULL_TREND cross-TF GATE
+// Still NO stop (that's Checkpoint C).
+// ═══════════════════════════════════════════════════════════════════════════
+// Adds the confluence gate: an entry only fires when the PREVIOUS CLOSED 2m
+// bar is in UT Bot V4 BULL_TREND. This is the #1 divergence risk in the whole
+// port (cross-TF repaint/look-ahead), so it gets its own checkpoint.
+//
+// FIDELITY NOTES (matching user_packs/ut_bot_v4 + our cross-TF gate timing):
+//  • UT Bot: Wilder ATR seeded at first TR; trailing stop seeded close-key*TR;
+//    4-case ratchet (verbatim from our incremental class).
+//  • BULL_TREND ≠ "close>stop". On the bar it crosses up, our interpreter
+//    labels it BULL_FLIP, not BULL_TREND. So the gate is
+//    (close>stop AND not bullFlip) — using bare close>stop would wrongly pass
+//    the flip bar.
+//  • Gate timing: our engine gates on the PREVIOUS CLOSED 2m bar (cross-TF
+//    look-ahead fix). Pine: request.security("2", expr[1], lookahead_off).
+//    ← VALIDATE THIS EMPIRICALLY against our backtest; if entries are shifted
+//       by one 2m bar, drop the [1] (lookahead_off already gives last-confirmed).
+//
+// HOW TO TEST: SPY 10s chart, Extended Hours, paste, Add to chart. The faint
+// green background = gate OPEN (prev 2m bar BULL_TREND). Entries should ONLY
+// occur on green-background bars. Compare entry timestamps to sid 303 backtest.
+// (Still no stop, so exits = mid-EMA cross only; expect some extra trades vs
+//  real 303 until Checkpoint C adds the ATR stop.)
+// ═══════════════════════════════════════════════════════════════════════════
+
+strategy("RoR 303 — Checkpoint B (core + 2m gate)", overlay=true,
+     default_qty_type=strategy.fixed, default_qty_value=1,
+     process_orders_on_close=true, calc_on_every_tick=false, pyramiding=0)
+
+// ── EMA Price-Position v3 (defaults; confirm vs confluence group) ──
+shortLen = input.int(8,  "Short EMA period")
+midLen   = input.int(21, "Mid EMA period")
+longLen  = input.int(50, "Long EMA period")
+
+rorEma(float src, int period) =>
+    var float e = na
+    a = 2.0 / (period + 1)
+    e := na(e) ? src : a * src + (1.0 - a) * e
+    e
+
+emaShort = rorEma(close, shortLen)
+emaMid   = rorEma(close, midLen)
+
+entrySig = close > emaShort and close[1] <= emaShort[1]   // eppv3_cross_short_up
+exitSig  = close < emaMid   and close[1] >= emaMid[1]      // eppv3_cross_mid_down
+
+// ── UT Bot V4 (2m gate) — exact translation of UtBotV4Incremental ──
+gateTf   = input.timeframe("2", "Gate timeframe")
+atrLen   = input.int(10,  "UT Bot ATR period")
+keyVal   = input.float(1.0, "UT Bot key value (ATR mult)")
+
+f_utbot_bulltrend(int atrPeriod, float key) =>
+    var float atr   = na
+    var float stop  = na
+    var float pc    = na   // prev close
+    bool bullFlip = false
+    if na(stop)
+        tr = high - low
+        atr  := tr
+        stop := close - key * tr
+        pc   := close
+    else
+        tr = math.max(high - low, math.abs(high - pc), math.abs(low - pc))
+        atr := atr + (1.0 / atrPeriod) * (tr - atr)
+        nLoss = key * atr
+        ps = stop
+        float ns = na
+        if close > ps and pc > ps
+            ns := math.max(ps, close - nLoss)
+        else if close < ps and pc < ps
+            ns := math.min(ps, close + nLoss)
+        else if close > ps
+            ns := close - nLoss
+        else
+            ns := close + nLoss
+        bullFlip := pc <= ps and close > ns
+        stop := ns
+        pc   := close
+    // BULL_TREND state = above stop AND not the flip-up bar (which is BULL_FLIP)
+    (close > stop) and not bullFlip
+
+// Previous CLOSED 2m bar's BULL_TREND, non-repainting.
+gateOpen = request.security(syminfo.tickerid, gateTf,
+     f_utbot_bulltrend(atrLen, keyVal)[1], lookahead=barmerge.lookahead_off)
+
+// ── Orders: entry gated by the 2m BULL_TREND ──
+entryGated = entrySig and gateOpen
+if entryGated and strategy.position_size == 0
+    strategy.entry("L", strategy.long)
+if exitSig and strategy.position_size > 0
+    strategy.close("L", comment="eppv3_cross_mid_down")
+
+// ── Visuals: EMAs + gate-state background (first heatmap analog) ──
+plot(emaShort, "EMA short", color.new(color.aqua, 0),   1)
+plot(emaMid,   "EMA mid",   color.new(color.orange, 0), 1)
+bgcolor(gateOpen ? color.new(color.green, 90) : na, title="2m gate open")
+plotshape(entryGated and strategy.position_size == 0, "entry", shape.triangleup,
+     location.belowbar, color.new(color.green, 0), size=size.tiny)
+plotshape(exitSig and strategy.position_size > 0, "exit", shape.triangledown,
+     location.abovebar, color.new(color.red, 0), size=size.tiny)
+
+// Mini gate-state table (heatmap seed): green = gate open this bar
+var table gt = table.new(position.top_right, 1, 1)
+if barstate.islast
+    table.cell(gt, 0, 0, gateOpen ? "2m UT_BOT_V4: BULL_TREND ✓" : "2m gate: blocked",
+         bgcolor=gateOpen ? color.new(color.green, 60) : color.new(color.red, 60),
+         text_color=color.white, text_size=size.small)
