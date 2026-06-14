@@ -186,3 +186,21 @@ VALIDATION NEEDED (Kevin): if you have a strategy using any of these as the
 PRIMARY trigger or as a 2m gate, export it → paste in TV → check trade/gate
 parity (RTH). MACD-primary: lines plot near 0 so not shown on price overlay
 (intentional); signal still drives entries.
+
+### Wave 2 — oscillators/indicators — ✅ DONE
+- supertrend: hand-rolled Wilder-ATR recursion (matches engine; Pine's
+  ta.supertrend seeds differently). States BULL/BEAR_TRENDING/NEAR_STOP;
+  triggers bull_flip/bear_flip.
+- rvol_v2: volume/SMA(vol,N). States EXTREME/HIGH/NORMAL/LOW/MINIMAL (3/1.5/
+  0.75/0.5); triggers spike/extreme/fade. ⚠ volume diverges WS-vs-REST + ta.sma
+  warmup differs from engine's expanding avg — RVOL gates noisier; validate.
+- rsi_zones_2: hand-rolled Wilder RSI seeded at first delta (not ta.rsi SMA
+  seed). 6 zones + 12 triggers.
+- stochastic_oscillator: ta.lowest/highest + ta.sma (K/D). 6 states + 10
+  triggers. ⚠ ta.sma warmup vs engine expanding-buffer (minor, post-warmup ok).
+- bollinger_bands: ta.sma + SAMPLE stdev (×√(n/(n-1)) from ta.stdev) to match
+  engine's ddof=1. 6 zone/squeeze states + 6 triggers.
+All unit-tested (triggers + gate states emit valid Pine); 303 regen no-regression.
+VALIDATION NEEDED (Kevin): a strategy gated on any of these (esp. on 2m) →
+export → paste TV → check the gate bgcolor/heatmap matches our Chart&Trades
+heatmap over RTH. RVOL gates most likely to drift (volume).

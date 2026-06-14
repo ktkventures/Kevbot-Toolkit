@@ -360,6 +360,297 @@ class MacdHistV2Emitter(_MacdBase):
         return (f"{fn_name}() =>\n{self._macd_lines('    ')}\n    {expr}")
 
 
+class SupertrendEmitter(PineEmitter):
+    """Supertrend (Wilder ATR + ratcheting hl2 bands). Hand-rolled recursion
+    to match the engine exactly (Pine's ta.supertrend differs in seeding)."""
+    slug = 'supertrend'
+    helpers = ()
+
+    def _params(self):
+        p = self.params
+        return int(p.get('atr_period', 10)), float(p.get('atr_multiplier', 3.0))
+
+    def _recursion(self, indent: str) -> str:
+        atrp, mult = self._params()
+        i = indent
+        return (
+            f"{i}var float stAtr = na\n"
+            f"{i}var float stUp = na\n"
+            f"{i}var float stDn = na\n"
+            f"{i}var int   stTrend = na\n"
+            f"{i}var float stLine = na\n"
+            f"{i}var float stPc = na\n"
+            f"{i}if na(stAtr)\n"
+            f"{i}    tr0 = high - low\n"
+            f"{i}    stAtr := tr0\n"
+            f"{i}    src0 = (high + low) / 2.0\n"
+            f"{i}    stUp := src0 - {mult} * tr0\n"
+            f"{i}    stDn := src0 + {mult} * tr0\n"
+            f"{i}    stTrend := 1\n"
+            f"{i}    stLine := stUp\n"
+            f"{i}    stPc := close\n"
+            f"{i}else\n"
+            f"{i}    tr = math.max(high - low, math.abs(high - stPc),"
+            f" math.abs(low - stPc))\n"
+            f"{i}    stAtr := stAtr + (1.0 / {atrp}) * (tr - stAtr)\n"
+            f"{i}    src = (high + low) / 2.0\n"
+            f"{i}    basicUp = src - {mult} * stAtr\n"
+            f"{i}    basicDn = src + {mult} * stAtr\n"
+            f"{i}    newUp = stPc > stUp ? math.max(basicUp, stUp) : basicUp\n"
+            f"{i}    newDn = stPc < stDn ? math.min(basicDn, stDn) : basicDn\n"
+            f"{i}    newTrend = stTrend == -1 and close > stDn ? 1 :"
+            f" (stTrend == 1 and close < stUp ? -1 : stTrend)\n"
+            f"{i}    stUp := newUp\n"
+            f"{i}    stDn := newDn\n"
+            f"{i}    stTrend := newTrend\n"
+            f"{i}    stLine := newTrend == 1 ? newUp : newDn\n"
+            f"{i}    stPc := close"
+        )
+
+    def emit_primary_setup(self) -> str:
+        return self._recursion('')
+
+    def emit_trigger(self, base: str) -> Optional[str]:
+        b = base.replace('st_', '')
+        return {
+            'bull_flip': "stTrend == 1 and stTrend[1] == -1",
+            'bear_flip': "stTrend == -1 and stTrend[1] == 1",
+        }.get(b)
+
+    def emit_gate_function(self, state: str, fn_name: str) -> Optional[str]:
+        st = state.upper()
+        expr = {
+            'BULL_TRENDING':  "stTrend == 1 and (close - stLine) > 0.5 * stAtr",
+            'BULL_NEAR_STOP': "stTrend == 1 and (close - stLine) <= 0.5 * stAtr",
+            'BEAR_TRENDING':  "stTrend == -1 and (stLine - close) > 0.5 * stAtr",
+            'BEAR_NEAR_STOP': "stTrend == -1 and (stLine - close) <= 0.5 * stAtr",
+        }.get(st)
+        if expr is None:
+            return None
+        return f"{fn_name}() =>\n{self._recursion('    ')}\n    {expr}"
+
+
+class RvolV2Emitter(PineEmitter):
+    """Relative volume = volume / SMA(volume, N). NOTE: volume itself diverges
+    WS-vs-REST, so RVOL gates are inherently noisier than price gates."""
+    slug = 'rvol_v2'
+    helpers = ()
+
+    def _period(self):
+        return int(self.params.get('vol_sma_period', 20))
+
+    def emit_primary_setup(self) -> str:
+        n = self._period()
+        return (f"rvSma = ta.sma(volume, {n})\n"
+                f"rvRvol = rvSma > 0 ? volume / rvSma : 0.0")
+
+    def emit_trigger(self, base: str) -> Optional[str]:
+        b = base.replace('rv2_', '')
+        return {
+            'spike':   "rvRvol > 1.5 and rvRvol[1] <= 1.5",
+            'extreme': "rvRvol > 3.0 and rvRvol[1] <= 3.0",
+            'fade':    "rvRvol < 1.0 and rvRvol[1] >= 1.0",
+        }.get(b)
+
+    def emit_gate_function(self, state: str, fn_name: str) -> Optional[str]:
+        n = self._period()
+        expr = {
+            'EXTREME': "r > 3.0",
+            'HIGH':    "r > 1.5 and r <= 3.0",
+            'NORMAL':  "r > 0.75 and r <= 1.5",
+            'LOW':     "r > 0.5 and r <= 0.75",
+            'MINIMAL': "r > 0.0 and r <= 0.5",
+        }.get(state.upper())
+        if expr is None:
+            return None
+        return (f"{fn_name}() =>\n"
+                f"    sma = ta.sma(volume, {n})\n"
+                f"    r = sma > 0 ? volume / sma : 0.0\n"
+                f"    {expr}")
+
+
+class RsiZones2Emitter(PineEmitter):
+    """RSI zones. Wilder RSI seeded at first delta (NOT ta.rsi's SMA seed)."""
+    slug = 'rsi_zones_2'
+    helpers = ()
+
+    def _params(self):
+        p = self.params
+        return (int(p.get('rsi_period', 14)), float(p.get('overbought_level', 70)),
+                float(p.get('oversold_level', 30)),
+                float(p.get('extreme_overbought_level', 80)),
+                float(p.get('extreme_oversold_level', 20)),
+                float(p.get('midline', 50)))
+
+    def _rsi(self, indent: str) -> str:
+        period = self._params()[0]
+        i = indent
+        return (
+            f"{i}var float rsiAg = na\n"
+            f"{i}var float rsiAl = na\n"
+            f"{i}var float rsiPc = na\n"
+            f"{i}float rsiVal = na\n"
+            f"{i}if not na(rsiPc)\n"
+            f"{i}    d = close - rsiPc\n"
+            f"{i}    g = d > 0 ? d : 0.0\n"
+            f"{i}    l = d < 0 ? -d : 0.0\n"
+            f"{i}    rsiAg := na(rsiAg) ? g : (1 - 1.0/{period})*rsiAg + (1.0/{period})*g\n"
+            f"{i}    rsiAl := na(rsiAl) ? l : (1 - 1.0/{period})*rsiAl + (1.0/{period})*l\n"
+            f"{i}    rsiVal := rsiAl == 0 ? 100.0 : 100.0 - 100.0/(1.0 + rsiAg/rsiAl)\n"
+            f"{i}rsiPc := close"
+        )
+
+    def emit_primary_setup(self) -> str:
+        return self._rsi('')
+
+    def emit_trigger(self, base: str) -> Optional[str]:
+        _, ob, os_, eob, eos, mid = self._params()
+        b = base.replace('rsi2_', '')
+        return {
+            'cross_into_overbought': f"rsiVal >= {ob} and rsiVal[1] < {ob}",
+            'cross_into_extreme_overbought': f"rsiVal >= {eob} and rsiVal[1] < {eob}",
+            'cross_into_oversold': f"rsiVal <= {os_} and rsiVal[1] > {os_}",
+            'cross_into_extreme_oversold': f"rsiVal <= {eos} and rsiVal[1] > {eos}",
+            'exit_overbought_zone': f"rsiVal < {ob} and rsiVal[1] >= {ob}",
+            'exit_oversold_zone': f"rsiVal > {os_} and rsiVal[1] <= {os_}",
+            'cross_above_midline': f"rsiVal > {mid} and rsiVal[1] <= {mid}",
+            'cross_below_midline': f"rsiVal < {mid} and rsiVal[1] >= {mid}",
+            'exit_long_overbought': f"rsiVal < {ob} and rsiVal[1] >= {ob}",
+            'exit_long_midline_cross_down': f"rsiVal < {mid} and rsiVal[1] >= {mid}",
+            'exit_short_oversold': f"rsiVal > {os_} and rsiVal[1] <= {os_}",
+            'exit_short_midline_cross_up': f"rsiVal > {mid} and rsiVal[1] <= {mid}",
+        }.get(b)
+
+    def emit_gate_function(self, state: str, fn_name: str) -> Optional[str]:
+        _, ob, os_, eob, eos, mid = self._params()
+        st = state.upper()
+        expr = {
+            'EXTREME_OVERBOUGHT': f"rsiVal >= {eob}",
+            'OVERBOUGHT': f"rsiVal >= {ob} and rsiVal < {eob}",
+            'NEUTRAL_BULLISH': f"rsiVal >= {mid} and rsiVal < {ob}",
+            'NEUTRAL_BEARISH': f"rsiVal > {os_} and rsiVal < {mid}",
+            'OVERSOLD': f"rsiVal > {eos} and rsiVal <= {os_}",
+            'EXTREME_OVERSOLD': f"rsiVal <= {eos}",
+        }.get(st)
+        if expr is None:
+            return None
+        return f"{fn_name}() =>\n{self._rsi('    ')}\n    {expr}"
+
+
+class StochasticEmitter(PineEmitter):
+    slug = 'stochastic_oscillator'
+    helpers = ()
+
+    def _params(self):
+        p = self.params
+        return (int(p.get('k_period', 14)), int(p.get('k_smooth', 3)),
+                int(p.get('d_period', 3)), float(p.get('overbought', 80)),
+                float(p.get('oversold', 20)), float(p.get('midline', 50)))
+
+    def _setup(self, indent: str) -> str:
+        k, ks, d, _, _, _ = self._params()
+        i = indent
+        return (
+            f"{i}ll = ta.lowest(low, {k})\n"
+            f"{i}hh = ta.highest(high, {k})\n"
+            f"{i}rawK = hh == ll ? 50.0 : (close - ll) / (hh - ll) * 100.0\n"
+            f"{i}stoK = ta.sma(rawK, {ks})\n"
+            f"{i}stoD = ta.sma(stoK, {d})"
+        )
+
+    def emit_primary_setup(self) -> str:
+        return self._setup('')
+
+    def emit_trigger(self, base: str) -> Optional[str]:
+        _, _, _, ob, os_, mid = self._params()
+        b = base.replace('sto_', '')
+        kx_up = "stoK > stoD and stoK[1] <= stoD[1]"
+        kx_dn = "stoK < stoD and stoK[1] >= stoD[1]"
+        return {
+            'k_cross_above_d_oversold':   f"({kx_up}) and stoK <= {os_}",
+            'k_cross_below_d_overbought': f"({kx_dn}) and stoK >= {ob}",
+            'k_cross_above_d_midrange':   f"({kx_up}) and stoK > {os_} and stoK < {ob}",
+            'k_cross_below_d_midrange':   f"({kx_dn}) and stoK > {os_} and stoK < {ob}",
+            'enter_overbought': f"stoK >= {ob} and stoK[1] < {ob}",
+            'exit_overbought':  f"stoK < {ob} and stoK[1] >= {ob}",
+            'enter_oversold':   f"stoK <= {os_} and stoK[1] > {os_}",
+            'exit_oversold':    f"stoK > {os_} and stoK[1] <= {os_}",
+            'k_cross_above_midline': f"stoK > {mid} and stoK[1] <= {mid}",
+            'k_cross_below_midline': f"stoK < {mid} and stoK[1] >= {mid}",
+        }.get(b)
+
+    def emit_gate_function(self, state: str, fn_name: str) -> Optional[str]:
+        _, _, _, ob, os_, mid = self._params()
+        st = state.upper()
+        expr = {
+            'OVERBOUGHT_BEARISH': f"stoK >= {ob} and stoK < stoD",
+            'OVERBOUGHT_BULLISH': f"stoK >= {ob} and stoK >= stoD",
+            'OVERSOLD_BULLISH': f"stoK <= {os_} and stoK > stoD",
+            'OVERSOLD_BEARISH': f"stoK <= {os_} and stoK <= stoD",
+            'BULLISH_MIDRANGE': f"stoK > {os_} and stoK < {ob} and stoK >= {mid}",
+            'BEARISH_MIDRANGE': f"stoK > {os_} and stoK < {ob} and stoK < {mid}",
+        }.get(st)
+        if expr is None:
+            return None
+        return f"{fn_name}() =>\n{self._setup('    ')}\n    {expr}"
+
+
+class BollingerEmitter(PineEmitter):
+    """Bollinger Bands. Uses SAMPLE stdev (ddof=1) like the engine —
+    converted from Pine's population ta.stdev via ×√(n/(n-1))."""
+    slug = 'bollinger_bands'
+    helpers = ()
+
+    def _params(self):
+        p = self.params
+        return (int(p.get('bb_period', 20)), float(p.get('bb_mult', 2.0)),
+                float(p.get('squeeze_threshold', 0.04)))
+
+    def _setup(self, indent: str) -> str:
+        n, mult, _ = self._params()
+        i = indent
+        return (
+            f"{i}bbBasis = ta.sma(close, {n})\n"
+            f"{i}bbStd = ta.stdev(close, {n}) * math.sqrt({n} / ({n} - 1.0))\n"
+            f"{i}bbUpper = bbBasis + {mult} * bbStd\n"
+            f"{i}bbLower = bbBasis - {mult} * bbStd\n"
+            f"{i}bbBw = bbBasis > 0 ? (bbUpper - bbLower) / bbBasis : na"
+        )
+
+    def emit_primary_setup(self) -> str:
+        return self._setup('')
+
+    def emit_trigger(self, base: str) -> Optional[str]:
+        _, _, sq = self._params()
+        b = base.replace('bb_', '')
+        return {
+            'cross_upper': "close > bbUpper and close[1] <= bbUpper[1]",
+            'cross_lower': "close < bbLower and close[1] >= bbLower[1]",
+            'cross_basis_up': "close > bbBasis and close[1] <= bbBasis[1]",
+            'cross_basis_down': "close < bbBasis and close[1] >= bbBasis[1]",
+            'squeeze_on': f"bbBw < {sq} and bbBw[1] >= {sq}",
+            'squeeze_off': f"bbBw > {sq} and bbBw[1] <= {sq}",
+        }.get(b)
+
+    def emit_gate_function(self, state: str, fn_name: str) -> Optional[str]:
+        _, _, sq = self._params()
+        st = state.upper()
+        # mid_zone_half = (upper-lower)*0.25 from basis; squeeze = bw < threshold
+        cond = {
+            'SQUEEZE_UPPER': f"close >= bbBasis + mzh and bbBw < {sq}",
+            'UPPER_ZONE':    f"close >= bbBasis + mzh and bbBw >= {sq}",
+            'SQUEEZE_LOWER': f"close <= bbBasis - mzh and bbBw < {sq}",
+            'LOWER_ZONE':    f"close <= bbBasis - mzh and bbBw >= {sq}",
+            'SQUEEZE_MID':   f"close < bbBasis + mzh and close > bbBasis - mzh and bbBw < {sq}",
+            'MID_ZONE':      f"close < bbBasis + mzh and close > bbBasis - mzh and bbBw >= {sq}",
+        }.get(st)
+        if cond is None:
+            return None
+        return (f"{fn_name}() =>\n{self._setup('    ')}\n"
+                f"    mzh = (bbUpper - bbLower) * 0.25\n"
+                f"    {cond}")
+
+
 # Registry: interpreter-name (gate) → emitter class
 EMITTERS = {
     'ema_pp_v3': lambda: EmaPpEmitter('eppv3'),
@@ -368,6 +659,11 @@ EMITTERS = {
     'macd_line_v2': MacdLineV2Emitter,
     'macd_histogram_v2': MacdHistV2Emitter,
     'ut_bot_v4': UtBotV4Emitter,
+    'supertrend': SupertrendEmitter,
+    'rvol_v2': RvolV2Emitter,
+    'rsi_zones_2': RsiZones2Emitter,
+    'stochastic_oscillator': StochasticEmitter,
+    'bollinger_bands': BollingerEmitter,
 }
 
 # Trigger-prefix → emitter factory (for the primary entry/exit pack)
@@ -377,6 +673,11 @@ _TRIGGER_PREFIX = {
     'esv2_': EmaStackV2Emitter,
     'mlv2_': MacdLineV2Emitter,
     'mhv2_': MacdHistV2Emitter,
+    'st_': SupertrendEmitter,
+    'rv2_': RvolV2Emitter,
+    'rsi2_': RsiZones2Emitter,
+    'sto_': StochasticEmitter,
+    'bb_': BollingerEmitter,
 }
 
 
