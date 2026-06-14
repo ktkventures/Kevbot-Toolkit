@@ -131,9 +131,26 @@ class PineEmitter:
         return None
 
 
-class EmaPpV3Emitter(PineEmitter):
-    slug = 'ema_pp_v3'
+def _ordering_expr(state: str, varmap: dict) -> Optional[str]:
+    """A permutation state like 'PSML' / 'SML' → strict-descending chain
+    (matches the interpreters' `a>b and b>c ...` classification)."""
+    try:
+        vars_ = [varmap[ch] for ch in state]
+    except KeyError:
+        return None
+    return " and ".join(f"{vars_[i]} > {vars_[i+1]}"
+                        for i in range(len(vars_) - 1))
+
+
+class EmaPpEmitter(PineEmitter):
+    """EMA Price-Position v3 AND v4 (identical math; differ only by prefix).
+    States = ordering of P(rice)/S(hort)/M(id)/L(ong) EMAs."""
     helpers = ('rorEma',)
+
+    def __init__(self, prefix='eppv3', params=None):
+        self.prefix = prefix
+        self.slug = 'ema_pp_v3' if prefix == 'eppv3' else 'ema_pp_v4'
+        super().__init__(params)
 
     def _periods(self):
         p = self.params
@@ -147,8 +164,7 @@ class EmaPpV3Emitter(PineEmitter):
                 f"emaLong  = rorEma(close, {l})")
 
     def emit_trigger(self, base: str) -> Optional[str]:
-        # base like 'eppv3_cross_short_up' or 'cross_short_up'
-        b = base.replace('eppv3_', '')
+        b = base.replace(self.prefix + '_', '')
         m = {
             'cross_short_up':   "close > emaShort and close[1] <= emaShort[1]",
             'cross_short_down': "close < emaShort and close[1] >= emaShort[1]",
@@ -156,6 +172,19 @@ class EmaPpV3Emitter(PineEmitter):
             'cross_mid_down':   "close < emaMid and close[1] >= emaMid[1]",
         }
         return m.get(b)
+
+    def emit_gate_function(self, state: str, fn_name: str) -> Optional[str]:
+        s, m, l = self._periods()
+        chain = _ordering_expr(state.upper(),
+                               {'P': 'c', 'S': 's', 'M': 'm', 'L': 'l'})
+        if chain is None:
+            return None
+        return (f"{fn_name}() =>\n"
+                f"    c = close\n"
+                f"    s = rorEma(close, {s})\n"
+                f"    m = rorEma(close, {m})\n"
+                f"    l = rorEma(close, {l})\n"
+                f"    {chain}")
 
 
 class UtBotV4Emitter(PineEmitter):
@@ -217,18 +246,150 @@ class UtBotV4Emitter(PineEmitter):
         )
 
 
-EMITTERS = {e.slug: e for e in (EmaPpV3Emitter, UtBotV4Emitter)}
+class EmaStackV2Emitter(PineEmitter):
+    """EMA stack ordering (short/mid/long). States = SML/SLM/MSL/MLS/LSM/LMS."""
+    slug = 'ema_stack_v2'
+    helpers = ('rorEma',)
+
+    def _periods(self):
+        p = self.params
+        return (int(p.get('short_period', 8)), int(p.get('mid_period', 21)),
+                int(p.get('long_period', 50)))
+
+    def emit_primary_setup(self) -> str:
+        s, m, l = self._periods()
+        return (f"esShort = rorEma(close, {s})\n"
+                f"esMid   = rorEma(close, {m})\n"
+                f"esLong  = rorEma(close, {l})")
+
+    def emit_trigger(self, base: str) -> Optional[str]:
+        b = base.replace('esv2_', '')
+        m = {
+            'cross_bull':     "esShort > esMid and esShort[1] <= esMid[1]",
+            'cross_bear':     "esShort < esMid and esShort[1] >= esMid[1]",
+            'mid_cross_bull': "esMid > esLong and esMid[1] <= esLong[1]",
+            'mid_cross_bear': "esMid < esLong and esMid[1] >= esLong[1]",
+        }
+        return m.get(b)
+
+    def emit_gate_function(self, state: str, fn_name: str) -> Optional[str]:
+        s, m, l = self._periods()
+        chain = _ordering_expr(state.upper(), {'S': 's', 'M': 'm', 'L': 'l'})
+        if chain is None:
+            return None
+        return (f"{fn_name}() =>\n"
+                f"    s = rorEma(close, {s})\n"
+                f"    m = rorEma(close, {m})\n"
+                f"    l = rorEma(close, {l})\n"
+                f"    {chain}")
+
+
+class _MacdBase(PineEmitter):
+    helpers = ('rorEma',)
+    _pfx = 'mlv2'
+
+    def _periods(self):
+        p = self.params
+        return (int(p.get('fast_period', 12)), int(p.get('slow_period', 26)),
+                int(p.get('signal_period', 9)))
+
+    def _macd_lines(self, indent='') -> str:
+        f, s, sig = self._periods()
+        return (f"{indent}mFast = rorEma(close, {f})\n"
+                f"{indent}mSlow = rorEma(close, {s})\n"
+                f"{indent}mLine = mFast - mSlow\n"
+                f"{indent}mSignal = rorEma(mLine, {sig})\n"
+                f"{indent}mHist = mLine - mSignal")
+
+    def emit_primary_setup(self) -> str:
+        return self._macd_lines()
+
+
+class MacdLineV2Emitter(_MacdBase):
+    slug = 'macd_line_v2'
+    _pfx = 'mlv2'
+
+    def emit_trigger(self, base: str) -> Optional[str]:
+        b = base.replace('mlv2_', '')
+        m = {
+            'cross_bull':      "mLine > mSignal and mLine[1] <= mSignal[1]",
+            'cross_bear':      "mLine < mSignal and mLine[1] >= mSignal[1]",
+            'zero_cross_up':   "mLine > 0 and mLine[1] <= 0",
+            'zero_cross_down': "mLine < 0 and mLine[1] >= 0",
+        }
+        return m.get(b)
+
+    def emit_gate_function(self, state: str, fn_name: str) -> Optional[str]:
+        # states: M>S+ / M>S- / M<S+ / M<S-  (line vs signal, sign of line)
+        st = state.strip()
+        expr = {
+            'M>S+': "mLine > mSignal and mLine > 0",
+            'M>S-': "mLine > mSignal and mLine <= 0",
+            'M<S-': "mLine <= mSignal and mLine <= 0",
+            'M<S+': "mLine <= mSignal and mLine > 0",
+        }.get(st)
+        if expr is None:
+            return None
+        return (f"{fn_name}() =>\n{self._macd_lines('    ')}\n    {expr}")
+
+
+class MacdHistV2Emitter(_MacdBase):
+    slug = 'macd_histogram_v2'
+    _pfx = 'mhv2'
+
+    def emit_trigger(self, base: str) -> Optional[str]:
+        b = base.replace('mhv2_', '')
+        m = {
+            'flip_pos':            "mHist > 0 and mHist[1] <= 0",
+            'flip_neg':            "mHist < 0 and mHist[1] >= 0",
+            'momentum_shift_up':   "mHist > mHist[1] and mHist[1] < mHist[2]",
+            'momentum_shift_down': "mHist < mHist[1] and mHist[1] > mHist[2]",
+        }
+        return m.get(b)
+
+    def emit_gate_function(self, state: str, fn_name: str) -> Optional[str]:
+        # states: H+up / H+dn / H-up / H-dn  (sign + direction vs prev bar)
+        expr = {
+            'H+up': "mHist > 0 and mHist > mHist[1]",
+            'H+dn': "mHist > 0 and mHist <= mHist[1]",
+            'H-up': "mHist <= 0 and mHist > mHist[1]",
+            'H-dn': "mHist <= 0 and mHist <= mHist[1]",
+        }.get(state.strip())
+        if expr is None:
+            return None
+        return (f"{fn_name}() =>\n{self._macd_lines('    ')}\n    {expr}")
+
+
+# Registry: interpreter-name (gate) → emitter class
+EMITTERS = {
+    'ema_pp_v3': lambda: EmaPpEmitter('eppv3'),
+    'ema_pp_v4': lambda: EmaPpEmitter('eppv4'),
+    'ema_stack_v2': EmaStackV2Emitter,
+    'macd_line_v2': MacdLineV2Emitter,
+    'macd_histogram_v2': MacdHistV2Emitter,
+    'ut_bot_v4': UtBotV4Emitter,
+}
+
+# Trigger-prefix → emitter factory (for the primary entry/exit pack)
+_TRIGGER_PREFIX = {
+    'eppv3_': lambda: EmaPpEmitter('eppv3'),
+    'eppv4_': lambda: EmaPpEmitter('eppv4'),
+    'esv2_': EmaStackV2Emitter,
+    'mlv2_': MacdLineV2Emitter,
+    'mhv2_': MacdHistV2Emitter,
+}
 
 
 def _emitter_for_trigger(trigger: str) -> Optional[PineEmitter]:
-    if trigger.startswith('eppv3_'):
-        return EmaPpV3Emitter()
+    for pfx, factory in _TRIGGER_PREFIX.items():
+        if trigger.startswith(pfx):
+            return factory()
     return None
 
 
 def _emitter_for_interp(interp: str) -> Optional[PineEmitter]:
-    cls = EMITTERS.get(interp.lower())
-    return cls() if cls else None
+    factory = EMITTERS.get(interp.lower())
+    return factory() if factory else None
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -390,9 +551,15 @@ def generate_pine(strat: dict) -> str:
 
     # ── visuals ──
     L("// ── visuals ──")
-    if prim.slug == 'ema_pp_v3':
+    if prim.slug in ('ema_pp_v3', 'ema_pp_v4'):
         L('plot(emaShort, "EMA short", color.new(color.aqua, 0), 1)')
         L('plot(emaMid,   "EMA mid",   color.new(color.orange, 0), 1)')
+    elif prim.slug == 'ema_stack_v2':
+        L('plot(esShort, "EMA short", color.new(color.aqua, 0), 1)')
+        L('plot(esMid,   "EMA mid",   color.new(color.orange, 0), 1)')
+        L('plot(esLong,  "EMA long",  color.new(color.purple, 0), 1)')
+    # (MACD-primary: lines live near 0, not plotted on the price overlay —
+    #  the entry shapes + gate background carry the signal.)
     if stop_cfg:
         L('plot(strategy.position_size > 0 ? stopLevel : na, "stop", '
           'color.new(color.red, 0), 1, plot.style_linebr)')

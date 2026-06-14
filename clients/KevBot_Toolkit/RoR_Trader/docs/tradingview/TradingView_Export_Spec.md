@@ -167,3 +167,22 @@ NEXT (Kevin go-ahead): build the generator + export tab so any strategy ports.
   surfaces exactly which one to add next based on the strategies you try.
 - VERIFY: pick a 1Min+ strategy in the app → TradingView Export tab → paste →
   deep TV backtest (months of history) → compare to our backtest.
+
+## PACK EMITTER SWEEP (2026-06-13) — progressive log
+Goal: Pine emitter for all 15 user packs. 3 dirs (rsi_zones, rsi_zones_3,
+swing_123_test) are empty legacy (pycache only) — 15 real packs, 13 to add
+(ema_pp_v3 + ut_bot_v4 already done).
+
+### Wave 1 — EMA/MACD family — ✅ DONE
+- ema_pp_v4: triggers (cross short/mid) + ordering states (P/S/M/L, 24 perms).
+  Identical math to v3 (shared EmaPpEmitter, prefix-parameterized).
+- ema_stack_v2: cross_bull/bear + mid_cross + SML/SLM/... ordering states.
+- macd_line_v2: cross_bull/bear, zero crosses + M>S± / M<S± states.
+- macd_histogram_v2: flip_pos/neg, momentum_shift + H+up/H+dn/H-up/H-dn states.
+All hand-rolled to match seeding (EMA first-close; MACD line=0/signal=0 first
+bar; signal=rorEma(line)). Unit-tested (triggers + gate states emit valid Pine);
+303 regen no-regression.
+VALIDATION NEEDED (Kevin): if you have a strategy using any of these as the
+PRIMARY trigger or as a 2m gate, export it → paste in TV → check trade/gate
+parity (RTH). MACD-primary: lines plot near 0 so not shown on price overlay
+(intentional); signal still drives entries.
