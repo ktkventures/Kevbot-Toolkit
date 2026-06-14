@@ -1,3 +1,46 @@
+# ⭐ KEVIN — VALIDATION FOLLOW-UPS (added 2026-06-13, do when you're back)
+
+Where things stand: TradingView Export is live on dev. 14/15 user packs have
+Pine emitters; sid 303 validated at 98.6% RTH trade parity. Now I need your
+human-in-loop checks (the generator can't self-verify against TradingView).
+
+## How to validate any strategy
+Open the strategy → "TradingView Export" tab → Copy Pine → in TradingView open
+the symbol on the matching timeframe → Pine Editor → paste → Add to chart →
+Strategy Tester. Compare entries/exits/gate to our backtest over an **RTH**
+window (cleanest; extended hours is sparse). Export "List of Trades" or chart
+data and I can run _tv_parity_compare.py / _tv_bar_parity.py for exact numbers.
+
+## [ ] 1. Confirm a 1-minute strategy lines up (deep history)
+TV keeps months of 1Min history (vs days for seconds) → strongest trust check.
+Pick any 1Min strategy and export it. If it uses a pack with no emitter yet
+(only sr_channels), the tab will say so.
+
+## [ ] 2. Per-pack spot checks — HIGH confidence (pure price/EMA math)
+Expect tight parity like 303. Validate when convenient, not urgent:
+  ema_pp_v4, ema_stack_v2, macd_line_v2, macd_histogram_v2, supertrend,
+  rsi_zones_2, stochastic_oscillator, bollinger_bands, swing_123, strat_assistant
+Check: a strategy whose ENTRY trigger uses the pack, OR one GATED on the pack's
+state (2m) — compare gate background/heatmap to our Chart & Trades heatmap.
+
+## [ ] 3. Per-pack spot checks — MEDIUM confidence (volume-dependent) ⚠ PRIORITY
+These are most likely to drift — check these first:
+  - rvol_v2  (relative volume; volume differs WS-vs-REST)
+  - vwap_v2  (cumulative + session-anchored + volume; also may hit Pine
+              ta.vwap limits when used as a CROSS-TF gate)
+
+## [ ] 4. Decision: sr_channels
+The only unported pack (LuxAlgo pivot-clustering — a focused mini-project to
+port faithfully). Tell me if/when you want me to build it. Until then, the tab
+cleanly reports "add an emitter for sr_channels" for strategies that use it.
+
+## [ ] 5. Known caveats to keep in mind while validating
+  - Seconds charts: shallow TV history; use RTH windows.
+  - TV labels bars by OPEN time; fill = open + tf (already handled in compares).
+  - Set the TV chart session (RTH vs Extended) to match the strategy.
+
+---
+
 # TradingView Export — Design Spec (started 2026-06-13)
 
 ## Goal
