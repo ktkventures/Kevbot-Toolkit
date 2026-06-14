@@ -651,6 +651,156 @@ class BollingerEmitter(PineEmitter):
                 f"    {cond}")
 
 
+class VwapV2Emitter(PineEmitter):
+    """Session-anchored VWAP + volume-weighted stdev bands. HIGHEST divergence
+    risk: depends on VOLUME (diverges WS-vs-REST), is cumulative (early diffs
+    compound), and anchoring must match. Uses a daily anchor; validate."""
+    slug = 'vwap_v2'
+    helpers = ()
+
+    def _params(self):
+        p = self.params
+        return float(p.get('sd1_mult', 1.0)), float(p.get('sd2_mult', 2.0))
+
+    def _setup(self, indent: str) -> str:
+        sd1, sd2 = self._params()
+        i = indent
+        return (
+            f"{i}vwAnchor = timeframe.change(\"1D\")\n"
+            f"{i}[vwVal, vwU1, vwL1] = ta.vwap(hlc3, vwAnchor, {sd1})\n"
+            f"{i}vwStd = {sd1} != 0 ? (vwU1 - vwVal) / {sd1} : 0.0\n"
+            f"{i}vwU2 = vwVal + {sd2} * vwStd\n"
+            f"{i}vwL2 = vwVal - {sd2} * vwStd\n"
+            f"{i}vwHalf = (vwU1 - vwVal) * 0.5"
+        )
+
+    def emit_primary_setup(self) -> str:
+        return self._setup('')
+
+    def emit_trigger(self, base: str) -> Optional[str]:
+        b = base.replace('vwapv2_', '')
+        return {
+            'cross_above': "close > vwVal and close[1] <= vwVal[1]",
+            'cross_below': "close < vwVal and close[1] >= vwVal[1]",
+            'enter_upper_extreme': "close > vwU2 and close[1] <= vwU2[1]",
+            'enter_lower_extreme': "close < vwL2 and close[1] >= vwL2[1]",
+        }.get(b)
+
+    def emit_gate_function(self, state: str, fn_name: str) -> Optional[str]:
+        st = state.strip()
+        expr = {
+            '>+2σ': "close > vwU2",
+            '>+1σ': "close > vwU1 and close <= vwU2",
+            '>V':   "close > vwVal + vwHalf and close <= vwU1",
+            '@V':   "close >= vwVal - vwHalf and close <= vwVal + vwHalf",
+            '<V':   "close >= vwL1 and close < vwVal - vwHalf",
+            '<-1σ': "close >= vwL2 and close < vwL1",
+            '<-2σ': "close < vwL2",
+        }.get(st)
+        if expr is None:
+            return None
+        return f"{fn_name}() =>\n{self._setup('    ')}\n    {expr}"
+
+
+class Swing123Emitter(PineEmitter):
+    """Swing 1-2-3 (C2/C3 price-action patterns). Pure OHLC, no params."""
+    slug = 'swing_123'
+    helpers = ()
+
+    def _recursion(self, indent: str) -> str:
+        i = indent
+        return (
+            f"{i}var float swH = na\n"
+            f"{i}var float swL = na\n"
+            f"{i}var float swC = na\n"
+            f"{i}var int swPrevPat = 0\n"
+            f"{i}int swPat = 0\n"
+            f"{i}if not na(swC)\n"
+            f"{i}    bullC2 = low < swL and close > swC\n"
+            f"{i}    bearC2 = high > swH and close < swC\n"
+            f"{i}    bullC3 = swPrevPat == 1 and close > swH\n"
+            f"{i}    bearC3 = swPrevPat == -1 and close < swL\n"
+            f"{i}    swPat := bullC3 ? 2 : (bearC3 ? -2 : (bullC2 ? 1 :"
+            f" (bearC2 ? -1 : 0)))\n"
+            f"{i}swH := high\n"
+            f"{i}swL := low\n"
+            f"{i}swC := close\n"
+            f"{i}swPrevPat := swPat"
+        )
+
+    def emit_primary_setup(self) -> str:
+        return self._recursion('')
+
+    def emit_trigger(self, base: str) -> Optional[str]:
+        b = base.replace('sw123_', '')
+        return {
+            'bull_c2': "swPat == 1", 'bull_c3': "swPat == 2",
+            'bear_c2': "swPat == -1", 'bear_c3': "swPat == -2",
+        }.get(b)
+
+    def emit_gate_function(self, state: str, fn_name: str) -> Optional[str]:
+        expr = {
+            'BULL_C3': "swPat == 2", 'BULL_C2': "swPat == 1",
+            'BEAR_C3': "swPat == -2", 'BEAR_C2': "swPat == -1",
+            'NEUTRAL': "swPat == 0",
+        }.get(state.upper())
+        if expr is None:
+            return None
+        return f"{fn_name}() =>\n{self._recursion('    ')}\n    {expr}"
+
+
+class StratAssistantEmitter(PineEmitter):
+    """TheStrat bar types (Inside/2-up/2-down/Outside) + wick shooter/hammer."""
+    slug = 'strat_assistant'
+    helpers = ()
+
+    def _wick(self):
+        return float(self.params.get('wick_pct', 0.75))
+
+    def _recursion(self, indent: str) -> str:
+        i = indent
+        return (
+            f"{i}var float saH = na\n"
+            f"{i}var float saL = na\n"
+            f"{i}int saBt = 0\n"
+            f"{i}if not na(saH)\n"
+            f"{i}    saBt := (high <= saH and low >= saL) ? 1 :"
+            f" ((high > saH and low < saL) ? 3 :"
+            f" ((high > saH and not (low < saL)) ? 2 :"
+            f" ((low < saL and not (high > saH)) ? -2 : 0)))\n"
+            f"{i}saH := high\n"
+            f"{i}saL := low"
+        )
+
+    def emit_primary_setup(self) -> str:
+        w = self._wick()
+        return (self._recursion('') + "\n"
+                f"saRange = high - low\n"
+                f"saWick = saRange * {w}\n"
+                f"saShoot = high - saWick\n"
+                f"saHammer = low + saWick")
+
+    def emit_trigger(self, base: str) -> Optional[str]:
+        b = base.replace('strat_', '')
+        return {
+            'bull_c2': "saBt == 2",
+            'bear_c2': "saBt == -2",
+            'outside_bar': "saBt == 3",
+            'inside_bar': "saBt == 1",
+            'shooter': "saBt != 1 and open < saShoot and close < saShoot",
+            'hammer': "saBt != 1 and open > saHammer and close > saHammer",
+        }.get(b)
+
+    def emit_gate_function(self, state: str, fn_name: str) -> Optional[str]:
+        expr = {
+            'INSIDE': "saBt == 1", 'TWO_UP': "saBt == 2",
+            'TWO_DOWN': "saBt == -2", 'OUTSIDE': "saBt == 3",
+        }.get(state.upper())
+        if expr is None:
+            return None
+        return f"{fn_name}() =>\n{self._recursion('    ')}\n    {expr}"
+
+
 # Registry: interpreter-name (gate) → emitter class
 EMITTERS = {
     'ema_pp_v3': lambda: EmaPpEmitter('eppv3'),
@@ -664,6 +814,13 @@ EMITTERS = {
     'rsi_zones_2': RsiZones2Emitter,
     'stochastic_oscillator': StochasticEmitter,
     'bollinger_bands': BollingerEmitter,
+    'vwap_v2': VwapV2Emitter,
+    'swing_123': Swing123Emitter,
+    'strat_assistant': StratAssistantEmitter,
+    # sr_channels: NOT YET PORTED — LuxAlgo-style pivot-clustering (pivot
+    # detection → proximity clustering → strength ranking → nearest channel).
+    # A faithful port is a focused mini-project; left unported so the endpoint
+    # cleanly reports it rather than emitting a misleading approximation.
 }
 
 # Trigger-prefix → emitter factory (for the primary entry/exit pack)
@@ -678,6 +835,9 @@ _TRIGGER_PREFIX = {
     'rsi2_': RsiZones2Emitter,
     'sto_': StochasticEmitter,
     'bb_': BollingerEmitter,
+    'vwapv2_': VwapV2Emitter,
+    'sw123_': Swing123Emitter,
+    'strat_': StratAssistantEmitter,
 }
 
 

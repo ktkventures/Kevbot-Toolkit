@@ -204,3 +204,33 @@ All unit-tested (triggers + gate states emit valid Pine); 303 regen no-regressio
 VALIDATION NEEDED (Kevin): a strategy gated on any of these (esp. on 2m) →
 export → paste TV → check the gate bgcolor/heatmap matches our Chart&Trades
 heatmap over RTH. RVOL gates most likely to drift (volume).
+
+### Wave 3 — structural/custom — ✅ 3/4 DONE (sr_channels deferred)
+- vwap_v2: session-anchored VWAP (daily anchor) + volume-weighted stdev bands;
+  7 σ-zone states + cross/extreme triggers. ⚠ HIGHEST divergence risk: volume-
+  dependent + cumulative + anchoring; VWAP as a cross-TF gate may hit Pine
+  ta.vwap context limits. Validate carefully, prefer as primary-TF / RTH.
+- swing_123: C2/C3 price-action recursion. 5 states + 4 triggers. Pure OHLC,
+  should match exactly.
+- strat_assistant: TheStrat bar types (Inside/2up/2down/Outside) + wick
+  shooter/hammer. 4 states + 6 triggers. Pure OHLC.
+- sr_channels: ⛔ NOT PORTED. LuxAlgo-style pivot-clustering (pivot detect →
+  proximity cluster → strength rank → nearest channel) — a faithful port is a
+  focused mini-project. Left unported so the endpoint cleanly says "add emitter
+  for sr_channels" rather than emitting a misleading approximation. FLAG FOR
+  KEVIN: decide if/when to invest in a faithful SR port.
+
+## SWEEP COMPLETE: 14/15 packs have emitters (only sr_channels remains)
+ema_pp_v3 ✓ ema_pp_v4 ✓ ema_stack_v2 ✓ macd_line_v2 ✓ macd_histogram_v2 ✓
+ut_bot_v4 ✓ supertrend ✓ rvol_v2 ✓ rsi_zones_2 ✓ stochastic_oscillator ✓
+bollinger_bands ✓ vwap_v2 ✓ swing_123 ✓ strat_assistant ✓ | sr_channels ⛔
+
+### VALIDATION MATRIX for Kevin (export → paste TV → compare RTH)
+Confidence HIGH (pure price/EMA math): ema_pp_v3/v4, ema_stack_v2, macd_line_v2,
+  macd_histogram_v2, ut_bot_v4, supertrend, rsi_zones_2, stochastic, swing_123,
+  strat_assistant, bollinger_bands.
+Confidence MEDIUM (volume-dependent): rvol_v2, vwap_v2 — expect more drift;
+  volume differs WS-vs-REST and VWAP is cumulative+anchored.
+Suggested checks: (1) a 1Min strategy whose entry trigger is each newly-covered
+  pack; (2) a strategy gated on each pack's state on 2m — compare the gate
+  bgcolor/heatmap to our Chart&Trades heatmap over an RTH window.
