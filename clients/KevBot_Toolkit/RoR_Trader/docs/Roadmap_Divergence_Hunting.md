@@ -1,7 +1,16 @@
 # Roadmap — Divergence Hunting (Live ↔ Backtest Pair-Rate to 95%+)
 
-**Last updated:** 2026-06-10 (Gate Parity polish + Per-Bar Parity Drift v1/v2 shipped)
+**Last updated:** 2026-06-15 (Monday harvest verdict — gate fix VERIFIED live)
 **Goal:** Drive fleet-wide live↔backtest pair rate to 95%+ across the canary cohort.
+**Status (2026-06-15 — HARVEST DAY):** ✅ **GATE DIVERGENCE SOLVED for the price cohort.**
+On clean liquid RTH tape (14:45–16:15Z, clipped inside BT coverage to exclude TBD-lag),
+the **gated 10s cohort averages 91.2%** (was 30–73% last week) — sitting right on top of
+the **ungated 94.8%**. Worst Friday offender 303 = 100% (62/0/0, zero phantoms). The
+own-records pollution fix (711e72b) held under live multi-strategy SPY fire. Every
+remaining dragger is a KNOWN class: B4 1Min early-fire (265/269), SR Channels WIP pack
+(292), dead-live 275, rare 5m-gate under-pass (271). VWAP v2 + RVOL v2 (last week's
+volume laggards) RECOVERED. Full tiered breakdown: `docs/Fleet_UAD_Report_2026-06-12.md`
+(Monday section). Next: B4 fix → 275 dead-live → strategy-health dashboard TBD column.
 **Status (2026-06-08 late):** Phase 1 (sid 174) executed. Surfaced the real "gating
 off-and-on" root cause: **confluence gates fail OPEN when records are empty**, and
 **2m cross-TF confluence records have not been produced in the live worker since ~06-03**,

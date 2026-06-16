@@ -472,6 +472,27 @@ def get_strategy_health(
             missed_count_global_fair = missed_count_fair
             paired_count_global_fair = paired_count_fair
 
+        # ── Combined% + TBD (2026-06-15, Kevin's ask) ─────────────────
+        # Combined% = paired / (paired + phantom + missed) on the
+        # apples-to-apples (global-fair) counts — the at-a-glance "is this
+        # behaving" number, matching the By-Hour / By-Deploy tabs.
+        # TBD = alerts NEWER than the global-fair cutoff: the backtest lane
+        # hasn't reached them yet, so they aren't phantoms — they convert on
+        # the next append. Excluded from Combined% (not in the denominator),
+        # surfaced as its own count so a high-TBD row reads as "lane lagging"
+        # not "divergent". Mirrors the By-Hour TBD rule (coverage = the
+        # fair cutoff here, vs last_recompute_until_ts there — both are
+        # "how far the backtest reference has caught up").
+        _denom_gf = (paired_count_global_fair + phantom_count_global_fair
+                     + missed_count_global_fair)
+        combined_pct = (round(100.0 * paired_count_global_fair / _denom_gf, 1)
+                        if _denom_gf > 0 else None)
+        if _global_fair_cutoff_dt is not None:
+            _gf_cut = _global_fair_cutoff_dt.timestamp()
+            tbd_count = sum(1 for a in alert_unix_list if a > _gf_cut)
+        else:
+            tbd_count = 0
+
         forward_testing = bool(s.get("forward_testing"))
         is_streaming_eligible = ("entry_trigger_confluence_id" in cfg)
 
@@ -600,6 +621,11 @@ def get_strategy_health(
             "phantom_count_global_fair": phantom_count_global_fair,
             "missed_count_global_fair": missed_count_global_fair,
             "paired_count_global_fair": paired_count_global_fair,
+            # 2026-06-15 — Combined% (paired/(paired+phantom+missed) on the
+            # global-fair counts) + TBD (alerts past the fair cutoff,
+            # lane-not-caught-up). Matches the By-Hour / By-Deploy tabs.
+            "combined_pct": combined_pct,
+            "tbd_count": tbd_count,
             "global_fair_cutoff_ts": (
                 _global_fair_cutoff_dt.isoformat()
                 if _global_fair_cutoff_dt else None),

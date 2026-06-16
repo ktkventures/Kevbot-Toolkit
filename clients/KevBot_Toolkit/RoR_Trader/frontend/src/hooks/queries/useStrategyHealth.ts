@@ -111,6 +111,10 @@ export interface StrategyHealthRow {
   phantom_count_global_fair: number;
   missed_count_global_fair: number;
   paired_count_global_fair: number;
+  // 2026-06-15 — Combined% (paired/(paired+phantom+missed) on global-fair
+  // counts) + TBD (alerts past the fair cutoff, backtest lane not caught up).
+  combined_pct: number | null;
+  tbd_count: number;
   global_fair_cutoff_ts: string | null;
 
   red_flags: StrategyHealthFlag[];

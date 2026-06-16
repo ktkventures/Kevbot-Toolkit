@@ -32,6 +32,7 @@ export interface ByHourStrategyRow {
   paired: number;
   phantom: number;
   missed: number;
+  tbd: number;
   combined_pct: number;
   alert_pair_pct: number;
   rankable: boolean;

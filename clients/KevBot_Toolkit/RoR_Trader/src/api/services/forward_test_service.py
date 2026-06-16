@@ -580,6 +580,159 @@ def _serialize_trades(trades_df) -> list[dict]:
 _ALGO_HISTORY_LAG_MINUTES = int(
     os.environ.get('ALGO_HISTORY_LAG_MINUTES', '15'))
 
+# ── B2 fix (2026-06-15): append edge-band replace ──────────────────────
+# Appends run a WINDOWED engine recompute that under-generates trades near
+# the data edge (imperfect resume-snapshot warmup + unsettled REST), and the
+# INSERT-only dedup on (strategy_id, entry_fill_ts, exit_fill_ts) means the
+# fresh, settled recompute can never REPLACE the stale rows. The band
+# fossilizes → live↔backtest pairing degrades the closer you measure to
+# "now" (the "clean-then-messier" artifact; confirmed on sid 302 2026-06-15,
+# afternoon 49%→98% after a full UAD). Fix: each append RECOMPUTES its
+# trailing band with full UAD-parity warmup (NOT the windowed resume) and
+# REPLACES it via db.replace_trades_in_window_admin. Band sits entirely
+# behind the lag cutoff so it never touches unsettled bars.
+_APPEND_EDGE_BAND_MINUTES = int(
+    os.environ.get('APPEND_EDGE_BAND_MINUTES', '120'))
+# Cron-cost throttle: the band recompute uses full UAD-parity warmup
+# (~12s/strategy), so the periodic worker cron rewrites a strategy's band at
+# most once per this interval. Manual "Update New Data" (force=True) always
+# heals immediately. 30 min keeps the 120-min band re-settled ~4× before
+# rows age out. (Future scale optimization: a convergence-sufficient warmup
+# would cut the per-run cost ~5-10× and could relax this.)
+_APPEND_EDGE_BAND_THROTTLE_SEC = int(
+    os.environ.get('APPEND_EDGE_BAND_THROTTLE_SEC', '1800'))
+# KILL-SWITCH (2026-06-15): the full-UAD-parity-warmup band recompute costs
+# ~427s/strategy on a 10Sec strategy — not viable as-is. Default OFF so the
+# code is dormant (appends behave exactly as before) until the approach is
+# finalized (reduced warmup / snapshot-at-band-start). Flip to 'true' only
+# with a cost-bounded recompute in place.
+_APPEND_EDGE_BAND_ENABLED = (
+    os.environ.get('APPEND_EDGE_BAND_ENABLED', 'false').lower() == 'true')
+# Band-recompute warmup CAP (trading days). Full UAD warmup is ~20 days for a
+# 10Sec strategy (≈48k bars → 427s) — overkill: indicators converge in a
+# fraction of that. Cap the band recompute's warmup at this many days
+# (validated to produce byte-identical band trades to full warmup). Far
+# cheaper while honoring "never under-warm". Bump if a coarse secondary-TF
+# strategy ever fails the identity check.
+_EDGE_BAND_WARMUP_DAYS = float(
+    os.environ.get('APPEND_EDGE_BAND_WARMUP_DAYS', '5'))
+# Coarsest-TF convergence floor (bars). The warmup cap is scaled up so the
+# COARSEST timeframe in the strategy always gets at least this many bars —
+# makes the day-cap TF-safe (a 15m/1H gate auto-gets more calendar days; a
+# 10Sec strategy stays at the validated floor). 300 ≈ generous for the
+# indicator periods in use. (10Sec + a DAILY secondary is an extreme TF
+# spread the cap can't serve cheaply — that's the snapshot-resume follow-up.)
+_EDGE_BAND_CONV_BARS = int(
+    os.environ.get('APPEND_EDGE_BAND_CONV_BARS', '300'))
+
+
+def _uad_warmup_bars(strat: dict, cap_days: float | None = None) -> int:
+    """Cold-warmup `warmup_bars` sized to match a full UAD's natural
+    warmup_days for this strategy, so indicator convergence at a window
+    start matches Update-All-Data. Inverse of the warmup_days→bars mapping
+    in services.get_strategy_trades_for_window.
+
+    Single source of truth for the windowed backtest append (Tier 2) and
+    the B2 edge-band replace in both append lanes — keeps their warmup
+    identical so the band recompute is UAD-faithful.
+
+    `cap_days` (B2 edge-band): cap the warmup at this many trading days to
+    keep the band recompute cheap. TF-SAFE: the cap is scaled UP for coarse
+    timeframes so the COARSEST TF always gets at least
+    `_EDGE_BAND_CONV_BARS` bars to converge — i.e. a 10Sec strategy is
+    capped hard (validated identical to full warmup) but a 15m/1H gate
+    automatically gets more calendar days. The cap can only ever REDUCE
+    warmup below the full requirement, never below the convergence floor,
+    so it cannot under-warm. None = no cap (full UAD parity).
+    """
+    from strategy_data import resolve_visible_window, compute_warmup_days
+    from data_loader import (
+        BARS_PER_DAY, get_required_tfs_from_confluence, get_tf_from_label,
+    )
+    import math as _math
+    uad_vs, uad_ve, _src = resolve_visible_window(strat)
+    uad_visible_days = max(
+        1.0, (uad_ve - uad_vs).total_seconds() / 86400.0)
+    uad_warmup_days = compute_warmup_days(strat, uad_visible_days)
+    req_labels = get_required_tfs_from_confluence(
+        strat.get('confluence', []))
+    sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
+    all_tfs = [strat.get('timeframe', '1Min')] + list(sec_tfs)
+    bpds = [BARS_PER_DAY.get(tf, 390) for tf in all_tfs]
+    binding_bpd = min(bpd for bpd in bpds if bpd > 0) if bpds else 390
+    if cap_days is not None:
+        # TF-safe cap: floor at `cap_days`, but scale up so the coarsest TF
+        # gets >= _EDGE_BAND_CONV_BARS bars (in trading days). For fine TFs
+        # the floor dominates (validated); for coarse TFs the convergence
+        # term dominates → more days. Never exceeds the full requirement.
+        conv_days = (_EDGE_BAND_CONV_BARS / binding_bpd) if binding_bpd else 0
+        eff_cap = max(cap_days, conv_days)
+        uad_warmup_days = min(uad_warmup_days, eff_cap)
+    return max(
+        100, int(_math.ceil(uad_warmup_days * binding_bpd * 252 / 365)))
+
+
+def _replace_edge_band(svc, strat, strategy_id, user_id, cutoff,
+                       model_override, ds_tag, data_source_filter,
+                       diagnostics_source):
+    """B2 fix — recompute the trailing edge band
+    [cutoff - _APPEND_EDGE_BAND_MINUTES, cutoff] with full UAD-parity
+    warmup (resume DISABLED) and REPLACE it in the trades table.
+
+    The windowed append under-generates trades near the data edge
+    (unsettled REST + imperfect resume warmup) and insert-only dedup
+    never rewrites them, so the band fossilizes → live↔backtest pairing
+    degrades the closer you measure to "now". This rewrites the band
+    every append with a settled, full-warmup recompute. The band sits
+    entirely behind the lag cutoff, so it never touches unsettled bars.
+
+    Independent of the windowed append's new-trade detection so it heals
+    prior fossils even on a "no new trades" append. Returns rows written.
+
+    Fully guarded: a band-replace failure NEVER crashes the append (the
+    band is a measurement-trust safety net, not the append's job).
+    """
+    import pandas as pd  # local import — module-level scope lacks pd
+    edge_ceil = cutoff
+    edge_start = cutoff - timedelta(minutes=_APPEND_EDGE_BAND_MINUTES)
+    try:
+        band_df = svc.get_strategy_trades_for_window(
+            strat, since_dt=edge_start, until_dt=edge_ceil,
+            model_override=model_override,
+            resume_snapshot_b64=None,  # cold warmup (no resume), capped
+            warmup_bars=_uad_warmup_bars(strat, cap_days=_EDGE_BAND_WARMUP_DAYS),
+            diagnostics_source=diagnostics_source,
+        )
+        band_records = []
+        if (band_df is not None and len(band_df) > 0
+                and 'exit_fill_ts' in band_df.columns):
+            bxt = pd.to_datetime(band_df['exit_fill_ts'], utc=True,
+                                 errors='coerce')
+            bet = pd.to_datetime(band_df['entry_fill_ts'], utc=True,
+                                 errors='coerce')
+            band_df = band_df[band_df['exit_fill_ts'].notna()
+                              & (bxt <= pd.Timestamp(edge_ceil))
+                              & (bet >= pd.Timestamp(edge_start))]
+            for rec in _serialize_trades(band_df):
+                rec['data_source'] = ds_tag
+                band_records.append(rec)
+        from db import replace_trades_in_window_admin
+        n = replace_trades_in_window_admin(
+            strategy_id, user_id, band_records,
+            data_source_filter=data_source_filter,
+            entry_floor_iso=edge_start.isoformat(),
+            entry_ceil_iso=edge_ceil.isoformat())
+        logger.info(
+            "[EDGE-BAND] sid=%s %s replace [%s..%s): %d trades",
+            strategy_id, data_source_filter, edge_start.isoformat()[:19],
+            edge_ceil.isoformat()[:19], n)
+        return n
+    except Exception as e:
+        logger.warning(
+            "[EDGE-BAND] sid=%s replace failed (append continues): %s",
+            strategy_id, e)
+        return -1  # sentinel: failed → caller must NOT skip band inserts
+
 # ── Snapshot lineage guard (2026-06-11, iter 0611a) ─────────────────────
 # Appends resume from persisted engine snapshots (engine_snapshot_b64 /
 # _algo); FULL recompute (Update All Data) never rewrites them. So
@@ -910,6 +1063,27 @@ def append_new_trades_for_strategy(
         algo_fingerprint = compute_backtest_fingerprint(strat)
         new_algo_snapshot_b64 = None
 
+        # ── B2 edge-band replace (2026-06-15) ──────────────────────────
+        # HOISTED above the windowed engine run + its early returns so it
+        # heals the trailing band on EVERY append. Recompute the band with
+        # full UAD-parity warmup (resume disabled) and REPLACE it.
+        # Throttled on the cron; force=True (manual) always heals now.
+        algo_ds_tag = f'cache_{algo_model}'
+        edge_start_iso = (cutoff - timedelta(
+            minutes=_APPEND_EDGE_BAND_MINUTES)).isoformat()
+        _last_band_algo = cfg.get('last_edge_band_ts_algo')
+        _do_band_algo = _APPEND_EDGE_BAND_ENABLED and (
+            force or not _last_band_algo or (
+                (now_dt - datetime.fromisoformat(_last_band_algo)).total_seconds()
+                > _APPEND_EDGE_BAND_THROTTLE_SEC))
+        band_replaced = 0
+        if _do_band_algo:
+            band_replaced = _replace_edge_band(
+                svc, strat, strategy_id, user_id, cutoff,
+                model_override=algo_model, ds_tag=algo_ds_tag,
+                data_source_filter='cache_%', diagnostics_source='algo')
+            cfg['last_edge_band_ts_algo'] = now_iso
+
         try:
             if use_windowed:
                 since_dt = datetime.fromisoformat(latest_entry_iso)
@@ -1014,6 +1188,8 @@ def append_new_trades_for_strategy(
             ek = ek_raw.isoformat() if hasattr(ek_raw, 'isoformat') else str(ek_raw)
             if latest_entry_iso and ek <= latest_entry_iso:
                 continue  # boundary or older — already in DB
+            if _do_band_algo and band_replaced >= 0 and ek >= edge_start_iso:
+                continue  # band owned by the edge-band replace (it succeeded)
             new_records.append(row)
 
         # Convert new records to JSON-safe dicts (re-uses existing
@@ -1038,6 +1214,10 @@ def append_new_trades_for_strategy(
                     "[ALGO-APPEND] strategy=%s insert_trade failed: %s",
                     strategy_id, e)
 
+        # (Edge-band replace already ran, hoisted above — its rows are in
+        # the DB. band_replaced carries its count for the Hi-Fi gate below
+        # so the fresh band rows get L-type refinement.)
+
         # Auto-Hi-Fi for cache-aligned and Hi-Fi-opted-in backtest
         # models. Refines L-type entry/exit timestamps from bar-level
         # to per-second precision so algo history matches live alerts.
@@ -1058,7 +1238,8 @@ def append_new_trades_for_strategy(
         HIFI_BACKTEST_MODELS = {'rest_hifi', 'cache_locked', 'cache_corrected'}
         hifi_summary = None
         algo_model_for_hifi = cfg.get('algo_model') or cfg.get('backtest_model')
-        if inserted > 0 and algo_model_for_hifi in HIFI_BACKTEST_MODELS:
+        if ((inserted > 0 or band_replaced > 0)
+                and algo_model_for_hifi in HIFI_BACKTEST_MODELS):
             try:
                 from api.routers.strategies import run_hifi_pass2
                 # Phase D (2026-05-14): ALGO-APPEND writes cache rows,
@@ -1427,6 +1608,29 @@ def append_new_backtest_trades_for_strategy(
     if _need_ctx_swap:
         set_admin_user_context(user_id)
 
+    # ── B2 edge-band replace (2026-06-15) ──────────────────────────────
+    # HOISTED above the windowed-append logic so it heals the trailing
+    # band on EVERY append — including the all-in-lag / all-already-stored
+    # early-return paths where the windowed run produces nothing new but
+    # the band still carries under-generated fossils. Recompute the band
+    # with full UAD-parity warmup (resume disabled) and REPLACE it.
+    # Throttled on the cron (cost ~12s/strategy); force=True heals now.
+    edge_start_iso = (cutoff - timedelta(
+        minutes=_APPEND_EDGE_BAND_MINUTES)).isoformat()
+    _last_band_bt = cfg.get('last_edge_band_ts_bt')
+    _do_band_bt = _APPEND_EDGE_BAND_ENABLED and (
+        force or not _last_band_bt or (
+            (now_dt - datetime.fromisoformat(_last_band_bt)).total_seconds()
+            > _APPEND_EDGE_BAND_THROTTLE_SEC))
+    bt_band_replaced = 0
+    if _do_band_bt:
+        bt_band_replaced = _replace_edge_band(
+            svc, strat, strategy_id, user_id, cutoff,
+            model_override=bt_model, ds_tag=ds_tag,
+            data_source_filter='backtest_%',
+            diagnostics_source='backtest')
+        cfg['last_edge_band_ts_bt'] = now_iso
+
     # LEF 2c port (2026-05-20): snapshot resume on the backtest lane.
     # Read the stored snapshot from config (one-per-lane scheme:
     # engine_snapshot_b64 = backtest lane, engine_snapshot_b64_algo =
@@ -1512,12 +1716,17 @@ def append_new_backtest_trades_for_strategy(
             ek = ek_raw.isoformat() if hasattr(ek_raw, 'isoformat') else str(ek_raw)
             if ek <= latest_ts_iso:
                 continue  # already in DB (boundary or older)
+            if _do_band_bt and bt_band_replaced >= 0 and ek >= edge_start_iso:
+                continue  # band owned by the edge-band replace (it succeeded)
             new_records.append(row)
 
         if not new_records:
+            # No new trades to append. The trailing band was already
+            # healed by the hoisted edge-band replace above (B2 fix).
             cfg['last_recompute_until_ts'] = now_iso
             _stamp_config(strategy_id, user_id, cfg)
             return {'status': 'no_new_trades', 'inserted': 0,
+                    'band_replaced': bt_band_replaced,
                     'cutoff': cutoff_iso, 'reason': 'all_already_stored',
                     'elapsed_s': round(_time.time() - t0, 2)}
 
@@ -1543,6 +1752,8 @@ def append_new_backtest_trades_for_strategy(
                     "[BT-APPEND] sid=%s insert_trade failed: %s",
                     strategy_id, e)
 
+        # (Edge-band replace already ran, hoisted above — its rows are in
+        # the DB, so the KPI recompute below reflects the corrected band.)
         try:
             from trades_store import _cache_invalidate
             _cache_invalidate(strategy_id, user_id)
@@ -1800,30 +2011,10 @@ def append_windowed_backtest_trades_for_strategy(
                     "falling back to cold warmup: %s", strategy_id, e)
 
         # Compute cold-warmup `warmup_bars` matching UAD's natural
-        # warmup_days for this strategy. Inverse of services.py:622
-        #   warmup_days ≈ warmup_bars / binding_bpd × 365/252
-        # → warmup_bars ≈ warmup_days × binding_bpd × 252/365
-        # We always pass this; it's only USED on the fallback path
-        # (snapshot resume ignores warmup_bars per services.py:627).
-        from strategy_data import (
-            resolve_visible_window, compute_warmup_days,
-        )
-        from data_loader import (
-            BARS_PER_DAY, get_required_tfs_from_confluence, get_tf_from_label,
-        )
-        import math as _math
-        uad_vs, uad_ve, _src = resolve_visible_window(strat)
-        uad_visible_days = max(
-            1.0, (uad_ve - uad_vs).total_seconds() / 86400.0)
-        uad_warmup_days = compute_warmup_days(strat, uad_visible_days)
-        req_labels = get_required_tfs_from_confluence(
-            strat.get('confluence', []))
-        sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
-        all_tfs = [strat.get('timeframe', '1Min')] + list(sec_tfs)
-        bpds = [BARS_PER_DAY.get(tf, 390) for tf in all_tfs]
-        binding_bpd = min(bpd for bpd in bpds if bpd > 0) if bpds else 390
-        uad_warmup_bars = max(
-            100, int(_math.ceil(uad_warmup_days * binding_bpd * 252 / 365)))
+        # warmup_days for this strategy (shared helper — single source of
+        # truth with the B2 edge-band replace). Only USED on the fallback
+        # path (snapshot resume ignores warmup_bars per services.py:627).
+        uad_warmup_bars = _uad_warmup_bars(strat)
 
         try:
             if resume_b64:

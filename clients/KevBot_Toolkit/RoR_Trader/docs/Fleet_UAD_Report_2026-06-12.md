@@ -895,3 +895,190 @@ Collapsed by default; only populates for windows ≥ 2026-06-12.
 - ✅ Alert Lens Live mode — dcede9a, backend verified, frontend awaits visual QA
 - ⏸️ B4 (1Min+ wait-for-close) — Monday, needs live verification
 - ⏸️ B2 (append edge re-verify) — Monday, nothing to act on until new appends
+
+---
+# 🌾 MONDAY 2026-06-15 — HARVEST DAY VERDICT (the gate fix held)
+
+**Setup:** full-fleet UAD ran over the weekend → all 46 lanes on post-fix code +
+scrubbed cache. Kevin appended today's RTH this morning; markets ~3.75h in on a clean
+liquid-tape session. Measured the canary cohort with `_uad_fleet_report.py` at ±5s.
+
+**Measurement window: 14:45 → 16:15Z** (deliberately clipped ~20 min *inside* BT-lane
+coverage; lanes were fresh to ~16:35–17:09). This excludes TBD-lag alerts — alerts
+newer than the BT reference, which masquerade as phantoms. Proof it matters: 302 read
+**73.2%** to 17:00 vs **89.1%** clipped to 16:30 vs the clean numbers below — ~22 of 32
+"phantoms" were just lane-edge lag. **The clipped window is the honest divergence read.**
+
+## 🎯 HEADLINE: gated cohort 40% → 91%. The own-records pollution fix is VERIFIED under live fire.
+
+| Band | n | avg combined% | range |
+|---|---|---|---|
+| **Ungated 10s price triggers** | 16 | **94.8%** | 78.9–100 |
+| **Gated 10s cohort** | 16 | **91.2%** | 80.9–100 |
+
+Last week the gated band flooded at 30–73% on multi-strategy SPY hubs. Today it sits
+**right on top of the ungated band.** Worst Friday offender **303 (UT Bot V4 gate) =
+100.0%, 62/0/0, zero phantoms.** Matched-pair quality is perfect fleet-wide: entries
+~100%, exits med +0.0s everywhere. **The gate divergence is solved for the price cohort.**
+
+## Tiered results (clean 14:45–16:15Z window)
+
+**TIER S — Flawless (100%, 0 phantom / 0 missed):**
+- 303 UT Bot V4 **gate** (62/0/0) · 280/278 EMA PP v4/v3 trig (134/0/0) · 288 RSI Zones 2 trig · 276 Bollinger trig · 307 KO-gated · 306 DIA-gated
+
+**TIER A — Excellent (95–99%):**
+- 296 Strat Assistant trig 98.8 · 300 Swing 1-2-3 trig 97.4 · 284 MACD Hist v2 trig 97.3 · 270/268 UT Bot canary 95.5 · 273 UT Bot TSLA 95.2
+
+**TIER B — Good (90–95%):**
+- 290 RVOL v2 trig 94.7 · 267 loose-conf gate 94.6 · 263 UT Bot NoConf 93.7 · 302 UT Bot trig (control) 93.3 · 283 EMA Stack v2 **gate** 93.3 · 299 SuperTrend **gate** 93.3 · 286 MACD Line v2 trig 93.2 · 279/281 EMA PP **gate** 92.6 · 277 Bollinger **gate** 91.8 · 287 MACD Line v2 **gate** 91.3
+
+**TIER C — Okay (80–90%; small-n or recovering):**
+- 295 Stochastic gate 88.6 · **305 VWAP v2 gate 87.5 (RECOVERED — was 18.1%)** · 285 MACD Hist v2 gate 86.8 · 294 Stochastic trig 83.3 (n=5) · 301 Swing 1-2-3 gate 82.8 · 297 Strat Assistant gate 82.6 · 293 SR Channels gate 80.9 (missed-heavy) · 282 EMA Stack v2 trig 78.9 ±5s but **100% ±10s** (latency-only, healthy)
+
+**TIER D — Draggers (every one is a KNOWN class, not a new bug):**
+| sid | combined% | class | divergence signature |
+|---|---|---|---|
+| 265 TSLA 1Min | 24.1% | **B4 1Min early-fire** | entries med **−60.0s**, 4 early; phantom-heavy (14) |
+| 269 SPY 1Min | 16.7% | **B4** | 1 early entry; live 11 pairs vs BT 3 trades (over-fires) |
+| 271 SPY 5m-gate | 14.3% | **live gate under-pass** (inverse of flood) | matched pairs clean (entry 86%, sig-exit 100%) but **35 unmatched BT entries** (42 BT / 6 alert), only 1 phantom → live 5m gate BLOCKS where BT passes |
+| 292 SR Channels trig | 14.0% | **pack WIP** (Kevin-flagged) | signal exits med **+40s**, 0% ±5s; 5 unmatched entries + 5 unmatched stops — indicator genuinely misaligned |
+| 275 TSLA Stoch-gate | 0% | **dead-live** (sid 274 class) | **0 alerts / 22 BT trades** — engine emitting nothing for this sid |
+| 174 TSLA 1Min dual-gate | 0% | B4 + SR pack + dual-gate compound | tiny n (1 alert pair / 3 BT) |
+
+**EXCLUDED — n=0 empty windows (quiet morning, NOT failures):**
+- 272 (10m Stoch gate) · 289 (RSI EXTREME_OVERBOUGHT gate) · 291 (RVOL EXTREME gate) · 136 (1Min dual gate) · 304 (VWAP v2 trigger) — rare-state gates simply didn't trigger; 304 had no signals. Dropping these into the average would falsely depress it.
+
+## By-pack-family (which packs are trusted vs WIP)
+
+| Pack | trigger | gate | verdict |
+|---|---|---|---|
+| UT Bot V4 | 93–95% | **100%** | ⭐ excellent both modes |
+| EMA PP v3/v4 | 100% | 92.6% | ⭐ excellent |
+| Bollinger | 100% | 91.8% | ⭐ excellent |
+| EMA Stack v2 | 100% ±10s | 93.3% | ✅ good |
+| MACD Line/Hist v2 | 93–97% | 86.8–91.3% | ✅ good |
+| SuperTrend | — | 93.3% | ✅ good |
+| RSI Zones 2 | 100% | (n=0) | ✅ good |
+| Strat Assistant | 98.8% | 82.6% | ✅ good (gate softer) |
+| Swing 1-2-3 | 97.4% | 82.8% | ✅ good (gate softer) |
+| Stochastic | 83.3% (n=5) | 88.6% | 🟡 okay |
+| RVOL v2 | 94.7% | (n=0) | ✅ **volume fix held** |
+| VWAP v2 | (n=0) | **87.5%** | ✅ **RECOVERED from 18% laggard** |
+| **SR Channels** | **14.0%** | 80.9% | 🔴 **WIP indicator — the real pack dragger** |
+
+**Answer to "what's dragging it down":** exactly what Kevin predicted — **SR Channels**
+is the only genuinely underperforming pack (it's a known WIP indicator, not a trusted
+one). VWAP v2 and RVOL v2 — last week's volume laggards — have fully recovered. Beyond
+SR Channels, the only draggers are TF-level (**1Min B4 early-fire**, fixable), one
+**dead-live** strategy (275), and one **rare 5m-gate under-pass** (271). No trusted pack
+is failing.
+
+## Residual classes after today (all classified, nothing new)
+1. **B4 1Min+ early-fire** — confirmed live (265 entries med −60s). Designed fix pending Kevin go. ← top remaining bug.
+2. **SR Channels pack** — needs indicator/migration work (Phase 4). Not an engine bug.
+3. **Dead-live 275** — 0 alerts / 22 BT; same silent class as 274. Quick dig queued.
+4. **271 5m-gate under-pass** — single rare-config strategy; live 5m gate blocks where BT passes (possible 5m cross-TF record gap, inverse of the old 2m flood). Low priority.
+5. Thin-tape WS-vs-REST trigger noise (extended hours only) — irreducible, vanishes on liquid RTH (today proves it).
+
+## ⚠️ SECOND READ (post 2nd append, ~18:09Z) — "clean-then-messier" = B2 confirmed LIVE
+
+Kevin re-clicked Update New Data (lanes fresh to ~18:05Z) and noticed By-Hour looked
+clean a few hours ago but messier later. Re-measured 14:45→**17:50**Z (the longer window
+that includes the afternoon) — the whole fleet sagged to **~77%** (TRIG 77.3 / GATE 77.8,
+essentially equal). **Per-hour decomposition (302 control, 303 gated, 296 trigger — all
+identical shape):**
+
+| entry hour | 302 paired | 303 paired | 296 paired |
+|---|---|---|---|
+| 14:00Z | 92% | 100% | 100% |
+| 15:00Z | 92% | 100% | 98% |
+| 16:00Z | 80% | 33% | 73% |
+| 17:00Z | **49%** | 50% | 54% |
+
+**It degrades with RECENCY, identically across ungated controls and gated strategies →
+measurement-side, NOT a gate or engine regression.** Phantom characterization (302,
+17:00–17:50Z): 41 alerts vs only 26 BT edges; **33 phantom alerts have NO BT trade within
+60s** (not timestamp drift — genuine BT **under-generation**). All afternoon BT trades
+were written by today's appends (17:21Z, 17:56Z).
+
+**Root cause = B2 append-edge fossilization (Friday's diagnosis, now reproduced live):**
+appends write BT trades for bars near the fresh data edge while REST is still unsettled,
+under-generating; **insert-only dedup never rewrites them**, so each append leaves a
+fossil band. Morning bars were settled (≥15min old) when appended → clean. Afternoon
+bars were the fresh edge → fossilized. Friday proved a **full Update All Data** rewrites
+the band (302: 47.8%→78.6%, +30.8 pts).
+
+**Implications:**
+- **The morning 91–95% is the TRUE engine performance.** The afternoon sag is an artifact
+  of appending-while-unsettled, not divergence. The harvest verdict stands.
+- **By-Hour will always look "messier" in recent hours** until either (a) a full UAD
+  rewrites the band, or (b) the B2 fix lands (append re-verifies/replaces its last edge
+  band each run). This is a measurement-trust bug, not an engine bug.
+- **This is precisely why the Health Overview needs the TBD column** — TBD should absorb
+  these near-edge under-generated cases so they don't read as phantoms.
+- Confirmation test available cheaply (no Railway redeploy): run **Update ALL Data** (not
+  New Data) on sid 302 → afternoon should recover to ~90%+.
+
+### ✅ CONFIRMED (full UAD on 302, landed 18:31Z) — mechanism (B)
+After Kevin ran Update ALL Data on sid 302, the afternoon recovered: **16:00Z 80%→100%,
+17:00Z 49%→98%**, and BT edges went **26 → 94** in 16:00–17:50Z. The full recompute
+GENERATED the trades the append was missing → **(B) windowed under-generation near the
+edge**, not (A) stale-row replacement. Root cause = the append's windowed recompute uses
+imperfect resume-snapshot warmup (and/or unsettled REST), producing fewer trades than a
+full-warmup backtest, and insert-only dedup never backfills. **Fix = edge-band replace
+with full UAD-parity warmup** (plan: `~/.claude/plans/merry-wobbling-corbato.md`).
+
+### ⛔ B2 FIX ATTEMPT #1 — PARKED (2026-06-15, dormant env-gated)
+Built edge-band-replace-with-full-warmup (helper `_replace_edge_band`, db
+`replace_trades_in_window_admin` + atomic RPC migration). Validated on sid 296
+(SPY 10Sec, fossilized afternoon 64%). **Two blockers:**
+1. **Cost: 427s/strategy.** Full UAD-parity warmup on a 10Sec strategy =
+   ~48,661 warmup bars ≈ a full UAD. The warmup IS the cost, so "band replace
+   with full warmup" gives ~no speed win over a full UAD. Not viable per-append.
+2. **Incomplete heal even WITH full warmup.** Post-replace, the band's recent
+   slice (17:50–18:35Z) hit **99%** but the earlier slice (16:35–17:50Z) only
+   **66%** — residual under-generation inside the same recompute window, not
+   understood (warmup-insufficiency? data? gating? local-env pack quirk?).
+**Status:** code dormant behind `APPEND_EDGE_BAND_ENABLED=false` (appends behave
+exactly as before — no regression, safe to deploy). Needs a different approach:
+- **(a) Lagged-snapshot resume** — persist a snapshot ~120min behind latest;
+  resume from it (converged state, no warmup → fast) to re-process the settled
+  band and REPLACE. Matches Kevin's "we have the state, just fill the gap."
+- **(b) Gap-detection targeted recompute** (Kevin's 2026-06-05 P0 design) —
+  cheap cron detects fossil windows (alerts ≫ BT in a bucket), queues a targeted
+  recompute only there. Doesn't slow normal appends.
+- First: understand the 66%/99% split (does full UAD on 296 also show it, or is
+  it recompute-specific?).
+**Immediate trust win instead → Part B dashboard:** a "settled-through" window +
+TBD column makes the dashboard compute its headline on settled data only, so the
+clean-then-messier artifact is invisible WITHOUT the engine fix.
+
+### ✅ B2 FIX ATTEMPT #2 — RESOLVED via capped warmup (2026-06-15, validated, dormant)
+The attempt-#1 blockers are solved:
+1. **Mechanism is correct** — attempt-#1's "66%" was a measurement artifact (band was
+   ~[17:33,19:38]; I'd measured [16:00,17:50], so mostly pre-band fossils). Entry-range
+   proof: band-replace rows densely cover their window; pre-band fossils correctly
+   untouched. Where the band covers, it heals 100%.
+2. **Cost fixed by a TF-safe warmup cap.** Full UAD-parity warmup ≈ a full UAD (427s).
+   Capping the band recompute's warmup at 5 trading days (scaled UP for coarse TFs so
+   the coarsest TF always gets ≥300 bars — never under-warms) cuts it to ~55–83s and is
+   **byte-identical to full warmup**, validated on three strategies covering the fleet's
+   TF range: **296 ungated 10Sec (103=103), 303 2m gate (23=23), 272 10m gate (27=27)** —
+   zero trade differences each. Regression tests: no new failures (4 pre-existing env
+   failures unchanged).
+
+**Shipped (local, DORMANT):** `_replace_edge_band` (hoisted above append early-returns,
+both lanes) + `db.replace_trades_in_window_admin` (atomic RPC `append_edge_band_replace_rpc.sql`
++ client-side fallback) + TF-safe `_uad_warmup_bars(cap_days=...)`. Gated OFF behind
+`APPEND_EDGE_BAND_ENABLED=false` → appends behave exactly as before until activated.
+30-min cron throttle; manual `force=True` heals immediately.
+
+**Known limit (documented):** an extreme TF spread (e.g. 10Sec primary + a DAILY gate)
+can't be served cheaply by any warmup cap — that needs the **lagged-snapshot resume**
+follow-up (TF-agnostic, no warmup; reuses the existing pack-modular snapshot
+serialization). Not in the current fleet.
+
+**EOD deploy sequence:** (1) commit + push after-hours (markets closed) → deploys dormant
+code, zero risk; (2) set `APPEND_EDGE_BAND_ENABLED=true` on Railway to activate (single
+reversible flag); (3) run Update All Data overnight for a clean baseline; (4) tomorrow's
+appends use the band-replace → stay clean. Backup branch `dev-backup-pre-b2-fix`.

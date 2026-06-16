@@ -113,7 +113,7 @@ type SortKey =
   | 'flags' | 'name' | 'symbol' | 'timeframe'
   | 'snapshot' | 'kpis' | 'lastTrade' | 'trades'
   | 'lastBt' | 'lastAlert'
-  | 'paired' | 'phantom' | 'missed';
+  | 'combined' | 'paired' | 'phantom' | 'missed' | 'tbd';
 
 function rowSortValue(
   r: StrategyHealthRow,
@@ -135,10 +135,21 @@ function rowSortValue(
     // (one fleet-wide cutoff so identical strategies report identical
     // numbers) rather than per-strategy _fair (each strategy uses its
     // own cutoff, which drifts and produces misleading asymmetry).
+    case 'combined':  return -(r.combined_pct ?? -1); // nulls (no data) sort last
     case 'paired':    return -(applesToApples ? r.paired_count_global_fair : r.paired_count);
     case 'phantom':   return -(applesToApples ? r.phantom_count_global_fair : r.phantom_count);
     case 'missed':    return -(applesToApples ? r.missed_count_global_fair : r.missed_count);
+    case 'tbd':       return -r.tbd_count;
   }
+}
+
+// Combined% cell color — matches the By-Hour tab convention.
+function combinedPctColor(v: number | null): string {
+  if (v === null || v === undefined) return 'var(--text-muted)';
+  if (v >= 90) return '#7fd081';   // green
+  if (v >= 70) return 'var(--text)';
+  if (v >= 40) return '#ffc107';   // amber
+  return '#ef5350';                // red
 }
 
 // ── Component ─────────────────────────────────────────────────────────
@@ -486,9 +497,11 @@ export default function StrategyHealthV1() {
                 <Th onClick={() => toggleSort('lastBt')}    label={`Last BT${arrow('lastBt')}`} />
                 <Th onClick={() => toggleSort('lastAlert')} label={`Last alert${arrow('lastAlert')}`} />
                 <Th onClick={() => toggleSort('trades')}    label={`Trades${arrow('trades')}`} align="right" />
+                <Th onClick={() => toggleSort('combined')}  label={`Combined %${arrow('combined')}`} align="right" />
                 <Th onClick={() => toggleSort('paired')}    label={`Paired ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('paired')}`} align="right" />
                 <Th onClick={() => toggleSort('phantom')}   label={`Phantom ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('phantom')}`} align="right" />
                 <Th onClick={() => toggleSort('missed')}    label={`Missed ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('missed')}`} align="right" />
+                <Th onClick={() => toggleSort('tbd')}       label={`TBD${arrow('tbd')}`} align="right" />
                 <th style={{ padding: '6px 8px', fontWeight: 500 }}
                     title="Snapshot subscription. ON = data-worker maintains a backtest snapshot. OFF = strategy is parked in the snapshot lane (alerts unaffected).">
                   Sub
@@ -563,6 +576,16 @@ export default function StrategyHealthV1() {
                        (one fleet-wide cutoff). Per-strategy _fair shown in
                        tooltip for reference along with raw. */}
                   <td style={{ padding: '6px 8px', textAlign: 'right',
+                               fontVariantNumeric: 'tabular-nums', fontWeight: 600,
+                               color: combinedPctColor(r.combined_pct) }}
+                      title={`Combined % = paired / (paired + phantom + missed) on `
+                        + `apples-to-apples counts: `
+                        + `${r.paired_count_global_fair}/(${r.paired_count_global_fair}`
+                        + `+${r.phantom_count_global_fair}+${r.missed_count_global_fair}). `
+                        + `Excludes ${r.tbd_count} TBD (lane not yet caught up).`}>
+                    {r.combined_pct === null ? '—' : `${r.combined_pct.toFixed(1)}%`}
+                  </td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',
                                color: (applesToApples ? r.paired_count_global_fair : r.paired_count) > 0
                                  ? '#7fd081' : 'var(--text-muted)' }}
@@ -588,6 +611,12 @@ export default function StrategyHealthV1() {
                         ? `global-fair: ${r.missed_count_global_fair} · per-strategy fair: ${r.missed_count_fair} · raw: ${r.missed_count}`
                         : `raw: ${r.missed_count} · global-fair (apples-to-apples): ${r.missed_count_global_fair} · per-strategy fair: ${r.missed_count_fair}`}>
                     {(applesToApples ? r.missed_count_global_fair : r.missed_count) || '—'}
+                  </td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right',
+                               fontVariantNumeric: 'tabular-nums',
+                               color: r.tbd_count > 0 ? 'var(--text)' : 'var(--text-muted)' }}
+                      title="TBD = alerts newer than the backtest lane's coverage. Not phantoms — the reference hasn't caught up; they pair on the next append. Excluded from Combined %.">
+                    {r.tbd_count || '—'}
                   </td>
                   <td style={{ padding: '6px 8px' }}>
                     <button
@@ -627,7 +656,7 @@ export default function StrategyHealthV1() {
               ))}
               {filteredRows.length === 0 && (
                 <tr>
-                  <td colSpan={10} style={{ padding: 16, textAlign: 'center',
+                  <td colSpan={16} style={{ padding: 16, textAlign: 'center',
                                             color: 'var(--text-muted)' }}>
                     No strategies match the current filter.
                   </td>

@@ -1378,6 +1378,130 @@ def replace_trades_admin(
     return total_inserted
 
 
+def replace_trades_in_window_admin(
+    strategy_id: int,
+    user_id: str,
+    trades: list[dict],
+    data_source_filter: str,
+    entry_floor_iso: str,
+    entry_ceil_iso: str,
+    chunk_size: int = 250,
+) -> int:
+    """Replace the trades in a bounded entry-time WINDOW for one lane.
+
+    The B2 fix (2026-06-15): "Update New Data" appends under-generate
+    trades near the data edge (windowed engine recompute on unsettled
+    REST + imperfect resume warmup), and the INSERT-only dedup on
+    (strategy_id, entry_fill_ts, exit_fill_ts) means the fresh, settled
+    recompute can never REPLACE the stale rows. This primitive lets each
+    append REWRITE its trailing edge band: DELETE every `data_source_filter`
+    row with entry_fill_ts in [floor, ceil) then INSERT the freshly
+    recomputed set.
+
+    Scope is (strategy_id AND data_source LIKE filter AND entry_fill_ts in
+    window) so it never touches the OTHER lane (backtest_% vs cache_%) nor
+    settled history below the band.
+
+    Concurrency (Kevin's call 2026-06-15): the API and the live worker can
+    append the same strategy from SEPARATE processes, so an in-process lock
+    can't serialize them, and the Supabase client runs DELETE and INSERT as
+    separate HTTP requests (no shared txn) — a naive delete-then-insert can
+    briefly expose an empty band that reads as a phantom spike. The atomic
+    path is the `replace_trades_in_window` Postgres function
+    (migrations/append_edge_band_replace_rpc.sql) which wraps
+    pg_advisory_xact_lock + DELETE + INSERT in ONE transaction. If that
+    function isn't installed yet, we fall back to client-side
+    delete-then-insert (sub-second window; fine for manual one-at-a-time
+    verification before the migration is run).
+
+    Returns inserted row count.
+    """
+    client = get_admin_client()
+
+    # Shape rows once (same as replace_trades_admin / insert path).
+    rows: list[dict] = []
+    for trade in trades:
+        row = _trade_to_row(trade)
+        row['strategy_id'] = strategy_id
+        row['user_id'] = user_id
+        row.pop('id', None)
+        row.pop('created_at', None)
+        rows.append(row)
+
+    # ── Preferred path: atomic server-side RPC (advisory-locked txn).
+    try:
+        def _do_rpc():
+            return client.rpc('replace_trades_in_window', {
+                'p_strategy_id': strategy_id,
+                'p_user_id': user_id,
+                'p_ds_filter': data_source_filter,
+                'p_entry_floor': entry_floor_iso,
+                'p_entry_ceil': entry_ceil_iso,
+                'p_rows': rows,
+            }).execute()
+
+        result = _execute_with_retry(
+            _do_rpc,
+            op_name=(f'replace_trades_in_window RPC sid={strategy_id} '
+                     f'filter={data_source_filter!r} '
+                     f'[{entry_floor_iso}..{entry_ceil_iso})'),
+            max_attempts=1,  # don't retry a missing-function error
+        )
+        # RPC returns the inserted count as a scalar.
+        val = result.data
+        if isinstance(val, list):
+            val = val[0] if val else 0
+        return int(val) if val is not None else 0
+    except Exception as e:
+        msg = str(e).lower()
+        # Function not installed yet → fall back. Any other error also
+        # falls back (the band replace must not break the append).
+        if not ('could not find' in msg or 'does not exist' in msg
+                or 'pgrst202' in msg or '404' in msg or 'schema cache' in msg):
+            logger.warning(
+                "[BAND-REPLACE] sid=%s RPC failed (%s); using client-side "
+                "fallback", strategy_id, e)
+
+    # ── Fallback: client-side scoped DELETE then chunked INSERT.
+    def _do_delete():
+        return (client.table('trades').delete()
+                .eq('strategy_id', strategy_id)
+                .like('data_source', data_source_filter)
+                .gte('entry_fill_ts', entry_floor_iso)
+                .lt('entry_fill_ts', entry_ceil_iso)
+                .execute())
+
+    _execute_with_retry(
+        _do_delete,
+        op_name=(f'replace_trades_in_window_admin DELETE sid={strategy_id} '
+                 f'filter={data_source_filter!r} '
+                 f'[{entry_floor_iso}..{entry_ceil_iso})'),
+    )
+
+    if not rows:
+        return 0
+
+    total_inserted = 0
+    total_chunks = (len(rows) + chunk_size - 1) // chunk_size
+    for idx in range(0, len(rows), chunk_size):
+        chunk = rows[idx:idx + chunk_size]
+        chunk_num = (idx // chunk_size) + 1
+
+        def _do_insert_chunk(_chunk=chunk):
+            return client.table('trades').insert(_chunk).execute()
+
+        result = _execute_with_retry(
+            _do_insert_chunk,
+            op_name=(
+                f'replace_trades_in_window_admin INSERT sid={strategy_id} '
+                f'chunk {chunk_num}/{total_chunks} ({len(chunk)} rows)'
+            ),
+        )
+        total_inserted += len(result.data) if result.data else len(chunk)
+
+    return total_inserted
+
+
 # ============================================================
 # Monitor Status CRUD (database path)
 # ============================================================
