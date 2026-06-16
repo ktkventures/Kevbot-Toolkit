@@ -1428,6 +1428,18 @@ def replace_trades_in_window_admin(
         row.pop('created_at', None)
         rows.append(row)
 
+    # NO-WIPE GUARD (2026-06-16): never DELETE the window when there's nothing
+    # to insert — an empty `trades` (e.g. caller's recompute silently returned
+    # 0 on a failed fetch) would otherwise delete-then-insert-nothing and WIPE
+    # the band. Callers (_replace_edge_band) already guard, but make the
+    # primitive inherently safe too. To intentionally CLEAR a window, delete
+    # explicitly elsewhere.
+    if not rows:
+        logger.info(
+            "replace_trades_in_window_admin sid=%s: 0 rows — no-op (skip "
+            "delete to avoid wiping the window)", strategy_id)
+        return 0
+
     # ── Preferred path: atomic server-side RPC (advisory-locked txn).
     try:
         def _do_rpc():

@@ -716,6 +716,21 @@ def _replace_edge_band(svc, strat, strategy_id, user_id, cutoff,
             for rec in _serialize_trades(band_df):
                 rec['data_source'] = ds_tag
                 band_records.append(rec)
+        # NO-WIPE GUARD (2026-06-16): if the recompute produced 0 band trades,
+        # do NOT delete-then-insert-nothing — that would WIPE the band's
+        # existing (correct) trades on a SILENT empty/failed fetch (e.g. a
+        # Polygon read-timeout that returns no data instead of raising; the
+        # full UAD hit exactly this on sid 303). Return -1 (same as a raised
+        # failure) so the caller's insert loop handles band trades normally
+        # (insert-only, no delete). The band self-heals on the next non-empty
+        # append. Trade-off: a band that is LEGITIMATELY empty keeps any stale
+        # rows until a non-empty recompute — rare, and far safer than a wipe.
+        if not band_records:
+            logger.info(
+                "[EDGE-BAND] sid=%s recompute returned 0 band trades — "
+                "skipping replace to avoid wiping the band (insert-only "
+                "fallback; retries next append)", strategy_id)
+            return -1
         from db import replace_trades_in_window_admin
         n = replace_trades_in_window_admin(
             strategy_id, user_id, band_records,
