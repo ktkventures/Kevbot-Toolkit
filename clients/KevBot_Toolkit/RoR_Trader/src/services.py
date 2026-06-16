@@ -656,6 +656,21 @@ def get_strategy_trades_for_window(
     if len(df) == 0:
         return _result(pd.DataFrame(), resume_snapshot_b64)
 
+    # Honor `until_dt`: the live-cache load path returns bars up to "now"
+    # even when a PAST end_date is requested, so clip explicitly. Without
+    # this, a snapshot taken with a past until_dt (e.g. the band-replace
+    # lagged-snapshot's base_target) lands at "now", and the resume strip
+    # below then removes the entire intended window → 0 trades. No-op for
+    # callers using until=now (the common case). (2026-06-16)
+    _end_clip = pd.Timestamp(end_date)
+    if df.index.tz is not None and _end_clip.tz is None:
+        _end_clip = _end_clip.tz_localize('UTC')
+    elif df.index.tz is None and _end_clip.tz is not None:
+        _end_clip = _end_clip.tz_localize(None)
+    df = df[df.index <= _end_clip]
+    if len(df) == 0:
+        return _result(pd.DataFrame(), resume_snapshot_b64)
+
     if envelope is not None:
         # Strip bars at or before the snapshot — already absorbed.
         last_bar_for_filter = pd.Timestamp(envelope['last_bar_ts'])

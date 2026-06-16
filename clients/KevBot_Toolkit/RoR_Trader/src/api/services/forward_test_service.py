@@ -624,6 +624,19 @@ _EDGE_BAND_WARMUP_DAYS = float(
 # spread the cap can't serve cheaply — that's the snapshot-resume follow-up.)
 _EDGE_BAND_CONV_BARS = int(
     os.environ.get('APPEND_EDGE_BAND_CONV_BARS', '300'))
+# v2 (2026-06-16): band-recompute MODE. 'capped' = cold capped-warmup (proven,
+# ~55-90s/strategy). 'snapshot' = resume from a rolling lagged base snapshot
+# (~10s/strategy, ~6-9x faster → fleet appends + cron viable). Default
+# 'capped' until snapshot mode is A/B-validated in prod; any snapshot miss/
+# error falls back to capped, so snapshot mode can never produce worse data.
+_APPEND_EDGE_BAND_MODE = os.environ.get(
+    'APPEND_EDGE_BAND_MODE', 'capped').lower()
+# Snapshot mode takes the lagged base snapshot this many minutes BEFORE
+# edge_start, so Tier-3 always-start-flat's boundary miss (a trade signaled on
+# the snapshot's last bar) lands in the buffer zone — OUTSIDE the replaced band
+# → band stays at full UAD parity.
+_EDGE_BAND_BUFFER_MIN = int(
+    os.environ.get('APPEND_EDGE_BAND_BUFFER_MIN', '15'))
 
 
 def _uad_warmup_bars(strat: dict, cap_days: float | None = None) -> int:
@@ -672,12 +685,105 @@ def _uad_warmup_bars(strat: dict, cap_days: float | None = None) -> int:
         100, int(_math.ceil(uad_warmup_days * binding_bpd * 252 / 365)))
 
 
+def _compute_band_df(svc, strat, cfg, lane, strategy_id, edge_start, edge_ceil,
+                     model_override, diagnostics_source):
+    """Recompute the band's trades and return a DataFrame.
+
+    Mode 'capped' (default): cold capped-warmup recompute over
+    [edge_start, edge_ceil] (proven, ~55-90s).
+
+    Mode 'snapshot' (v2): resume from a rolling lagged base snapshot kept
+    in cfg['band_base_snapshot_b64_{lane}'] at position B (~10s):
+      1. Obtain a base snapshot AT base_target = edge_start - BUFFER:
+         - warm: resume the existing base (B → base_target), capturing the
+           new base snapshot (cheap, no warmup);
+         - cold/stale/mismatch: seed it with one capped-warmup run to
+           base_target (one-time, amortized).
+      2. Resume base_target → edge_ceil for the band trades.
+      3. Persist the base snapshot @ base_target into cfg for next append.
+    The BUFFER keeps the always-start-flat boundary miss outside the band
+    (caller filters to entry >= edge_start). Any miss/exception falls back
+    to capped — snapshot mode can never produce worse data than capped.
+    """
+    cap_warmup = _uad_warmup_bars(strat, cap_days=_EDGE_BAND_WARMUP_DAYS)
+
+    def _capped():
+        return svc.get_strategy_trades_for_window(
+            strat, since_dt=edge_start, until_dt=edge_ceil,
+            model_override=model_override, resume_snapshot_b64=None,
+            warmup_bars=cap_warmup, diagnostics_source=diagnostics_source)
+
+    if _APPEND_EDGE_BAND_MODE != 'snapshot' or cfg is None or lane is None:
+        return _capped()
+
+    from unified_engine import (compute_backtest_fingerprint,
+                                 deserialize_backtest_snapshot)
+    fp = compute_backtest_fingerprint(strat)
+    mid = f"{'backtest' if lane == 'bt' else 'algo'}_{model_override}"
+    base_target = edge_start - timedelta(minutes=_EDGE_BAND_BUFFER_MIN)
+    snap_key = f'band_base_snapshot_b64_{lane}'
+    ts_key = f'band_base_snapshot_ts_{lane}'
+    base_b64 = cfg.get(snap_key)
+    base_dt = None
+    if cfg.get(ts_key):
+        try:
+            base_dt = datetime.fromisoformat(cfg[ts_key])
+            if base_dt.tzinfo is None:
+                base_dt = base_dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            base_dt = None
+    try:
+        valid_warm = (base_b64 and base_dt and base_dt <= base_target
+                      and deserialize_backtest_snapshot(
+                          base_b64, expected_fingerprint=fp,
+                          expected_model_id=mid) is not None)
+        if valid_warm:
+            # Warm roll: resume existing base (B) forward to base_target.
+            _roll_df, base_at_target = svc.get_strategy_trades_for_window(
+                strat, since_dt=base_dt, until_dt=base_target,
+                model_override=model_override, resume_snapshot_b64=base_b64,
+                expected_fingerprint=fp, expected_model_id=mid,
+                return_snapshot=True, diagnostics_source=diagnostics_source)
+            _origin = f"rolled {base_dt.isoformat()[:19]}"
+        else:
+            # Cold seed: capped warmup up to base_target (one-time).
+            _seed_df, base_at_target = svc.get_strategy_trades_for_window(
+                strat, since_dt=base_target, until_dt=base_target,
+                model_override=model_override, resume_snapshot_b64=None,
+                warmup_bars=cap_warmup, expected_fingerprint=fp,
+                expected_model_id=mid, return_snapshot=True,
+                diagnostics_source=diagnostics_source)
+            _origin = "cold-seed"
+        if not base_at_target:
+            raise ValueError("no base snapshot produced")
+        # Band: resume base_target → edge_ceil (warmup-free).
+        band_df, _ = svc.get_strategy_trades_for_window(
+            strat, since_dt=base_target, until_dt=edge_ceil,
+            model_override=model_override, resume_snapshot_b64=base_at_target,
+            expected_fingerprint=fp, expected_model_id=mid,
+            return_snapshot=True, diagnostics_source=diagnostics_source)
+        # Persist the rolled/seeded base snapshot @ base_target for next time.
+        cfg[snap_key] = base_at_target
+        cfg[ts_key] = base_target.isoformat()
+        logger.info(
+            "[EDGE-BAND] sid=%s snapshot-mode band (%s → base %s)",
+            strategy_id, _origin, base_target.isoformat()[:19])
+        return band_df
+    except Exception as e:
+        logger.warning(
+            "[EDGE-BAND] sid=%s snapshot mode failed (%s) — capped fallback",
+            strategy_id, e)
+        return _capped()
+
+
 def _replace_edge_band(svc, strat, strategy_id, user_id, cutoff,
                        model_override, ds_tag, data_source_filter,
-                       diagnostics_source):
+                       diagnostics_source, cfg=None, lane=None):
     """B2 fix — recompute the trailing edge band
-    [cutoff - _APPEND_EDGE_BAND_MINUTES, cutoff] with full UAD-parity
-    warmup (resume DISABLED) and REPLACE it in the trades table.
+    [cutoff - _APPEND_EDGE_BAND_MINUTES, cutoff] and REPLACE it in the
+    trades table. Mode (capped warmup vs snapshot resume) is chosen by
+    `_compute_band_df`; this fn owns the band filter, no-wipe guard, and
+    the replace.
 
     The windowed append under-generates trades near the data edge
     (unsettled REST + imperfect resume warmup) and insert-only dedup
@@ -696,13 +802,9 @@ def _replace_edge_band(svc, strat, strategy_id, user_id, cutoff,
     edge_ceil = cutoff
     edge_start = cutoff - timedelta(minutes=_APPEND_EDGE_BAND_MINUTES)
     try:
-        band_df = svc.get_strategy_trades_for_window(
-            strat, since_dt=edge_start, until_dt=edge_ceil,
-            model_override=model_override,
-            resume_snapshot_b64=None,  # cold warmup (no resume), capped
-            warmup_bars=_uad_warmup_bars(strat, cap_days=_EDGE_BAND_WARMUP_DAYS),
-            diagnostics_source=diagnostics_source,
-        )
+        band_df = _compute_band_df(
+            svc, strat, cfg, lane, strategy_id, edge_start, edge_ceil,
+            model_override, diagnostics_source)
         band_records = []
         if (band_df is not None and len(band_df) > 0
                 and 'exit_fill_ts' in band_df.columns):
@@ -1096,7 +1198,8 @@ def append_new_trades_for_strategy(
             band_replaced = _replace_edge_band(
                 svc, strat, strategy_id, user_id, cutoff,
                 model_override=algo_model, ds_tag=algo_ds_tag,
-                data_source_filter='cache_%', diagnostics_source='algo')
+                data_source_filter='cache_%', diagnostics_source='algo',
+                cfg=cfg, lane='algo')
             cfg['last_edge_band_ts_algo'] = now_iso
 
         try:
@@ -1643,7 +1746,7 @@ def append_new_backtest_trades_for_strategy(
             svc, strat, strategy_id, user_id, cutoff,
             model_override=bt_model, ds_tag=ds_tag,
             data_source_filter='backtest_%',
-            diagnostics_source='backtest')
+            diagnostics_source='backtest', cfg=cfg, lane='bt')
         cfg['last_edge_band_ts_bt'] = now_iso
 
     # LEF 2c port (2026-05-20): snapshot resume on the backtest lane.
