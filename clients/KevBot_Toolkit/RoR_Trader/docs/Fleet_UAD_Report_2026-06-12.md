@@ -1082,3 +1082,64 @@ serialization). Not in the current fleet.
 code, zero risk; (2) set `APPEND_EDGE_BAND_ENABLED=true` on Railway to activate (single
 reversible flag); (3) run Update All Data overnight for a clean baseline; (4) tomorrow's
 appends use the band-replace → stay clean. Backup branch `dev-backup-pre-b2-fix`.
+
+**✅ DEPLOYED 2026-06-15 EOD:** commit `ed758da` → dev; **`api` deploy SUCCESS** (clean
+boot, no import errors). Flag `APPEND_EDGE_BAND_ENABLED=true` set on **`api` only** (manual
+Update New Data path) — NOT on Data Worker (its `run_startup_catchup` appends on restart →
+would band-replace-storm; auto-append cron is off anyway: `ALGO_HISTORY_CRON_ENABLED=false`).
+RPC migration run (atomic advisory-locked path live). **Tomorrow plan (tasks #12-14):**
+overnight UAD (full-recompute, flag-independent) → AM test Update New Data on 1-2 strategies
+(296+303), watch Combined% on Health Overview → fleet-wide once clean. Snapshot-resume v2
+(8× faster, cron-reliable) is the next build — resume returns 0 trades in 3 spikes, needs
+`run_unified_backtest` resume-path instrumentation (tasks #10/#11).
+
+### 🩹 Overview over-filtering fix (2026-06-16, commit 37a7dad)
+During the partial fleet UAD, Kevin saw sid 304 (30 alerts/15 BT) show BLANK
+combined%/paired/phantom/missed in the Health Overview while By-Hour showed it fine.
+Root cause: the Overview's apples-to-apples cutoff was a fleet-wide MIN of every strategy's
+min(last_bt, last_alert) — sid 305 (stopped firing at 16:11) dragged it back, excluding
+every other strategy's later events into TBD. **Fix:** classify per-strategy by the
+strategy's OWN coverage (`last_recompute_until_ts` || last_bt_processed), exactly like
+By-Hour; `_pair_phantom_missed` returns a 4th value (tbd) split by `coverage_unix`. The
+fleet-wide global-fair cutoff + the apples-to-apples toggle are RETIRED from the display
+(TBD makes it apples-to-apples naturally per strategy). Verified live: 304 → 54.1% (20/9/8),
+305/306 legit-empty (0 activity), 307 → 100%. Read-side only; UAD/append path untouched.
+
+---
+
+## EOD 2026-06-16 — v2 snapshot-resume PROD-VALIDATED; fossilization documented
+
+**v2 snapshot-resume shipped + validated in prod.** `APPEND_EDGE_BAND_MODE=snapshot` (api)
+warm-rolls a rolling lagged base snapshot instead of cold warmup. Offline byte-identical to
+capped on 302/303/272 (0 diffs); the earlier "resume = 0 trades" was a TEST ARTIFACT
+(`prepare_data_with_indicators` ignored a past `end_date` → snapshot landed at "now" →
+resume strip nuked the band; fixed by a clip in `get_strategy_trades_for_window`, commit
+411e5e7). Live confirmation on controls 296/303: across two consecutive appends the base
+snapshot **rolled forward** (296: 20:12→20:43, 303: 20:11→20:44) — the warm-roll signature
+— both lanes' band stamps moved in lockstep with `last_recompute`, no wipe, pairing held
+95%/92%. (Could not capture `APPEND_ELAPSED` from Railway logs — the `rsi_zones` warning
+flood drowns the EDGE-BAND lines in the 500-line snapshot buffer; confirmed via config
+fingerprints instead.)
+
+**Confidence that append ≡ full UAD: ~90/100** for recently-UAD'd strategies. Holds back
+from ~98 on: (1) edge-bar settlement differences (full UAD re-fetches all bars fresh;
+append reuses cached `live_bars`), (2) Tier-3 always-start-flat boundary in rare
+position-open-at-boundary cases, (3) offline diffs used the same cached bars both sides
+(proves engine math, not a fresh re-fetch). The A/B that converts 90→measured: append then
+**immediately** full-UAD the same strategy back-to-back, diff the identical window (task
+#18). Running UAD hours after the append is NOT a clean diff (different settled windows).
+
+**Fossilization fully documented** in `docs/Append_Edge_Fossilization.md`. Key points:
+an append fills the WHOLE gap (windowed append, INSERT-only) + REWRITES the trailing 120min
+(edge-band replace) — no hole. A "fossil" = edge under-count frozen by INSERT-only dedup,
+drifted deeper than the 120-min band; only a full UAD scrubs deep fossils. Counterintuitive:
+infrequent appends are CLEANER (one settled-data pass); frequent edge-nibbling is what
+compounds fossils — but a tight cron is probably SAFE because the 120-min band covers
+Polygon settlement (verify before enabling — task #19). Phantom-trade live alert use case
+logged (task #20): needs reduced `_ALGO_HISTORY_LAG_MINUTES` (15) for near-real-time.
+
+**Plan locked:** tonight = Update-New-Data across fleet (append, safe — no-wipe guard).
+Do NOT run unattended fleet-wide full UAD tonight (#16 lane-wipe-on-fetch-failure still
+unguarded — hit 303 today). Tomorrow = A/B back-to-back on 2–3 diverse samples (296 ungated
+10Sec, 303 gated 2m, 272 coarse 10m) a few hours into session once early bars settle.
+Backup branch `dev-backup-2026-06-16-v2-snapshot` @ 411e5e7.
