@@ -118,7 +118,6 @@ type SortKey =
 function rowSortValue(
   r: StrategyHealthRow,
   key: SortKey,
-  applesToApples: boolean,
 ): number | string {
   switch (key) {
     case 'flags':     return -r.red_flags.length; // most flags first by default asc
@@ -131,14 +130,13 @@ function rowSortValue(
     case 'lastBt':    return r.last_backtest_created_age_sec ?? Number.POSITIVE_INFINITY;
     case 'lastAlert': return r.last_alert_age_sec ?? Number.POSITIVE_INFINITY;
     case 'trades':    return -r.trade_count_backtest;
-    // 2026-05-29: when apples-to-apples is ON, use the GLOBAL fair counts
-    // (one fleet-wide cutoff so identical strategies report identical
-    // numbers) rather than per-strategy _fair (each strategy uses its
-    // own cutoff, which drifts and produces misleading asymmetry).
+    // 2026-06-16: per-strategy coverage-classified counts (match By-Hour).
+    // TBD makes the comparison apples-to-apples naturally — the old
+    // fleet-wide global-fair cutoff is retired (it over-filtered).
     case 'combined':  return -(r.combined_pct ?? -1); // nulls (no data) sort last
-    case 'paired':    return -(applesToApples ? r.paired_count_global_fair : r.paired_count);
-    case 'phantom':   return -(applesToApples ? r.phantom_count_global_fair : r.phantom_count);
-    case 'missed':    return -(applesToApples ? r.missed_count_global_fair : r.missed_count);
+    case 'paired':    return -r.paired_count_cov;
+    case 'phantom':   return -r.phantom_count_cov;
+    case 'missed':    return -r.missed_count_cov;
     case 'tbd':       return -r.tbd_count;
   }
 }
@@ -223,8 +221,6 @@ export default function StrategyHealthV1() {
   // The raw counts (full window) inflate when one source hasn't caught
   // up to the other; the fair counts only pair events that BOTH sides
   // had a chance to capture. Default ON so the page shows honest numbers.
-  const [applesToApples, setApplesToApples] = useState(true);
-
   const filteredRows = useMemo(() => {
     if (!data?.rows) return [];
     let rows = data.rows;
@@ -235,15 +231,15 @@ export default function StrategyHealthV1() {
       rows = rows.filter(r => r.red_flags.includes(activeFlag));
     }
     const sorted = [...rows].sort((a, b) => {
-      const av = rowSortValue(a, sortKey, applesToApples);
-      const bv = rowSortValue(b, sortKey, applesToApples);
+      const av = rowSortValue(a, sortKey);
+      const bv = rowSortValue(b, sortKey);
       const cmp = typeof av === 'number' && typeof bv === 'number'
         ? av - bv
         : String(av).localeCompare(String(bv));
       return sortDir === 'asc' ? cmp : -cmp;
     });
     return sorted;
-  }, [data, sortKey, sortDir, activeFlag, includeLegacy, applesToApples]);
+  }, [data, sortKey, sortDir, activeFlag, includeLegacy]);
 
   // Summary: counts by flag, scoped to non-legacy strategies.
   const summary = useMemo(() => {
@@ -365,17 +361,6 @@ export default function StrategyHealthV1() {
                 onChange={e => setIncludeLegacy(e.target.checked)}
               />
               <span>include legacy</span>
-            </label>
-            <label
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'pointer', marginLeft: 8 }}
-              title="Apples-to-apples counts (default ON). When ON, Paired/Phantom/Missed use a SINGLE fleet-wide cutoff so identical strategies report identical numbers — the cutoff is the earliest per-strategy min(last alert, last backtest update) among strategies active in both lanes. Without this toggle (or with it OFF), raw counts include the trailing batch-lag window and inflate phantom counts with false positives that don't reflect real divergence."
-            >
-              <input
-                type="checkbox"
-                checked={applesToApples}
-                onChange={e => setApplesToApples(e.target.checked)}
-              />
-              <span>apples-to-apples counts</span>
             </label>
             <button
               onClick={() => refetch()}
@@ -587,30 +572,24 @@ export default function StrategyHealthV1() {
                   </td>
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',
-                               color: (applesToApples ? r.paired_count_global_fair : r.paired_count) > 0
+                               color: r.paired_count_cov > 0
                                  ? '#7fd081' : 'var(--text-muted)' }}
-                      title={applesToApples
-                        ? `global-fair: ${r.paired_count_global_fair} · per-strategy fair: ${r.paired_count_fair} · raw: ${r.paired_count}`
-                        : `raw: ${r.paired_count} · global-fair (apples-to-apples): ${r.paired_count_global_fair} · per-strategy fair: ${r.paired_count_fair}`}>
-                    {(applesToApples ? r.paired_count_global_fair : r.paired_count) || '—'}
+                      title={`Paired (matched within tolerance). Per-strategy coverage-classified. raw: ${r.paired_count}`}>
+                    {r.paired_count_cov || '—'}
                   </td>
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',
-                               color: (applesToApples ? r.phantom_count_global_fair : r.phantom_count) > 0
+                               color: r.phantom_count_cov > 0
                                  ? '#ffc107' : 'var(--text-muted)' }}
-                      title={applesToApples
-                        ? `global-fair: ${r.phantom_count_global_fair} · per-strategy fair: ${r.phantom_count_fair} · raw: ${r.phantom_count}`
-                        : `raw: ${r.phantom_count} · global-fair (apples-to-apples): ${r.phantom_count_global_fair} · per-strategy fair: ${r.phantom_count_fair}`}>
-                    {(applesToApples ? r.phantom_count_global_fair : r.phantom_count) || '—'}
+                      title={`Phantom (alert with no backtest trade, AND older than the backtest lane's coverage — a real divergence, not lag). raw: ${r.phantom_count}`}>
+                    {r.phantom_count_cov || '—'}
                   </td>
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',
-                               color: (applesToApples ? r.missed_count_global_fair : r.missed_count) > 0
+                               color: r.missed_count_cov > 0
                                  ? '#ef5350' : 'var(--text-muted)' }}
-                      title={applesToApples
-                        ? `global-fair: ${r.missed_count_global_fair} · per-strategy fair: ${r.missed_count_fair} · raw: ${r.missed_count}`
-                        : `raw: ${r.missed_count} · global-fair (apples-to-apples): ${r.missed_count_global_fair} · per-strategy fair: ${r.missed_count_fair}`}>
-                    {(applesToApples ? r.missed_count_global_fair : r.missed_count) || '—'}
+                      title={`Missed (backtest trade with no alert). raw: ${r.missed_count}`}>
+                    {r.missed_count_cov || '—'}
                   </td>
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',

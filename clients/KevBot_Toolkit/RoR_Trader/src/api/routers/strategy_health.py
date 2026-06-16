@@ -280,8 +280,9 @@ def get_strategy_health(
         alerts_per_sid.setdefault(sid, []).append(dt.timestamp())
 
     def _pair_phantom_missed(edge_isos: List[str], alert_unix: List[float],
-                              upper_bound_unix: Optional[float] = None):
-        """Greedy pairing within ±tolerance. Returns (phantom, missed, paired).
+                              upper_bound_unix: Optional[float] = None,
+                              coverage_unix: Optional[float] = None):
+        """Greedy pairing within ±tolerance. Returns (phantom, missed, paired, tbd).
 
         phantom = unpaired alerts (alert-only — Kevin's 'phantom').
         missed  = unpaired trade edges (backtest-only — Kevin's 'missed').
@@ -309,9 +310,13 @@ def get_strategy_health(
             edges = [e for e in edges if e <= upper_bound_unix]
             alerts_sorted = [a for a in alerts_sorted if a <= upper_bound_unix]
         # Two-pointer greedy pair: walk both lists, pair when |diff| ≤ tol.
+        # Track the timestamps of UNPAIRED alerts so we can split them into
+        # phantom (backtest had a chance — alert ≤ coverage) vs TBD (backtest
+        # lane hasn't reached it yet — alert > coverage), per By-Hour.
         i = j = 0
         paired_edges = 0
         paired_alerts = 0
+        unpaired_alert_ts: List[float] = []
         while i < len(edges) and j < len(alerts_sorted):
             diff = alerts_sorted[j] - edges[i]
             if abs(diff) <= _DIVERGENCE_TOLERANCE_SEC:
@@ -320,12 +325,24 @@ def get_strategy_health(
                 i += 1
                 j += 1
             elif diff < 0:
-                j += 1   # alert too early — it's a phantom, skip ahead
+                unpaired_alert_ts.append(alerts_sorted[j])
+                j += 1   # alert too early — it's a phantom/TBD, skip ahead
             else:
                 i += 1   # edge too early — it's missed, skip ahead
+        unpaired_alert_ts.extend(alerts_sorted[j:])  # trailing unmatched alerts
         phantom = len(alerts_sorted) - paired_alerts
         missed = len(edges) - paired_edges
-        return phantom, missed, paired_alerts
+        tbd = 0
+        if coverage_unix is not None:
+            # Unpaired alerts NEWER than the backtest-lane coverage aren't
+            # phantoms — the reference doesn't exist yet (convert on next
+            # append). Split them out of phantom into TBD. (Per-strategy
+            # coverage — NOT a fleet-wide min — so one quiet strategy can't
+            # over-filter the rest. This is what makes TBD apples-to-apples
+            # naturally and supersedes the old global-fair cutoff.)
+            tbd = sum(1 for a in unpaired_alert_ts if a > coverage_unix)
+            phantom -= tbd
+        return phantom, missed, paired_alerts, tbd
 
     # 2026-05-29: GLOBAL fair_cutoff — used for cross-strategy comparisons.
     # The per-strategy `fair_cutoff_dt = min(last_bt_processed, last_alert_at)`
@@ -418,7 +435,7 @@ def get_strategy_health(
         # trades-per-window (could be up to ~2× trade_count_backtest).
         edge_isos = agg["recent_edges"]
         alert_unix_list = alerts_per_sid.get(sid, [])
-        phantom_count, missed_count, paired_count = _pair_phantom_missed(
+        phantom_count, missed_count, paired_count, _ = _pair_phantom_missed(
             edge_isos, alert_unix_list)
 
         # 2026-05-27 (revised): apples-to-apples cutoff = "the latest bar
@@ -444,7 +461,7 @@ def get_strategy_health(
         elif last_alert_at is not None:
             fair_cutoff_dt = last_alert_at
         if fair_cutoff_dt is not None:
-            phantom_count_fair, missed_count_fair, paired_count_fair = (
+            phantom_count_fair, missed_count_fair, paired_count_fair, _ = (
                 _pair_phantom_missed(
                     edge_isos, alert_unix_list,
                     upper_bound_unix=fair_cutoff_dt.timestamp()))
@@ -464,7 +481,7 @@ def get_strategy_health(
         if _global_fair_cutoff_dt is not None:
             (phantom_count_global_fair,
              missed_count_global_fair,
-             paired_count_global_fair) = _pair_phantom_missed(
+             paired_count_global_fair, _) = _pair_phantom_missed(
                 edge_isos, alert_unix_list,
                 upper_bound_unix=_global_fair_cutoff_dt.timestamp())
         else:
@@ -472,26 +489,28 @@ def get_strategy_health(
             missed_count_global_fair = missed_count_fair
             paired_count_global_fair = paired_count_fair
 
-        # ── Combined% + TBD (2026-06-15, Kevin's ask) ─────────────────
-        # Combined% = paired / (paired + phantom + missed) on the
-        # apples-to-apples (global-fair) counts — the at-a-glance "is this
-        # behaving" number, matching the By-Hour / By-Deploy tabs.
-        # TBD = alerts NEWER than the global-fair cutoff: the backtest lane
-        # hasn't reached them yet, so they aren't phantoms — they convert on
-        # the next append. Excluded from Combined% (not in the denominator),
-        # surfaced as its own count so a high-TBD row reads as "lane lagging"
-        # not "divergent". Mirrors the By-Hour TBD rule (coverage = the
-        # fair cutoff here, vs last_recompute_until_ts there — both are
-        # "how far the backtest reference has caught up").
-        _denom_gf = (paired_count_global_fair + phantom_count_global_fair
-                     + missed_count_global_fair)
-        combined_pct = (round(100.0 * paired_count_global_fair / _denom_gf, 1)
-                        if _denom_gf > 0 else None)
-        if _global_fair_cutoff_dt is not None:
-            _gf_cut = _global_fair_cutoff_dt.timestamp()
-            tbd_count = sum(1 for a in alert_unix_list if a > _gf_cut)
-        else:
-            tbd_count = 0
+        # ── Coverage-classified counts + Combined% + TBD (2026-06-16) ─────
+        # The PRIMARY per-strategy numbers, matching By-Hour/By-Deploy:
+        # pair alerts↔BT edges, then split UNPAIRED alerts by this strategy's
+        # OWN backtest coverage — alert newer than coverage → TBD (lane hasn't
+        # caught up, converts next append), else phantom. Combined% =
+        # paired/(paired+phantom+missed), TBD excluded.
+        #
+        # Coverage = last_recompute_until_ts (when the lane last recomputed),
+        # falling back to last_bt_processed. PER-STRATEGY — NOT the old
+        # fleet-wide global-fair MIN, which one quiet strategy (e.g. 305
+        # stopped firing at midday) dragged back far enough to over-filter
+        # every other strategy's recent events into TBD (blank Combined%).
+        # TBD makes the comparison apples-to-apples naturally, so the
+        # global-fair cutoff is retired from the display (2026-06-16).
+        _cov_dt = last_recompute_until or last_bt_processed
+        _cov_unix = _cov_dt.timestamp() if _cov_dt is not None else None
+        (phantom_count_cov, missed_count_cov,
+         paired_count_cov, tbd_count) = _pair_phantom_missed(
+            edge_isos, alert_unix_list, coverage_unix=_cov_unix)
+        _denom_cov = paired_count_cov + phantom_count_cov + missed_count_cov
+        combined_pct = (round(100.0 * paired_count_cov / _denom_cov, 1)
+                        if _denom_cov > 0 else None)
 
         forward_testing = bool(s.get("forward_testing"))
         is_streaming_eligible = ("entry_trigger_confluence_id" in cfg)
@@ -621,11 +640,17 @@ def get_strategy_health(
             "phantom_count_global_fair": phantom_count_global_fair,
             "missed_count_global_fair": missed_count_global_fair,
             "paired_count_global_fair": paired_count_global_fair,
-            # 2026-06-15 — Combined% (paired/(paired+phantom+missed) on the
-            # global-fair counts) + TBD (alerts past the fair cutoff,
-            # lane-not-caught-up). Matches the By-Hour / By-Deploy tabs.
+            # 2026-06-16 — PRIMARY per-strategy coverage-classified counts
+            # (matches By-Hour/By-Deploy). paired/phantom/missed split by this
+            # strategy's own coverage; TBD = unpaired alerts newer than
+            # coverage; combined% = paired/(paired+phantom+missed). The V1
+            # table reads THESE (the raw/fair/global_fair fields above are
+            # retained for back-compat but no longer drive the display).
             "combined_pct": combined_pct,
             "tbd_count": tbd_count,
+            "paired_count_cov": paired_count_cov,
+            "phantom_count_cov": phantom_count_cov,
+            "missed_count_cov": missed_count_cov,
             "global_fair_cutoff_ts": (
                 _global_fair_cutoff_dt.isoformat()
                 if _global_fair_cutoff_dt else None),
