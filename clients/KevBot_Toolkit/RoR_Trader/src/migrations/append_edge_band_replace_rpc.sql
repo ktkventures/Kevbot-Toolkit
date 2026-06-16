@@ -74,7 +74,14 @@ BEGIN
     data_source       TEXT,
     data              JSONB
   )
-  ON CONFLICT (strategy_id, entry_fill_ts, exit_fill_ts) DO NOTHING;
+  -- ON CONFLICT with no named target: skips any row violating ANY unique
+  -- constraint without requiring an exact constraint match. (Named target
+  -- (strategy_id, entry_fill_ts, exit_fill_ts) raised 42P10 "no unique or
+  -- exclusion constraint matching the ON CONFLICT specification" — the
+  -- trades_dedupe_idx isn't inferable as a conflict arbiter here, likely
+  -- due to its nullable cols. The band is DELETEd first in this same txn,
+  -- so conflicts are only a stray-duplicate safety net anyway.)
+  ON CONFLICT DO NOTHING;
 
   GET DIAGNOSTICS v_inserted = ROW_COUNT;
   RETURN v_inserted;

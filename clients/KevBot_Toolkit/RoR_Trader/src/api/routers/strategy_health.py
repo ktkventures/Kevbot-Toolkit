@@ -55,6 +55,11 @@ _NO_RECENT_TRADE_SEC = 7 * 24 * 60 * 60  # 7 days without an entry while
 # within tolerance of an alert.fill_ts counts as paired. The window
 # itself is caller-supplied (window_hours query param, default 24h).
 _DIVERGENCE_TOLERANCE_SEC = 60.0            # ±60s
+# Appends write backtest trades only up to now − this lag (settle window),
+# but stamp last_recompute_until_ts at wall-clock "now". So the TBD coverage
+# cutoff = last_recompute_until − this, i.e. the real BT data edge. Mirrors
+# forward_test_service._ALGO_HISTORY_LAG_MINUTES (15 min).
+_COVERAGE_LAG_SEC = 15 * 60
 _WINDOW_HOURS_DEFAULT = 24
 _WINDOW_HOURS_MIN = 1
 _WINDOW_HOURS_MAX = 168                     # 7 days max
@@ -503,7 +508,19 @@ def get_strategy_health(
         # every other strategy's recent events into TBD (blank Combined%).
         # TBD makes the comparison apples-to-apples naturally, so the
         # global-fair cutoff is retired from the display (2026-06-16).
-        _cov_dt = last_recompute_until or last_bt_processed
+        # Coverage = the backtest-lane DATA EDGE, not the wall-clock recompute
+        # stamp. last_recompute_until_ts is stamped at append "now", but the
+        # append only WRITES trades up to now − LAG (15-min settle), so the
+        # last ~15 min of alerts have no BT reference yet → they're TBD, not
+        # phantoms. Subtract the lag so the trailing lag window classifies as
+        # TBD (matches the append cutoff). Fallback to last_bt_processed.
+        if last_recompute_until is not None:
+            _cov_dt = last_recompute_until - timedelta(
+                seconds=_COVERAGE_LAG_SEC)
+            if last_bt_processed is not None and last_bt_processed > _cov_dt:
+                _cov_dt = last_bt_processed  # data edge is actually later
+        else:
+            _cov_dt = last_bt_processed
         _cov_unix = _cov_dt.timestamp() if _cov_dt is not None else None
         (phantom_count_cov, missed_count_cov,
          paired_count_cov, tbd_count) = _pair_phantom_missed(
