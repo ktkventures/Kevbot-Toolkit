@@ -1,0 +1,22 @@
+# Fidelity Gate fixtures: 30-day sub-minute raw-bar parquets are large
+# (~5 MB each). Only the durable subset (live real-money set: 308 ungated,
+# 309 + 313 gated multi-TF) is committed as the standing nightly drift
+# baseline. The full broad-coverage set is regenerated locally via
+#   python -m fidelity.capture <sid> 30
+# (see README.md for the fixture-set list). This keeps git light while
+# preserving a durable baseline + the before/after [FC] protocol.
+*
+!.gitignore
+!README.md
+!sid_308_bars.parquet
+!sid_308_gatecols.parquet
+!sid_308_trades.parquet
+!sid_308_manifest.json
+!sid_309_bars.parquet
+!sid_309_gatecols.parquet
+!sid_309_trades.parquet
+!sid_309_manifest.json
+!sid_313_bars.parquet
+!sid_313_gatecols.parquet
+!sid_313_trades.parquet
+!sid_313_manifest.json

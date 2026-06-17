@@ -1,0 +1,31 @@
+# Fidelity Gate — per-push synthetic parity suite (hermetic, no secrets).
+# Catches engine-logic drift on every commit. The heavier real-bar golden
+# suite (fidelity/golden.py) runs locally/nightly where Supabase is reachable
+# — see docs/Fidelity_Gate.md.
+name: Fidelity Gate (synthetic parity)
+
+on:
+  push:
+    paths:
+      - 'clients/KevBot_Toolkit/RoR_Trader/src/**.py'
+  pull_request:
+
+jobs:
+  synthetic-parity:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/KevBot_Toolkit/RoR_Trader
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Synthetic parity suite (hermetic)
+        working-directory: clients/KevBot_Toolkit/RoR_Trader/src
+        run: |
+          python test_unified_parity.py
+          python test_parity_regression.py
+          python test_mass_builder_fidelity_parity.py

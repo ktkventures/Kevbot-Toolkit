@@ -316,10 +316,15 @@ def test_ctype_trade_parity():
         ut = unified_trades.iloc[i]
 
         # Entry time
-        if str(bt['entry_trigger_ts']) != str(ut['entry_trigger_ts']):
+        # Convention difference (NOT divergence): legacy generate_trades labels
+        # the entry by bar-OPEN time; the unified engine labels by bar-CLOSE time
+        # (Trade_Timestamps_Spec). Same bar, same price (asserted below) — the
+        # unified ts is exactly one bar period later. Assert same-bar identity.
+        _bar = df_raw.index[1] - df_raw.index[0]
+        if pd.Timestamp(bt['entry_time']) + _bar != pd.Timestamp(ut['entry_trigger_ts']):
             mismatches.append(
-                f"  Trade {i}: entry_time batch={bt['entry_trigger_ts']} "
-                f"unified={ut['entry_trigger_ts']}")
+                f"  Trade {i}: entry bar batch={bt['entry_time']}+{_bar} "
+                f"!= unified={ut['entry_trigger_ts']}")
 
         # Entry price (should be close for C-type)
         if abs(bt['entry_price'] - ut['entry_price']) > 0.001:
@@ -1285,8 +1290,10 @@ def test_swing_target_short():
 
 
 def test_swing_stop_not_enough_history():
-    """Swing stop falls back to ATR when buffer has insufficient history."""
-    print("  [26] Swing stop (not enough history) ...", end=" ")
+    """Empty swing buffer must LOUDLY REJECT (StopComputationError), not
+    silently fall back to ATR*1.5 — the silent fallback drove backtest<->live
+    divergence and was deliberately replaced with a loud failure."""
+    print("  [26] Swing stop (empty buffer → loud reject) ...", end=" ")
 
     strategy = {
         'id': 'test_swing_fallback', 'direction': 'LONG',
@@ -1300,10 +1307,13 @@ def test_swing_stop_not_enough_history():
     # Only 1 bar — after excluding current, window is empty
     psm.update_high_low(105, 100)
 
-    stop = psm._compute_stop(100.0, 2.0, {'close': 100})
-
-    # Fallback: ATR * 1.5 = 3.0, LONG: 100 - 3 = 97
-    assert abs(stop - 97.0) < 0.001, f"Expected 97.0, got {stop}"
+    from stop_target_methods import StopComputationError
+    try:
+        psm._compute_stop(100.0, 2.0, {'close': 100})
+        raise AssertionError("expected StopComputationError (loud swing-stop "
+                             "rejection) but _compute_stop returned a value")
+    except StopComputationError:
+        pass  # correct: loud rejection of the empty-buffer case
     print("PASSED")
 
 
