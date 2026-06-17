@@ -446,6 +446,17 @@ const PULSE_CSS = `@keyframes pulse { 0%, 100% { transform: scale(1); opacity: 0
 /* TABS                                                                        */
 /* ========================================================================= */
 
+// Feature flag: the 3-way divergence tab (Backtest/Algo/Live comparison) is
+// ARCHIVED behind this flag, default OFF. It auto-polls /divergence-data every
+// ~30s and the 3-way recompute (alerts+backtest+cache, 1000 each) OOM'd the api
+// on large 15Sec lanes (#28). Backtest≈live is now validated via the Strategy
+// Health page + chart-and-trades one-by-one comparison, so the live 3-way
+// surface is off by default. The DivergenceTabContent component + the
+// `tab === 'Divergence'` render block are left intact for easy reintroduction —
+// set NEXT_PUBLIC_ENABLE_THREEWAY_DIVERGENCE=true to bring the tab back.
+const THREEWAY_DIVERGENCE_ENABLED =
+  process.env.NEXT_PUBLIC_ENABLE_THREEWAY_DIVERGENCE === 'true';
+
 const TABS = [
   'Equity & KPIs',
   'Chart & Trades',
@@ -457,7 +468,7 @@ const TABS = [
   'Alert Analysis',
   'Unified Trades',
   'Parity',
-  'Divergence',
+  ...(THREEWAY_DIVERGENCE_ENABLED ? ['Divergence'] : []),
   'Data Fidelity',
   'TradingView Export',
 ];
