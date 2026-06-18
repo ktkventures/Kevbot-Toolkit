@@ -394,6 +394,7 @@ def _polygon_fetch_bars(ticker: str, multiplier: int, timespan: str,
     Returns list of bar dicts. Handles next_url pagination automatically.
     """
     import requests
+    import time
 
     all_results = []
     url = f"{POLYGON_BASE_URL}/v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from_date}/{to_date}"
@@ -404,33 +405,49 @@ def _polygon_fetch_bars(ticker: str, multiplier: int, timespan: str,
         'adjusted': 'true',
     }
 
+    # CRITICAL (2026-06-18): never silently return PARTIAL data. With sort=asc,
+    # a mid-pagination failure drops the most-RECENT bars, leaving a backtest
+    # lane that can't pair recent live alerts (→ all-phantom). Long sub-minute
+    # loads span many pages, so transient page errors are common. Retry each
+    # page with backoff; if a page can't be fetched after MAX_RETRIES, RAISE
+    # loudly so the caller fails visibly instead of persisting a truncated lane.
+    MAX_RETRIES = 6
+    page_attempts = 0
+
     while url:
         try:
-            resp = requests.get(url, params=params, timeout=30)
-            if resp.status_code == 429:
-                # Rate limited — wait and retry
-                import time
-                time.sleep(1)
+            resp = requests.get(url, params=params, timeout=60)
+            if resp.status_code == 429 or resp.status_code >= 500 or resp.status_code != 200:
+                page_attempts += 1
+                if page_attempts >= MAX_RETRIES:
+                    raise RuntimeError(
+                        f"Polygon API {resp.status_code} for {ticker} "
+                        f"{multiplier}/{timespan} after {MAX_RETRIES} retries "
+                        f"(have {len(all_results)} bars, INCOMPLETE): "
+                        f"{resp.text[:160]}")
+                time.sleep(min(2 ** page_attempts, 30))
                 continue
-            if resp.status_code != 200:
-                logger.warning(f"Polygon API error {resp.status_code}: {resp.text[:200]}")
-                return all_results
+            page_attempts = 0  # reset on a successful page
 
             data = resp.json()
-            results = data.get('results', [])
-            all_results.extend(results)
+            all_results.extend(data.get('results', []))
 
-            # Follow pagination
+            # Follow pagination (next_url is a full URL; just append apiKey)
             next_url = data.get('next_url')
             if next_url:
-                # next_url is a full URL; just append apiKey
                 url = next_url
                 params = {'apiKey': POLYGON_API_KEY}
             else:
                 url = None
-        except Exception as e:
-            logger.warning(f"Polygon fetch error: {e}")
-            break
+        except requests.RequestException as e:
+            page_attempts += 1
+            if page_attempts >= MAX_RETRIES:
+                raise RuntimeError(
+                    f"Polygon fetch failed for {ticker} {multiplier}/{timespan} "
+                    f"after {MAX_RETRIES} retries (have {len(all_results)} bars, "
+                    f"INCOMPLETE — refusing to return partial): {e}")
+            time.sleep(min(2 ** page_attempts, 30))
+            continue
 
     return all_results
 
