@@ -681,3 +681,43 @@ ParityDriftRibbonV2.
   shadow branch doesn't re-derive confluence records, warmup-vs-update_bar
   `*_prev` one-bar transient, full-history flat-row cleanup (159k), 267 TSLA
   flats not cleaned.
+
+---
+
+## 2026-06-18 — Speed batch (what we were trying to accomplish) + pivot to gate-timing
+
+**Goal of the speed work:** the divergence investigation, charts, UND/UAD and
+Mass Builder were all bottlenecked on `prepare_data_with_indicators` recomputing
+ALL 15 enabled confluence groups over the full bar set (OOM + 5-7× slowness on
+sub-minute strategies). The aim was to make investigation *fast* WITHOUT touching
+the fidelity (backtest↔live) parity — so we could iterate on real divergences
+instead of waiting on data.
+
+**What shipped (all behind the byte-identical Fidelity Gate):**
+- **#21** (`1bbad56`) — scope the group loop in prepare to only the groups a
+  strategy reads (derive-from-strat; kill-switch `RORT_SCOPE_CONFLUENCE_GROUPS`,
+  now =1 on api; live engine left FULL on purpose). Result: ~2× prep + much
+  narrower df (OOM relief), byte-identical (golden 3/3 + parity guard, gate
+  states REAL-diff=0).
+- **#29** (`13c4786`) — chart-data: pass `strat=` so #21 scoping applies to
+  charts + trim the returned df to the visible window (full-history warmup kept
+  for correctness; only never-rendered bars dropped).
+
+**What we measured and DROPPED (kept the parity, not the marginal speed):**
+- Profiling a scoped recompute: **trade engine = 76%**, prepare = 24%. So
+  scoping interpreters/triggers (the rest of #21) is ~7-10s marginal on the
+  shared path → dropped. The real recompute lever is trade-engine throughput
+  (separate, risky — explicit decision required, not folded into a speed batch).
+- #29 "decouple" (build daily/4h secondaries from a cheap 1Min load instead of
+  the sub-minute primary) — **empirically rejected**: daily/4h OHLC+indicators
+  DIFFER between 1Min-source and 15Sec-source (close Δ0.055, volume Δ527k). Since
+  backtest resamples secondaries from the primary, a 1Min-sourced chart heatmap
+  would disagree with the backtest → divergence. Residual: 365d×15Sec ≈ 5.7M-bar
+  *load* for sub-minute+daily charts has no fidelity-safe quick fix (deferred).
+
+**Pivot:** speed is banked; back to the actual divergence. Leading hypothesis on
+the new gated real-money strategies (309/310/313): backtest gates on the
+PREVIOUS secondary bar (`<interp>__<tf>`, shifted) while live gates on the
+CURRENT closed bar (`_spec_<interp>__<tf>`). Diagnosing read-only via
+`gate_parity_harness.py` (PB vs CB ribbon distributions + theoretical-BT vs
+live-actual + CBpass&PBfail) before any fix.
