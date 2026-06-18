@@ -9,63 +9,63 @@ in their current locations for now — see Doc Map). New observations get logged
 Backtest and live produce the **same trades within ~5s**, so we can **trade reliably**.
 Current focus: the first real-money strategies (308–314, TSLA 15Sec).
 
-## Current state (2026-06-18)
-**Working:**
-- High-TF gates (1h/4h/1d) verified supported live (#23).
-- Fidelity Gate shipped — regression net vs backtest↔live drift (`Fidelity_Gate_Guide.md`).
-- Divergence-data OOM that crashed the site: fixed + deployed (#28).
-- 308 is firing live (281 alerts/day); it's the intended ungated live tester.
+## Current state (2026-06-18 EOD)
+**Working / shipped:**
+- 308 (ungated) fires live + has a correct backtest lane (the loader silent-truncation that
+  zeroed it was fixed + the lane rebuilt). It's the ungated live tester.
+- High-TF gates supported live (#23); Fidelity Gate shipped (`Fidelity_Gate_Guide.md`);
+  div-data OOM fixed (#28); `alerts.live_model` NULL = NON-ISSUE (fixed 2026-06-03).
+- **#21** prep scoping (`1bbad56`) + **#29** chart scoping+trim (`13c4786`) live: ~2× prep,
+  OOM relief, byte-identical. (Dropped: interp/trigger scoping = marginal; #29 decouple =
+  empirically breaks parity. Residual: 5.7M-bar sub-minute+daily chart load deferred.)
 
-**Broken / under investigation:**
-- **308 backtest path is broken** — UAD persisted 0 trades; direct windowed run truncates at
-  Apr-13 (1,896 trades) instead of running to now; yet the direct prepare path works (2,593).
-  So 308 shows 0-paired / all-phantom on Strategy Health. **Real bug, P0.**
-- **309/310/313 missed trades** — after UND, the backtest shows entries live didn't fire =
-  **gate decision-timing divergence** (live evaluates intra-bar/at-grace; backtest is
-  bar-close). This is the documented gated root cause, not a new bug. Diagnose via the
-  **Gate Parity tab** (already built).
+**Root-caused TODAY — the 309–314 "missed/phantom" picture** (full detail:
+`Mass_Builder_Forward_Test_Bugs.md`). It is NOT PB/CB gate timing. It decomposes into:
+- **Display artifacts** (not trading bugs): stale per-load Fwd counts; Fwd count
+  double-counts backtest+cache; cache lane is a backtest seed-copy; `forward_test_start`
+  anchored to created_at not the OOS start (`in_sample_end`).
+- **Bug 5 (real, FIXED + shipped `0e19838`, live-confirm pending):** live warmup used a flat
+  `days=7` for every gate → a 1Day gate got ~5 bars → never warmed → gated strategies never
+  entered live (310/313 = 0 live vs 33/103 backtest). Fix: TF-scaled resample-from-1min
+  warmup. Offline-validated (313 daily 0/12 mismatch vs backtest + BULL_TREND on fire days;
+  no regression 309/311). Backup: `dev-backup-2026-06-18-pre-shadow-warmup`.
+- **310 RVOL gate (real, OPEN):** forming >60s bar gets ~2× volume (per-second + ws_agg
+  fan-out both add) → live RVOL reads EXTREME → 5m-RVOL-HIGH gate never matches. Separate
+  from Bug 5 (volume, not warmup). Price-based gates unaffected.
 
 ## Priorities
 
-### P0 — divergences blocking live trading
-1. **308 broken backtest path** — UAD writes 0 + windowed run truncates at Apr-13. Fix so
-   308 has a correct full-window lane (it's the live tester).
-2. **309/310/313 missed-trade divergence** — gate decision-timing (live grace vs backtest
-   bar-close). Use the Gate Parity tab. Contributing documented classes: sub-minute
-   drift-cascade (live misses clusters), user-pack gates failing on secondary TFs, EH/AH
-   session-filter inflating "missed."
-3. **`alerts.live_model` NULL on new strategies** → rest-verifier silently skips 308–314
-   (they may be unmeasured/mispaired — could itself create phantom/TBD noise).
-4. **#16** — guard full-UAD so a transient fetch failure can't silently zero a lane.
+### P0 — get the gated real-money strategies executing live
+1. **Bug 5 LIVE CONFIRMATION (tomorrow at open).** Verify the worker ran the fix
+   (`railway logs --service Worker | grep '[Bug5]'` → 1Day gate now warms ~245 bars not 5)
+   and that 313/312 produce live alerts during market. ALSO verify engine health: post-market
+   tonight monitor_status showed `connected=False` + an odd `started_at` (Apr-06 vs 19:05
+   earlier) — likely a rolling-deploy/stale-replica artifact; confirm the engine is cleanly
+   connected at open. (Service is **"Worker"**, capital W — not "worker".)
+2. **310 RVOL volume-double-count** (live-gate sub-bug) — suppress one volume source on the
+   forming >60s bar so live RVOL matches backtest. The other reason a gated strategy is blocked.
+3. **#16** — guard full-UAD so a transient fetch failure can't silently zero a lane.
 
-### P1 — infra that unblocks investigation + speed
-5. **#30** pin the Fidelity Gate fixture window (deterministic golden).
-6. **#21 DONE (2026-06-18, `1bbad56`)** scope prep to needed confluence groups. Group-loop
-   scoping = ~2× prep + narrower df (OOM relief), byte-identical (golden 3/3 + parity guard).
-   Flag `RORT_SCOPE_CONFLUENCE_GROUPS=1` live on api; live engine deliberately left full.
-   Profile verdict: trade engine = 76% of a recompute, prep = 24% — so interp/trigger
-   scoping (the rest) is marginal (~7-10s on shared path) and was **dropped**. Next real
-   recompute lever = trade-engine throughput (separate, risky — needs explicit decision).
-7. **#29 PARTIAL DONE (2026-06-18, `13c4786`)** chart speed = scope chart prep (#21) + trim
-   returned df to visible window. **Decouple REJECTED** (empirically): daily/4h built from a
-   cheap 1Min load ≠ from the 15Sec primary (close Δ0.055, volume Δ527k) → would break
-   chart↔backtest heatmap parity. **Residual:** 365d×15Sec ≈ 5.7M-bar *load* for
-   sub-minute+daily charts has no fidelity-safe quick fix — deferred architectural item
-   (entangled with secondary-source consistency across backtest/live/chart). Side-note:
-   1Min vs 15Sec feeds report different volume for the same span — worth a later look.
+### P1 — Stage-2 pipeline cleanups (so Mass Builder scales to thousands, clean by construction)
+4. **Bug 1** — Fwd count = backtest-lane only (`data_source='backtest_%'`, post-divider). Per
+   Kevin: forward-test = backtest model split at the divider, NOT cache, NOT combined.
+5. **OOS anchor DECISION** — should `forward_test_start` = `in_sample_end` (the OOS start the
+   trader expects) vs `created_at` (when live monitoring began)? Three timelines currently
+   collapsed into one divider. Needs Kevin's call; changes what "forward test" displays.
+6. **Bug 3** — one source of truth for `forward_test_start` (top-level col vs config=None).
+7. **Bug 4** — stamp the cache lane's model (`cache_None` → `cache_<algo_model>`).
+8. **Bug 2** — distinguish the backtest-seed forward equity from real live fills (viz).
+   → bake 4–8 into MB save + the cold-seed path (relates to #25 / #26).
 
-### P2 — known divergence draggers (documented in Roadmap_Divergence_Hunting / Known_Bugs)
-8. **B4 1Min early-fire (#5)** — the "1-minute bars and above" timing item (265/269).
-9. 292 SR-channels pack (WIP), 275 dead-live (0 alerts/22 BT), 271 rare 5m-gate under-pass.
-10. Streaming-tick backtest under-fires ~7%; backtest session-filter on primary_df path;
-    manual-backfill +17% vs UAD; ralph_engine watchdog for secondary-TF shadow engines.
+### P2 — known divergence draggers (Roadmap_Divergence_Hunting / Known_Bugs)
+9. **B4 1Min early-fire (#5)** — the "1-minute bars and above" timing item (265/269).
+10. 292 SR-channels pack (WIP), 275 dead-live (0 alerts/22 BT), 271 rare 5m-gate under-pass;
+    streaming-tick backtest under-fires ~7%; ralph_engine watchdog for shadow engines.
 
 ### P3 — larger builds (discuss scope first) + cleanup
-11. **Live-Mode ground-truth embedding** (#4) — per-bar telemetry on ralph_engine so gate
-    parity is read, not reconstructed.
-12. **Tier-3 post-deploy monitor** (#31); Mass Builder #22 (HIFI cache bug) / #25
-    (save-persists-trades) / #26 (cold-seed).
-13. **Docs cleanup phase 2** — actually move active docs into `_active/`, archive done specs.
+11. **#30** pin Fidelity Gate fixture window; **#4** Live-Mode ground-truth telemetry; **#31**
+    Tier-3 post-deploy monitor; trade-engine throughput (the 76% recompute lever, risky).
+12. **Docs cleanup phase 2** — move active docs into `_active/`, archive done specs.
 
 ## Doc map (current locations; move = phase 2)
 **Active (read these):**
