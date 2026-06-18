@@ -40,9 +40,19 @@ Current focus: the first real-money strategies (308–314, TSLA 15Sec).
 
 ### P1 — infra that unblocks investigation + speed
 5. **#30** pin the Fidelity Gate fixture window (deterministic golden).
-6. **#21** scope prep to needed confluence groups (the OOM/speed fix) — run *through* the
-   Fidelity Gate. Also makes charts + divergence investigation fast.
-7. **#29** chart-data window (365-day daily-warmup blowup + trim to visible) — so charts load.
+6. **#21 DONE (2026-06-18, `1bbad56`)** scope prep to needed confluence groups. Group-loop
+   scoping = ~2× prep + narrower df (OOM relief), byte-identical (golden 3/3 + parity guard).
+   Flag `RORT_SCOPE_CONFLUENCE_GROUPS=1` live on api; live engine deliberately left full.
+   Profile verdict: trade engine = 76% of a recompute, prep = 24% — so interp/trigger
+   scoping (the rest) is marginal (~7-10s on shared path) and was **dropped**. Next real
+   recompute lever = trade-engine throughput (separate, risky — needs explicit decision).
+7. **#29 PARTIAL DONE (2026-06-18, `13c4786`)** chart speed = scope chart prep (#21) + trim
+   returned df to visible window. **Decouple REJECTED** (empirically): daily/4h built from a
+   cheap 1Min load ≠ from the 15Sec primary (close Δ0.055, volume Δ527k) → would break
+   chart↔backtest heatmap parity. **Residual:** 365d×15Sec ≈ 5.7M-bar *load* for
+   sub-minute+daily charts has no fidelity-safe quick fix — deferred architectural item
+   (entangled with secondary-source consistency across backtest/live/chart). Side-note:
+   1Min vs 15Sec feeds report different volume for the same span — worth a later look.
 
 ### P2 — known divergence draggers (documented in Roadmap_Divergence_Hunting / Known_Bugs)
 8. **B4 1Min early-fire (#5)** — the "1-minute bars and above" timing item (265/269).
