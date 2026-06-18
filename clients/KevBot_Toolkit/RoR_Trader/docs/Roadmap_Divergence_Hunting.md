@@ -26,6 +26,30 @@ related artifacts live. Update at each session's end.
 
 ---
 
+**Note (2026-06-18):** the live priority list now lives in `docs/_active/STATUS.md` (read
+that first). This doc remains the divergence-specific detail log; some entries below
+(6/11–6/15) are historical — verify before acting.
+
+## Update 2026-06-18 — first real-money strategies surfaced two divergences
+
+Live-money set 308–314 (TSLA 15Sec) after overnight UAD/UND:
+
+- **308 backtest path BROKEN (P0).** Update-All-Data persisted **0** trades; a direct
+  `get_strategy_trades(308)` returns **1,896 trades but only spans Mar-19 → Apr-13** then
+  stops (18 min run); yet the direct `prepare_data_with_indicators` fixture path got **2,593**
+  over a recent 30-day window. So the windowed/UAD path truncates + fails to persist for 308
+  (309–314, same entry/exit, got full Mar→Jun lanes). Effect: 308 = 0-paired / all-phantom on
+  Strategy Health (no lane to pair). Real bug in the windowed path, not a transient re-UAD.
+
+- **309/310/313 missed trades = the documented gate decision-timing divergence (H1).** Revises
+  yesterday's "gates weren't open" theory: UND-extended backtests show entries live didn't
+  fire → live evaluates intra-bar/at-grace while backtest is bar-close. Diagnose with the
+  **Gate Parity tab**. Contributing classes (Known_Bugs): sub-minute drift-cascade, user-pack
+  gates failing on secondary TFs, EH/AH session-filter inflating "missed."
+
+- **`alerts.live_model` NULL on new strategies** → rest-verifier silently skips 308–314, so
+  they may be unmeasured/mispaired (own phantom/TBD noise). See Known_Bugs.
+
 ## Update 2026-06-10 — Gate Parity tab polish + Per-Bar Parity Drift (v1 + v2)
 
 Shipped to dev (`c0116ea`, pushed live; backup branch `dev-backup-2026-06-10-gate-parity`):
