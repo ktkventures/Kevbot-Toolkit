@@ -48,6 +48,27 @@ def _auto_parity_enabled() -> bool:
 _AUTO_PARITY_LAST_N = 200
 
 
+def _forward_divider_dt(strat: dict):
+    """Forward-test divider (2026-06-18 decision): the equity-curve blue/yellow
+    split anchors to `in_sample_end` (the out-of-sample start a trader means by
+    "forward test"), falling back to `forward_test_start`. Returns a tz-aware
+    UTC datetime or None. Keeps the equity boundary aligned with the Fwd count
+    (`_count_forward_trades` uses the same divider). The cache/live lane + alerts
+    are a SEPARATE live-monitoring overlay (see Mass_Builder_Forward_Test_Bugs)."""
+    cfg = strat.get('config') if isinstance(strat.get('config'), dict) else {}
+    raw = (strat.get('in_sample_end') or (cfg or {}).get('in_sample_end')
+           or strat.get('forward_test_start'))
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def recompute_and_persist_stored_trades(
     strategy_id: int,
     user_id: str,
@@ -176,9 +197,9 @@ def _do_recompute(
     from api.services.backtest_service import _build_equity_curve
     eq_data = _build_equity_curve(all_trades)
     boundary_index = None
-    if strat.get('forward_test_start'):
-        fwd_start = datetime.fromisoformat(strat['forward_test_start'])
-        bt_portion, _ = svc.split_trades_at_boundary(all_trades, fwd_start)
+    _div = _forward_divider_dt(strat)
+    if _div is not None:
+        bt_portion, _ = svc.split_trades_at_boundary(all_trades, _div)
         boundary_index = len(bt_portion) if len(bt_portion) > 0 else None
 
     equity_curve_data = {
@@ -1467,11 +1488,10 @@ def append_new_trades_for_strategy(
                 from api.services.backtest_service import _build_equity_curve
                 eq_data = _build_equity_curve(kpis_df)
                 boundary_index = None
-                if strat.get('forward_test_start'):
-                    fwd_start = datetime.fromisoformat(
-                        strat['forward_test_start'])
+                _div = _forward_divider_dt(strat)
+                if _div is not None:
                     bt_portion, _ = svc.split_trades_at_boundary(
-                        kpis_df, fwd_start)
+                        kpis_df, _div)
                     boundary_index = (len(bt_portion)
                                       if len(bt_portion) > 0 else None)
                 equity_curve_data = {
@@ -1904,9 +1924,9 @@ def append_new_backtest_trades_for_strategy(
         from api.services.backtest_service import _build_equity_curve
         eq_data = _build_equity_curve(merged_df)
         boundary_index = None
-        if strat.get('forward_test_start'):
-            fwd_start = datetime.fromisoformat(strat['forward_test_start'])
-            bt_portion, _ = svc.split_trades_at_boundary(merged_df, fwd_start)
+        _div = _forward_divider_dt(strat)
+        if _div is not None:
+            bt_portion, _ = svc.split_trades_at_boundary(merged_df, _div)
             boundary_index = len(bt_portion) if len(bt_portion) > 0 else None
         equity_curve_data = {
             'exit_times': [p.get('timestamp', '') for p in eq_data],
