@@ -196,6 +196,7 @@ def prepare_data_with_indicators(
     secondary_tf_dfs: Optional[Dict[str, pd.DataFrame]] = None,
     strat: Optional[dict] = None,
     model_override: Optional[str] = None,
+    required_confluence_ids: Optional[set] = None,
 ) -> pd.DataFrame:
     """Load market data and run all indicators, interpreters, and trigger detection.
 
@@ -255,6 +256,25 @@ def prepare_data_with_indicators(
 
     use_injected = primary_df is not None
 
+    # #21 prep-scoping kill-switch (default OFF → full behavior, byte-identical).
+    # When ON, derive the needed-group set from the `strat` the caller already
+    # passes — no caller threading. The backtest/chart paths
+    # (get_strategy_trades_for_window, load_strategy_data) pass strat → auto-
+    # scoped. The LIVE engine (data_worker_engine) does NOT pass strat → it
+    # stays full/unscoped on purpose (separate, later validation). Validated
+    # byte-identical (trades + gate states) by the parity guard.
+    import os
+    _scope_flag = os.getenv('RORT_SCOPE_CONFLUENCE_GROUPS', '0') == '1'
+    if _scope_flag and required_confluence_ids is None and strat is not None:
+        try:
+            from unified_engine import resolve_required_confluence_groups
+            required_confluence_ids = resolve_required_confluence_groups(
+                strat, get_enabled_groups(load_confluence_groups()))
+        except Exception as _e:
+            logger.warning("[#21] scope-prep derive failed (%s) — full compute", _e)
+            required_confluence_ids = None
+    _scope_on = _scope_flag and required_confluence_ids is not None
+
     # TTL-cache lookup. Only applies to the REST path — the cache key is
     # keyed on REST inputs (symbol, days, etc.), so injected DataFrames
     # would silently collide with REST results otherwise.
@@ -262,6 +282,10 @@ def prepare_data_with_indicators(
         cache_key = _prepare_cache_key(
             symbol, days, seed, start_date, end_date,
             timeframe, data_feed, session, secondary_tfs)
+        # Scoped frames are strategy-dependent (only some groups computed) — they
+        # must not share a cache entry with a full or differently-scoped frame.
+        if _scope_on:
+            cache_key = cache_key + (tuple(sorted(required_confluence_ids)),)
         cached = _prepare_cache_get(cache_key)
         if cached is not None:
             return cached
@@ -292,8 +316,15 @@ def prepare_data_with_indicators(
     # Run indicators
     df = run_all_indicators(df)
 
-    # Run group-specific indicators for custom parameters
-    for group in get_enabled_groups(load_confluence_groups()):
+    # #21: group-specific indicators. When scoping is ON, compute only the
+    # groups the strategy actually reads (entry/exit/gate packs); interpreters/
+    # triggers for un-computed groups self-skip via their existing `except
+    # KeyError` (missing-column) guards, so the strategy's USED columns stay
+    # byte-identical to the full path. Default (scope OFF) = all enabled groups.
+    _enabled_groups = get_enabled_groups(load_confluence_groups())
+    _scoped_groups = ([g for g in _enabled_groups if g.id in required_confluence_ids]
+                      if _scope_on else _enabled_groups)
+    for group in _scoped_groups:
         df = run_indicators_for_group(df, group)
 
     # Run interpreters
@@ -326,7 +357,7 @@ def prepare_data_with_indicators(
                 if len(sec_df) == 0:
                     continue
                 sec_df = run_all_indicators(sec_df)
-                for group in get_enabled_groups(load_confluence_groups()):
+                for group in _scoped_groups:  # #21: same scoped set as primary
                     sec_df = run_indicators_for_group(sec_df, group)
                 sec_df = run_all_interpreters(sec_df)
 

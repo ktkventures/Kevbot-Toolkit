@@ -663,6 +663,56 @@ def resolve_strategy_requirements(strategy: dict) -> Tuple[
     return indicators, interpreters, triggers, params
 
 
+def resolve_required_confluence_groups(strategy: dict, enabled_groups) -> set:
+    """Return the set of enabled confluence-group IDs whose indicator/interpreter
+    computation a strategy ACTUALLY needs (#21 prep-scoping).
+
+    A provable SUPERSET — errs toward inclusion — so scoping
+    prepare_data_with_indicators to this set can never drop a column the engine
+    reads. Pure + deterministic: backtest and live derive the identical set from
+    the same strategy dict + enabled-group list, so scoping introduces ZERO
+    backtest<->live divergence (it only skips computing groups whose columns the
+    strategy never reads).
+
+    Inclusion rule mirrors the user-pack in-play logic in
+    resolve_strategy_requirements: a group is needed if ANY of —
+      (a) its template's interpreters intersect required_interpreters
+          (covers entry/exit interpreters AND confluence/gate records, which
+          surface as interpreter keys like '2m-BOLLINGER_BANDS-...'),
+      (b) its template trigger_prefix matches a required trigger,
+      (c) its template is a user-pack whose `_user_pack_<slug>` marker is in
+          required_indicators.
+    Plus ALWAYS-include the structural templates (bar_count exits + swing
+    buffer) that create_default_groups force-adds.
+
+    Returns a set of group `id` strings. Order is irrelevant (the caller filters
+    the enabled-group list in place, preserving order).
+    """
+    from confluence_groups import TEMPLATES
+    req_ind, req_interps, req_trigs, _ = resolve_strategy_requirements(strategy)
+    ALWAYS_TEMPLATES = {'bar_count', 'swing_123'}
+    needed: set = set()
+    for g in enabled_groups:
+        tmpl_key = getattr(g, 'base_template', None)
+        if tmpl_key in ALWAYS_TEMPLATES:
+            needed.add(g.id)
+            continue
+        tpl = TEMPLATES.get(tmpl_key) or {}
+        tpl_interps = set(tpl.get('interpreters', []))
+        if tpl_interps & req_interps:          # (a)
+            needed.add(g.id)
+            continue
+        prefix = tpl.get('trigger_prefix', '')  # (b)
+        if prefix and any(t == prefix or t.startswith(prefix + '_')
+                          for t in req_trigs):
+            needed.add(g.id)
+            continue
+        if tmpl_key and f'_user_pack_{tmpl_key}' in req_ind:  # (c)
+            needed.add(g.id)
+            continue
+    return needed
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # INCREMENTAL INDICATOR ENGINE — O(1) updates per bar close
 # ═══════════════════════════════════════════════════════════════════════════
