@@ -78,3 +78,24 @@ ralph_engine. (309 fired 34 alerts → its 2m gate partially works; 5m/1d worse.
   seed), Bug 2 (seed visualization), Bug 3 (one fwd_start source), Bug 4 (stamp
   cache model). Bake into MB save + the cold-seed path so new strategies are
   clean by construction.
+
+## UPDATE 2026-06-18b — forward_test_start anchor + 311 (Kevin's OOS question)
+
+**Confirmed the anchor bug.** MB config carries `in_sample_end: 2026-05-15` +
+`backtest_start_date: 2026-03-19` (in-sample Mar19→May15, out-of-sample
+May15→now). But `forward_test_start` = `created_at` (**Jun-17**), NOT the OOS
+start (**May-15**). So the "forward test" divider = "when live monitoring began,"
+not "when out-of-sample began." Traders expect forward-test = the OOS held-out
+period (May15→now, backtest-model, NO alerts expected since not live-monitored).
+DESIGN FIX (Stage 2): forward-test divider should be `in_sample_end`, and
+"live-monitoring start" (alerts overlay) is a SEPARATE concept = created_at.
+
+**311 is the PHANTOM direction (opposite of 310/313).** 0 backtest trades after
+Jun-17 but **22 live alerts** Jun-18 (11 sw123_bull_c2 entries + 7 stop_loss + 4
+utv4_bear_flip). Live fired where backtest (recomputed) shows nothing → phantom.
+Either real live-only fires OR the creation-anchored window hides OOS backtest
+trades that exist May15–Jun17. Re-check 311 with the OOS anchor before judging.
+
+Net concept: there are THREE timelines, currently collapsed into one divider:
+  in-sample backtest | out-of-sample (forward) backtest | live monitoring (alerts)
+       Mar19–May15   |          May15–now (no alerts)    |   Jun17–now (alerts)
