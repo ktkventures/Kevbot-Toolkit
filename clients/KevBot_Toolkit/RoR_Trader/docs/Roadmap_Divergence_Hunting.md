@@ -721,3 +721,33 @@ PREVIOUS secondary bar (`<interp>__<tf>`, shifted) while live gates on the
 CURRENT closed bar (`_spec_<interp>__<tf>`). Diagnosing read-only via
 `gate_parity_harness.py` (PB vs CB ribbon distributions + theoretical-BT vs
 live-actual + CBpass&PBfail) before any fix.
+
+### 2026-06-18 — Gate divergence on 309/310/313: root-caused to TWO things (NOT PB/CB timing)
+
+Investigated via `gate_parity_harness.py` + direct stored-lane queries. The
+"forward-test trades that should have happened but didn't" decomposes into:
+
+1. **Measurement artifact (inflates "missed"):** `forward_test_start` is **None**
+   on 309/310/313 (likely all Mass-Builder strategies). So Strategy Health /
+   divergence compares the FULL 3-month backtest lane (682 / 341 / 455 trades,
+   Mar–Jun) against only ~2 days of live → nearly everything reads as "missed."
+   Per [[feedback_forward_test_start_immutable]] the anchor SHOULD be creation;
+   here it was never set. Setting it to creation = correct anchor, not masking.
+
+2. **Real live-side gap (the actual bug):** restricting to since-Jun-16:
+   - 310 (5m-RVOL gate): BT=33, **live=0**
+   - 313 (1d-UT_BOT-BULL_TREND gate): BT=103, **live=0**
+   - 309 (2m-Bollinger gate): BT=23 (Jun16-17), live=32 (all **Jun18**)
+   - 308 (NO gate): BT=356, live=482 ✅ fires fine
+   The gated strategies don't ENTER live; ungated does. PB vs CB gate ribbons are
+   **identical** (309) / near-identical (310) → it is NOT a previous-bar-vs-
+   current-bar timing skew. 313's daily gate, if bullish, should fire all day
+   (its 103 BT entries confirm) yet live=0 → the **live engine is almost
+   certainly not producing the higher-TF gate state** (cross-TF secondary feed),
+   same class as the Phase-31 regression (ca57cac) and the user-pack secondary-TF
+   FLIP gap. Engine confirmed running + monitoring TSLA + 54 strategies (right
+   owner). Needs: capture live secondary-TF gate state for 313 during market
+   hours → confirm None/unfed → fix the secondary builder feed in ralph_engine.
+
+Side-note: dev pushes redeploy the worker too (engine restarted 19:05 on today's
+pushes) — batch pushes; mind live restarts during market hours.

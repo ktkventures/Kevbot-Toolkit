@@ -36,7 +36,8 @@ from db import get_admin_client, _row_to_strategy
 from ralph_engine import StrategyMonitor, SymbolHub, _LABEL_TO_TF_SECONDS
 from data_loader import load_market_data, resample_to_timeframe
 
-TF_LABEL = {60: '1Min', 120: '2Min', 300: '5Min', 900: '15Min'}
+TF_LABEL = {60: '1Min', 120: '2Min', 300: '5Min', 900: '15Min',
+            3600: '1Hour', 14400: '4Hour', 86400: '1Day'}
 
 
 def _parse_iso(s) -> Optional[datetime]:
@@ -257,6 +258,11 @@ def build_gate_parity_view(sid: int, hours: float = 4.0,
     df = svc.prepare_data_with_indicators(
         strat['symbol'], timeframe=primary_tf, secondary_tfs=(TF_LABEL[sec_tf],),
         start_date=start, end_date=end, session=session, strat=strat)
+    # The cache-backed path can return the full cached range regardless of
+    # start/end — clip to the requested window so counts are window-accurate.
+    if len(df):
+        _idx = df.index.tz_convert('UTC') if df.index.tz is not None else df.index.tz_localize('UTC')
+        df = df[(_idx >= pd.Timestamp(start)) & (_idx <= pd.Timestamp(end))]
 
     pb_col = f'{interp}__{tf_part}'
     cb_col = f'_spec_{interp}__{tf_part}'
