@@ -39,10 +39,13 @@ Resolves Kevin's "yellow line but Fwd=0" on 309 & 313.
 
 ### Bug 1 — "Forward trades" count is semantically wrong (double-counts)
 `_count_forward_trades` has NO data_source filter, so it counts
-**backtest + cache** rows after fwd_start. A *forward* count should be the
-**cache/live lane only** (and should exclude backtest-seeded copies). This is
-why 310 reads "38 forward trades, 0 alerts" — those are 19 backtest + 19
-backtest-SEEDED cache rows, **not real live fills**.
+**backtest + cache** rows after fwd_start. Per Kevin: forward-test should be the
+**BACKTEST-MODEL lane only**, split at the divider (forward test = the same
+backtest model, just the post-divider slice). So the count should filter
+`data_source='backtest_%'` and `entry >= divider` (310→19, 313→56) — the cache
+lane belongs to the live/divergence view, NOT the forward-test number. This is
+why 310 reads "38 forward trades, 0 alerts": 19 backtest + 19 backtest-SEEDED
+cache rows, none of them real live fills.
 
 ### Bug 2 — cache lane is a backtest seed-copy → yellow line lies
 The `cache_None` lane starts identical to backtest (#26 cold-seed). So the
@@ -99,3 +102,29 @@ trades that exist May15–Jun17. Re-check 311 with the OOS anchor before judging
 Net concept: there are THREE timelines, currently collapsed into one divider:
   in-sample backtest | out-of-sample (forward) backtest | live monitoring (alerts)
        Mar19–May15   |          May15–now (no alerts)    |   Jun17–now (alerts)
+
+## UPDATE 2026-06-18c — Bug 5 ROOT CAUSE CONFIRMED (live gate warmup = flat days=7)
+
+`ralph_engine.py:4689` warms the secondary-TF shadow engine (and primary monitor)
+with `load_market_data(sym, days=7, timeframe=tf_str)` — a **flat 7 days
+regardless of the gate's timeframe**. Bars produced:
+- 2m gate (309): ~2,700 bars → warms → fires live (34 alerts) ✅
+- 1h gate (311): ~49 bars → marginal → fires (22) ✅ (its 0-BT-post-Jun17 is the
+  separate phantom/anchor question)
+- 5m gate (310): ~546 bars (enough), BUT the documented **RVOL_V2 live-gate
+  volume caveat** (line 691, "live RVOL read EXTREME near-constantly") → 0 live
+- **4h/1d gate (312, 313): ~5–12 bars** → UT_BOT/coarse indicators NEVER warm →
+  gate state invalid → **0 live entries**. ← systematic; hits every coarse-gated
+  strategy.
+
+**Fix direction (Stage 1, fidelity-IMPROVING — makes live match backtest):**
+scale warmup `days` by the secondary TF so the gate indicator gets ~250+ bars
+(daily → ~365d, 4h → ~60d, etc.), NOT a flat 7. Parity nuance: backtest builds
+its daily/4h gate by **resampling from 1-min** (CLAUDE.md), while this warmup
+loads NATIVE `tf_str` bars (split-adjustment risk). To truly match backtest, warm
+the shadow from resampled-1min history, not native coarse bars. This REDUCES
+divergence (backtest already uses full-history gate; live should too), so it's a
+parity fix, not a risk — but it IS a live-engine change → greenlight before edit.
+
+Separately: 310's RVOL live-gate reliability is its own sub-bug (volume feed),
+partially addressed 2026-06-12; verify independently.
