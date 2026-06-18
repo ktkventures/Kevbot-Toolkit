@@ -351,14 +351,22 @@ def _augment_with_counts(strategies: list) -> None:
         except Exception:
             return sid, 0
 
-    def _count_forward_trades(sid: int, fwd_start) -> tuple[int, int]:
-        if not fwd_start:
+    def _count_forward_trades(sid: int, divider) -> tuple[int, int]:
+        # Forward-test = the BACKTEST-MODEL lane sliced at the divider
+        # (2026-06-18 decision): divider = in_sample_end (the out-of-sample
+        # start a trader means by "forward test"), falling back to
+        # forward_test_start. data_source is filtered to backtest_% so we do
+        # NOT double-count the cache lane (which is a backtest seed-copy until
+        # live diverges) — the cache/live lane + alerts are a SEPARATE
+        # live-monitoring overlay. See Mass_Builder_Forward_Test_Bugs.md.
+        if not divider:
             return sid, 0
         try:
             r = client.table('trades') \
                 .select('id', count='exact') \
                 .eq('strategy_id', sid) \
-                .gte('entry_fill_ts', fwd_start) \
+                .like('data_source', 'backtest_%') \
+                .gte('entry_fill_ts', divider) \
                 .limit(0) \
                 .execute()
             return sid, (r.count or 0)
@@ -370,7 +378,8 @@ def _augment_with_counts(strategies: list) -> None:
     with ThreadPoolExecutor(max_workers=12) as ex:
         alert_futures = {ex.submit(_count_alerts, s['id']): s['id'] for s in strategies if s.get('id')}
         fwd_futures = {
-            ex.submit(_count_forward_trades, s['id'], s.get('forward_test_start')): s['id']
+            ex.submit(_count_forward_trades, s['id'],
+                      s.get('in_sample_end') or s.get('forward_test_start')): s['id']
             for s in strategies if s.get('id')
         }
         for fut in as_completed(alert_futures):
