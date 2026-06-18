@@ -2557,10 +2557,26 @@ def get_strategy_chart_data(
             timeframe=strat.get('timeframe', '1Min'),
             session=strat.get('trading_session', 'RTH'),
             secondary_tfs=sec_tfs,
+            strat=strat,  # #29: enables #21 confluence-group scoping on the chart
+                          # prep (byte-identical for displayed cols; only drops
+                          # groups the chart never renders). No-op when flag off.
         )
         _phases["prepare"] = _time.time() - _t
         logger.warning("[CHART-DATA:%s] prepare_data_with_indicators=%.2fs bars=%d",
                        strategy_id, _phases["prepare"], len(df))
+
+        # #29: trim to the user's visible window. The extended history above
+        # (chart_days, up to 365d) is loaded purely to warm up daily-secondary
+        # indicators; the user only views `base_days`. Indicators are already
+        # computed on the full window, so trimming the tail preserves every
+        # visible value while cutting serialization + payload dramatically.
+        if chart_days > base_days and len(df) > 0:
+            import pandas as _pd
+            _cutoff = df.index.max() - _pd.Timedelta(days=base_days)
+            _before = len(df)
+            df = df[df.index >= _cutoff]
+            logger.warning("[CHART-DATA:%s] #29 trim %d -> %d bars (visible=%dd)",
+                           strategy_id, _before, len(df), base_days)
 
         # M8.7 (2026-05-02): factored indicator classification + serialization
         # into _build_chart_response_from_df, shared with /chart-data-cache.
