@@ -477,10 +477,52 @@ def create_strategy(strategy: dict = Body(...), user=Depends(get_current_user)):
     if strategy.get('time_exit_pack_id') and not strategy.get('time_exit_config'):
         strategy['time_exit_config'] = _resolve_time_exit_from_pack(strategy['time_exit_pack_id'])
 
+    # Tier 1 (2026-06-18): did the caller hand us backtest trades to persist?
+    # Strategy Builder saves include stored_trades (the backtest it just ran) —
+    # save_strategy_db persists those to the trades table directly. Mass Builder
+    # candidates DON'T (their trades are stripped from search results, too large
+    # for JSONB), so a saved MB strategy lands with an EMPTY backtest lane → UND
+    # has nothing to append from → you'd have to hand-run Update-All-Data. Detect
+    # that here so we can auto-populate the lane below.
+    _had_trades = bool(strategy.get('stored_trades'))
+
     from db import USE_DB
     if USE_DB:
         from db import save_strategy_db
         result = save_strategy_db(strategy)
+
+        # Tier 1: auto-populate the backtest lane for trades-less saves (MB
+        # candidates) by enqueuing a single-strategy recompute — the SAME engine
+        # UAD uses (recompute_and_persist_stored_trades), run async via the
+        # update_jobs infra so the save returns immediately. Eliminates the
+        # save → manual UAD → UND → UND dance: after this job finishes the lane
+        # is populated and UND works directly. See Mass_Builder_Forward_Test_Bugs.
+        if not _had_trades and result and result.get('id'):
+            try:
+                from db import save_update_job
+                from update_jobs import start_update_job_async
+                _new_id = int(result['id'])
+                _uid = user.get('id') if isinstance(user, dict) \
+                    else getattr(user, 'id', None)
+                _job_id = save_update_job({
+                    'name': f'Auto-populate backtest lane (sid {_new_id})',
+                    'mode': 'all', 'scope': 'single',
+                    'strategy_ids': [_new_id], 'status': 'queued',
+                    'progress': {'current_step': 0, 'total_steps': 1,
+                                 'current_sid': None,
+                                 'current_phase': 'queued', 'per_strategy': {}},
+                })
+                if _job_id:
+                    start_update_job_async(_job_id, 'all', [_new_id], _uid)
+                    result['auto_populate_job_id'] = _job_id
+                    logger.warning(
+                        "[Tier1] sid=%s saved w/o trades -> enqueued "
+                        "auto-populate job %s", _new_id, _job_id)
+            except Exception as e:
+                logger.warning(
+                    "[Tier1] auto-populate enqueue failed for sid=%s: %s",
+                    result.get('id'), e)
+
         return result if result else {"status": "saved"}
 
     # JSON fallback
