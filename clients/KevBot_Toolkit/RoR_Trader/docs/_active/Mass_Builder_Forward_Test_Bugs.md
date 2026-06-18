@@ -128,3 +128,23 @@ parity fix, not a risk — but it IS a live-engine change → greenlight before 
 
 Separately: 310's RVOL live-gate reliability is its own sub-bug (volume feed),
 partially addressed 2026-06-12; verify independently.
+
+## UPDATE 2026-06-18d — Bug 5 FIX SHIPPED + validated
+
+`ralph_engine.py`: new `_load_warmup_df()` (single source of truth for all 3
+warmup paths — startup `_warmup_all` + both hot-reload seeds). Sub-minute TFs
+load native (days=7); **≥60s TFs warm from resampled-1min over a TF-scaled
+window** (`_secondary_warmup_days`: 1Day=355d, 4h=180d, 1h=55d, 5m=10d) —
+matching backtest's resample-from-1min construction. Backup branch:
+`dev-backup-2026-06-18-pre-shadow-warmup`.
+
+Validation (parity-#1):
+- 313 daily UT_BOT_V4: fix-window(355d/245 bars) vs backtest-window(135d/95) →
+  **0/12 recent-date mismatches**; Jun 16/17/18 = BULL_TREND (the gate IS bullish
+  on the days backtest fired 103× → live will now pass it).
+- Regression on currently-firing strategies: 309 (2m Bollinger) old-native-7d vs
+  new-resampled → **0/12**; 311 (1h VWAP) 36→273 bars → **0/12**. No regression.
+
+Post-deploy live measure: 313/312 (coarse gates) should begin producing live
+alerts once a primary entry fires while the gate is satisfied. 310's RVOL gate is
+the SEPARATE volume-double-count sub-bug (still open).

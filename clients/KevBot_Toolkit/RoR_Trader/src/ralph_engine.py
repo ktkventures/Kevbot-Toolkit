@@ -1699,6 +1699,64 @@ def _ws_agg_primary_fanout_enabled() -> bool:
     return val in ('1', 'true', 'yes', 'on')
 
 
+# Bug 5 (2026-06-18): the live warmup used a flat days=7 for EVERY builder,
+# which starves coarse-TF gates — a 1Day gate got ~5 bars and its indicator
+# (UT_BOT, etc.) never warmed, so the cross-TF gate state was never valid and
+# gated strategies never entered live (310/313 fired 0 live vs 33/103 backtest).
+# Size the warmup window to the TF so the gate converges the way it does in
+# backtest. Target a generous bar count (>= what the backtest window yields),
+# floored at 7 days (fine TFs already warm in <7d).
+_SHADOW_WARMUP_TARGET_BARS = 250
+
+
+def _secondary_warmup_days(tf_str: str, is_crypto_sym: bool = False) -> int:
+    """Calendar days of 1-min history needed to warm ~_SHADOW_WARMUP_TARGET_BARS
+    bars of `tf_str`. The shadow is then built by resampling that 1-min history
+    to `tf_str` — mirroring the backtest's resample-from-1min construction
+    (CLAUDE.md), so live and backtest gate states align. Sub-minute TFs keep
+    the flat 7-day native load (can't resample 1-min finer)."""
+    import math as _m
+    from data_loader import BARS_PER_DAY, CRYPTO_BARS_PER_DAY
+    bpd_map = CRYPTO_BARS_PER_DAY if is_crypto_sym else BARS_PER_DAY
+    bpd = bpd_map.get(tf_str, 390)
+    if bpd <= 0:
+        return 7
+    trading_days = _SHADOW_WARMUP_TARGET_BARS / bpd
+    # trading-days -> calendar-days. Equities skip weekends (×7/5); crypto is
+    # 24/7. Add a holiday/weekend buffer either way.
+    cal = trading_days if is_crypto_sym else trading_days * 7.0 / 5.0
+    return max(7, int(_m.ceil(cal)) + 5)
+
+
+def _load_warmup_df(sym: str, tf_seconds: int, session: str) -> pd.DataFrame:
+    """Load warmup bars for one builder/shadow TF (Bug 5, 2026-06-18).
+
+    Single source of truth for every warmup path (startup `_warmup_all` +
+    hot-reload). Sub-minute TFs load natively (can't resample 1-min finer).
+    >=60s TFs are built by resampling a TF-scaled 1-min window — matching the
+    backtest's resample-from-1min construction (CLAUDE.md) AND the live
+    ws_agg/AM fan-out — so coarse gates (4h/1d) actually converge live instead
+    of being starved by the old flat days=7 (a 1Day gate got ~5 bars → never
+    warmed → gated strategies never entered live). Validated: recent daily
+    UT_BOT_V4 states match backtest 0/12 mismatches."""
+    from data_loader import (
+        load_market_data, is_crypto, resample_to_timeframe)
+    tf_str = SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min')
+    if tf_seconds < 60:
+        return load_market_data(
+            sym, days=7, timeframe=tf_str, feed='sip', session=session)
+    wd = _secondary_warmup_days(tf_str, is_crypto(sym))
+    df1 = load_market_data(
+        sym, days=wd, timeframe='1Min', feed='sip', session=session)
+    if df1 is None or len(df1) == 0:
+        return pd.DataFrame()
+    out = resample_to_timeframe(
+        df1[['open', 'high', 'low', 'close', 'volume']].copy(), tf_str)
+    logger.info("[Bug5] warmup %s tf=%s: 1min_days=%d -> %d resampled bars "
+                "(was flat days=7)", sym, tf_str, wd, len(out))
+    return out
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SHADOW INDICATOR ENGINE — secondary TF interpreter state for MTF confluence
 # ═══════════════════════════════════════════════════════════════════════════
@@ -4665,8 +4723,6 @@ class RalphEngine:
 
     def _warmup_all(self):
         """Load historical data and initialize all monitors."""
-        from data_loader import load_market_data, is_crypto
-
         seen_tf: Dict[Tuple[str, int], pd.DataFrame] = {}
 
         for sym, hub in self.hubs.items():
@@ -4684,11 +4740,10 @@ class RalphEngine:
                             break
 
                     try:
-                        # Crypto: session is irrelevant (24/7 market),
-                        # load_market_data auto-routes via is_crypto()
-                        df = load_market_data(
-                            sym, days=7, timeframe=tf_str,
-                            feed='sip', session=session)
+                        # Bug 5 (2026-06-18): shared warmup loader — sub-minute
+                        # native, >=60s resampled-from-1min over a TF-scaled
+                        # window so coarse gates converge (was flat days=7).
+                        df = _load_warmup_df(sym, tf_seconds, session)
                     except Exception as e:
                         logger.error("Warmup failed for %s/%s: %s",
                                      sym, tf_str, e)
@@ -5711,11 +5766,9 @@ class RalphEngine:
             else:
                 # Load historical data for warmup
                 try:
-                    from data_loader import load_market_data
-                    tf_str = SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min')
-                    df = load_market_data(
-                        sym, days=7, timeframe=tf_str,
-                        feed='sip', session=monitor.session)
+                    # Bug 5: shared warmup loader (TF-scaled, resample-from-1min
+                    # for >=60s). Sub-minute primary stays native days=7.
+                    df = _load_warmup_df(sym, tf_seconds, monitor.session)
                     if df is not None and len(df) > 0:
                         # seed_history splits any forming bar into
                         # _partial; warm up monitor from the resulting
@@ -5735,11 +5788,11 @@ class RalphEngine:
                 if sec_builder is None or len(sec_builder.history) > 0:
                     continue  # already seeded by another monitor this pass
                 try:
-                    from data_loader import load_market_data
                     sec_tf_str = SECONDS_TO_TIMEFRAME.get(sec_tf, '1Min')
-                    sec_df = load_market_data(
-                        sym, days=7, timeframe=sec_tf_str,
-                        feed='sip', session=monitor.session)
+                    # Bug 5: TF-scaled, resample-from-1min warmup for the new
+                    # secondary/gate TF (was flat days=7 → coarse gates starved
+                    # → never warmed → gated strategy never entered live).
+                    sec_df = _load_warmup_df(sym, sec_tf, monitor.session)
                     if sec_df is not None and len(sec_df) > 0:
                         # Drop the in-progress (currently-forming) bar
                         # if present. load_market_data sometimes returns
