@@ -148,3 +148,40 @@ Validation (parity-#1):
 Post-deploy live measure: 313/312 (coarse gates) should begin producing live
 alerts once a primary entry fires while the gate is satisfied. 310's RVOL gate is
 the SEPARATE volume-double-count sub-bug (still open).
+
+## UPDATE 2026-06-18e — Tier 1 shipped (MB save auto-populates lane) + Tier 2 plan
+
+**Confirmed MB pathway == UAD:** MB runs `prepare_data_with_indicators` +
+`run_unified_backtest` (mass_builder.py:535/1195) — same engine as UAD's
+`recompute_and_persist_stored_trades`. MB even pre-bakes a `precompute_bar_cache`
+(the "dough": bars+indicators+superset triggers) and re-applies each candidate's
+confluence via `run_trades_from_cache` (10-50× replay) — exactly Kevin's
+pizza-dough model.
+
+**Root cause of the save→UAD→UND→UND dance:** MB strips `stored_trades` from
+search results (too large for JSONB, mass_builder.py:1914). So a saved MB
+candidate lands with an EMPTY trades-table lane (`save_strategy_db` CAN persist
+trades — `replace_trades_for_strategy` — but is handed none). UND then has
+nothing to append from → manual UAD required. Candidate trades pop ~60s after a
+search (`_active_searches` cleanup, 1967); API is `--workers 1` so the per-
+(symbol,tf) dough cache (LRU 20) IS reachable from a later save but is lost on
+deploy/eviction.
+
+**Tier 1 SHIPPED (`8e270c7`, backup `dev-backup-2026-06-18-pre-tier1-autopopulate`):**
+`create_strategy` auto-enqueues a single-strategy `mode='all'` recompute (async
+update_jobs) when the save carries no trades → lane populates → UND works, no
+manual UAD. Gated + try/except (a save never fails). Verify with a real MB save
+(an "Auto-populate backtest lane" job should appear).
+
+**Tier 2 (planned, scale + durability):** persist the dough (`CachedBarState`)
+as a **Parquet blob in object storage** (Supabase Storage), indexed by a small
+table (symbol, tf, window → blob_url) — NOT row-per-bar Postgres (1.4M
+bars/15Sec-90d is too many rows; Parquet = a few MB, ~1s load). Then the save's
+cold path becomes "load dough + `run_trades_from_cache` re-bake" (seconds,
+deploy-durable) instead of a full recompute. Store one dough per symbol/TF, not
+trade-detail per candidate (Kevin's storage point).
+
+**Skip:** pre-baking stop *prices* — the cache already stores stop *inputs*
+(ATR/swing levels in `current_values`); the final price must vary per candidate
+(it's an optimization variable), so there's no win. Hi-Fi analog (cache the
+1-second data) is a later phase.
