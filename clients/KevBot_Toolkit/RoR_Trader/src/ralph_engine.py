@@ -1742,7 +1742,10 @@ def _load_warmup_df(sym: str, tf_seconds: int, session: str) -> pd.DataFrame:
     from data_loader import (
         load_market_data, is_crypto, resample_to_timeframe)
     tf_str = SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min')
-    if tf_seconds < 60:
+    # <=60s loads NATIVELY: sub-minute can't resample 1-min finer, and 1Min
+    # IS 1-min (resample_to_timeframe rejects a 1Min->1Min no-op, which broke
+    # 1Min warmup → strategies skipped, 2026-06-19). Only >60s resamples.
+    if tf_seconds <= 60:
         return load_market_data(
             sym, days=7, timeframe=tf_str, feed='sip', session=session)
     wd = _secondary_warmup_days(tf_str, is_crypto(sym))
