@@ -211,3 +211,24 @@ dough re-bake == a full UAD on the REAL window (the dough is built over the
 search window; recompute uses resolve_visible_window+warmup — same resolver, so
 expected identical, but confirm empirically). Until then: Tier 1's full recompute
 populates saved-MB lanes (slow but correct); Tier 2 makes it seconds once flipped.
+
+## UPDATE 2026-06-18g — Tier 2 VALIDATED + FLIPPED ON (RORT_USE_DOUGH_CACHE=1)
+
+Real-save testing (318-323) surfaced + fixed two issues, then validated:
+- **Key**: dropped per-save `backtest_start_date` (varies sub-second) → key on
+  `(symbol,tf,session,data_days)` so producer+consumer match. (`6c21564`)
+- **Trim**: dough covers warmup+visible; producer stamps `_visible_start` +
+  visible `_trading_days`; consumer trims re-bake via `trim_trades_to_visible`
+  (requires `_visible_start`, else old doughs → full recompute).
+
+**Dry-run (sid 318): dough re-bake == full `get_strategy_trades` recompute,
+BYTE-IDENTICAL (entry/exit ts + prices + r + exit_reason), 0.5s vs 30s (~60×).**
+Note: this matches the RECOMPUTE baseline; the MB sent-trades lanes carry Hi-Fi
+exit timestamps (a separate pass) which a plain recompute (dough or full) does
+not reproduce — orthogonal to Tier 2.
+
+**FLIPPED ON 2026-06-18** (RORT_USE_DOUGH_CACHE=1 on api). Effect: recompute
+paths (UND/UAD/Tier-1 cold-save) re-bake from a fresh dough in ~0.5s instead of
+a full recompute, fallback-safe. Existing pre-fix doughs lack `_visible_start`
+→ skipped (full recompute) until a NEW search writes fix-compatible doughs.
+ACTION: re-run a search so new doughs carry `_visible_start` + the new key.
