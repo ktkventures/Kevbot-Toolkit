@@ -9,6 +9,20 @@ in their current locations for now — see Doc Map). New observations get logged
 Backtest and live produce the **same trades within ~5s**, so we can **trade reliably**.
 Current focus: the first real-money strategies (308–314, TSLA 15Sec).
 
+## ⚠️ PENDING MONDAY (2026-06-22) LIVE VALIDATION + rollback map
+Jun-19 was Juneteenth (market closed) → no live data, so the live-engine changes
+below could NOT be validated. ONLY these touch live firing; everything else this
+session is offline-validated (Tier 2 byte-identical) or display-only (Bug 1/equity).
+- **Bug 5 — TF-scaled coarse-gate warmup** (`ralph_engine._load_warmup_df`).
+  VALIDATE Mon: 313/312 (1d/4h gates) fire live + no live↔backtest divergence on
+  the 1d/2m/5m-gated cohort. **ROLLBACK = flip `RORT_TF_SCALED_WARMUP=0` on Worker**
+  (instant; reverts to pre-Bug-5 flat days=7). Commits: `0e19838`, `3159d96`.
+- **1Min support fix** (`<=60s` native, `8c2fdcb`). VALIDATE Mon: a 1Min strategy
+  warms + fires (no "Cannot resample to 1Min"). Covered by the same kill-switch.
+- **310 RVOL** live sub-bug (forming-bar volume 2×) — NOT yet fixed; verify Mon.
+Selective rollback: each feature is its own commit → `git revert <commit>` leaves
+the rest intact. We are NOT in "roll back everything" territory.
+
 ## Current state (2026-06-18 EOD)
 **Working / shipped:**
 - 308 (ungated) fires live + has a correct backtest lane (the loader silent-truncation that
