@@ -139,8 +139,9 @@ export default function AdminTasksPage() {
     <div style={{ padding: 20, maxWidth: 1500, margin: '0 auto' }}>
       <h1 style={{ fontSize: 22, marginBottom: 4 }}>Dev Task Tracker</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
-        {openCount} open · {liveCount} touch live · sorted by priority (phase.seq, 1.1 first).
-        Urgent ⚡ is a tag; 🔴 = touches live engine/trading; ⏳ = needs live validation.
+        {openCount} open · {liveCount} touch live · sorted by priority (phase.seq, 1.1 first). Legend:
+        🟢 offline-ok = fully validatable now (safe to work); ⏳ = needs live-market data to confirm;
+        🔴 = touches live engine/trading code (deploy carefully); ⚡ = urgent (a tag, not a priority).
       </p>
 
       {err && <Card><div style={{ color: 'var(--red)', fontSize: 13 }}>⚠ {err}</div></Card>}
@@ -209,8 +210,10 @@ export default function AdminTasksPage() {
                     </select>
                   </td>
                   <td style={cell}>
-                    {t.impacts_live && <span style={badge('var(--red)')} title="touches live engine/trading">🔴 live</span>}
-                    {t.needs_live_validation && <span style={badge('#a06800')} title="needs live-market validation">⏳ validate</span>}
+                    {t.impacts_live && <span style={badge('var(--red)')} title="touches live engine/trading code — deploy carefully">🔴 live</span>}
+                    {t.status !== 'Done' && (t.needs_live_validation
+                      ? <span style={badge('#a06800')} title="needs live-market data to confirm">⏳ validate</span>
+                      : <span style={badge('#2e7d32')} title="fully validatable offline — safe to work now">🟢 offline-ok</span>)}
                     <span style={{ cursor: 'pointer' }} title="toggle urgent" onClick={() => patch(t.id, { is_urgent: !t.is_urgent })}>
                       {t.is_urgent ? <span style={badge('#b00')}>⚡ urgent</span> : <span style={{ opacity: 0.3 }}>⚡</span>}
                     </span>
