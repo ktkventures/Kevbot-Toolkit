@@ -69,3 +69,85 @@ def deserialize_dough(blob: bytes) -> Tuple[List[Any], dict]:
 def dough_blob_size(cache: List[Any], metadata: dict) -> int:
     """Compressed byte size of the serialized dough (for storage planning)."""
     return len(serialize_dough(cache, metadata))
+
+
+# ── Persistent store (Supabase Storage) ────────────────────────────────────
+# One dough per (user, symbol, tf, session, window) — keyed by config, NOT by
+# candidate, since all candidates of a search share the superset dough.
+# Fallback-safe everywhere: any failure returns None so the caller recomputes.
+
+DOUGH_BUCKET = 'dough-cache'
+
+
+def dough_key(strat: dict) -> str:
+    """Deterministic blob key for a strategy's dough, derived from the window-
+    defining config (symbol/tf/session/data_days/backtest_start_date) — the
+    same fields that resolve the backtest window. All candidates of one search
+    share these, so they share one dough. The candidate's confluence/triggers
+    are NOT in the key (the dough is the superset). Returns '' if underspecified
+    (caller treats as no-dough)."""
+    import hashlib
+    cfg = strat.get('config') if isinstance(strat.get('config'), dict) else {}
+    parts = [
+        str(strat.get('user_id') or ''),
+        str(strat.get('symbol') or ''),
+        str(strat.get('timeframe') or ''),
+        str(strat.get('trading_session') or strat.get('session') or 'RTH'),
+        str(strat.get('data_days') or (cfg or {}).get('data_days') or ''),
+        str(strat.get('backtest_start_date')
+            or (cfg or {}).get('backtest_start_date') or ''),
+    ]
+    if not parts[1] or not parts[2]:   # need at least symbol + timeframe
+        return ''
+    h = hashlib.sha1('|'.join(parts).encode()).hexdigest()[:24]
+    return f"{parts[0] or 'anon'}/{parts[1]}_{parts[2]}_{h}.dough.gz"
+
+
+def put_dough(key: str, cache: List[Any], metadata: dict,
+              built_at_iso: str) -> bool:
+    """Upload a serialized dough to the bucket (upsert). built_at_iso is
+    stamped into the metadata so get_dough can enforce freshness. Returns
+    True on success, False on any failure (non-fatal: search still proceeds)."""
+    if not key:
+        return False
+    try:
+        from db import get_admin_client
+        meta2 = dict(metadata or {})
+        meta2['_built_at'] = built_at_iso
+        blob = serialize_dough(cache, meta2)
+        get_admin_client().storage.from_(DOUGH_BUCKET).upload(
+            key, blob,
+            {'content-type': 'application/octet-stream', 'upsert': 'true'})
+        return True
+    except Exception:
+        return False
+
+
+def get_dough(key: str, max_age_hours: float = 36.0):
+    """Download + deserialize a dough. Returns (cache, metadata) or None on
+    miss / schema mismatch / staleness (built_at older than max_age_hours).
+    Never raises — a None return means 'recompute instead'."""
+    if not key:
+        return None
+    try:
+        from db import get_admin_client
+        blob = get_admin_client().storage.from_(DOUGH_BUCKET).download(key)
+        if not blob:
+            return None
+        cache, metadata = deserialize_dough(blob)
+        if max_age_hours is not None:
+            built = (metadata or {}).get('_built_at')
+            if built:
+                from datetime import datetime, timezone
+                try:
+                    b = datetime.fromisoformat(str(built).replace('Z', '+00:00'))
+                    if b.tzinfo is None:
+                        b = b.replace(tzinfo=timezone.utc)
+                    age_h = (datetime.now(timezone.utc) - b).total_seconds() / 3600.0
+                    if age_h > max_age_hours:
+                        return None  # stale → recompute
+                except Exception:
+                    pass
+        return cache, metadata
+    except Exception:
+        return None
