@@ -156,7 +156,43 @@ def _do_recompute(
         strat.get('entry_trigger_confluence_id', '?'),
     )
 
-    all_trades = svc.get_strategy_trades(strat)
+    # Tier 2 (gated, default OFF via RORT_USE_DOUGH_CACHE): if a fresh dough
+    # exists for this strategy's window, re-bake the lane from it
+    # (run_trades_from_cache, 10-50x) instead of a full prepare+engine recompute.
+    # Fallback-safe: any miss / stale / error / trigger-not-in-superset falls
+    # through to the full svc.get_strategy_trades. CRITICAL: carry trading_days
+    # from the dough metadata onto .attrs, else calculate_kpis falls back to
+    # count_trading_days(trades_df)=1 and inflates daily_r ~180x (see line ~190).
+    import os as _os
+    all_trades = None
+    if _os.getenv('RORT_USE_DOUGH_CACHE', '0') == '1':
+        try:
+            import bar_cache_store as _bcs
+            from unified_engine import run_trades_from_cache as _rtfc
+            _got = _bcs.get_dough(_bcs.dough_key(strat))
+            if _got is not None:
+                _cache, _meta = _got
+                _reb = _rtfc(_cache, strat, _meta)
+                if _reb is not None and len(_reb) > 0:
+                    _td = (_meta or {}).get('_trading_days')
+                    if _td:
+                        try:
+                            _reb.attrs['trading_days'] = _td
+                        except Exception:
+                            pass
+                    all_trades = _reb
+                    logger.info(
+                        "[Tier2] strategy=%s lane re-baked from dough "
+                        "(%d trades, trading_days=%s)",
+                        strategy_id, len(all_trades), _td)
+        except Exception as _e:
+            logger.warning(
+                "[Tier2] strategy=%s dough re-bake failed (%s) — full recompute",
+                strategy_id, _e)
+            all_trades = None
+
+    if all_trades is None:
+        all_trades = svc.get_strategy_trades(strat)
     logger.info(
         "[FT-RECOMPUTE] strategy=%s: %d trades", strategy_id, len(all_trades),
     )
