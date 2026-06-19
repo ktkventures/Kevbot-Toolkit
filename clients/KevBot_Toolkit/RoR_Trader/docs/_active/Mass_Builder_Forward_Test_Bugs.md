@@ -185,3 +185,29 @@ trade-detail per candidate (Kevin's storage point).
 (ATR/swing levels in `current_values`); the final price must vary per candidate
 (it's an optimization variable), so there's no win. Hi-Fi analog (cache the
 1-second data) is a later phase.
+
+## UPDATE 2026-06-18f — Tier 2 implemented END-TO-END (gated off) + validated
+
+Behind kill-switch `RORT_USE_DOUGH_CACHE` (default **OFF** → production unchanged):
+- **Storage** (`bar_cache_store`, `bddbf7c`): `dough-cache` Supabase Storage bucket
+  (existing service-role creds — no new access). gzip(pickle) envelope w/
+  schema_version + freshness (`_built_at`, 36h default). Window-only key
+  (symbol/tf/session/data_days/backtest_start_date — NO user_id; doughs are
+  market-data+superset, shareable, trigger-not-in-superset falls back).
+- **Producer** (`mass_builder.run_mass_search`, `074518a`): persists each
+  group's freshly-built dough (best-effort try/except, trading_days stamped).
+- **Consumer** (`forward_test_service._do_recompute`, `2b4aeb5`): when flag on +
+  a fresh dough exists, re-bakes the lane via `run_trades_from_cache` instead of
+  a full recompute; carries trading_days onto `.attrs` (else KPI daily_r inflates
+  ~180×); any miss/stale/error → full recompute.
+
+Validated (all gated tests, throwaways cleaned): serialization round-trip
+byte-identical (503==503); storage put→get→re-bake identical + freshness guard;
+producer-key == consumer-key (MATCH); full flow engine==dough-rebake (503==503)
+with trading_days propagated (4→4).
+
+**Flip gate:** turn `RORT_USE_DOUGH_CACHE=1` ONLY after a dry-run confirms a
+dough re-bake == a full UAD on the REAL window (the dough is built over the
+search window; recompute uses resolve_visible_window+warmup — same resolver, so
+expected identical, but confirm empirically). Until then: Tier 1's full recompute
+populates saved-MB lanes (slow but correct); Tier 2 makes it seconds once flipped.
