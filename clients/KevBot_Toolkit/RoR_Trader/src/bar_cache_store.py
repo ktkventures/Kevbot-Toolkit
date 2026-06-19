@@ -80,27 +80,29 @@ DOUGH_BUCKET = 'dough-cache'
 
 
 def dough_key(strat: dict) -> str:
-    """Deterministic blob key for a strategy's dough, derived from the window-
-    defining config (symbol/tf/session/data_days/backtest_start_date) — the
-    same fields that resolve the backtest window. All candidates of one search
-    share these, so they share one dough. The candidate's confluence/triggers
-    are NOT in the key (the dough is the superset). Returns '' if underspecified
-    (caller treats as no-dough)."""
+    """Deterministic blob key for a strategy's dough, derived ONLY from the
+    window-defining fields (symbol/tf/session/data_days/backtest_start_date) —
+    NOT user_id. The dough is pure market data + superset indicators/triggers
+    (no user-private data; the user's confluence is applied at re-bake, and a
+    trigger missing from the superset safely falls back to recompute), so it's
+    shareable across users by window. Keying without user_id lets the Mass
+    Builder producer (which doesn't carry user_id in run_mass_search) and the
+    save-side consumer compute the SAME key. Returns '' if underspecified."""
     import hashlib
     cfg = strat.get('config') if isinstance(strat.get('config'), dict) else {}
+    symbol = str(strat.get('symbol') or '')
+    timeframe = str(strat.get('timeframe') or '')
     parts = [
-        str(strat.get('user_id') or ''),
-        str(strat.get('symbol') or ''),
-        str(strat.get('timeframe') or ''),
+        symbol, timeframe,
         str(strat.get('trading_session') or strat.get('session') or 'RTH'),
         str(strat.get('data_days') or (cfg or {}).get('data_days') or ''),
         str(strat.get('backtest_start_date')
             or (cfg or {}).get('backtest_start_date') or ''),
     ]
-    if not parts[1] or not parts[2]:   # need at least symbol + timeframe
+    if not symbol or not timeframe:
         return ''
     h = hashlib.sha1('|'.join(parts).encode()).hexdigest()[:24]
-    return f"{parts[0] or 'anon'}/{parts[1]}_{parts[2]}_{h}.dough.gz"
+    return f"dough/{symbol}_{timeframe}_{h}.dough.gz"
 
 
 def put_dough(key: str, cache: List[Any], metadata: dict,

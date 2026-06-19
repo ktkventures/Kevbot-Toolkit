@@ -1187,6 +1187,23 @@ def run_mass_search(
                                             secondary_tf_map=sec_tf_map if sec_tf_map else None)
                                         _group_cache_holder['cache'] = _cache
                                         _group_cache_holder['meta'] = _meta
+                                        # Tier 2: persist this group's dough so a
+                                        # later save can re-bake the lane (gated
+                                        # consumer in forward_test_service) instead
+                                        # of a full recompute. One dough per
+                                        # (symbol,tf,window); best-effort — a
+                                        # failure never breaks the search.
+                                        try:
+                                            import bar_cache_store as _bcs
+                                            from datetime import datetime as _dt, timezone as _tz
+                                            _dkey = _bcs.dough_key(config)
+                                            if _dkey:
+                                                _m2 = dict(_meta or {})
+                                                _m2['_trading_days'] = count_trading_days(df)
+                                                _bcs.put_dough(_dkey, _cache, _m2,
+                                                               _dt.now(_tz.utc).isoformat())
+                                        except Exception:
+                                            pass
                                     trades_df = run_trades_from_cache(
                                         _group_cache_holder['cache'],
                                         config,
