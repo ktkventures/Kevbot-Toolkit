@@ -1742,10 +1742,13 @@ def _load_warmup_df(sym: str, tf_seconds: int, session: str) -> pd.DataFrame:
     from data_loader import (
         load_market_data, is_crypto, resample_to_timeframe)
     tf_str = SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min')
-    # <=60s loads NATIVELY: sub-minute can't resample 1-min finer, and 1Min
-    # IS 1-min (resample_to_timeframe rejects a 1Min->1Min no-op, which broke
-    # 1Min warmup → strategies skipped, 2026-06-19). Only >60s resamples.
-    if tf_seconds <= 60:
+    # KILL-SWITCH (2026-06-19): RORT_TF_SCALED_WARMUP=0 reverts to the
+    # pre-Bug-5 flat days=7 native load for ALL TFs — instant rollback if the
+    # TF-scaled resample-from-1min warmup shows any live divergence Monday
+    # (flip the env var, no code revert/redeploy of logic). 1Min stays native
+    # either way (the resample-to-1Min no-op is invalid).
+    _tf_scaled = os.getenv('RORT_TF_SCALED_WARMUP', '1') == '1'
+    if tf_seconds <= 60 or not _tf_scaled:
         return load_market_data(
             sym, days=7, timeframe=tf_str, feed='sip', session=session)
     wd = _secondary_warmup_days(tf_str, is_crypto(sym))
