@@ -507,6 +507,7 @@ def run_mass_search(
     progress_callback: Callable[[int, int, str], None] = None,
     resume_checkpoint: Optional[dict] = None,
     checkpoint_callback: Optional[Callable[[list, list, dict], None]] = None,
+    partial_callback: Optional[Callable[[list], None]] = None,
 ) -> list:
     """Execute a mass strategy search.
 
@@ -849,6 +850,11 @@ def run_mass_search(
     total_steps = n_data_groups + n_backtest_combos
     step = 0
     results = []
+    # 1.16 mid-flight persistence throttle: flush results-so-far to the DB at
+    # most this often (env-tunable; 0 disables). Resume is unaffected — this
+    # writes the `results` field, resume reads the separate `checkpoint`.
+    _last_partial_flush = _time.monotonic()
+    _partial_flush_sec = float(os.getenv('RORT_MASS_PARTIAL_FLUSH_SEC', '30'))
     min_trades = required_perf.get('min_trades', 10)
     print(f"[MASS] total_steps={total_steps}, tickers={len(tickers)}, tfs={len(timeframes)}, dirs={len(directions)}, entries={len(entry_cids)}, exits={len(exit_combos)}, packs={len(pack_combos)}")
     print(f"[MASS] all_entry_bases={all_entry_bases}")
@@ -1533,6 +1539,18 @@ def run_mass_search(
                             if progress_callback:
                                 progress_callback(step, total_steps, label)
 
+                            # 1.16: throttled mid-flight flush of results-so-far
+                            # — crash-visible + viewable as each combo lands.
+                            if (partial_callback and _partial_flush_sec > 0 and
+                                    _time.monotonic() - _last_partial_flush
+                                    > _partial_flush_sec):
+                                _last_partial_flush = _time.monotonic()
+                                try:
+                                    partial_callback(list(results))
+                                except Exception as _pf_err:
+                                    logger.warning("Mass search: partial flush "
+                                                   "failed (non-fatal): %s", _pf_err)
+
             logger.info("Mass search: %s/%s group complete, %d results so far",
                         symbol, tf, len(results))
 
@@ -1950,11 +1968,30 @@ def start_mass_search_async(search_id, search_config: dict,
                 except Exception as e:
                     logger.warning("Checkpoint DB flush failed (non-fatal): %s", e)
 
+            # 1.16 mid-flight persistence — write the results-so-far to the DB
+            # `results` field (slim, stored_trades stripped) + in-memory count
+            # as each dough/combo completes. Makes a 20h run's progress
+            # crash-visible AND viewable live (feeds the nested Mass-Results UI,
+            # 1.17). Independent of `checkpoint` (resume) — no duplication risk.
+            def _partial(results_snapshot):
+                slim = [{k: v for k, v in r.items() if k != 'stored_trades'}
+                        if isinstance(r, dict) else r
+                        for r in results_snapshot]
+                with _search_lock:
+                    if search_id in _active_searches:
+                        _active_searches[search_id]['results_so_far'] = len(slim)
+                try:
+                    update_mass_search(search_id, {
+                        'status': 'running', 'results': slim})
+                except Exception as e:
+                    logger.warning("Partial results flush failed (non-fatal): %s", e)
+
             raw = run_mass_search(
                 search_config,
                 progress_callback=_progress,
                 resume_checkpoint=resume_checkpoint,
                 checkpoint_callback=_checkpoint,
+                partial_callback=_partial,
             )
 
             # run_mass_search returns (results_list, diagnostics_dict)
