@@ -80,28 +80,33 @@ DOUGH_BUCKET = 'dough-cache'
 
 
 def dough_key(strat: dict) -> str:
-    """Deterministic blob key for a strategy's dough, derived ONLY from the
-    window-defining fields (symbol/tf/session/data_days/backtest_start_date) —
-    NOT user_id. The dough is pure market data + superset indicators/triggers
-    (no user-private data; the user's confluence is applied at re-bake, and a
-    trigger missing from the superset safely falls back to recompute), so it's
-    shareable across users by window. Keying without user_id lets the Mass
-    Builder producer (which doesn't carry user_id in run_mass_search) and the
-    save-side consumer compute the SAME key. Returns '' if underspecified."""
+    """Deterministic blob key for a strategy's dough, derived from the STABLE
+    window-class fields (symbol/tf/session/data_days) — deliberately NOT
+    `backtest_start_date` (stamped per-save as now−data_days, varies by
+    sub-seconds) and NOT user_id.
+
+    Rationale: `run_trades_from_cache` iterates the DOUGH's own cached bars, so
+    the re-bake reproduces the candidate's backtest over the search window
+    regardless of the strategy's own window anchor — we only need the key to
+    MATCH between the Mass Builder producer (run_mass_search, no user_id) and
+    the save-side consumer. Keying on the window CLASS (not the exact
+    timestamp) makes them match; the 36h freshness guard + latest-wins upsert
+    handle staleness. The dough is pure market data + superset indicators (no
+    user-private data; an out-of-superset trigger safely falls back), so it's
+    shareable by window class. Returns '' if underspecified."""
     import hashlib
     cfg = strat.get('config') if isinstance(strat.get('config'), dict) else {}
     symbol = str(strat.get('symbol') or '')
     timeframe = str(strat.get('timeframe') or '')
     parts = [
         symbol, timeframe,
-        str(strat.get('trading_session') or strat.get('session') or 'RTH'),
+        str(strat.get('trading_session') or strat.get('session')
+            or (cfg or {}).get('trading_session') or 'RTH'),
         str(strat.get('data_days') or (cfg or {}).get('data_days') or ''),
-        str(strat.get('backtest_start_date')
-            or (cfg or {}).get('backtest_start_date') or ''),
     ]
     if not symbol or not timeframe:
         return ''
-    h = hashlib.sha1('|'.join(parts).encode()).hexdigest()[:24]
+    h = hashlib.sha1('|'.join(parts).encode()).hexdigest()[:16]
     return f"dough/{symbol}_{timeframe}_{h}.dough.gz"
 
 

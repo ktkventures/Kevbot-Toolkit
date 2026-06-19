@@ -172,19 +172,32 @@ def _do_recompute(
             _got = _bcs.get_dough(_bcs.dough_key(strat))
             if _got is not None:
                 _cache, _meta = _got
-                _reb = _rtfc(_cache, strat, _meta)
-                if _reb is not None and len(_reb) > 0:
-                    _td = (_meta or {}).get('_trading_days')
-                    if _td:
-                        try:
-                            _reb.attrs['trading_days'] = _td
-                        except Exception:
-                            pass
-                    all_trades = _reb
+                # The dough covers warmup+visible bars; the persisted lane is
+                # visible-only (MB trims to visible_start). Require _visible_start
+                # so we can trim the re-bake identically — without it we'd
+                # over-count warmup trades, so treat as a miss (full recompute).
+                _vs = (_meta or {}).get('_visible_start')
+                if not _vs:
                     logger.info(
-                        "[Tier2] strategy=%s lane re-baked from dough "
-                        "(%d trades, trading_days=%s)",
-                        strategy_id, len(all_trades), _td)
+                        "[Tier2] strategy=%s dough lacks _visible_start "
+                        "-> full recompute", strategy_id)
+                else:
+                    _reb = _rtfc(_cache, strat, _meta)
+                    if _reb is not None and len(_reb) > 0:
+                        from strategy_data import trim_trades_to_visible as _trim
+                        import pandas as _pd
+                        _reb = _trim(_reb, _pd.Timestamp(_vs))
+                        _td = (_meta or {}).get('_trading_days')
+                        if _td:
+                            try:
+                                _reb.attrs['trading_days'] = _td
+                            except Exception:
+                                pass
+                        all_trades = _reb
+                        logger.info(
+                            "[Tier2] strategy=%s lane re-baked from dough "
+                            "(%d trades trimmed to visible %s, trading_days=%s)",
+                            strategy_id, len(all_trades), _vs, _td)
         except Exception as _e:
             logger.warning(
                 "[Tier2] strategy=%s dough re-bake failed (%s) — full recompute",

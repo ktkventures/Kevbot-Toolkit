@@ -1199,7 +1199,19 @@ def run_mass_search(
                                             _dkey = _bcs.dough_key(config)
                                             if _dkey:
                                                 _m2 = dict(_meta or {})
-                                                _m2['_trading_days'] = count_trading_days(df)
+                                                # Visible-window trading days
+                                                # (line 1004) — NOT the full-df
+                                                # warmup-inclusive count — so the
+                                                # consumer's KPIs match.
+                                                _m2['_trading_days'] = period_trading_days
+                                                # Visible_start so the consumer can
+                                                # trim the re-bake to the visible
+                                                # window (dough covers warmup+visible;
+                                                # the lane is visible-only).
+                                                _m2['_visible_start'] = (
+                                                    _search_visible_start.isoformat()
+                                                    if _search_visible_start is not None
+                                                    else None)
                                                 _bcs.put_dough(_dkey, _cache, _m2,
                                                                _dt.now(_tz.utc).isoformat())
                                         except Exception:
