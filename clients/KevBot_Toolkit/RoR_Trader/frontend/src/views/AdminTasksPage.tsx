@@ -4,7 +4,7 @@
  * Priority = phase.seq, sorted ascending so 1.1 ("do next") is at top.
  * Urgent is a tag, not a priority. impacts_live / needs_live_validation are
  * badges so the "does this touch trading?" question is visible at a glance.
- * Talks to /api/dev-tasks (admin-gated). See migrations/dev_tasks_table.sql.
+ * Click a task → modal with description + comments. Talks to /api/dev-tasks.
  */
 'use client';
 
@@ -39,7 +39,7 @@ const STATUS_COLOR: Record<string, string> = {
   'In Progress': 'var(--amber, #d98c00)', 'Blocked': 'var(--red)', 'Done': 'var(--green)',
 };
 
-const cell: React.CSSProperties = { padding: '6px 8px', verticalAlign: 'top', fontSize: 13 };
+const cell: React.CSSProperties = { padding: '7px 8px', verticalAlign: 'middle', fontSize: 13 };
 const input: React.CSSProperties = {
   background: 'var(--bg-input)', color: 'var(--text-primary)',
   border: '1px solid var(--border)', borderRadius: 6, padding: '4px 6px', fontSize: 13,
@@ -57,10 +57,9 @@ export default function AdminTasksPage() {
   const [liveOnly, setLiveOnly] = useState(false);
   const [areaFilter, setAreaFilter] = useState('');
   const [assigneeFilter, setAssigneeFilter] = useState('');
-  const [expanded, setExpanded] = useState<number | null>(null);
+  const [modalId, setModalId] = useState<number | null>(null);
   const [comments, setComments] = useState<Record<number, Comment[]>>({});
   const [draftComment, setDraftComment] = useState('');
-  // new-task form
   const [nt, setNt] = useState({
     title: '', priority_phase: 1, priority_seq: 99, area: 'other',
     assignee: 'claude', impacts_live: false,
@@ -77,40 +76,31 @@ export default function AdminTasksPage() {
   useEffect(() => { load(); }, [load]);
 
   const patch = async (id: number, fields: Partial<Task>) => {
-    // optimistic
     setTasks((t) => t.map((x) => (x.id === id ? { ...x, ...fields } : x)));
     try {
-      await apiFetch(`/api/dev-tasks/${id}`, {
-        method: 'PATCH', body: JSON.stringify(fields),
-      });
+      await apiFetch(`/api/dev-tasks/${id}`, { method: 'PATCH', body: JSON.stringify(fields) });
     } catch (e) { setErr(String(e)); load(); }
   };
-
   const createTask = async () => {
     if (!nt.title.trim()) return;
     try {
       await apiFetch('/api/dev-tasks', { method: 'POST', body: JSON.stringify(nt) });
-      setNt({ ...nt, title: '' });
-      load();
+      setNt({ ...nt, title: '' }); load();
     } catch (e) { setErr(String(e)); }
   };
-
   const del = async (id: number) => {
     if (!confirm('Delete this task?')) return;
     setTasks((t) => t.filter((x) => x.id !== id));
+    if (modalId === id) setModalId(null);
     try { await apiFetch(`/api/dev-tasks/${id}`, { method: 'DELETE' }); }
     catch (e) { setErr(String(e)); load(); }
   };
-
-  const toggleExpand = async (id: number) => {
-    if (expanded === id) { setExpanded(null); return; }
-    setExpanded(id); setDraftComment('');
-    if (!comments[id]) {
-      try {
-        const cs = await apiFetch<Comment[]>(`/api/dev-tasks/${id}/comments`);
-        setComments((m) => ({ ...m, [id]: cs || [] }));
-      } catch { /* ignore */ }
-    }
+  const openModal = async (id: number) => {
+    setModalId(id); setDraftComment('');
+    try {
+      const cs = await apiFetch<Comment[]>(`/api/dev-tasks/${id}/comments`);
+      setComments((m) => ({ ...m, [id]: cs || [] }));
+    } catch { /* ignore */ }
   };
   const addComment = async (id: number) => {
     if (!draftComment.trim()) return;
@@ -133,9 +123,20 @@ export default function AdminTasksPage() {
 
   const openCount = tasks.filter((t) => t.status !== 'Done').length;
   const liveCount = tasks.filter((t) => t.impacts_live && t.status !== 'Done').length;
+  const modalTask = tasks.find((t) => t.id === modalId) || null;
+
+  const PriCell = ({ t }: { t: Task }) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 2, whiteSpace: 'nowrap' }}>
+      <input style={{ ...input, width: 34, padding: '4px 3px' }} type="number" value={t.priority_phase}
+        onChange={(e) => patch(t.id, { priority_phase: +e.target.value })} />
+      <span style={{ color: 'var(--text-tertiary)' }}>.</span>
+      <input style={{ ...input, width: 50, padding: '4px 3px' }} type="number" step="0.05" value={t.priority_seq}
+        onChange={(e) => patch(t.id, { priority_seq: +e.target.value })} />
+    </div>
+  );
 
   return (
-    <div style={{ padding: 20, maxWidth: 1200, margin: '0 auto' }}>
+    <div style={{ padding: 20, maxWidth: 1500, margin: '0 auto' }}>
       <h1 style={{ fontSize: 22, marginBottom: 4 }}>Dev Task Tracker</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
         {openCount} open · {liveCount} touch live · sorted by priority (phase.seq, 1.1 first).
@@ -147,14 +148,16 @@ export default function AdminTasksPage() {
       <Card>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <strong style={{ fontSize: 13 }}>+ New:</strong>
-          <input style={{ ...input, flex: 1, minWidth: 200 }} placeholder="task title…"
+          <input style={{ ...input, flex: 1, minWidth: 240 }} placeholder="task title…"
             value={nt.title} onChange={(e) => setNt({ ...nt, title: e.target.value })}
             onKeyDown={(e) => e.key === 'Enter' && createTask()} />
-          <input style={{ ...input, width: 44 }} type="number" title="phase"
-            value={nt.priority_phase} onChange={(e) => setNt({ ...nt, priority_phase: +e.target.value })} />
-          <span>.</span>
-          <input style={{ ...input, width: 56 }} type="number" step="0.05" title="seq"
-            value={nt.priority_seq} onChange={(e) => setNt({ ...nt, priority_seq: +e.target.value })} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 2, whiteSpace: 'nowrap' }}>
+            <input style={{ ...input, width: 40 }} type="number" title="phase"
+              value={nt.priority_phase} onChange={(e) => setNt({ ...nt, priority_phase: +e.target.value })} />
+            <span>.</span>
+            <input style={{ ...input, width: 54 }} type="number" step="0.05" title="seq"
+              value={nt.priority_seq} onChange={(e) => setNt({ ...nt, priority_seq: +e.target.value })} />
+          </div>
           <select style={input} value={nt.area} onChange={(e) => setNt({ ...nt, area: e.target.value })}>
             {AREAS.map((a) => <option key={a} value={a}>{a}</option>)}
           </select>
@@ -187,74 +190,115 @@ export default function AdminTasksPage() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--border)', fontSize: 11, color: 'var(--text-tertiary)' }}>
-                <th style={cell}>Pri</th><th style={cell}>Task</th><th style={cell}>Status</th>
-                <th style={cell}>Flags</th><th style={cell}>Area</th><th style={cell}>Who</th><th style={cell}></th>
+                <th style={{ ...cell, width: 96 }}>Pri</th><th style={cell}>Task</th><th style={{ ...cell, width: 130 }}>Status</th>
+                <th style={{ ...cell, width: 200 }}>Flags</th><th style={{ ...cell, width: 110 }}>Area</th><th style={{ ...cell, width: 100 }}>Who</th><th style={{ ...cell, width: 32 }}></th>
               </tr>
             </thead>
             <tbody>
               {visible.map((t) => (
-                <React.Fragment key={t.id}>
-                  <tr style={{ borderBottom: '1px solid var(--border)', opacity: t.status === 'Done' ? 0.55 : 1 }}>
-                    <td style={cell}>
-                      <input style={{ ...input, width: 34 }} type="number" value={t.priority_phase}
-                        onChange={(e) => patch(t.id, { priority_phase: +e.target.value })} />.
-                      <input style={{ ...input, width: 48 }} type="number" step="0.05" value={t.priority_seq}
-                        onChange={(e) => patch(t.id, { priority_seq: +e.target.value })} />
-                    </td>
-                    <td style={{ ...cell, cursor: 'pointer', fontWeight: 500 }} onClick={() => toggleExpand(t.id)}>
-                      {expanded === t.id ? '▾ ' : '▸ '}{t.title}
-                      {(t.blocked_by?.length > 0) && <span style={{ color: 'var(--red)', fontSize: 11 }}> ⛔blocked-by {t.blocked_by.join(',')}</span>}
-                    </td>
-                    <td style={cell}>
-                      <select style={{ ...input, color: STATUS_COLOR[t.status] }} value={t.status}
-                        onChange={(e) => patch(t.id, { status: e.target.value })}>
-                        {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-                      </select>
-                    </td>
-                    <td style={cell}>
-                      {t.impacts_live && <span style={badge('var(--red)')} title="touches live engine/trading">🔴 live</span>}
-                      {t.needs_live_validation && <span style={badge('#a06800')} title="needs live-market validation">⏳ validate</span>}
-                      <span style={{ cursor: 'pointer' }} title="toggle urgent" onClick={() => patch(t.id, { is_urgent: !t.is_urgent })}>
-                        {t.is_urgent ? <span style={badge('#b00')}>⚡ urgent</span> : <span style={{ opacity: 0.3 }}>⚡</span>}
-                      </span>
-                    </td>
-                    <td style={cell}>
-                      <select style={input} value={t.area} onChange={(e) => patch(t.id, { area: e.target.value })}>
-                        {AREAS.map((a) => <option key={a} value={a}>{a}</option>)}
-                      </select>
-                    </td>
-                    <td style={cell}>
-                      <select style={input} value={t.assignee || ''} onChange={(e) => patch(t.id, { assignee: e.target.value })}>
-                        {ASSIGNEES.map((a) => <option key={a} value={a}>{a || '—'}</option>)}
-                      </select>
-                    </td>
-                    <td style={cell}><span style={{ cursor: 'pointer', color: 'var(--red)' }} onClick={() => del(t.id)}>✕</span></td>
-                  </tr>
-                  {expanded === t.id && (
-                    <tr><td colSpan={7} style={{ ...cell, background: 'var(--bg-input)' }}>
-                      <textarea style={{ ...input, width: '100%', minHeight: 50 }} placeholder="description / notes…"
-                        defaultValue={t.description}
-                        onBlur={(e) => e.target.value !== t.description && patch(t.id, { description: e.target.value })} />
-                      <div style={{ marginTop: 8, fontSize: 12, fontWeight: 600 }}>Comments</div>
-                      {(comments[t.id] || []).map((cm) => (
-                        <div key={cm.id} style={{ fontSize: 12, margin: '3px 0' }}>
-                          <b>{cm.author}</b> <span style={{ color: 'var(--text-tertiary)' }}>{cm.created_at?.slice(0, 16).replace('T', ' ')}</span>: {cm.body}
-                        </div>
-                      ))}
-                      <div style={{ display: 'flex', gap: 6, marginTop: 6 }}>
-                        <input style={{ ...input, flex: 1 }} placeholder="add comment…" value={draftComment}
-                          onChange={(e) => setDraftComment(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && addComment(t.id)} />
-                        <button style={{ ...input, cursor: 'pointer' }} onClick={() => addComment(t.id)}>Comment</button>
-                      </div>
-                    </td></tr>
-                  )}
-                </React.Fragment>
+                <tr key={t.id} style={{ borderBottom: '1px solid var(--border)', opacity: t.status === 'Done' ? 0.55 : 1 }}>
+                  <td style={cell}><PriCell t={t} /></td>
+                  <td style={{ ...cell, cursor: 'pointer', fontWeight: 500 }} onClick={() => openModal(t.id)}>
+                    {t.title}
+                    {(t.blocked_by?.length > 0) && <span style={{ color: 'var(--red)', fontSize: 11 }}> ⛔{t.blocked_by.join(',')}</span>}
+                  </td>
+                  <td style={cell}>
+                    <select style={{ ...input, color: STATUS_COLOR[t.status] }} value={t.status}
+                      onChange={(e) => patch(t.id, { status: e.target.value })}>
+                      {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </td>
+                  <td style={cell}>
+                    {t.impacts_live && <span style={badge('var(--red)')} title="touches live engine/trading">🔴 live</span>}
+                    {t.needs_live_validation && <span style={badge('#a06800')} title="needs live-market validation">⏳ validate</span>}
+                    <span style={{ cursor: 'pointer' }} title="toggle urgent" onClick={() => patch(t.id, { is_urgent: !t.is_urgent })}>
+                      {t.is_urgent ? <span style={badge('#b00')}>⚡ urgent</span> : <span style={{ opacity: 0.3 }}>⚡</span>}
+                    </span>
+                  </td>
+                  <td style={cell}>
+                    <select style={input} value={t.area} onChange={(e) => patch(t.id, { area: e.target.value })}>
+                      {AREAS.map((a) => <option key={a} value={a}>{a}</option>)}
+                    </select>
+                  </td>
+                  <td style={cell}>
+                    <select style={input} value={t.assignee || ''} onChange={(e) => patch(t.id, { assignee: e.target.value })}>
+                      {ASSIGNEES.map((a) => <option key={a} value={a}>{a || '—'}</option>)}
+                    </select>
+                  </td>
+                  <td style={cell}><span style={{ cursor: 'pointer', color: 'var(--red)' }} onClick={() => del(t.id)}>✕</span></td>
+                </tr>
               ))}
               {visible.length === 0 && <tr><td colSpan={7} style={{ ...cell, color: 'var(--text-tertiary)' }}>No tasks match the filters.</td></tr>}
             </tbody>
           </table>
         </Card>
+      )}
+
+      {/* ── Task modal ─────────────────────────────────────────────── */}
+      {modalTask && (
+        <div onClick={() => setModalId(null)} style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 1000,
+          display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '6vh 16px',
+        }}>
+          <div onClick={(e) => e.stopPropagation()} style={{
+            background: 'var(--bg-card, var(--bg-input))', border: '1px solid var(--border)',
+            borderRadius: 10, width: '100%', maxWidth: 720, maxHeight: '82vh', overflowY: 'auto',
+            padding: 20, boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+              <input style={{ ...input, fontSize: 17, fontWeight: 600, flex: 1, padding: '6px 8px' }}
+                value={modalTask.title}
+                onChange={(e) => patch(modalTask.id, { title: e.target.value })} />
+              <button style={{ ...input, cursor: 'pointer' }} onClick={() => setModalId(null)}>✕ close</button>
+            </div>
+
+            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center', margin: '12px 0' }}>
+              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Priority</span>
+              <PriCell t={modalTask} />
+              <select style={{ ...input, color: STATUS_COLOR[modalTask.status] }} value={modalTask.status}
+                onChange={(e) => patch(modalTask.id, { status: e.target.value })}>
+                {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <select style={input} value={modalTask.area} onChange={(e) => patch(modalTask.id, { area: e.target.value })}>
+                {AREAS.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
+              <select style={input} value={modalTask.assignee || ''} onChange={(e) => patch(modalTask.id, { assignee: e.target.value })}>
+                {ASSIGNEES.map((a) => <option key={a} value={a}>@{a || '—'}</option>)}
+              </select>
+              <label style={{ fontSize: 12 }}><input type="checkbox" checked={modalTask.impacts_live}
+                onChange={(e) => patch(modalTask.id, { impacts_live: e.target.checked })} /> 🔴 live</label>
+              <label style={{ fontSize: 12 }}><input type="checkbox" checked={modalTask.needs_live_validation}
+                onChange={(e) => patch(modalTask.id, { needs_live_validation: e.target.checked })} /> ⏳ validate</label>
+              <label style={{ fontSize: 12 }}><input type="checkbox" checked={modalTask.is_urgent}
+                onChange={(e) => patch(modalTask.id, { is_urgent: e.target.checked })} /> ⚡ urgent</label>
+            </div>
+
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Description</div>
+            <textarea style={{ ...input, width: '100%', minHeight: 90 }} placeholder="description…"
+              defaultValue={modalTask.description}
+              onBlur={(e) => e.target.value !== modalTask.description && patch(modalTask.id, { description: e.target.value })} />
+
+            <div style={{ fontSize: 12, fontWeight: 600, margin: '14px 0 6px' }}>Comments</div>
+            {(comments[modalTask.id] || []).map((cm) => (
+              <div key={cm.id} style={{ fontSize: 13, margin: '5px 0', paddingBottom: 5, borderBottom: '1px solid var(--border)' }}>
+                <b>{cm.author}</b> <span style={{ color: 'var(--text-tertiary)', fontSize: 11 }}>{cm.created_at?.slice(0, 16).replace('T', ' ')}</span>
+                <div>{cm.body}</div>
+              </div>
+            ))}
+            {(comments[modalTask.id] || []).length === 0 && <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>No comments yet.</div>}
+            <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+              <input style={{ ...input, flex: 1 }} placeholder="add a comment…" value={draftComment}
+                onChange={(e) => setDraftComment(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && addComment(modalTask.id)} />
+              <button style={{ ...input, cursor: 'pointer', background: 'var(--blue)', color: '#fff' }}
+                onClick={() => addComment(modalTask.id)}>Comment</button>
+            </div>
+
+            <div style={{ marginTop: 16, textAlign: 'right' }}>
+              <button style={{ ...input, cursor: 'pointer', color: 'var(--red)' }} onClick={() => del(modalTask.id)}>Delete task</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
