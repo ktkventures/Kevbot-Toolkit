@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Card from '@/components/Card';
 import PageHeader from '@/components/PageHeader';
 import { useMassResults, useDeleteMassResult, useCancelMassSearch, useMassProgress, useResumeMassSearch } from '@/hooks/queries/useMassBuilder';
+import MassSearchResultsPanel from '@/views/MassSearchResultsPanel';
 
 /* ========================================================================= */
 /* TYPES                                                                      */
@@ -146,6 +147,7 @@ export default function MassResultsPage() {
   // ---- Local UI state ----
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState('Newest');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   // ---- Map API data ----
   const searches: SavedSearch[] = useMemo(() => {
@@ -285,6 +287,8 @@ export default function MassResultsPage() {
           const isQueued = search.status === 'queued';
           const isComplete = search.status === 'completed';
           const isOrphaned = search.status === 'orphaned';
+          const isExpanded = expandedId === search.id;
+          const canExpand = isComplete || isRunning || isOrphaned;
 
           const badgeColor = isComplete ? 'var(--green)'
             : isRunning ? 'var(--accent)'
@@ -396,6 +400,15 @@ export default function MassResultsPage() {
 
                 {/* Right: actions */}
                 <div className="flex items-center gap-2 flex-shrink-0 ml-4">
+                  {canExpand && (
+                    <button
+                      style={{ ...btnSecondary, color: isExpanded ? 'var(--accent)' : 'var(--text-secondary)', borderColor: isExpanded ? 'var(--accent)' : 'var(--border)' }}
+                      onClick={() => setExpandedId(isExpanded ? null : search.id)}
+                      title="Show per-dough results"
+                    >
+                      {isExpanded ? '▼ Results' : '▶ Results'}
+                    </button>
+                  )}
                   {isComplete && (
                     <button
                       style={{ ...btnSecondary, background: 'var(--accent)', color: 'white', border: 'none' }}
@@ -450,6 +463,9 @@ export default function MassResultsPage() {
                   )}
                 </div>
               </div>
+              {isExpanded && (
+                <MassSearchResultsPanel searchId={search.id} isRunning={isRunning} />
+              )}
             </Card>
           );
         })}

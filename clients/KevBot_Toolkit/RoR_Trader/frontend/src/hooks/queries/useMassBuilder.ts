@@ -30,6 +30,12 @@ export function useMassResult(id: string | number | null) {
     queryKey: ['mass-result', id],
     queryFn: () => apiFetch<any>(`/api/mass-builder/results/${id}`),
     enabled: id !== null,
+    // Poll every 3s while the search is still running so mid-flight results
+    // (1.16 incremental persistence) stream into the expanded panel; stop
+    // once the row reaches a terminal status.
+    refetchInterval: (query) =>
+      query.state.data?.status === 'running' ? 3000 : false,
+    placeholderData: (prev) => prev,
   });
 }
 
