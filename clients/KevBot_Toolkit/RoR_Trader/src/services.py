@@ -197,6 +197,7 @@ def prepare_data_with_indicators(
     strat: Optional[dict] = None,
     model_override: Optional[str] = None,
     required_confluence_ids: Optional[set] = None,
+    force_scope: bool = False,
 ) -> pd.DataFrame:
     """Load market data and run all indicators, interpreters, and trigger detection.
 
@@ -273,7 +274,12 @@ def prepare_data_with_indicators(
         except Exception as _e:
             logger.warning("[#21] scope-prep derive failed (%s) — full compute", _e)
             required_confluence_ids = None
-    _scope_on = _scope_flag and required_confluence_ids is not None
+    # `force_scope=True` lets a specific caller (Mass Builder) scope to an
+    # explicit required_confluence_ids set WITHOUT the global flag — so the
+    # live engine + single-strategy backtest stay full/unscoped on purpose
+    # (global enablement is a separate, post-Monday change). Mass Builder
+    # passes the search-level UNION of every selected trigger/confluence group.
+    _scope_on = (_scope_flag or force_scope) and required_confluence_ids is not None
 
     # TTL-cache lookup. Only applies to the REST path — the cache key is
     # keyed on REST inputs (symbol, days, etc.), so injected DataFrames

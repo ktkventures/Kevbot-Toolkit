@@ -792,6 +792,49 @@ def run_mass_search(
     # Collect ALL unique base trigger IDs for the mega bar_cache
     _all_base_triggers = set(all_entry_bases.values()) | set(all_exit_bases.values())
 
+    # ── #21 prep-scoping for Mass Builder (memory hardening) ──────────────
+    # The per-(symbol,tf) df is otherwise baked with ALL enabled confluence
+    # groups (e.g. 851 cols) regardless of what this search uses → the dough
+    # copies that wide per-bar state into one object per bar → multi-trigger
+    # / long-window runs blow past RAM and get OOM-killed (losing the whole
+    # run). Scope prep to the UNION of groups any selected trigger/confluence
+    # needs — a provable superset, byte-identical (validated by the Fidelity
+    # Gate + scoped-vs-unscoped repro). Mass-builder-only for now via
+    # force_scope; global enablement is a separate post-Monday change.
+    # Kill-switch: RORT_MASS_SCOPE_CONFLUENCE=0 → full/unscoped (old behavior).
+    _mass_scope_on = os.getenv('RORT_MASS_SCOPE_CONFLUENCE', '1') == '1'
+    _search_required_groups = None
+    if _mass_scope_on:
+        try:
+            from unified_engine import resolve_required_confluence_groups
+            _union_strat = {
+                'symbol': tickers[0] if tickers else None,
+                'timeframe': timeframes[0] if timeframes else '1Min',
+                'entry_trigger': next(iter(_all_base_triggers), None),
+                'exit_triggers': sorted(_all_base_triggers),
+                'confluence': [], 'general_confluences': list(gen_conf_ids),
+            }
+            _req = set(resolve_required_confluence_groups(_union_strat, enabled_groups))
+            # Selected TF-confluence groups: their synthetic _TF_- IDs don't
+            # flow through resolve_strategy_requirements, so add them directly.
+            _by_upper = {g.id.upper(): g for g in enabled_groups}
+            for syn in tf_conf_ids:
+                if isinstance(syn, str) and syn.startswith('_TF_-'):
+                    body = syn[len('_TF_-'):]
+                    gid_up = (body.rsplit('-', 2) if body.count('-') >= 2
+                              else body.rsplit('-', 1))[0]
+                    g = _by_upper.get(gid_up)
+                    if g:
+                        _req.add(g.id)
+            _search_required_groups = _req
+            print(f"[MASS] prep-scope ON: {len(_search_required_groups)}/"
+                  f"{len(enabled_groups)} groups -> {sorted(_search_required_groups)}",
+                  flush=True)
+        except Exception as _exc:
+            logger.warning("Mass search: prep-scope resolve failed (%s) — "
+                           "full/unscoped", _exc)
+            _search_required_groups = None
+
     # Build pack combos (stop × target × time_exit)
     pack_combos = [(sc, tc, tec)
                    for sc in stop_configs
@@ -960,6 +1003,8 @@ def run_mass_search(
                         _synth_strat,
                         data_feed=data_feed,
                         secondary_tfs_override=sec_tfs,
+                        required_confluence_ids=_search_required_groups,
+                        force_scope=(_search_required_groups is not None),
                     )
                     df = _bundle.df
                     # Stash visible_start for downstream trim — every

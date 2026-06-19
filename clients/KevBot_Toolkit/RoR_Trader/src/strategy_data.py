@@ -150,6 +150,8 @@ def load_strategy_data(
     data_feed: str = "sip",
     model_override: Optional[str] = None,
     secondary_tfs_override: Optional[tuple] = None,
+    required_confluence_ids: Optional[set] = None,
+    force_scope: bool = False,
 ) -> StrategyDataBundle:
     """Resolve window, compute warmup, load bars, return bundle.
 
@@ -214,6 +216,8 @@ def load_strategy_data(
         secondary_tfs=secondary_tfs,
         strat=strat,
         model_override=model_override,
+        required_confluence_ids=required_confluence_ids,
+        force_scope=force_scope,
     )
 
     sec_tf_map = get_secondary_tf_map(df) if len(df) > 0 else {}
