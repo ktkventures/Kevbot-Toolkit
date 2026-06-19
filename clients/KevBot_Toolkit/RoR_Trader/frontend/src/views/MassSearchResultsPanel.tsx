@@ -12,7 +12,6 @@
 
 import { useState, useMemo } from 'react';
 import { useMassResult } from '@/hooks/queries/useMassBuilder';
-import { useRunBacktest, type BacktestRequest } from '@/hooks/queries/useBacktest';
 
 /* ---- helpers ---- */
 
@@ -44,38 +43,6 @@ function fmtNum(v: any, dp = 2): string {
 }
 
 const muted: React.CSSProperties = { color: 'var(--text-muted)' };
-const btnGhost: React.CSSProperties = {
-  background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer',
-};
-
-/** Map a mass-result config to a BacktestRequest for an engine-accurate re-run.
- *  Reproduces the result's ORIGINAL window (Date Range) so the engine KPIs are
- *  apples-to-apples with the preview — the backtest service only honors a window
- *  when lookback_mode === "Date Range", else it runs the recent N days. */
-function toBacktestReq(cfg: any): BacktestRequest | null {
-  if (!cfg?.symbol || !cfg?.entry_trigger_confluence_id || !cfg?.direction) return null;
-  const start = cfg.lookback_start_date || cfg.backtest_start_date;
-  const end = cfg.lookback_end_date || cfg.backtest_end_date;
-  const useDateRange = !!start;
-  return {
-    symbol: cfg.symbol,
-    timeframe: cfg.timeframe,
-    direction: cfg.direction,
-    session: cfg.trading_session,
-    entry_trigger_confluence_id: cfg.entry_trigger_confluence_id,
-    exit_trigger_confluence_ids: cfg.exit_trigger_confluence_ids || [],
-    confluence: cfg.confluence || [],
-    stop_config: cfg.stop_config || undefined,
-    target_config: cfg.target_config || undefined,
-    bar_count_exit: cfg.bar_count_exit ?? undefined,
-    risk_per_trade: cfg.risk_per_trade ?? undefined,
-    hifi_mode: !!cfg.hifi_mode,
-    lookback_mode: useDateRange ? 'Date Range' : (cfg.lookback_mode || 'Days'),
-    lookback_start_date: useDateRange ? start : undefined,
-    lookback_end_date: useDateRange ? (end || undefined) : undefined,
-    days: cfg.data_days ?? undefined,
-  };
-}
 
 /* ---- inline equity sparkline (real result data, lightweight SVG) ---- */
 
@@ -145,16 +112,7 @@ function ResultRow({ r }: { r: MassResult }) {
   const k = r.kpis || {};
   const isBase = confLabel(r).startsWith('—');
   const curve = useMemo(() => toCurve(r.equity_curve), [r.equity_curve]);
-  const req = useMemo(() => toBacktestReq(cfg), [cfg]);
-  const bt = useRunBacktest();
   const dailyR = num(k.daily_r);
-  const ek = bt.data?.kpis;
-  const eCurve = useMemo(
-    () => (bt.data?.equity_curve || [])
-      .map((p: any) => num(p?.cumulative_r))
-      .filter((n): n is number => n != null),
-    [bt.data],
-  );
 
   return (
     <div style={{ borderTop: '1px solid var(--border)' }}>
@@ -188,44 +146,11 @@ function ResultRow({ r }: { r: MassResult }) {
               {r.oos_kpis && <div style={{ color: 'var(--accent)' }}>OOS daily R: {fmtR(r.oos_kpis?.daily_r)}</div>}
             </div>
           </div>
-
-          {/* Engine-accurate re-run (fetch on demand) */}
-          <div className="pt-2" style={{ borderTop: '1px dashed var(--border)' }}>
-            {!ek ? (
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => req && bt.mutate(req)}
-                  disabled={!req || bt.isPending}
-                  className="text-[11px] px-2 py-1 rounded"
-                  style={{ background: 'var(--accent-muted)', color: 'var(--accent)', opacity: (!req || bt.isPending) ? 0.55 : 1, cursor: (!req || bt.isPending) ? 'default' : 'pointer' }}
-                >
-                  {bt.isPending ? 'Running engine…' : '⟳ Confirm engine-accurate KPIs'}
-                </button>
-                {!req && <span className="text-[10px]" style={muted}>legacy result — missing trigger id</span>}
-                {bt.isError && <span className="text-[10px]" style={{ color: 'var(--red)' }}>re-run failed — try again</span>}
-              </div>
-            ) : (
-              <div className="flex flex-wrap gap-6 items-start">
-                <div>
-                  <p className="text-[10px] mb-1" style={{ color: 'var(--accent)' }}>
-                    Equity · engine-accurate{bt.data?.data_source ? ` · ${bt.data.data_source}` : ''}
-                  </p>
-                  <EquitySparkline curve={eCurve} />
-                </div>
-                <div>
-                  <p className="text-[10px] mb-1" style={{ color: 'var(--accent)' }}>Engine KPIs ({num(ek.total_trades) ?? 0} trades)</p>
-                  <KpiGrid k={ek} />
-                </div>
-                <button
-                  onClick={() => bt.reset()}
-                  className="text-[10px] px-1.5 py-0.5 rounded self-start"
-                  style={{ ...btnGhost }}
-                >
-                  re-run
-                </button>
-              </div>
-            )}
-          </div>
+          {/* Engine-accurate inline re-run is deferred: the generic
+              /api/backtest/run endpoint can't reproduce a mass result (it loads
+              the visible window with NO indicator warmup → cold indicators →
+              0 trades). Needs a warmup-aware rerun endpoint (reuse
+              load_strategy_data's warmup + visible-trim). Preview KPIs stand. */}
         </div>
       )}
     </div>
