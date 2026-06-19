@@ -48,6 +48,14 @@ def _auto_parity_enabled() -> bool:
 _AUTO_PARITY_LAST_N = 200
 
 
+def _os_env_skip_algo_cold_seed() -> bool:
+    """1.5 kill-switch (default ON): skip the historical algo-lane cold-seed on
+    a fresh strategy's first UND (the lane fills live instead). Set
+    RORT_SKIP_ALGO_COLD_SEED=0 to restore the old full-backtest cold-seed."""
+    import os
+    return os.getenv('RORT_SKIP_ALGO_COLD_SEED', '1') == '1'
+
+
 def _forward_divider_dt(strat: dict):
     """Forward-test divider (2026-06-18 decision): the equity-curve blue/yellow
     split anchors to `in_sample_end` (the out-of-sample start a trader means by
@@ -1291,6 +1299,21 @@ def append_new_trades_for_strategy(
                     return_snapshot=True,
                     diagnostics_source='algo',
                 )
+            elif (latest_entry_iso is None
+                  and _os_env_skip_algo_cold_seed()):
+                # 1.5 (2026-06-19): a fresh strategy's algo/cache lane starts
+                # EMPTY and fills LIVE — the worker inserts each closed live
+                # trade (worker.py "ALGO TRADE APPENDED"). The old cold-seed
+                # ran a FULL algo-model backtest over all history (the ~17min
+                # first-UND cost), which is redundant here: algo_model ==
+                # backtest_model so it just duplicated the backtest lane, and
+                # the pre-live portion has no live alerts to diverge against.
+                # Skip it → fast first-UND; divergence still works from
+                # live-start onward. RORT_SKIP_ALGO_COLD_SEED=0 restores it.
+                logger.info(
+                    "[1.5] strategy=%s algo lane empty → skip cold-seed "
+                    "(lane fills live)", strategy_id)
+                all_trades_df = pd.DataFrame()
             else:
                 # Full-path: no snapshot benefit (this branch runs the
                 # full strategy history; resume_snapshot would skip too
