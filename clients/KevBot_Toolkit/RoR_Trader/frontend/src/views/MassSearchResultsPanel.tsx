@@ -48,9 +48,15 @@ const btnGhost: React.CSSProperties = {
   background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer',
 };
 
-/** Map a mass-result config to a BacktestRequest for an engine-accurate re-run. */
+/** Map a mass-result config to a BacktestRequest for an engine-accurate re-run.
+ *  Reproduces the result's ORIGINAL window (Date Range) so the engine KPIs are
+ *  apples-to-apples with the preview — the backtest service only honors a window
+ *  when lookback_mode === "Date Range", else it runs the recent N days. */
 function toBacktestReq(cfg: any): BacktestRequest | null {
   if (!cfg?.symbol || !cfg?.entry_trigger_confluence_id || !cfg?.direction) return null;
+  const start = cfg.lookback_start_date || cfg.backtest_start_date;
+  const end = cfg.lookback_end_date || cfg.backtest_end_date;
+  const useDateRange = !!start;
   return {
     symbol: cfg.symbol,
     timeframe: cfg.timeframe,
@@ -64,9 +70,9 @@ function toBacktestReq(cfg: any): BacktestRequest | null {
     bar_count_exit: cfg.bar_count_exit ?? undefined,
     risk_per_trade: cfg.risk_per_trade ?? undefined,
     hifi_mode: !!cfg.hifi_mode,
-    lookback_mode: cfg.lookback_mode,
-    lookback_start_date: cfg.lookback_start_date || undefined,
-    lookback_end_date: cfg.lookback_end_date || undefined,
+    lookback_mode: useDateRange ? 'Date Range' : (cfg.lookback_mode || 'Days'),
+    lookback_start_date: useDateRange ? start : undefined,
+    lookback_end_date: useDateRange ? (end || undefined) : undefined,
     days: cfg.data_days ?? undefined,
   };
 }
