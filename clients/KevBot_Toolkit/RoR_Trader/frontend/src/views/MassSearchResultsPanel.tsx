@@ -44,6 +44,31 @@ function fmtNum(v: any, dp = 2): string {
 
 const muted: React.CSSProperties = { color: 'var(--text-muted)' };
 
+/* ---- trigger-set ("dough") identity + readable labels ---- */
+
+function stopLabel(sc: any): string {
+  if (!sc) return 'none';
+  const m = sc.method || '?';
+  if (m === 'atr') return `ATR${sc.atr_mult != null ? ` ${sc.atr_mult}×` : ''}`;
+  if (m === 'swing') return `swing${sc.lookback != null ? ` lb${sc.lookback}` : ''}${sc.padding != null ? ` p${sc.padding}` : ''}`;
+  if (m === 'fixed_dollar' || m === 'fixed') return `fixed${sc.value != null ? ` $${sc.value}` : ''}`;
+  return String(m);
+}
+
+/** A trigger-set = the (entry × exit × stop × target) "dough" the confluences
+ *  ride on — the expensive part. Group results by it; rows differ by confluence. */
+function triggerSet(r: any): { key: string; entry: string; exit: string; stop: string; target: string } {
+  const cfg = r?.config || {};
+  const entry = cfg.entry_trigger_name || cfg.entry_trigger || '(entry?)';
+  const exitsArr = cfg.exit_trigger_names || cfg.exit_triggers || (cfg.exit_trigger ? [cfg.exit_trigger] : []);
+  const exit = Array.isArray(exitsArr) ? (exitsArr.join(' + ') || 'signal/none') : String(exitsArr || 'signal/none');
+  const stop = stopLabel(cfg.stop_config);
+  const target = cfg.target_config?.method ? stopLabel(cfg.target_config) : 'signal';
+  const rawExits = [...(cfg.exit_triggers || (cfg.exit_trigger ? [cfg.exit_trigger] : []))].sort().join(',');
+  const key = [cfg.entry_trigger || entry, rawExits, JSON.stringify(cfg.stop_config || {}), JSON.stringify(cfg.target_config || null)].join('||');
+  return { key, entry, exit, stop, target };
+}
+
 /* ---- inline equity sparkline (real result data, lightweight SVG) ---- */
 
 function EquitySparkline({ curve, w = 220, h = 48 }: { curve: number[]; w?: number; h?: number }) {
@@ -157,37 +182,49 @@ function ResultRow({ r }: { r: MassResult }) {
   );
 }
 
-/* ---- a dough group (one base entry trigger) ---- */
+/* ---- a trigger-set ("dough") group: one entry × exit × stop ---- */
 
-function DoughGroup({ trigger, results, defaultOpen }: { trigger: string; results: MassResult[]; defaultOpen: boolean }) {
+interface TriggerSetGroup { key: string; entry: string; exit: string; stop: string; target: string; results: MassResult[]; best: number; }
+
+function DoughGroup({ g, defaultOpen }: { g: TriggerSetGroup; defaultOpen: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
-  const best = num(results[0]?.kpis?.daily_r);
+  const titleAttr = `entry: ${g.entry}\nexit: ${g.exit}\nstop: ${g.stop} · target: ${g.target}`;
   return (
     <div className="rounded-lg overflow-hidden" style={{ border: '1px solid var(--border)' }}>
       <button
         onClick={() => setOpen((o) => !o)}
-        className="w-full flex items-center justify-between px-3 py-2"
+        className="w-full flex items-center justify-between px-3 py-2 gap-3"
         style={{ background: 'var(--bg-card)' }}
+        title={titleAttr}
       >
         <div className="flex items-center gap-2 min-w-0">
           <span style={{ ...muted, fontSize: '0.65rem' }}>{open ? '▼' : '▶'}</span>
-          <span className="text-xs font-semibold truncate" title={trigger} style={{ fontFamily: 'var(--font-mono, monospace)' }}>
-            {trigger}
-          </span>
+          <div className="min-w-0 text-left">
+            <div className="text-xs font-semibold truncate" style={{ color: 'var(--text-secondary)' }}>
+              <span style={{ color: 'var(--green)' }}>{g.entry}</span>
+              <span style={muted}> → </span>
+              <span style={{ color: 'var(--red)' }}>{g.exit}</span>
+            </div>
+            <div className="text-[10px] truncate" style={muted}>
+              stop: <span style={{ color: 'var(--text-secondary)' }}>{g.stop}</span> · target: <span style={{ color: 'var(--text-secondary)' }}>{g.target}</span>
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
           <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: 'var(--bg-input)', ...muted }}>
-            {results.length} {results.length === 1 ? 'variant' : 'variants'}
+            {g.results.length} {g.results.length === 1 ? 'confluence' : 'confluences'}
+          </span>
+          <span className="text-xs" style={muted}>
+            best <span className="font-bold" style={{ color: (g.best ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>{fmtR(g.best)}</span>
           </span>
         </div>
-        <span className="text-xs flex-shrink-0" style={muted}>
-          best <span className="font-bold" style={{ color: (best ?? 0) >= 0 ? 'var(--green)' : 'var(--red)' }}>{fmtR(best)}</span>
-        </span>
       </button>
       {open && (
         <div>
           <div className="grid gap-2 px-2 py-1" style={{ gridTemplateColumns: '16px 1fr 70px 64px 56px 64px', fontSize: '0.6rem', ...muted, background: 'var(--bg-input)' }}>
             <span></span><span>confluence</span><span>daily R</span><span>WR</span><span>PF</span><span>trades</span>
           </div>
-          {results.map((r, i) => <ResultRow key={i} r={r} />)}
+          {g.results.map((r, i) => <ResultRow key={i} r={r} />)}
         </div>
       )}
     </div>
@@ -200,31 +237,43 @@ export default function MassSearchResultsPanel({ searchId, isRunning }: { search
   const { data, isLoading } = useMassResult(searchId);
   const results: MassResult[] = Array.isArray(data?.results) ? data!.results : [];
 
-  const groups = useMemo(() => {
-    const map = new Map<string, MassResult[]>();
+  const groups = useMemo<TriggerSetGroup[]>(() => {
+    const map = new Map<string, TriggerSetGroup>();
     for (const r of results) {
-      const key = r.config?.entry_trigger || r.config?.entry_trigger_id || '(unknown trigger)';
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(r);
+      const ts = triggerSet(r);
+      let g = map.get(ts.key);
+      if (!g) { g = { ...ts, results: [], best: -1e9 }; map.set(ts.key, g); }
+      g.results.push(r);
     }
-    const arr = Array.from(map.entries()).map(([trigger, rs]) => {
-      const sorted = [...rs].sort((a, b) => (num(b.kpis?.daily_r) ?? -1e9) - (num(a.kpis?.daily_r) ?? -1e9));
-      return { trigger, results: sorted, best: num(sorted[0]?.kpis?.daily_r) ?? -1e9 };
-    });
+    const arr = Array.from(map.values());
+    for (const g of arr) {
+      g.results.sort((a, b) => (num(b.kpis?.daily_r) ?? -1e9) - (num(a.kpis?.daily_r) ?? -1e9));
+      g.best = num(g.results[0]?.kpis?.daily_r) ?? -1e9;
+    }
     arr.sort((a, b) => b.best - a.best);
     return arr;
   }, [results]);
 
+  // Fail-loud: surface combos that errored out (cross-pack drops, data gaps).
+  const diag = (data?.summary?.diagnostics) || {};
+  const failed = num(diag.backtests_failed) ?? 0;
+
   return (
     <div className="mt-3 pt-3 space-y-2" style={{ borderTop: '1px solid var(--border)' }}>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <p className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-          {results.length} result{results.length === 1 ? '' : 's'} across {groups.length} dough{groups.length === 1 ? '' : 's'}
+          {results.length} result{results.length === 1 ? '' : 's'} across {groups.length} trigger-set{groups.length === 1 ? '' : 's'}
         </p>
         {isRunning && (
           <span className="text-[10px] px-1.5 py-0.5 rounded-full flex items-center gap-1" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
             <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--accent)' }} />
             streaming live
+          </span>
+        )}
+        {failed > 0 && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full" title="Some trigger backtests errored and were skipped — results may be incomplete."
+                style={{ background: 'rgba(255,80,80,0.15)', color: 'var(--red)' }}>
+            ⚠ {failed} backtest{failed === 1 ? '' : 's'} failed
           </span>
         )}
       </div>
@@ -239,7 +288,7 @@ export default function MassSearchResultsPanel({ searchId, isRunning }: { search
       )}
 
       {groups.map((g, i) => (
-        <DoughGroup key={g.trigger} trigger={g.trigger} results={g.results} defaultOpen={i === 0} />
+        <DoughGroup key={g.key} g={g} defaultOpen={i === 0 && groups.length <= 3} />
       ))}
     </div>
   );
