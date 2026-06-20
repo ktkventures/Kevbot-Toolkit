@@ -1230,6 +1230,21 @@ def run_mass_search(
                                         _superset['exit_triggers'] = sorted(
                                             set(_all_entry_bases) |
                                             set(_all_exit_bases))
+                                        # CRITICAL: _resolve_trigger_ids reads
+                                        # exit_trigger_confluence_ids FIRST and
+                                        # only falls back to exit_triggers when
+                                        # it's empty. The combo config we copied
+                                        # carries the FIRST combo's exit CIDs, so
+                                        # without clearing them the dough would
+                                        # track only the first combo's exit (+
+                                        # entry) — every other pack's trigger
+                                        # (rvol_v2, supertrend, …) silently
+                                        # never gets cached -> "not in cache"
+                                        # failures that drop whole entry/exit
+                                        # families. Clear the CID fields so the
+                                        # stuffed exit_triggers superset wins.
+                                        _superset['exit_trigger_confluence_ids'] = []
+                                        _superset['exit_trigger_confluence_id'] = None
                                         _superset['confluence'] = []
                                         _superset['general_confluences'] = []
                                         _cache, _meta = precompute_bar_cache(
