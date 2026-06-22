@@ -52,7 +52,9 @@ interface Strategy {
   exit: string[];
   stop: string;
   target: string;
+  timeExit: string | null;
   confluence: string[];
+  general: string[];
   alertTracking: boolean;
   monitored: boolean;
   btDays: number;
@@ -192,6 +194,7 @@ function apiToStrategy(s: any): Strategy {
     target: s.target_config?.method || 'Signal exit only',
     timeExit: s.time_exit_config?.method ? formatTimeExit(s.time_exit_config) : null,
     confluence: s.confluence || [],
+    general: s.general_confluences || [],
     alertTracking: s.alert_tracking_enabled || false,
     monitored: s.alert_tracking_enabled || false,
     btDays: s.data_days || 30,
@@ -2134,12 +2137,19 @@ export default function StrategiesPage() {
                 {/* Row 4: Confluence conditions with fidelity badges */}
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>confluence:</span>
-                  {strat.confluence.length > 0 ? strat.confluence.map((c) => (
+                  {strat.confluence.map((c) => (
                     <span key={c} className="text-[10px] font-mono flex items-center gap-1">
                       <span className="px-1 py-0.5 rounded-full font-medium" style={{ color: '#26C6DA', background: '#26C6DA20', fontSize: '9px' }}>[PB]</span>
                       <span className="px-1.5 py-0.5 rounded" style={{ color: 'var(--accent)', background: 'var(--accent)' + '15' }}>{c}</span>
                     </span>
-                  )) : (
+                  ))}
+                  {strat.general.map((g) => (
+                    <span key={g} className="text-[10px] font-mono flex items-center gap-1" title="General confluence (session / time-of-day / calendar gate)">
+                      <span className="px-1 py-0.5 rounded-full font-medium" style={{ color: '#FFB74D', background: '#FFB74D20', fontSize: '9px' }}>[GEN]</span>
+                      <span className="px-1.5 py-0.5 rounded" style={{ color: 'var(--text-secondary)', background: 'var(--bg-input)' }}>{g.replace(/^GEN-/, '')}</span>
+                    </span>
+                  ))}
+                  {strat.confluence.length === 0 && strat.general.length === 0 && (
                     <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>none</span>
                   )}
                 </div>
