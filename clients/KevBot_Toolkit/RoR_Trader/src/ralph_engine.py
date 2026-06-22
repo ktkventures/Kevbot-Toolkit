@@ -1347,6 +1347,24 @@ class StrategyMonitor:
                     self.strat_id, sorted(self.position.confluence_set),
                     1 if _ok else 0, sorted(_recs),
                     sorted(mtf_confluence.keys()) if mtf_confluence else None)
+        elif (self.position.state.status == 'FLAT'
+              and self.position.confluence_set
+              and any(trigger_bools.values())):
+            # GATE_BLOCK_DIAG (temporary, 2026-06-22): an entry trigger fired
+            # while FLAT + gated, but no entry signal was produced — the gate
+            # suppressed it. Log the live gate state to pin WHY the needed
+            # confluence record isn't in _current_confluence: is _general_packs
+            # empty (load/context issue)? is the GEN record produced at all
+            # (bar_ts/window issue)? Remove after diagnosis.
+            _gen_recs = sorted(
+                r for r in self._current_confluence if r.startswith('GEN-'))
+            _bt = bar.get('timestamp')
+            logger.info(
+                "GATE_BLOCK_DIAG strat=%s active=%s need=%s gen_packs=%d "
+                "gen_records=%s bar_ts=%r(%s)",
+                self.strat_id, [k for k, v in trigger_bools.items() if v],
+                sorted(self.position.confluence_set), len(self._general_packs),
+                _gen_recs, _bt, type(_bt).__name__)
 
         # 7. Confirmation check for HM/HL entries made THIS bar
         if (self.position.state.status == 'IN_POSITION' and
