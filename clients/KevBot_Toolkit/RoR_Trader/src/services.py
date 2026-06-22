@@ -658,10 +658,28 @@ def get_strategy_trades_for_window(
     # (longest TF) is the binding constraint.
     req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
     sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
-    all_tfs = [timeframe] + list(sec_tfs)
-    bpds = [BARS_PER_DAY.get(tf, 390) for tf in all_tfs]
-    binding_bpd = min(bpd for bpd in bpds if bpd > 0) if bpds else 390
-    warmup_days = max(1, math.ceil(warmup_bars / max(binding_bpd, 0.001) * 365 / 252))
+
+    # Secondary-TF cache (RORT_SECONDARY_TF_CACHE): if a valid cache exists,
+    # inject the cached+extended secondary series and size warmup off the
+    # PRIMARY only (short) — the coarse secondary no longer needs the long
+    # warmup load. Inert when the kill-switch is OFF. Byte-identical by
+    # construction (see secondary_tf_cache.py).
+    _sec_inject = None
+    if _secondary_cache_enabled() and sec_tfs:
+        _sec_inject = _secondary_cache_load_extend(
+            strat, sec_tfs, until_dt, timeframe,
+            strat.get('trading_session', 'RTH'), data_feed, expected_model_id)
+    _used_sec_cache = _sec_inject is not None
+
+    if _used_sec_cache:
+        # warmup off the PRIMARY only — secondary comes from cache
+        primary_bpd = BARS_PER_DAY.get(timeframe, 390)
+        warmup_days = max(1, math.ceil(warmup_bars / max(primary_bpd, 0.001) * 365 / 252))
+    else:
+        all_tfs = [timeframe] + list(sec_tfs)
+        bpds = [BARS_PER_DAY.get(tf, 390) for tf in all_tfs]
+        binding_bpd = min(bpd for bpd in bpds if bpd > 0) if bpds else 390
+        warmup_days = max(1, math.ceil(warmup_bars / max(binding_bpd, 0.001) * 365 / 252))
 
     # Strip tz for comparison if since_dt carries one — prepare_data_with_indicators
     # accepts naive or aware; staying naive matches the Streamlit pattern.
@@ -687,11 +705,19 @@ def get_strategy_trades_for_window(
         data_feed=data_feed,
         session=strat.get('trading_session', 'RTH'),
         secondary_tfs=sec_tfs,
+        secondary_tf_dfs=_sec_inject,  # secondary-TF cache injection (or None)
         strat=strat,  # Phase E preview: enables cache_locked dispatch
         model_override=model_override,  # algo_model split (2026-05-07)
     )
     if len(df) == 0:
         return _result(pd.DataFrame(), resume_snapshot_b64)
+
+    # Secondary-TF cache WRITE: on a FULL compute (no cache used, no primary
+    # snapshot resume → df carries the fully-warmed secondary), build + persist
+    # the cache so the NEXT append takes the fast path. Cold-seed + refresh.
+    if (_secondary_cache_enabled() and sec_tfs
+            and not _used_sec_cache and envelope is None):
+        _secondary_cache_persist(strat, df, sec_tfs, expected_model_id)
 
     # Honor `until_dt`: the live-cache load path returns bars up to "now"
     # even when a PAST end_date is requested, so clip explicitly. Without
@@ -809,6 +835,98 @@ def _has_long_cycle_secondary_tf(strat: dict) -> bool:
         if tf_label in LONG_CYCLE:
             return True
     return False
+
+
+# ── Secondary-TF cache (RORT_SECONDARY_TF_CACHE) ───────────────────────────
+# Extends the snapshot concept to the SECONDARY series so coarse-gate strategies
+# (1Hour+ secondary) can take the fast windowed resume instead of the long
+# warmup load. The cached resampled secondary OHLCV is byte-identical to a fresh
+# full resample (proven in secondary_tf_cache.py); injected via secondary_tf_dfs.
+# Kill-switch default OFF — fully inert until enabled.
+
+def _secondary_cache_enabled() -> bool:
+    import os
+    return os.getenv('RORT_SECONDARY_TF_CACHE', '0') == '1'
+
+
+def _has_valid_secondary_cache(strat: dict, model_id: str | None = None) -> bool:
+    """True if the strategy has a fingerprint+model-valid secondary cache."""
+    if not _secondary_cache_enabled():
+        return False
+    try:
+        import secondary_tf_cache as STC
+        from unified_engine import compute_backtest_fingerprint
+        cfg = strat.get('config') or {}
+        b64 = strat.get('secondary_series_b64') or cfg.get('secondary_series_b64')
+        de = STC.deserialize_secondary_cache(
+            b64, expected_fingerprint=compute_backtest_fingerprint(strat),
+            expected_model_id=model_id)
+        return de is not None and bool(de.get('series'))
+    except Exception:
+        return False
+
+
+def _secondary_cache_load_extend(strat, sec_tfs, until_dt, primary_tf,
+                                 session, data_feed, model_id):
+    """Load the cached secondary series + extend it with a SHORT fresh load
+    from the last cached bar → until. Returns {canonical_tf: DataFrame} keyed
+    for prepare_data's secondary_tf_dfs, or None on any miss (caller falls back
+    to full resample). Byte-identical to fresh full resample by construction."""
+    try:
+        import pandas as _pd
+        import secondary_tf_cache as STC
+        from unified_engine import compute_backtest_fingerprint
+        from data_loader import load_market_data
+        cfg = strat.get('config') or {}
+        b64 = strat.get('secondary_series_b64') or cfg.get('secondary_series_b64')
+        de = STC.deserialize_secondary_cache(
+            b64, expected_fingerprint=compute_backtest_fingerprint(strat),
+            expected_model_id=model_id)
+        if de is None or not de.get('series'):
+            return None
+        cached = de['series']
+        # earliest boundary across secondaries → recent load start
+        boundaries = [df.index[-1] + _pd.Timedelta(seconds=STC._period_seconds(tf))
+                      for tf, df in cached.items() if len(df)]
+        if not boundaries:
+            return None
+        start = min(boundaries)
+        _start = start.tz_localize(None) if getattr(start, 'tz', None) is not None else start
+        _until = until_dt.replace(tzinfo=None) if getattr(until_dt, 'tzinfo', None) else until_dt
+        recent = load_market_data(strat['symbol'], start_date=_start, end_date=_until,
+                                  timeframe=primary_tf, feed=data_feed, session=session)
+        extended = STC.extend_secondary_ohlcv(cached, recent, tuple(sec_tfs))
+        return extended
+    except Exception as _e:
+        _logger.warning("secondary-cache load/extend failed (%s) — full resample", _e)
+        return None
+
+
+def _secondary_cache_persist(strat, df, sec_tfs, model_id):
+    """Build the secondary cache from a fully-computed df (primary OHLCV) and
+    persist it to config.secondary_series_b64 via a FULL-config read-modify-write
+    (never a partial JSONB update — see feedback_jsonb_partial_updates)."""
+    try:
+        import secondary_tf_cache as STC
+        from unified_engine import compute_backtest_fingerprint
+        from db import get_admin_client, get_current_user_id
+        sec = STC.build_secondary_ohlcv(df, tuple(sec_tfs))
+        if not sec:
+            return
+        last_ts = df.index[-1].isoformat()
+        blob = STC.serialize_secondary_cache(
+            sec, compute_backtest_fingerprint(strat), model_id, last_ts)
+        if not blob:
+            return
+        c = get_admin_client()
+        sid = strat.get('id')
+        uid = strat.get('user_id') or get_current_user_id()
+        row = c.table('strategies').select('config').eq('id', sid).single().execute()
+        full_cfg = dict((row.data or {}).get('config') or {})
+        full_cfg['secondary_series_b64'] = blob
+        c.table('strategies').update({'config': full_cfg}).eq('id', sid).execute()
+    except Exception as _e:
+        _logger.warning("secondary-cache persist failed (%s) — non-fatal", _e)
 
 
 def get_strategy_trades(strat: dict, data_feed: str = "sip", model_override: str | None = None) -> pd.DataFrame:

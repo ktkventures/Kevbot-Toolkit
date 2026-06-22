@@ -1,0 +1,85 @@
+# Design — Secondary-TF cache for fast Update-New-Data (FOR REVIEW) — 2026-06-22
+
+## Where the cost actually is (important — it reframes the fix)
+Traced the backtest path (`services.prepare_data_with_indicators`, lines 349–384). The
+secondary-TF work itself is **cheap**: resample is in-memory, and `run_all_indicators` /
+interpreters run on a **small** coarse series (1d over a year ≈ 365 rows; 4h ≈ ~1500). The
+expensive part is the **primary data LOAD** (`load_market_data`) over a **long warmup window** —
+and that window is long *only because the coarse 1d/4h gates need a long history to warm up*.
+The primary's own indicators (15Sec) warm in hours, not months.
+
+So the 700s isn't "computing secondary indicators" — it's "loading months of bars so the coarse
+secondary series can be built." The primary snapshot (`engine_snapshot_b64`) resumes the
+**primary** incremental engine but does NOT cover the secondary series, so that long load recurs
+every append.
+
+## The fix (and the fidelity-sensitive part)
+**Cache the computed secondary series** (resampled OHLCV + indicators + interpreter states) so an
+append no longer needs the long primary load to rebuild it. Concretely, on Update-New-Data:
+1. **Shorten the primary load window** to just the primary's own warmup + the visible/new range
+   (short — 15Sec warms fast), INSTEAD of the long coarse-gate warmup.
+2. **Load the cached secondary series** and **extend** it with only the few new coarse bars (a
+   short recent load forms the new 1d/4h bars), then **inject via the existing `secondary_tf_dfs`
+   hook** (services.py:357 already supports this — skips the resample).
+3. Result: no months-long load; primary load shrinks dramatically → the speedup.
+
+**The fidelity-sensitive step is #1** — shortening the primary warmup window. It MUST produce
+byte-identical primary indicator values vs the long-warmup run, and the cached+extended secondary
+series MUST be byte-identical to a fresh full resample. **This is the whole risk** (it's why the
+primary snapshot had scarring — warmup edges). The parity guard gates everything.
+
+## Caching scope (answer to Kevin's question)
+- **Update-All-Data**: stays a full recompute (source of truth). It computes the full secondary
+  series anyway → **writes/refreshes the cache** as a near-free side effect. Not itself sped up.
+- **Update-New-Data**: **reads** the cache + extends it (the fast path) + writes back. Cold-seeds
+  once if absent. **The speedup is realized here** — the periodic/cron path.
+- Cache is **fingerprint-keyed** (same `compute_backtest_fingerprint`): any config change
+  invalidates it → next Update-All rebuilds fresh. Per-`model_id` too (rest_hifi vs cache lanes).
+
+## Cache storage
+Payload is **small** (coarse series ≈ tens of KB). Options: a `config` field
+(`secondary_series_b64`, like `engine_snapshot_b64`) or Supabase Storage (like Tier-2 dough).
+Leaning config-field for simplicity given the small size; revisit if a strategy has many/large
+secondaries. api is ephemeral on Railway, so it MUST be DB/Storage, not local disk.
+
+## Parity guard (the gate — build FIRST, before enabling)
+Offline test on the 1d/4h strategies (**313, 314**) asserting:
+- **Secondary series byte-identical**: cached+extended vs fresh full-resample (every column,
+  every coarse bar).
+- **Primary indicators byte-identical** at the short-warmup boundary vs long-warmup.
+- **Trades identical**: the resulting `unified_trades` output matches the full-recompute trades
+  (entry/exit ts, price, exec_type) over the overlap window.
+Run on: primary+secondary, a 1d gate (313 has 1d+4h), a 4h gate, and an ungated control.
+**Enable only when byte-identical. Kill-switch env flag default OFF. Canary on 313/314 first.**
+
+## CORRECTED FRAMING (2026-06-22, after reading the code)
+We ALREADY snapshot the primary, and strategies WITHOUT a long-cycle secondary already get the
+fast windowed resume. The gap is an explicit guard — `_has_long_cycle_secondary_tf`
+(forward_test_service.py:1244-1248) — that routes any strategy with a **1Hour+ secondary**
+(1d/4h, e.g. 313/314) to the **`full` warmup path**, because the snapshot only captures the
+PRIMARY engine state (`serialize_backtest_snapshot` = `strat.indicators` only) and a coarse
+secondary would resume into undefined indicators. So there is really ONE fix, not
+aggressive-vs-conservative: **extend the snapshot to also cover the secondary series, then lift
+the guard for strategies that have a valid secondary snapshot.** Same mechanism as the primary,
+one level out.
+
+Note: in the BACKTEST path the secondary isn't a stateful incremental engine — it's a vectorized
+resample (`resample_to_timeframe`) + `run_all_indicators` over the small coarse series
+(services.py:349-384). So the "secondary snapshot" = the **cached resampled secondary OHLCV**
+(indicators recompute deterministically + cheaply on it). Cache the OHLCV (the
+expensive-to-build-from-1min part); recompute indicators on resume.
+
+## Open decisions for Kevin
+1. **Warmup-shortening is the crux + the risk.** Are you comfortable with the approach of
+   shrinking the primary load when the secondary is cached (gated by byte-identical parity), or
+   would you prefer a more conservative variant (e.g., cache the secondary but keep the full
+   primary warmup — smaller speedup, lower risk)? The conservative variant saves the secondary
+   *recompute* but not the long *load*, so the win is smaller.
+2. Cache storage: config field vs Supabase Storage.
+3. Scope: implement on 313/314 (1d/4h) first as canaries, measure, then widen.
+
+## Recommendation
+Because the speedup *requires* the fidelity-sensitive warmup-shortening, I recommend we align on
+decision #1 before I implement — then I build the parity harness, implement behind the kill-switch,
+prove byte-identical on 313/314, and bring you the numbers + parity results for review before any
+enablement. I will NOT enable anything that isn't byte-identical.
