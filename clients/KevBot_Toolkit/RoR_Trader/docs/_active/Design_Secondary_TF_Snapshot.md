@@ -52,6 +52,36 @@ Offline test on the 1d/4h strategies (**313, 314**) asserting:
 Run on: primary+secondary, a 1d gate (313 has 1d+4h), a 4h gate, and an ungated control.
 **Enable only when byte-identical. Kill-switch env flag default OFF. Canary on 313/314 first.**
 
+## MEASURED RESULTS (2026-06-22 EOD — real UND append path, sid 313, force=True)
+| lane | cache | time | notes |
+|------|-------|------|-------|
+| BT   | seeded  | **3.8–4.6s** | uses get_strategy_trades_for_window (wired) |
+| ALGO | not seeded | **390.9–391.8s** | uses the separate `full` recompute path (NOT wired) |
+
+Lanes intact afterward (455/455, no corruption). Fidelity byte-identical (4 offline proofs).
+**~85–100× speedup where the cache is present.** Flag ON on api (RORT_SECONDARY_TF_CACHE=1).
+
+### ⚠️ REMAINING PIECE — algo-lane / full-recompute cache seeding (NOT done)
+The cache is read+injected+persisted ONLY in `services.get_strategy_trades_for_window`
+(the windowed path). The BT lane always routes through it → benefits + self-seeds on a cold
+(envelope=None) full compute. BUT:
+1. The **algo lane** uses a separate `full` recompute path (forward_test_service else-branch,
+   when use_windowed=False) that does NOT call get_strategy_trades_for_window → never seeds its
+   cache → stays 391s. Guard-lift can't help because the cache never gets written.
+2. **Auto-seed bootstrap:** persist only fires on a full compute (`envelope is None` — so the
+   secondary is fully warmed, never caching an under-warmed short-window secondary). Established
+   strategies resume (envelope present) → never hit the persist → cache never seeds on its own.
+
+**TO FINISH:** wire the cache WRITE into the full-recompute path (Update-All:
+`recompute_and_persist_stored_trades`, + the algo `full` branch) so coarse strategies get seeded
+fleet-wide. Then both lanes take the fast windowed path. The READ/INJECT/short-window side is
+done + proven; this is the seeding side.
+
+NOTE: my change also appears to FIX a latent correctness issue — without the cache, a coarse-gate
+strategy resuming via the primary snapshot (short window) under-warms the secondary → wrong
+gates; the guard currently prevents that by forcing `full`. The cache provides a warmed secondary
+so the short resume becomes correct AND fast. Worth confirming when finishing the seeding.
+
 ## CORRECTED FRAMING (2026-06-22, after reading the code)
 We ALREADY snapshot the primary, and strategies WITHOUT a long-cycle secondary already get the
 fast windowed resume. The gap is an explicit guard — `_has_long_cycle_secondary_tf`

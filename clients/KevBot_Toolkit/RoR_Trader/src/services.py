@@ -659,19 +659,19 @@ def get_strategy_trades_for_window(
     req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
     sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
 
-    # Secondary-TF cache (RORT_SECONDARY_TF_CACHE): if a valid cache exists,
+    # Secondary-TF snapshot (RORT_SECONDARY_TF_SNAPSHOT): if a valid cache exists,
     # inject the cached+extended secondary series and size warmup off the
     # PRIMARY only (short) — the coarse secondary no longer needs the long
     # warmup load. Inert when the kill-switch is OFF. Byte-identical by
-    # construction (see secondary_tf_cache.py).
+    # construction (see secondary_tf_snapshot.py).
     _sec_inject = None
-    if _secondary_cache_enabled() and sec_tfs:
-        _sec_inject = _secondary_cache_load_extend(
+    if _secondary_snapshot_enabled() and sec_tfs:
+        _sec_inject = _secondary_snapshot_load_extend(
             strat, sec_tfs, until_dt, timeframe,
             strat.get('trading_session', 'RTH'), data_feed, expected_model_id)
-    _used_sec_cache = _sec_inject is not None
+    _used_sec_snapshot = _sec_inject is not None
 
-    if _used_sec_cache:
+    if _used_sec_snapshot:
         # warmup off the PRIMARY only — secondary comes from cache
         primary_bpd = BARS_PER_DAY.get(timeframe, 390)
         warmup_days = max(1, math.ceil(warmup_bars / max(primary_bpd, 0.001) * 365 / 252))
@@ -705,19 +705,19 @@ def get_strategy_trades_for_window(
         data_feed=data_feed,
         session=strat.get('trading_session', 'RTH'),
         secondary_tfs=sec_tfs,
-        secondary_tf_dfs=_sec_inject,  # secondary-TF cache injection (or None)
+        secondary_tf_dfs=_sec_inject,  # secondary-TF snapshot injection (or None)
         strat=strat,  # Phase E preview: enables cache_locked dispatch
         model_override=model_override,  # algo_model split (2026-05-07)
     )
     if len(df) == 0:
         return _result(pd.DataFrame(), resume_snapshot_b64)
 
-    # Secondary-TF cache WRITE: on a FULL compute (no cache used, no primary
+    # Secondary-TF snapshot WRITE: on a FULL compute (no cache used, no primary
     # snapshot resume → df carries the fully-warmed secondary), build + persist
     # the cache so the NEXT append takes the fast path. Cold-seed + refresh.
-    if (_secondary_cache_enabled() and sec_tfs
-            and not _used_sec_cache and envelope is None):
-        _secondary_cache_persist(strat, df, sec_tfs, expected_model_id)
+    if (_secondary_snapshot_enabled() and sec_tfs
+            and not _used_sec_snapshot and envelope is None):
+        _secondary_snapshot_persist(strat, df, sec_tfs, expected_model_id)
 
     # Honor `until_dt`: the live-cache load path returns bars up to "now"
     # even when a PAST end_date is requested, so clip explicitly. Without
@@ -837,28 +837,28 @@ def _has_long_cycle_secondary_tf(strat: dict) -> bool:
     return False
 
 
-# ── Secondary-TF cache (RORT_SECONDARY_TF_CACHE) ───────────────────────────
+# ── Secondary-TF snapshot (RORT_SECONDARY_TF_SNAPSHOT) ───────────────────────────
 # Extends the snapshot concept to the SECONDARY series so coarse-gate strategies
 # (1Hour+ secondary) can take the fast windowed resume instead of the long
 # warmup load. The cached resampled secondary OHLCV is byte-identical to a fresh
-# full resample (proven in secondary_tf_cache.py); injected via secondary_tf_dfs.
+# full resample (proven in secondary_tf_snapshot.py); injected via secondary_tf_dfs.
 # Kill-switch default OFF — fully inert until enabled.
 
-def _secondary_cache_enabled() -> bool:
+def _secondary_snapshot_enabled() -> bool:
     import os
-    return os.getenv('RORT_SECONDARY_TF_CACHE', '0') == '1'
+    return os.getenv('RORT_SECONDARY_TF_SNAPSHOT', '0') == '1'
 
 
-def _has_valid_secondary_cache(strat: dict, model_id: str | None = None) -> bool:
-    """True if the strategy has a fingerprint+model-valid secondary cache."""
-    if not _secondary_cache_enabled():
+def _has_valid_secondary_snapshot(strat: dict, model_id: str | None = None) -> bool:
+    """True if the strategy has a fingerprint+model-valid secondary snapshot."""
+    if not _secondary_snapshot_enabled():
         return False
     try:
-        import secondary_tf_cache as STC
+        import secondary_tf_snapshot as STC
         from unified_engine import compute_backtest_fingerprint
         cfg = strat.get('config') or {}
-        b64 = strat.get('secondary_series_b64') or cfg.get('secondary_series_b64')
-        de = STC.deserialize_secondary_cache(
+        b64 = strat.get('secondary_snapshot_b64') or cfg.get('secondary_snapshot_b64')
+        de = STC.deserialize_secondary_snapshot(
             b64, expected_fingerprint=compute_backtest_fingerprint(strat),
             expected_model_id=model_id)
         return de is not None and bool(de.get('series'))
@@ -866,7 +866,7 @@ def _has_valid_secondary_cache(strat: dict, model_id: str | None = None) -> bool
         return False
 
 
-def _secondary_cache_load_extend(strat, sec_tfs, until_dt, primary_tf,
+def _secondary_snapshot_load_extend(strat, sec_tfs, until_dt, primary_tf,
                                  session, data_feed, model_id):
     """Load the cached secondary series + extend it with a SHORT fresh load
     from the last cached bar → until. Returns {canonical_tf: DataFrame} keyed
@@ -874,12 +874,12 @@ def _secondary_cache_load_extend(strat, sec_tfs, until_dt, primary_tf,
     to full resample). Byte-identical to fresh full resample by construction."""
     try:
         import pandas as _pd
-        import secondary_tf_cache as STC
+        import secondary_tf_snapshot as STC
         from unified_engine import compute_backtest_fingerprint
         from data_loader import load_market_data
         cfg = strat.get('config') or {}
-        b64 = strat.get('secondary_series_b64') or cfg.get('secondary_series_b64')
-        de = STC.deserialize_secondary_cache(
+        b64 = strat.get('secondary_snapshot_b64') or cfg.get('secondary_snapshot_b64')
+        de = STC.deserialize_secondary_snapshot(
             b64, expected_fingerprint=compute_backtest_fingerprint(strat),
             expected_model_id=model_id)
         if de is None or not de.get('series'):
@@ -898,23 +898,23 @@ def _secondary_cache_load_extend(strat, sec_tfs, until_dt, primary_tf,
         extended = STC.extend_secondary_ohlcv(cached, recent, tuple(sec_tfs))
         return extended
     except Exception as _e:
-        _logger.warning("secondary-cache load/extend failed (%s) — full resample", _e)
+        _logger.warning("secondary-snapshot load/extend failed (%s) — full resample", _e)
         return None
 
 
-def _secondary_cache_persist(strat, df, sec_tfs, model_id):
-    """Build the secondary cache from a fully-computed df (primary OHLCV) and
-    persist it to config.secondary_series_b64 via a FULL-config read-modify-write
+def _secondary_snapshot_persist(strat, df, sec_tfs, model_id):
+    """Build the secondary snapshot from a fully-computed df (primary OHLCV) and
+    persist it to config.secondary_snapshot_b64 via a FULL-config read-modify-write
     (never a partial JSONB update — see feedback_jsonb_partial_updates)."""
     try:
-        import secondary_tf_cache as STC
+        import secondary_tf_snapshot as STC
         from unified_engine import compute_backtest_fingerprint
         from db import get_admin_client, get_current_user_id
         sec = STC.build_secondary_ohlcv(df, tuple(sec_tfs))
         if not sec:
             return
         last_ts = df.index[-1].isoformat()
-        blob = STC.serialize_secondary_cache(
+        blob = STC.serialize_secondary_snapshot(
             sec, compute_backtest_fingerprint(strat), model_id, last_ts)
         if not blob:
             return
@@ -923,10 +923,10 @@ def _secondary_cache_persist(strat, df, sec_tfs, model_id):
         uid = strat.get('user_id') or get_current_user_id()
         row = c.table('strategies').select('config').eq('id', sid).single().execute()
         full_cfg = dict((row.data or {}).get('config') or {})
-        full_cfg['secondary_series_b64'] = blob
+        full_cfg['secondary_snapshot_b64'] = blob
         c.table('strategies').update({'config': full_cfg}).eq('id', sid).execute()
     except Exception as _e:
-        _logger.warning("secondary-cache persist failed (%s) — non-fatal", _e)
+        _logger.warning("secondary-snapshot persist failed (%s) — non-fatal", _e)
 
 
 def get_strategy_trades(strat: dict, data_feed: str = "sip", model_override: str | None = None) -> pd.DataFrame:

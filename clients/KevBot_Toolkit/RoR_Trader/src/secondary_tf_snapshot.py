@@ -1,4 +1,4 @@
-"""Secondary-TF cache — fast Update-New-Data for coarse-gate strategies.
+"""Secondary-TF snapshot — fast Update-New-Data for coarse-gate strategies.
 
 PROBLEM: strategies with a 1Hour+ secondary TF (e.g. 1d/4h gates) are routed to
 the FULL warmup path (`_has_long_cycle_secondary_tf` guard,
@@ -7,7 +7,7 @@ forward_test_service.py) because the primary engine snapshot
 coarse secondary series would resume into undefined indicators. That forces a
 months-long primary load every append (~700s on TSLA 15Sec / 1d/4h).
 
-FIX (this module): cache the resampled secondary OHLCV. On append, load the cache
+FIX (this module): snapshot the resampled secondary OHLCV. On append, load the cache
 + extend it with a SHORT fresh load from the last complete coarse bar onward, then
 inject via the existing `secondary_tf_dfs` hook (services.prepare_data_with_indicators).
 The primary load shrinks to the primary's own (short) warmup → big speedup.
@@ -17,7 +17,7 @@ TSLA 1d/4h): cached COMPLETE bars + resample-from-boundary == full resample. Bec
 `resample_to_timeframe` is calendar-aligned and `run_all_indicators` is deterministic,
 byte-identical OHLCV ⇒ byte-identical indicators ⇒ gates ⇒ trades. Fingerprint +
 model_id keyed (mirrors the primary snapshot); any mismatch ⇒ caller falls back to
-full rebuild. Kill-switch: RORT_SECONDARY_TF_CACHE (default OFF).
+full rebuild. Kill-switch: RORT_SECONDARY_TF_SNAPSHOT (default OFF).
 
 Cache stores COMPLETE coarse bars only (the last, possibly-forming, bar is dropped
 at write time and re-formed on the next extend).
@@ -30,7 +30,7 @@ from typing import Dict, Optional
 import pandas as pd
 
 OHLCV = ['open', 'high', 'low', 'close', 'volume']
-SECONDARY_CACHE_SCHEMA_VERSION = 1
+SECONDARY_SNAPSHOT_SCHEMA_VERSION = 1
 
 
 def _period_seconds(target_tf: str) -> int:
@@ -66,7 +66,7 @@ def extend_secondary_ohlcv(cached: Dict[str, pd.DataFrame],
     Byte-identical to a fresh full resample: keep cache bars, then append
     resampled-recent bars whose period start is >= (last cache bar + 1 period).
     The last bar of the result may again be incomplete → drop it (callers that
-    persist re-cache via build_secondary_ohlcv; callers that consume keep it,
+    persist re-persist via build_secondary_ohlcv; callers that consume keep it,
     matching prepare_data which keeps the forming bar then shifts/ffills).
     """
     from data_loader import resample_to_timeframe
@@ -85,7 +85,7 @@ def extend_secondary_ohlcv(cached: Dict[str, pd.DataFrame],
     return out
 
 
-def serialize_secondary_cache(sec_dfs: Dict[str, pd.DataFrame],
+def serialize_secondary_snapshot(sec_dfs: Dict[str, pd.DataFrame],
                               fingerprint: str,
                               model_id: Optional[str],
                               last_bar_ts: str) -> Optional[str]:
@@ -93,7 +93,7 @@ def serialize_secondary_cache(sec_dfs: Dict[str, pd.DataFrame],
     falls back to full rebuild — never raises)."""
     try:
         envelope = {
-            'schema_version': SECONDARY_CACHE_SCHEMA_VERSION,
+            'schema_version': SECONDARY_SNAPSHOT_SCHEMA_VERSION,
             'fingerprint': fingerprint,
             'model_id': model_id,
             'last_bar_ts': last_bar_ts,
@@ -107,7 +107,7 @@ def serialize_secondary_cache(sec_dfs: Dict[str, pd.DataFrame],
         return None
 
 
-def deserialize_secondary_cache(
+def deserialize_secondary_snapshot(
         b64: Optional[str],
         expected_fingerprint: Optional[str] = None,
         expected_model_id: Optional[str] = None) -> Optional[dict]:
@@ -122,7 +122,7 @@ def deserialize_secondary_cache(
         return None
     if not isinstance(env, dict):
         return None
-    if env.get('schema_version') != SECONDARY_CACHE_SCHEMA_VERSION:
+    if env.get('schema_version') != SECONDARY_SNAPSHOT_SCHEMA_VERSION:
         return None
     if expected_fingerprint and env.get('fingerprint') != expected_fingerprint:
         return None

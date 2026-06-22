@@ -23,6 +23,18 @@ session is offline-validated (Tier 2 byte-identical) or display-only (Bug 1/equi
 Selective rollback: each feature is its own commit → `git revert <commit>` leaves
 the rest intact. We are NOT in "roll back everything" territory.
 
+## 2026-06-19/20 update — Mass Builder hardening (full log: `Session_2026-06-19_MassBuilder.md`)
+All shipped to `dev` + deployed. Mass Builder now: won't OOM on multi-trigger/long runs
+(**1.15** scoping, `RORT_MASS_SCOPE_CONFLUENCE` default on, byte-identical, RSS −55%);
+persists results mid-run (**1.16**, `RORT_MASS_PARTIAL_FLUSH_SEC` 30s); nested per-**trigger-set**
+drill-down on Mass Results (**1.17**) with fail-loud `backtests_failed` badge.
+**P0 cross-pack silent-drop FIXED** (`7fb84ae`): pre-existing bug (NOT #21 scoping) — the HiFi
+dough only tracked the first combo's exit because `_resolve_trigger_ids` reads
+`exit_trigger_confluence_ids` before `exit_triggers`; mixed-pack searches silently kept only the
+first pack. Engine-accurate inline re-run **pulled** (no warmup via `/api/backtest/run`) → task 1.18.
+**RESUME: P1b** — drill-in button deep-linking to the Mass Builder edit view pre-filtered to a
+trigger-set + add a trigger-set filter there (reuse `MassBuilderPage.tsx`, don't rebuild). Then P2 perf.
+
 ## Current state (2026-06-18 EOD)
 **Working / shipped:**
 - 308 (ungated) fires live + has a correct backtest lane (the loader silent-truncation that
