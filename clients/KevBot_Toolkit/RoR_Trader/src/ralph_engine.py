@@ -4599,8 +4599,30 @@ class RalphEngine:
         # Load saved position state
         saved_positions = load_engine_state()
 
-        # Load enabled general packs for GEN- confluence evaluation
-        self._general_packs = _load_enabled_general_packs()
+        # Load enabled general packs for GEN- confluence evaluation.
+        # CRITICAL (2026-06-22): the worker thread has NO thread-local user
+        # context at startup, so the context-dependent _load_enabled_general_packs()
+        # silently loaded 0 packs → every monitor was built with an empty
+        # _general_packs → ALL general-pack gating was blocked live (confirmed
+        # via GATE_BLOCK_DIAG: gen_packs=0). The hot-reload path already loads
+        # via the explicit admin path; mirror it here using the user_id stamped
+        # on the strategies. Falls back to the context path for CLI/dry-run.
+        _uid = next((s.get('user_id') for s in strategies if s.get('user_id')), None)
+        self._general_packs = []
+        if _uid:
+            try:
+                from db import load_general_packs_admin
+                from general_packs import _parse_pack_list, get_enabled_general_packs
+                self._general_packs = get_enabled_general_packs(
+                    _parse_pack_list(load_general_packs_admin(_uid)))
+            except Exception as _gp_e:
+                logger.warning("startup general-pack admin load failed (%s); "
+                               "falling back to context load", _gp_e)
+                self._general_packs = _load_enabled_general_packs()
+        else:
+            self._general_packs = _load_enabled_general_packs()
+        logger.info("startup: loaded %d enabled general packs (uid=%s)",
+                    len(self._general_packs), str(_uid)[:8] if _uid else None)
 
         # Group strategies by symbol
         by_symbol: Dict[str, List[dict]] = {}
