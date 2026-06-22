@@ -1277,6 +1277,21 @@ class StrategyMonitor:
         # 3b. Evaluate General Pack conditions (time/calendar filters)
         if self._general_packs:
             bar_ts = bar.get('timestamp')
+            # BarBuilder.to_dict() emits 'timestamp' as an ISO STRING
+            # (self.bar_start.isoformat()), so the live bar-close path passes
+            # a str here — not a datetime. The old isinstance(datetime) guard
+            # was therefore always False live, so _evaluate_general_packs was
+            # never called, no GEN- record entered _current_confluence, and
+            # EVERY general-pack-gated strategy was silently blocked live
+            # (the backtest path uses a datetime index, so it worked → the
+            # tz fix only ever helped backtest). Coerce string → datetime so
+            # gen-gating actually fires live. Matches the pd.Timestamp parse
+            # pattern used elsewhere for bar['timestamp'].
+            if isinstance(bar_ts, str) and bar_ts:
+                try:
+                    bar_ts = pd.Timestamp(bar_ts).to_pydatetime()
+                except Exception:
+                    bar_ts = None
             if isinstance(bar_ts, datetime):
                 self._current_confluence |= _evaluate_general_packs(
                     self._general_packs, bar_ts)
