@@ -1125,17 +1125,20 @@ class StrategyMonitor:
                            self.strat_id, _diag_e)
             self._diag_cols = []
 
-        # General Pack references (for GEN- confluence records)
-        # Only keep packs referenced by this strategy's general_confluences
-        gp_ids_needed = set()
-        for rec in strategy.get('general_confluences', []):
-            parts = rec.split('-', 2)
-            if len(parts) >= 2:
-                gp_ids_needed.add(parts[1].lower())
+        # General Pack references (for GEN- confluence records).
+        # Only keep packs referenced by this strategy's general_confluences.
+        # Match by the full `GEN-{PACK_ID}-` prefix, NOT split('-')[1] — pack
+        # ids can contain dashes (e.g. 'time_of_day-11:30-14:00'), so token[1]
+        # would yield just 'TIME_OF_DAY' and never match the real id → the pack
+        # is silently dropped and the gate never fires live (while the backtest,
+        # which evaluates all packs, still has it → backtest↔live divergence).
+        _needed_recs = [r for r in strategy.get('general_confluences', [])
+                        if isinstance(r, str) and r.startswith('GEN-')]
         self._general_packs = [
             p for p in (general_packs or [])
-            if p.id in gp_ids_needed
-        ] if gp_ids_needed else []
+            if any(r.upper().startswith(f'GEN-{p.id.upper()}-')
+                   for r in _needed_recs)
+        ] if _needed_recs else []
 
         # Normalize confluence labels to uppercase (backtest may store lowercase)
         if self.position.confluence_set:
