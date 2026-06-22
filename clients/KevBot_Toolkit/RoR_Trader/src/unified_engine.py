@@ -182,6 +182,29 @@ _GP_SESSION_WINDOWS = {
 }
 
 
+def _gp_to_market(ts):
+    """Convert a timestamp to ET (market tz) for general-pack evaluation.
+    Session/time-of-day/day/calendar boundaries are defined in ET, but the live
+    bar_ts is UTC — without this, the UTC hour is compared against ET boundaries
+    (e.g. 16:01 UTC mid-session read as past the 16:00 close → OUT_OF_SESSION),
+    which silently blocks every session/time-gated strategy. Naive assumed UTC."""
+    try:
+        if hasattr(ts, 'tz_convert'):  # pandas Timestamp
+            if getattr(ts, 'tz', None) is None:
+                ts = ts.tz_localize('UTC')
+            return ts.tz_convert('America/New_York')
+        from datetime import timezone as _tz
+        if getattr(ts, 'tzinfo', None) is None:
+            ts = ts.replace(tzinfo=_tz.utc)
+        try:
+            from zoneinfo import ZoneInfo
+            return ts.astimezone(ZoneInfo('America/New_York'))
+        except Exception:
+            return ts
+    except Exception:
+        return ts
+
+
 def _eval_gp_scalar(pack, ts: datetime) -> Optional[str]:
     """Evaluate a GeneralPack against a single timestamp. Returns state label."""
     try:
@@ -190,6 +213,7 @@ def _eval_gp_scalar(pack, ts: datetime) -> Optional[str]:
         return None
     logic = TEMPLATES.get(pack.base_template, {}).get("condition_logic")
     params = pack.parameters
+    ts = _gp_to_market(ts)  # ET — boundaries below are defined in market time
     if logic == "time_window":
         start = params.get("start_hour", 9) * 60 + params.get("start_minute", 30)
         end = params.get("end_hour", 12) * 60 + params.get("end_minute", 0)

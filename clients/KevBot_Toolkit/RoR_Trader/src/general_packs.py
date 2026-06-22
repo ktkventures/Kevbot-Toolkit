@@ -430,6 +430,24 @@ SESSION_WINDOWS = {
 }
 
 
+_MARKET_TZ = 'America/New_York'
+
+
+def _to_market_index(idx):
+    """Convert a DatetimeIndex to ET (market timezone) before reading
+    hour/minute/weekday/day. Session + time-of-day boundaries are defined in ET
+    (e.g. 9:30-16:00), but bars are stored in UTC — without this conversion the
+    UTC hour is compared against ET boundaries (e.g. 16:01 UTC read as 'past the
+    16:00 close' → OUT_OF_SESSION mid-session). Naive index assumed UTC;
+    idempotent for ET-aware input."""
+    try:
+        if getattr(idx, 'tz', None) is None:
+            idx = idx.tz_localize('UTC')
+        return idx.tz_convert(_MARKET_TZ)
+    except Exception:
+        return idx
+
+
 def evaluate_condition(df: pd.DataFrame, pack: 'GeneralPack') -> pd.Series:
     """Evaluate a general pack's condition on each bar and return a Series of output labels."""
     logic = TEMPLATES.get(pack.base_template, {}).get("condition_logic")
@@ -462,6 +480,7 @@ def _eval_time_window(df: pd.DataFrame, start_h: int, start_m: int,
         except Exception:
             pass
 
+    idx = _to_market_index(idx)  # ET — boundaries are defined in market time
     bar_minutes = idx.hour * 60 + idx.minute
     in_window = (bar_minutes >= start_minutes) & (bar_minutes < end_minutes)
     return pd.Series(
@@ -497,6 +516,7 @@ def _eval_day_of_week(df: pd.DataFrame, params: dict) -> pd.Series:
         except Exception:
             pass
 
+    idx = _to_market_index(idx)  # ET — weekday boundary is in market time
     results = []
     for dt in idx:
         day_name = day_map.get(dt.dayofweek)
@@ -523,6 +543,7 @@ def _eval_calendar_filter(df: pd.DataFrame, params: dict) -> pd.Series:
         except Exception:
             pass
 
+    idx = _to_market_index(idx)  # ET — calendar day boundary is in market time
     results = []
     for dt in idx:
         blocked = False
