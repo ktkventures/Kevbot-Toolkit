@@ -1347,6 +1347,24 @@ class StrategyMonitor:
                     self.strat_id, sorted(self.position.confluence_set),
                     1 if _ok else 0, sorted(_recs),
                     sorted(mtf_confluence.keys()) if mtf_confluence else None)
+        elif (self.position.state.status == 'FLAT'
+              and self.position.confluence_set
+              and any(trigger_bools.values())):
+            # XTF_BLOCK_DIAG (2026-06-23): a gated entry trigger fired while
+            # FLAT but produced no entry signal — the confluence gate suppressed
+            # it. Logs needed confluence_set vs what's actually in
+            # _current_confluence, plus the cross-TF (mtf) buffer keys — to pin
+            # whether the secondary-TF records (e.g. 2m/5m SWING_123 for
+            # 327/328/329) are ABSENT (broken cross-TF feed) or PRESENT-but-not
+            # -matching. Mirrors the gen-gate diagnosis. Remove after diagnosis.
+            _recs = self._current_confluence
+            _need = self.position.confluence_set
+            logger.info(
+                "XTF_BLOCK_DIAG strat=%s active=%s need=%s subset_ok=%d "
+                "present=%s mtf_keys=%s",
+                self.strat_id, [k for k, v in trigger_bools.items() if v],
+                sorted(_need), 1 if _need.issubset(_recs) else 0,
+                sorted(_recs), sorted(mtf_confluence.keys()) if mtf_confluence else None)
 
         # 7. Confirmation check for HM/HL entries made THIS bar
         if (self.position.state.status == 'IN_POSITION' and
