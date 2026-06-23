@@ -129,6 +129,14 @@ def get_strategy_health(
         None,
         description="Custom window end (ISO 8601 or Unix sec).",
     ),
+    tolerance_seconds: float = Query(
+        _DIVERGENCE_TOLERANCE_SEC,
+        ge=0.0,
+        le=300.0,
+        description="Alert↔backtest match tolerance (seconds) for "
+                    "phantom/missed pairing. Default 60 (no behavior change). "
+                    "Use 5 or 10 for a stricter fidelity view.",
+    ),
 ):
     """One row per strategy with all the health signals + red flags.
 
@@ -324,7 +332,7 @@ def get_strategy_health(
         unpaired_alert_ts: List[float] = []
         while i < len(edges) and j < len(alerts_sorted):
             diff = alerts_sorted[j] - edges[i]
-            if abs(diff) <= _DIVERGENCE_TOLERANCE_SEC:
+            if abs(diff) <= tolerance_seconds:
                 paired_edges += 1
                 paired_alerts += 1
                 i += 1

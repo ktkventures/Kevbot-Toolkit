@@ -1,4 +1,20 @@
-# Design — Secondary-TF cache for fast Update-New-Data (FOR REVIEW) — 2026-06-22
+# Design — Secondary-TF snapshot for fast Update-New-Data — 2026-06-22
+
+## ⚠️ SCOPE NOTE (2026-06-23) — snapshot currently only covers 1Hour+ secondaries
+The seed + the guard-lift are both gated on `_has_long_cycle_secondary_tf` = **1Hour or
+coarser** secondary (1h/2h/4h/1d/1w/1mo). Confirmed live 2026-06-23: every 1Hour+ strategy
+(310/311/312/313/314/325/330/331) is seeded; sub-1Hour (2m/5m/10m/30m/3m, e.g. 327/328/329/309)
+is NOT — those rely on the existing windowed resume.
+- **Why it's probably fine now:** sub-1Hour secondaries warm in a short window, so the windowed
+  resume is fast for them already (the guard threshold reflects this).
+- **POTENTIAL GAP to verify (Kevin's flag):** on a SHORT resume window, a 10m/30m secondary may
+  still be under-warmed (e.g. 1 day of 30m ≈ 48 bars < a 100-bar indicator). The 1Hour threshold
+  is a heuristic; sub-1Hour under-warm on resume is unverified. NOT urgent, but as strategies run
+  for months and we move to a cron, verify and — if needed — **lower the snapshot threshold so
+  ALL gated strategies get the snapshot treatment** (the snapshot is cheap, ~4KB). Track under the
+  bug-hunt loop (accuracy + scalability goals).
+
+# (original title) Design — Secondary-TF cache for fast Update-New-Data (FOR REVIEW) — 2026-06-22
 
 ## Where the cost actually is (important — it reframes the fix)
 Traced the backtest path (`services.prepare_data_with_indicators`, lines 349–384). The
