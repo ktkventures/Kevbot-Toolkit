@@ -9,7 +9,41 @@ in their current locations for now — see Doc Map). New observations get logged
 Backtest and live produce the **same trades within ~5s**, so we can **trade reliably**.
 Current focus: the first real-money strategies (308–314, TSLA 15Sec).
 
-## ⚠️ PENDING MONDAY (2026-06-22) LIVE VALIDATION + rollback map
+## 🟢 2026-06-22 EOD — DONE TODAY + 2026-06-23 PLAN (read this first)
+
+**Done today (all deployed):**
+1. **Gen-gate live ROOT FIX (`880bdb3`) — CONFIRMED LIVE.** Root cause was NOT tz/timestamp:
+   `RalphEngine.start` loaded general packs with no user context → 0 packs → all gated monitors
+   empty → gate always failed. Fix loads via `load_general_packs_admin(user_id)`. Confirmed: sid
+   337 (after-hours TOD gate) fired bull_flip ENTRIES in-window. See `feedback_gengate_live_string_ts`.
+2. **Secondary-TF SNAPSHOT — speed work, VALIDATED + deployed (`e0b1e4a`, flag `RORT_SECONDARY_TF_SNAPSHOT=1` on api).**
+   Update-All seeds the snapshot → Update-New on coarse-gate strategies drops from **~780s → ~18s
+   (~43×)**, both lanes, byte-identical, lanes intact. (NOT the algo/cache_% lane — it's an extension
+   of `engine_snapshot_b64`.) Detail: `Design_Secondary_TF_Snapshot.md`.
+3. **XTF_BLOCK_DIAG deployed (`3da94eb`)** — captures cross-TF gate-blocks (327/328/329) at RTH open tomorrow.
+
+**Tonight:** Kevin runs **Update-All Data** (after the `3da94eb` deploy settles) → seeds snapshots →
+Update-New fast all day tomorrow.
+
+**2026-06-23 PLAN (execution order):**
+1. **Verify the speed work landed in prod** (~10 min): Update-All seeded the coarse strategies +
+   a production Update-New runs in seconds.
+2. **Confirm gen-gating in RTH:** 334 (session, open), 335 (11:30–14:00 ET), 336 (14:00–16:00 ET)
+   fire in-window. Closes the loop (337 was after-hours).
+3. **Bug-hunt divergences (main work, gate to live trading):**
+   a. **Cross-TF live gating 327/328/329** (TOP) — confirmed live bug: live blocks entries the
+      backtest takes. Use XTF_BLOCK_DIAG to pin, then fix.
+   b. **313 full recompute = 0 trades vs lane = 455** — investigate the discrepancy (pre-existing).
+   c. **Re-assess phantom/missed** (325/330/331/333…) with fresh lanes + gen-gate fixed.
+4. **As fidelity solidifies:** pick first live-trading strategy; revisit service-split + cron for scale.
+
+**PRE-STEP-3 (discuss first):** set up a **bug-hunt SKILL** — a standard, more-autonomous
+implement+test procedure for divergence fixes (we do this a lot; codify it). Review with Kevin
+before starting the divergence bug-hunt.
+
+---
+
+## ⚠️ PENDING MONDAY (2026-06-22) — ✅ RESOLVED (gen-gate root-fixed + confirmed live; see above)
 Jun-19 was Juneteenth (market closed) → no live data, so the live-engine changes
 below could NOT be validated. ONLY these touch live firing; everything else this
 session is offline-validated (Tier 2 byte-identical) or display-only (Bug 1/equity).
