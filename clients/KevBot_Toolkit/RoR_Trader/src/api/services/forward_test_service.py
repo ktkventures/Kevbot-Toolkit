@@ -1244,12 +1244,12 @@ def append_new_trades_for_strategy(
         # Secondary-TF snapshot (RORT_SECONDARY_TF_SNAPSHOT): a valid cache makes the
         # windowed path safe for coarse-gate strategies (the secondary comes
         # from the cache, not the short window), so lift the long-cycle guard.
-        _algo_model_for_cache = cfg.get('algo_model') or cfg.get('backtest_model')
+        _algo_model_for_snap = cfg.get('algo_model') or cfg.get('backtest_model')
         use_windowed = (
             latest_entry_iso is not None
             and (not svc._has_long_cycle_secondary_tf(strat)
                  or svc._has_valid_secondary_snapshot(
-                     strat, f"algo_{_algo_model_for_cache}"))
+                     strat, _algo_model_for_snap))
         )
         engine_path = 'windowed' if use_windowed else 'full'
 

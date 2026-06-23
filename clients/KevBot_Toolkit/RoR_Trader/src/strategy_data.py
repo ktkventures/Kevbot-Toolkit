@@ -222,6 +222,21 @@ def load_strategy_data(
 
     sec_tf_map = get_secondary_tf_map(df) if len(df) > 0 else {}
 
+    # Seed the secondary-TF SNAPSHOT (RORT_SECONDARY_TF_SNAPSHOT). This is a
+    # FULL warmup-extended load (start=warmup_start), so `df` carries the
+    # COMPLETE secondary series — safe to persist. Keyed by model_override so
+    # coarse-gate Update-New appends can take the fast windowed path. Only
+    # fires for long-cycle (1Hour+) secondaries; inert when the kill-switch is
+    # OFF. Non-fatal on any error.
+    try:
+        import services as _svc
+        if (_svc._secondary_snapshot_enabled() and secondary_tfs
+                and _svc._has_long_cycle_secondary_tf(strat) and len(df) > 0):
+            _svc._secondary_snapshot_persist(
+                strat, df, secondary_tfs, model_override)
+    except Exception:
+        pass
+
     return StrategyDataBundle(
         df=df,
         visible_start=visible_start,

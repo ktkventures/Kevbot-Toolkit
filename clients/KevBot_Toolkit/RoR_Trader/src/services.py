@@ -668,7 +668,7 @@ def get_strategy_trades_for_window(
     if _secondary_snapshot_enabled() and sec_tfs:
         _sec_inject = _secondary_snapshot_load_extend(
             strat, sec_tfs, until_dt, timeframe,
-            strat.get('trading_session', 'RTH'), data_feed, expected_model_id)
+            strat.get('trading_session', 'RTH'), data_feed, model_override)
     _used_sec_snapshot = _sec_inject is not None
 
     if _used_sec_snapshot:
@@ -717,7 +717,7 @@ def get_strategy_trades_for_window(
     # the cache so the NEXT append takes the fast path. Cold-seed + refresh.
     if (_secondary_snapshot_enabled() and sec_tfs
             and not _used_sec_snapshot and envelope is None):
-        _secondary_snapshot_persist(strat, df, sec_tfs, expected_model_id)
+        _secondary_snapshot_persist(strat, df, sec_tfs, model_override)
 
     # Honor `until_dt`: the live-cache load path returns bars up to "now"
     # even when a PAST end_date is requested, so clip explicitly. Without
