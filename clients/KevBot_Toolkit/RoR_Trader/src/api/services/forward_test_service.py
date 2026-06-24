@@ -1859,6 +1859,7 @@ def append_new_backtest_trades_for_strategy(
 
     try:
         try:
+            import os as _os_bt
             all_trades_df, new_bt_snapshot_b64 = svc.get_strategy_trades_for_window(
                 strat, since_dt=since_dt, until_dt=now_dt,
                 model_override=bt_model,
@@ -1867,6 +1868,12 @@ def append_new_backtest_trades_for_strategy(
                 expected_model_id=f"backtest_{bt_model}",
                 return_snapshot=True,
                 diagnostics_source='backtest',
+                # 2026-06-23 fix: inherit the boundary-open position on the
+                # BACKTEST lane so trades spanning an append boundary aren't
+                # dropped (root cause of ~50% lane under-production). Backtest
+                # lane ONLY — live/algo keep always-flat (§8.2). Kill-switch.
+                inherit_position=(_os_bt.getenv(
+                    'RORT_RESUME_INHERIT_POSITION', '0') == '1'),
             )
         except Exception as e:
             logger.warning(

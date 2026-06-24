@@ -3666,30 +3666,40 @@ def deserialize_backtest_snapshot(
     return envelope
 
 
-def apply_backtest_snapshot(strat, envelope: dict) -> None:
+def apply_backtest_snapshot(strat, envelope: dict,
+                            inherit_position: bool = False) -> None:
     """Restore a deserialized snapshot envelope into a fresh
     UnifiedStrategy.
 
     Tier 3 §8.2 (always-start-flat, 2026-05-20): INDICATOR state is
-    restored from the envelope; POSITION state is NOT — the position
-    machine always starts FLAT across a refresh/restart boundary
-    regardless of what the snapshot recorded. The envelope still
-    carries `envelope['position']` for back-compat with older
-    snapshots and for diagnostic purposes, but apply_backtest_
-    snapshot intentionally drops it. Per Tier 3 §4.1, any open
-    pre-boundary trade is owned by the pre-boundary window's
-    stored_trades; the post-boundary window owns trades it
-    originates itself.
+    restored from the envelope; POSITION state is NOT (by default) —
+    the position machine always starts FLAT across a refresh/restart
+    boundary regardless of what the snapshot recorded. Per Tier 3 §4.1,
+    any open pre-boundary trade is owned by the pre-boundary window's
+    stored_trades; the post-boundary window owns trades it originates
+    itself.
 
-    Was previously (LEF 2c, 2026-05-20 morning): also restored
-    position state — that landed before Tier 3 §6 decisions resolved.
-    Tier 3 supersedes that behavior; this function is the single
-    place to enforce the FLAT contract for backtest resumes.
+    `inherit_position` (2026-06-23): when True, ALSO restore the
+    snapshot's recorded position so a trade OPEN at the resume boundary
+    is CONTINUED rather than dropped. Root cause: with always-flat, a
+    trade that enters in append N's window and exits in append N+1's
+    window is owned by neither (N ended before the exit; N+1 starts
+    flat and never saw the entry), so it vanishes. That loss is ~1 trade
+    per append and compounds over the hundreds of incremental appends
+    that build a lane → ~50% under-production vs a cold/full recompute
+    (321: snapshot-resume lane 45% alert-match vs cold/recompute 92%).
+    This flag is set ONLY on the BACKTEST-append lane (behind
+    RORT_RESUME_INHERIT_POSITION). Live (ralph_engine §8.3, its own
+    flat logic — NOT this function), the algo lane (data_worker, mirrors
+    live restart-flat reality), and chart render keep the §8.2 contract.
+    Open trades are never persisted as closed round-trips by the
+    pre-boundary window, so inheriting + closing in the next window
+    records the trade exactly once (no double-count).
     """
     strat.indicators.restore_state(envelope['engine'])
-    # NOTE: deliberately not restoring envelope['position'] —
-    # see docstring. The Tier 3 contract trumps the snapshot's
-    # recorded state.
+    if inherit_position and envelope.get('position') is not None:
+        import copy as _copy
+        strat.position.state = _copy.deepcopy(envelope['position'])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3708,6 +3718,7 @@ def run_unified_backtest(
     return_snapshot: bool = False,
     snapshot_model_id: Optional[str] = None,
     diagnostics_source: Optional[str] = None,
+    inherit_position: bool = False,
 ):
     """Run unified backtest on historical OHLCV data.
 
@@ -3762,7 +3773,8 @@ def run_unified_backtest(
     # processes only the new bars without re-warming.
     if resume_snapshot is not None:
         try:
-            apply_backtest_snapshot(strat, resume_snapshot)
+            apply_backtest_snapshot(strat, resume_snapshot,
+                                    inherit_position=inherit_position)
         except Exception as e:
             logger.warning("apply_backtest_snapshot failed: %s — "
                            "proceeding with cold-start", e)
