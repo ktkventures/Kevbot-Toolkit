@@ -28,6 +28,8 @@ shipped scope.
 from __future__ import annotations
 
 import logging
+import math
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
@@ -39,10 +41,32 @@ logger = logging.getLogger(__name__)
 # ── Constants (tunable; see plan: piped-wondering-tower.md) ───────────
 
 WARMUP_MULTIPLIER = 2
-"""Warmup buffer = visible_days * this. v1 floor; v1+1 will union with
-indicator-derived longest lookback. Keeping `*2` matches the prior
-behavior of `prepare_forward_test_data:834` so live KPIs don't shift
-out from under existing strategies."""
+"""Warmup buffer = visible_days * this. LEGACY path (kill-switch OFF).
+Keeping `*2` matches the prior behavior of `prepare_forward_test_data:834`
+so live KPIs don't shift out from under existing strategies. The
+right-sized path (M-RS1, RORT_RIGHTSIZE_WARMUP=1) replaces this — see
+`compute_warmup_days` + `docs/_active/Plan_M-RS1_Warmup_Rightsizing.md`."""
+
+# ── M-RS1 right-sized warmup (per-TF; kill-switch RORT_RIGHTSIZE_WARMUP) ──
+PRIMARY_WARMUP_BARS = 1200
+"""Warmup bars for the PRIMARY (fastest) TF. Generous — covers long-EMA
+(EMA-200 ≈ 6× period) convergence. Cheap in calendar terms because the
+primary is the highest bars/day TF (1200 × 30Sec ≈ 1.5 trading days)."""
+
+SECONDARY_WARMUP_BARS = 250
+"""Warmup bars for each SECONDARY (coarse) TF. == ralph_engine.
+_SHADOW_WARMUP_TARGET_BARS so the backtest warms its secondaries exactly
+like the LIVE engine does (parity bonus). A single global target would
+backfire here: 1200 bars on a 4h TF = ~2.4yr of calendar warmup."""
+
+_TRADING_TO_CALENDAR = 365.0 / 252.0
+"""Inflate trading-day counts → calendar days (weekends/holidays)."""
+
+
+def _rightsize_warmup_enabled() -> bool:
+    """M-RS1 kill-switch. Default OFF — legacy `visible_days * 2` until
+    byte-identical-proven, then flip ON. Instant rollback by unsetting."""
+    return os.getenv("RORT_RIGHTSIZE_WARMUP", "0") == "1"
 
 LEGACY_FALLBACK_DAYS = 90
 """Visible-window length for strategies that don't have
@@ -129,17 +153,48 @@ def resolve_visible_window(
 
 
 def compute_warmup_days(strat: dict, visible_days: float) -> float:
-    """Warmup buffer in days. v1: `visible_days * WARMUP_MULTIPLIER`.
+    """Warmup buffer in days.
 
-    TODO v1+1: union with indicator-derived longest lookback. Walk the
-    strategy's `resolve_strategy_requirements` to extract longest period
-    (200-bar EMA on 1Day → 200 calendar days needed), then return
-    `max(visible_days * WARMUP_MULTIPLIER, longest_indicator_lookback)`.
-    See unified_engine.py:430-622 (resolve_strategy_requirements) +
-    unified_engine.py:291-335 (_INDICATOR_PARAM_SPEC) for the hook.
+    LEGACY (RORT_RIGHTSIZE_WARMUP unset): `visible_days * WARMUP_MULTIPLIER`.
+    This scales with the visible window, which is wrong — indicators need a
+    FIXED bar count regardless of how long the backtest runs. For an old
+    coarse-gate strategy (visible ≈ 540d) this loads ~1,620d ≈ 555k 1-min
+    bars and the engine chews all of it (~2/3 trimmed away). See cProfile in
+    `docs/_active/Recompute_Scalability_Findings.md`.
+
+    RIGHT-SIZED (M-RS1, RORT_RIGHTSIZE_WARMUP=1): size warmup PER-TF to the
+    bars each TF needs to converge, then take the max calendar span:
+      - PRIMARY (fastest TF): PRIMARY_WARMUP_BARS (generous; cheap in days).
+      - each SECONDARY (coarse): SECONDARY_WARMUP_BARS (== live's 250-bar
+        standard). A single global target would over-warm the coarse TF.
+    Independent of visible_days. Byte-identical-gated before default ON —
+    see `docs/_active/Plan_M-RS1_Warmup_Rightsizing.md`.
     """
-    _ = strat  # unused in v1; reserved for v1+1
-    return max(1.0, float(visible_days) * float(WARMUP_MULTIPLIER))
+    if not _rightsize_warmup_enabled():
+        return max(1.0, float(visible_days) * float(WARMUP_MULTIPLIER))
+
+    # Right-sized, per-TF. Resolve secondaries from confluence (same
+    # convention as load_strategy_data / services.get_strategy_trades).
+    from data_loader import (
+        BARS_PER_DAY, get_required_tfs_from_confluence, get_tf_from_label,
+    )
+
+    primary_tf = strat.get("timeframe", "1Min")
+    try:
+        sec_tfs = [get_tf_from_label(lbl)
+                   for lbl in get_required_tfs_from_confluence(
+                       strat.get("confluence", []))]
+    except Exception:
+        sec_tfs = []
+
+    def _days(bars: float, tf: str) -> float:
+        bpd = BARS_PER_DAY.get(tf, 390) or 390
+        return math.ceil(bars / bpd * _TRADING_TO_CALENDAR)
+
+    days = _days(PRIMARY_WARMUP_BARS, primary_tf)
+    for tf in sec_tfs:
+        days = max(days, _days(SECONDARY_WARMUP_BARS, tf))
+    return max(1.0, float(days))
 
 
 # ── Loader ────────────────────────────────────────────────────────────
