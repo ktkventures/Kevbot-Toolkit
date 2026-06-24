@@ -70,6 +70,7 @@ def create_app() -> FastAPI:
     from api.routers.update_jobs import router as update_jobs_router
     from api.routers.system_settings import router as system_settings_router
     from api.routers.dev_tasks import router as dev_tasks_router
+    from api.routers.bar_cache_admin import router as bar_cache_admin_router
 
     app.include_router(auth_router)
     app.include_router(settings_router)
@@ -95,6 +96,7 @@ def create_app() -> FastAPI:
     app.include_router(update_jobs_router)
     app.include_router(system_settings_router)
     app.include_router(dev_tasks_router)
+    app.include_router(bar_cache_admin_router)
 
     # Load user packs at startup — registers indicators, interpreters,
     # triggers, and intra-bar level maps. DB group creation is skipped

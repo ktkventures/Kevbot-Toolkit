@@ -110,6 +110,7 @@ const navItems: NavItem[] = [
       { href: '/admin/live-models', label: 'Live Models' },
       { href: '/admin/backtest-models', label: 'Backtest / Algo Models' },
       { href: '/admin/update-jobs', label: 'Update Jobs' },
+      { href: '/admin/bar-cache', label: 'Bar Cache' },
       { href: '/admin/tasks', label: 'Tasks' },
     ],
   },

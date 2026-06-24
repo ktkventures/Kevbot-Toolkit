@@ -1269,6 +1269,11 @@ class WorkerManager:
         # thread, env-gated by LIVE_BARS_BACKFILL_SUBMINUTE_ENABLED.
         self._live_bars_backfill_subm_thread: Optional[threading.Thread] = None
         self._live_bars_backfill_subm_stop = threading.Event()
+        # M-RS2 Phase 1: bar-cache supply maintenance cron. Keeps the configured
+        # native 1s/1min capture targets current (bar_cache.maintain_all_enabled).
+        # Own thread, env-gated by BAR_CACHE_MAINTAIN_ENABLED (default OFF).
+        self._bar_cache_maintain_thread: Optional[threading.Thread] = None
+        self._bar_cache_maintain_stop = threading.Event()
 
     def run(self):
         """Main loop — poll DB, start/stop engines, write heartbeats."""
@@ -1281,6 +1286,7 @@ class WorkerManager:
             self._algo_history_stop.set()
             self._live_bars_backfill_stop.set()
             self._live_bars_backfill_subm_stop.set()
+            self._bar_cache_maintain_stop.set()
         signal.signal(signal.SIGTERM, handle_signal)
         signal.signal(signal.SIGINT, handle_signal)
 
@@ -1290,6 +1296,8 @@ class WorkerManager:
         self._start_live_bars_backfill_cron()
         # Spin up the sub-minute REST-backfill cron (LEF Phase 3a).
         self._start_live_bars_backfill_subminute_cron()
+        # Spin up the M-RS2 bar-cache supply-maintenance cron.
+        self._start_bar_cache_maintain_cron()
 
         while self._running:
             try:
@@ -1355,6 +1363,47 @@ class WorkerManager:
         self._algo_history_thread = threading.Thread(
             target=loop, daemon=True, name="algo-history-cron")
         self._algo_history_thread.start()
+
+    def _start_bar_cache_maintain_cron(self):
+        """Launch the M-RS2 bar-cache supply-maintenance cron (own thread).
+
+        Keeps every enabled `bar_cache_config` capture target current by
+        calling `bar_cache.maintain_all_enabled()` (extend trailing edge +
+        refresh the unsettled window per the revision-horizon guard). This
+        keeps the REST-canonical 1s/1min supply primed independently of whether
+        the cache READ path (BAR_CACHE_ENABLED) is wired yet — Phase 1 builds
+        the supply; Phase 2 serves from it 1:1.
+
+        Disabled by default — set BAR_CACHE_MAINTAIN_ENABLED=true on the Railway
+        worker to enable. Interval via BAR_CACHE_MAINTAIN_INTERVAL_SECONDS
+        (default 300). Daemon thread so the process exits cleanly.
+        """
+        val = os.environ.get('BAR_CACHE_MAINTAIN_ENABLED', '').strip().lower()
+        if val not in ('1', 'true', 'yes', 'on'):
+            logger.info(
+                "bar-cache maintain cron disabled — set "
+                "BAR_CACHE_MAINTAIN_ENABLED=true on Railway worker to enable")
+            return
+        interval = int(
+            os.environ.get('BAR_CACHE_MAINTAIN_INTERVAL_SECONDS', '300'))
+
+        def loop():
+            logger.info("bar-cache maintain cron started (interval=%ss)", interval)
+            # Stagger first run so worker startup completes first.
+            self._bar_cache_maintain_stop.wait(90.0)
+            while not self._bar_cache_maintain_stop.is_set():
+                try:
+                    import bar_cache
+                    summary = bar_cache.maintain_all_enabled()
+                    logger.info("bar-cache maintain cycle: %s", summary)
+                except Exception as e:
+                    logger.error(
+                        "bar-cache maintain cycle crashed: %s", e, exc_info=True)
+                self._bar_cache_maintain_stop.wait(interval)
+
+        self._bar_cache_maintain_thread = threading.Thread(
+            target=loop, daemon=True, name="bar-cache-maintain-cron")
+        self._bar_cache_maintain_thread.start()
 
     def _start_live_bars_backfill_cron(self):
         """Launch the live_bars REST-backfill cron in a background thread.

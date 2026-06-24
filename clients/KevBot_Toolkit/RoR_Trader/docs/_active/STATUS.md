@@ -1,13 +1,118 @@
 # RoR Trader — STATUS (read me first)
 
-**Updated: 2026-06-18.** This is the single doc to open for "what are we doing and why."
+**Updated: 2026-06-24.** This is the single doc to open for "what are we doing and why."
 It's the live priority list + current state. Deeper detail lives in the linked docs (kept
 in their current locations for now — see Doc Map). New observations get logged here (and in
-`Roadmap_Divergence_Hunting.md` for divergence specifics).
+`Roadmap_Divergence_Hunting.md` for divergence specifics). Work board = the **dev_tasks
+admin page** (`/admin/tasks`); today's items are #33–#40.
 
 ## North star
 Backtest and live produce the **same trades within ~5s**, so we can **trade reliably**.
 Current focus: the first real-money strategies (308–314, TSLA 15Sec).
+
+## 🟢 2026-06-24 EOD — recompute-scalability day (READ FIRST)
+Three big wins, all behind kill-switches / validated:
+
+**1. M-RS1 — recompute warmup right-sized (SHIPPED + ENABLED).** Full recompute used a flat
+`visible_days×2` warmup (no TF awareness) → loaded ~1yr of bars for a coarse-gate strategy.
+Replaced with per-TF warmup (`PRIMARY_WARMUP_BARS=1200` + `SECONDARY=250`, matching the live
+engine's 250-bar standard) in `strategy_data.compute_warmup_days`, behind
+`RORT_RIGHTSIZE_WARMUP`. **Validated byte-identical** (308/309/325 local + **Railway 174 = 188
+trades = local baseline**), **~3× faster** on the common cases. **ENABLED in prod.** Net win
+for the fleet majority; ~neutral for normal-window coarse gates. Docs:
+`Plan_M-RS1_Warmup_Rightsizing.md`, `Recompute_Scalability_Findings.md`. (dev_tasks #33)
+
+**2. Inherit-position append fix — VALIDATED on the real path.** `RORT_RESUME_INHERIT_POSITION`
+(shipped 2026-06-23) enabled today; **Update-New on 321 → combined% 45%→84.7%@5s** (near the
+~90% recompute truth), fill timing median 0s. The append under-production (a primary phantom
+source) is largely solved. Consider flipping default ON fleet-wide (dev_tasks #34). Detail:
+memory `project_append_underproduces_recent_window`.
+
+**3. M-RS2 — REST canonical bar store, Phase 1 backend COMPLETE.** The fleet-wide lever:
+fetch each ticker's native bars ONCE, reuse everywhere (stop re-pulling months of bars per
+strategy). **Design aligned with Kevin: supply-first.**
+- **Phase 1 (the supply) — built + validated, behind kill-switches:** `1Sec` Polygon mapping
+  (was a silent fallback to 1-minute — latent bug), revision-horizon guard (settled/unsettled
+  split, `bar_cache.py`), `backfill_symbol` (seed) + `maintain_symbol` (keep-updated +
+  revision-refresh) — both validated on TSLA — `bar_cache_config` table (migration applied) +
+  CRUD + `maintain_all_enabled` + worker cron (`BAR_CACHE_MAINTAIN_ENABLED`, OFF). All inert
+  (`BAR_CACHE_ENABLED` off).
+- **⚠️ KEY FIDELITY FINDING:** 1s→1Min OHLC is **byte-identical** but **VOLUME diverges**
+  (auction/condition-trade aggregation) → "build every TF from 1s" breaks volume. **Pivoted to
+  cache NATIVE bars per (symbol, timeframe)** — store native 1s + native 1Min; sub-minute
+  materializes from 1s, coarse from 1Min, all matched 1:1 in Phase 2 (serving).
+- **Remaining Phase 1:** admin page (frontend CRUD + status + backfill-now) + deploy the worker
+  cron (push ask-first; OFF by default so safe). dev_tasks #35/#36/#37.
+- **Phase 2 (later):** wire backtest/append reads to the cache 1:1, validated byte-identical
+  (handle volume per-feature). dev_tasks #30/#38. Doc: `Design_M-RS2_Shared_Bar_Store.md`.
+
+**Parked / loose ends:** TV export — reverted today (generator drifted from validated
+Checkpoint C: adds a corner table C lacks; ut_bot has only a gate emitter, needs an
+entry/exit-trigger emitter). Treat as its own focused session (dev_tasks #39). Layer-1 health
+tool `_divergence_walkthrough --denom` crashes (tolerance_seconds Query, commit 1269d46) —
+one-line fix (dev_tasks #40).
+
+**Tomorrow's moves:** (a) build the M-RS2 admin page + deploy the worker cron, then backfill a
+couple tickers' 1s+1min supply; (b) decide on flipping the inherit-position default ON; (c)
+optionally start M-RS2 Phase 2 (read-path 1:1 wiring) on one strategy.
+
+## 🔴 2026-06-23 EOD — MAJOR root cause + fix (READ FIRST tomorrow)
+
+**Found + fixed the dominant phantom / low-combined% source.** The backtest **append**
+(Update-New) was under-producing the recent window by ~50% (321: snapshot-resume lane 45%
+live-alert match vs cold/full-recompute 92%). Root cause: **Tier 3 §8.2 "always-start-flat"
+was applied at EVERY incremental append resume boundary**, dropping the trade open at each
+boundary. ~1 lost/append compounds over ~34 session appends → ~half the trades vanish.
+Cold/full **recompute = truth** (matches live alerts ~92% @5s, identical local↔Railway).
+NOT local-vs-Railway, NOT user-pack warmup. Full detail: memory
+`project_append_underproduces_recent_window`.
+
+**FIX shipped (inert):** `inherit_position` flag — restore the boundary-open position on
+resume so the trade continues. Commits `bb33332` + `64547cf` (the 2nd fixes a real bug the
+first introduced: restoring a FLAT position zeroed entries via cooldown fields → now only
+OPEN positions are inherited). **Kill-switch `RORT_RESUME_INHERIT_POSITION`, default OFF,
+BACKTEST-LANE-ONLY** (live/algo/chart keep §8.2 always-flat — Kevin's TradingView/restart
+intent preserved). Validated: unit (boundary trade recovered, ON=cold), FLAT-window ON==OFF,
+Tier-3 contract 5/5 with default OFF, 97% on a cumulative harness (off-by-2 = harness omits
+the edge-band-replace the real append does).
+
+**TOMORROW'S FIRST MOVES (RTH):**
+1. **Kevin sets `RORT_RESUME_INHERIT_POSITION=1` on api + Worker** (CLI set was permission-
+   blocked tonight). Then real RTH append cron uses the fix.
+2. **Compare 321 + 308 lanes (built by flagged live appends) to cold recomputes** = the
+   real-path byte-identical proof. Watch combined% @5s on Strategy Health — should climb.
+3. Green → flip default ON fleet-wide. Problem → flag OFF (instant kill-switch).
+
+**Also shipped today:** hardened local-update tool `src/local_update.py` + skill
+`local-update` (registry-safe, smoke-gated — every local backtest/append script MUST call
+`scan_and_load_all()` or user-pack strategies silently return 0; memory
+`feedback_local_script_pack_registry`). Strategy-health `tolerance_seconds` param (5s/10s).
+
+**OPEN BLOCKER (the scale lever) — cProfile'd 2026-06-24, 3-milestone plan locked.** Full
+recompute of a coarse-gate strategy (sid 325) = ~29% I/O + ~70% CPU, **both inflated by an
+oversized warmup**: the full path loads + processes ~1yr of 1-min (`visible×2` flat
+multiplier, no secondary-TF awareness) when the 4h gate needs only ~250 bars (~125 days).
+cProfile split: load 353s / engine 378s / user-pack indicators 299s / interpreters 97s.
+**The earlier "1-min bar-cache" framing was a mismeasurement** (95-day isolated load = 3s;
+the real in-pipeline load is ~1yr). NEW PLAN — 3 milestones, cheapest-first, each
+byte-identical + kill-switched (full detail: `_active/Recompute_Scalability_Findings.md`):
+- **M-RS1 — Right-size warmup** (do FIRST, biggest bang/least risk): size warmup to the
+  indicator/binding-TF requirement, tying into the standard that already exists
+  (`ralph_engine._secondary_warmup_days`, 250-bar target; append path binding-bpd). Cuts the
+  ~1yr load AND ~2/3 of engine+indicator bars. There's a TODO at `strategy_data.py:134`.
+- **M-RS2 — Shared symbol-level 1-SECOND bar store** ("super dough", Kevin's idea): fetch
+  once per ticker, reused by every strategy/backtest/append/live. 1s base (sub-minute
+  strategies can't build from 1-min) + materialized 1-min layer. Settled-immutable +
+  recent-always-refetch guard. ~0.5–0.7 GB/ticker/yr (~$6/mo for 50 tickers). Agent page to
+  checkbox tickers + capture range. Speeds I/O + kills cross-strategy redundancy (NOT CPU).
+- **M-RS3 — Parallel recompute + dedicated Railway update service** (throughput multiplier,
+  vertical + horizontal); maybe decouple Hi-Fi (~8min) if still on the critical path.
+
+Backup branch: `dev-backup-2026-06-23-pre-inherit-fix`. (Superseded: `Design_Recompute_Bar_Cache.md`.)
+
+**Catalog Update-All decision (pending Kevin):** considering a full-catalog local Update-All
+tonight to establish clean faithful baselines (recompute=truth, independent of the append
+fix) — see my recommendation below / in chat. Risk = the 8 coarse-gate strategies may OOM.
 
 ## 🟢 2026-06-22 EOD — DONE TODAY + 2026-06-23 PLAN (read this first)
 

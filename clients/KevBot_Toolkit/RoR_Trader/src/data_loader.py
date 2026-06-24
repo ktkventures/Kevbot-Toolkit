@@ -346,6 +346,7 @@ def _polygon_timespan(timeframe: str) -> tuple:
     '1Min' → (1, 'minute'), '5Sec' → (5, 'second'), '1Hour' → (1, 'hour')
     """
     _map = {
+        "1Sec": (1, "second"),
         "5Sec": (5, "second"), "10Sec": (10, "second"),
         "15Sec": (15, "second"), "30Sec": (30, "second"),
         "1Min": (1, "minute"), "2Min": (2, "minute"),

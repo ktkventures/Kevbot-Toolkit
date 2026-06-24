@@ -57,6 +57,20 @@ def is_enabled() -> bool:
     return val in ("1", "true", "yes", "on")
 
 
+def _revision_horizon_min() -> int:
+    """M-RS2 fidelity guard. Bars within this many minutes of *now* are
+    treated as UNSETTLED: Polygon revises recent bars (late prints; "TV
+    revises closed 1Min within ~5 min" — project_tv_stability_2026-05-04),
+    so they are ALWAYS re-fetched from Polygon REST and overwritten on read,
+    regardless of what's cached. Bars older than the horizon are SETTLED →
+    immutable → served from cache, never re-fetched. Default 45 min pads
+    Kevin's ~15-min typical settle observation for safety; tune via env."""
+    try:
+        return max(0, int(os.environ.get("BAR_CACHE_REVISION_HORIZON_MIN", "45")))
+    except ValueError:
+        return 45
+
+
 # =============================================================================
 # Cache I/O
 # =============================================================================
@@ -291,6 +305,23 @@ def cached_load_market_data(
                 fetch_ranges.append(
                     (last_cached + timedelta(minutes=1), end_dt))
 
+    # 2b. REVISION-HORIZON GUARD (M-RS2 fidelity — the core correctness fix).
+    # The settled/unsettled split: any bar within `now - horizon` may still be
+    # revised by Polygon (late prints), so ALWAYS re-fetch + overwrite that
+    # window on read — even if it's already cached (the trailing-edge skip
+    # above would otherwise serve a stale pre-revision bar). Settled bars
+    # (older than the horizon) are never re-fetched. The upsert at step 3
+    # (ON CONFLICT DO UPDATE) overwrites the refreshed tail. For reads of
+    # purely-historical ranges (end_dt older than the horizon) this is inert.
+    horizon_min = _revision_horizon_min()
+    if horizon_min > 0:
+        actual_now = datetime.now(timezone.utc)
+        unsettled_start = actual_now - timedelta(minutes=horizon_min)
+        if end_dt > unsettled_start:
+            rev_from = max(start_dt, unsettled_start)
+            if rev_from < end_dt:
+                fetch_ranges.append((rev_from, end_dt))
+
     # 3. Execute fetches + upsert
     fetch_failed_cold = False
     for f_from, f_to in fetch_ranges:
@@ -345,6 +376,166 @@ def cached_load_market_data(
             return None
 
     return df if len(df) > 0 else None
+
+
+# =============================================================================
+# M-RS2 Phase 1 — proactive supply capture (native bars per (symbol, TF))
+# =============================================================================
+
+# Chunk sizing per resolution to bound memory + Polygon pagination on a single
+# fetch. 1Sec is ~23k bars/RTH-day (~5.9M/yr) so it must be chunked tight.
+_BACKFILL_CHUNK_DAYS = {
+    "1Sec": 7, "5Sec": 14, "10Sec": 21, "15Sec": 30, "30Sec": 45,
+    "1Min": 120, "1Hour": 365, "1Day": 365,
+}
+
+
+def backfill_symbol(
+    symbol: str,
+    timeframe: str,
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    chunk_days: Optional[int] = None,
+) -> int:
+    """Proactively fetch + cache NATIVE Polygon bars for [start_date, end_date]
+    under their own `timeframe` key (M-RS2 Phase 1 — the data supply). Stores
+    RAW (session='24/7', all hours included); the session filter is applied on
+    read. Chunked so high-volume resolutions (1Sec) don't blow memory or hit a
+    single huge paginated fetch. Idempotent via the upsert (re-running overwrites
+    overlapping bars). Returns the total rows upserted.
+
+    This is the PROACTIVE primer — distinct from `cached_load_market_data`'s
+    lazy fetch-on-read. Caches native data only; deriving/serving other TFs from
+    it (Phase 2) is matched 1:1 to the current backtest per-feature, validated.
+    """
+    from data_loader import load_from_polygon, is_polygon_configured
+    if not is_polygon_configured():
+        logger.warning("bar_cache.backfill_symbol: Polygon not configured")
+        return 0
+    if start_date.tzinfo is None:
+        start_date = start_date.replace(tzinfo=timezone.utc)
+    if end_date.tzinfo is None:
+        end_date = end_date.replace(tzinfo=timezone.utc)
+
+    step = chunk_days or _BACKFILL_CHUNK_DAYS.get(timeframe, 30)
+    total = 0
+    cur = start_date
+    while cur < end_date:
+        chunk_end = min(cur + timedelta(days=step), end_date)
+        try:
+            df = load_from_polygon(
+                symbol=symbol, days=0, timeframe=timeframe,
+                start_date=cur, end_date=chunk_end, session="24/7")
+        except Exception as e:
+            logger.warning(
+                "bar_cache.backfill_symbol: fetch failed %s/%s [%s..%s]: %s",
+                symbol, timeframe, cur, chunk_end, e)
+            cur = chunk_end
+            continue
+        if df is not None and len(df) > 0:
+            n = _bulk_upsert(symbol, timeframe, df)
+            total += n
+            logger.info(
+                "bar_cache.backfill_symbol: %s/%s [%s..%s] +%d rows",
+                symbol, timeframe, cur.date(), chunk_end.date(), n)
+        cur = chunk_end
+    return total
+
+
+def maintain_symbol(symbol: str, timeframe: str) -> int:
+    """Keep a captured (symbol, timeframe) layer up to date (M-RS2 Phase 1).
+    In ONE fetch it both (a) extends the trailing edge from the last cached bar
+    to now, and (b) re-fetches the unsettled window (`now - revision_horizon`)
+    to overwrite any bars Polygon has since revised. Fetches from
+    `min(last_cached, unsettled_start)` → now so both are covered without a
+    second round-trip. No-op (returns 0) if nothing is cached yet — seed with
+    `backfill_symbol` first. Returns rows upserted."""
+    from data_loader import load_from_polygon, is_polygon_configured
+    if not is_polygon_configured():
+        return 0
+    last = _max_cached_ts(symbol, timeframe)
+    if last is None:
+        return 0
+    now = datetime.now(timezone.utc)
+    unsettled_start = now - timedelta(minutes=_revision_horizon_min())
+    fetch_from = min(last, unsettled_start)
+    try:
+        df = load_from_polygon(
+            symbol=symbol, days=0, timeframe=timeframe,
+            start_date=fetch_from, end_date=now, session="24/7")
+    except Exception as e:
+        logger.warning("bar_cache.maintain_symbol: fetch failed %s/%s: %s",
+                       symbol, timeframe, e)
+        return 0
+    if df is None or len(df) == 0:
+        return 0
+    n = _bulk_upsert(symbol, timeframe, df)
+    logger.info("bar_cache.maintain_symbol: %s/%s extended from %s, +%d rows",
+                symbol, timeframe, fetch_from.isoformat(), n)
+    return n
+
+
+# =============================================================================
+# M-RS2 Phase 1 — capture config (admin control surface) + maintain-all loop
+# =============================================================================
+
+def get_capture_targets(enabled_only: bool = True) -> list[dict]:
+    """Return the configured (symbol, timeframe) capture targets from
+    bar_cache_config. Drives the maintenance loop + the admin page."""
+    from db import get_admin_client
+    client = get_admin_client()
+    try:
+        q = client.table("bar_cache_config").select("*")
+        if enabled_only:
+            q = q.eq("enabled", True)
+        return (q.order("symbol").order("timeframe").execute().data) or []
+    except Exception as e:
+        logger.warning("bar_cache.get_capture_targets failed: %s", e)
+        return []
+
+
+def set_capture_target(symbol: str, timeframe: str, *, enabled: bool = True,
+                       capture_days: Optional[int] = None) -> bool:
+    """Upsert a capture target (admin page CRUD). Does NOT trigger a backfill —
+    the caller runs backfill_symbol once, then the maintain loop keeps it
+    current. Returns True on success."""
+    from db import get_admin_client
+    client = get_admin_client()
+    row = {"symbol": symbol, "timeframe": timeframe, "enabled": enabled}
+    if capture_days is not None:
+        row["capture_days"] = capture_days
+    try:
+        client.table("bar_cache_config").upsert(
+            row, on_conflict="symbol,timeframe").execute()
+        return True
+    except Exception as e:
+        logger.warning("bar_cache.set_capture_target failed %s/%s: %s",
+                       symbol, timeframe, e)
+        return False
+
+
+def maintain_all_enabled() -> dict:
+    """Keep every enabled capture target current (cron entrypoint). Calls
+    maintain_symbol() per target, stamps last_maintained_at. Returns a summary
+    {targets, rows, errors}."""
+    from db import get_admin_client
+    client = get_admin_client()
+    targets = get_capture_targets(enabled_only=True)
+    rows_total = 0
+    errors = 0
+    for t in targets:
+        sym, tf = t.get("symbol"), t.get("timeframe")
+        try:
+            rows_total += maintain_symbol(sym, tf)
+            client.table("bar_cache_config").update(
+                {"last_maintained_at": datetime.now(timezone.utc).isoformat()}
+            ).eq("symbol", sym).eq("timeframe", tf).execute()
+        except Exception as e:
+            errors += 1
+            logger.warning("bar_cache.maintain_all_enabled %s/%s: %s",
+                           sym, tf, e)
+    return {"targets": len(targets), "rows": rows_total, "errors": errors}
 
 
 # =============================================================================
