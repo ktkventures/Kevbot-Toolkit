@@ -19,6 +19,18 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-06-24
+
+- **~22:14 UTC (16:14 MT)** — `deb96e5` M-RS1 per-TF warmup + `dc053b3` M-RS2 Phase 1 bar-cache supply
+  - Service(s) redeployed: api / Worker / frontend
+  - Observed cache gap: (deploy window — expect ~1-2 min Worker restart gap)
+  - Notes: New behavior behind kill-switches. RORT_RIGHTSIZE_WARMUP already set
+    ON → M-RS1 becomes active with this deploy (recompute warmup right-sized).
+    BAR_CACHE_ENABLED off (read path inert). New bar-cache maintain cron runs
+    only if BAR_CACHE_MAINTAIN_ENABLED=true (set on Worker) → it will start
+    keeping the configured TSLA 1s/1min targets current. New admin page at
+    /admin/bar-cache. bar_cache_config table already migrated.
+
 ## 2026-05-12
 
 - **~22:41 UTC (16:41 MT)** — `c2f7713` Fix algoMatches stale closure: deps missed algoTrades
