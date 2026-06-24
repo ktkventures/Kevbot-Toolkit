@@ -3698,8 +3698,17 @@ def apply_backtest_snapshot(strat, envelope: dict,
     """
     strat.indicators.restore_state(envelope['engine'])
     if inherit_position and envelope.get('position') is not None:
-        import copy as _copy
-        strat.position.state = _copy.deepcopy(envelope['position'])
+        _pos = envelope['position']
+        # Inherit ONLY an OPEN position (a trade spanning the boundary). A FLAT
+        # snapshot must NOT be restored: its post-exit cooldown / bar-count
+        # fields (e.g. last_exit_bar_count, the 1-bar cooldown) would suppress
+        # entries in the resume window → the engine produces ZERO trades. (§8.2
+        # dropped position partly to avoid exactly this.) FLAT → leave the fresh
+        # always-flat machine untouched, so flat boundaries behave identically
+        # to the default path; only an in-position boundary is continued.
+        if getattr(_pos, 'status', 'FLAT') != 'FLAT':
+            import copy as _copy
+            strat.position.state = _copy.deepcopy(_pos)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
