@@ -10,6 +10,33 @@ admin page** (`/admin/tasks`); today's items are #33–#40.
 Backtest and live produce the **same trades within ~5s**, so we can **trade reliably**.
 Current focus: the first real-money strategies (308–314, TSLA 15Sec).
 
+## 🟢 2026-06-24 PM — M-RS2 Phase 1 DEPLOYED + speed test (read first)
+- **Deployed to dev** (deb96e5 M-RS1 + dc053b3 M-RS2 Phase1 + e6b9221 deploy-log; backup
+  branch `dev-backup-2026-06-24-pre-mrs-deploy`). M-RS1 now ACTIVE in prod
+  (`RORT_RIGHTSIZE_WARMUP=1`). Admin page **/admin/bar-cache** live. Tasks board got an **ID
+  column** (#33–#40 = today).
+- **Bar-cache supply:** TSLA **1Sec (~7.0M/yr) + 1Min (235k/yr) backfilled**, kept current by
+  the worker maintain cron (`BAR_CACHE_MAINTAIN_ENABLED`). **Next: backfill SPY** (36
+  strategies — the largest cohort; TSLA=27). TSLL/DIA/KO = 1 each, low priority.
+- **Speed test (CORRECTED — read this):** direct-Postgres is the fastest reader; cache 1-second
+  speedup **scales with window: ~1.3× (1 day) → ~4.2× (1 week)**, more beyond. Whole-period
+  single read works (year = 7M rows in one read). **Phase 2 read path = direct Postgres**
+  (psycopg + `SUPABASE_CONNECTION_STRING`), loading the whole backtest period in a few big reads
+  (native 1Min + native sub-minute for volume fidelity + all 1Sec for Hi-Fi), NOT many small
+  fetches (Kevin's idea — validated).
+  - **⚠️ Correction:** earlier "Polygon 1-second is unreliable/aging/throttled" claims were a
+    test-harness bug (positional arg: `load_from_polygon('TSLA','1Sec',…)` put `'1Sec'` in the
+    `days` param → timeframe defaulted to 1Min). **Polygon serves full 1-second; the cache
+    matches it exactly.** No fidelity/retention issue. Always pass `timeframe=` as a keyword.
+- **Calibrated expectation:** single-Update-All cache win is **moderate** (M-RS1 already shrank
+  the load); the big wins are fleet-scale (one capture serves all strategies), Hi-Fi (one big
+  read vs many fetches), and large windows.
+- **Remaining for the definitive Update-All time-saved number (next session, ~1 focused block):**
+  (1) baseline a current Update-All; (2) build `bar_cache.read_bars()` (direct-PG, raw cursor,
+  whole-period); (3) wire into the data-load path behind a flag + byte-identical gate; (4) A/B
+  old-vs-new. Mass Builder / Update-New / charts then inherit it. Doc:
+  `Design_M-RS2_Shared_Bar_Store.md`. Board: #30/#38.
+
 ## 🟢 2026-06-24 EOD — recompute-scalability day (READ FIRST)
 Three big wins, all behind kill-switches / validated:
 

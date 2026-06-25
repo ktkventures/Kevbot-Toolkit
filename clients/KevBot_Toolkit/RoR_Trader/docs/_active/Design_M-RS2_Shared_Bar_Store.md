@@ -177,6 +177,29 @@ from the secondary-TF snapshot + `_compare_cache_replay.py`. **Kill-switch `BAR_
 - **Real costs:** Postgres perf at tens of M rows (→ partition/index, maybe parquet hybrid);
   the one-time Polygon backfill per ticker; the operational fidelity guard.
 
+## Phase 2 read-path + speed/reliability findings (2026-06-24, measured)
+Backfilled TSLA 1Min (235k, full year) + 1Sec (in progress, ~5.3M) and A/B'd loads:
+- **1-Min load (full year, 235k rows):** Polygon 9.3s · Supabase PostgREST 7.6s · **direct
+  Postgres 5.7s**. → **Phase 2 reads bulk bars via a DIRECT POSTGRES connection** (psycopg +
+  `SUPABASE_CONNECTION_STRING` in src/.env, session pooler), NOT the supabase-py REST client.
+  Direct PG is the fastest + is what the read path should use. (1-min is the *floor* of the
+  benefit — Polygon's 1-min API is already fast.)
+- **1-SECOND speed (CORRECTED 2026-06-24):** cache speedup scales with window size —
+  **~1.3× for 1 day** (Polygon's 1s day-fetch is already fast ~4s) and **~4.2× for 1 week**
+  (cache ~2.2s vs Polygon ~9s), growing from there. Direct-PG read stays ~2s while Polygon's
+  fetch climbs with the window. Plus the fleet-reuse win (fetch once, not per-strategy).
+  - **CORRECTION — earlier "Polygon 1s unreliable/throttled/ages-out" claims were WRONG**, an
+    artifact of a positional-arg bug in the test harness (`load_from_polygon('TSLA','1Sec',…)`
+    bound `'1Sec'` to the `days` param → `timeframe` defaulted to 1Min → all "Polygon 1s"
+    numbers were actually 1-minute). Verified: Polygon serves full 1-second (raw endpoint
+    25,769 rows/day) and the **cache matches Polygon exactly** (no fidelity/retention issue).
+    Always call `load_from_polygon` with `timeframe=` as a keyword.
+  → M-RS2's justification is the (window-scaling) speed + fleet-reuse + offline/deterministic
+  reads, NOT any Polygon unreliability.
+- **Deps added:** `psycopg[binary]` (installed in .venv); `SUPABASE_CONNECTION_STRING` env.
+  Supabase "Max Rows" already 50000 (lets PostgREST page in ~50k chunks); bulk reads still
+  prefer direct PG.
+
 ## Decisions (LOCKED 2026-06-24)
 1. **Base resolution:** 1-second, ALWAYS, every tracked ticker (uniform = stable; trading needs
    1Sec for Hi-Fi anyway). Materialize a 1Min layer from it.

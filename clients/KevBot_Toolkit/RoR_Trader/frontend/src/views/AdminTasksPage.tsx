@@ -191,13 +191,14 @@ export default function AdminTasksPage() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--border)', fontSize: 11, color: 'var(--text-tertiary)' }}>
-                <th style={{ ...cell, width: 96 }}>Pri</th><th style={cell}>Task</th><th style={{ ...cell, width: 130 }}>Status</th>
+                <th style={{ ...cell, width: 44 }}>ID</th><th style={{ ...cell, width: 96 }}>Pri</th><th style={cell}>Task</th><th style={{ ...cell, width: 130 }}>Status</th>
                 <th style={{ ...cell, width: 200 }}>Flags</th><th style={{ ...cell, width: 110 }}>Area</th><th style={{ ...cell, width: 100 }}>Who</th><th style={{ ...cell, width: 32 }}></th>
               </tr>
             </thead>
             <tbody>
               {visible.map((t) => (
                 <tr key={t.id} style={{ borderBottom: '1px solid var(--border)', opacity: t.status === 'Done' ? 0.55 : 1 }}>
+                  <td style={{ ...cell, color: 'var(--text-tertiary)', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>#{t.id}</td>
                   <td style={cell}><PriCell t={t} /></td>
                   <td style={{ ...cell, cursor: 'pointer', fontWeight: 500 }} onClick={() => openModal(t.id)}>
                     {t.title}
@@ -231,7 +232,7 @@ export default function AdminTasksPage() {
                   <td style={cell}><span style={{ cursor: 'pointer', color: 'var(--red)' }} onClick={() => del(t.id)}>✕</span></td>
                 </tr>
               ))}
-              {visible.length === 0 && <tr><td colSpan={7} style={{ ...cell, color: 'var(--text-tertiary)' }}>No tasks match the filters.</td></tr>}
+              {visible.length === 0 && <tr><td colSpan={8} style={{ ...cell, color: 'var(--text-tertiary)' }}>No tasks match the filters.</td></tr>}
             </tbody>
           </table>
         </Card>
