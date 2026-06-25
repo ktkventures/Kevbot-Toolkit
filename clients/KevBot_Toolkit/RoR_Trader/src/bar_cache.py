@@ -379,6 +379,65 @@ def cached_load_market_data(
 
 
 # =============================================================================
+# M-RS2 Phase 2 — fast read path (direct Postgres, not PostgREST)
+# =============================================================================
+
+def direct_pg_available() -> bool:
+    """True if a direct Postgres DSN is configured for fast bulk reads."""
+    return bool(os.environ.get("SUPABASE_CONNECTION_STRING"))
+
+
+def read_bars(symbol: str, timeframe: str,
+              start, end) -> Optional["pd.DataFrame"]:
+    """Read cached native bars for (symbol, timeframe) in [start, end] over a
+    DIRECT Postgres connection (psycopg + SUPABASE_CONNECTION_STRING) — the
+    fast read path validated 2026-06-24 (binary protocol, one query, no
+    PostgREST/JSON). Returns a DataFrame shaped like load_from_polygon (UTC
+    DatetimeIndex, columns open/high/low/close/volume), or None if no DSN /
+    no rows. Raw cursor + bulk DataFrame build (not pandas.read_sql, which is
+    slow over psycopg3).
+
+    NOTE: returns RAW (all-hours) rows; the caller applies any session filter,
+    exactly like _select_range / load_from_polygon(session-on-read).
+    """
+    dsn = os.environ.get("SUPABASE_CONNECTION_STRING")
+    if not dsn:
+        return None
+    try:
+        import psycopg
+        import pandas as pd
+    except Exception as e:  # noqa: BLE001
+        logger.warning("bar_cache.read_bars: psycopg/pandas unavailable: %s", e)
+        return None
+    if hasattr(start, "isoformat"):
+        start = start.isoformat()
+    if hasattr(end, "isoformat"):
+        end = end.isoformat()
+    sql = ("select ts, open, high, low, close, volume from bar_cache "
+           "where symbol=%s and timeframe=%s and ts between %s and %s "
+           "order by ts")
+    try:
+        with psycopg.connect(dsn, connect_timeout=15) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (symbol, timeframe, start, end))
+                rows = cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("bar_cache.read_bars: direct-PG read failed %s/%s: %s",
+                       symbol, timeframe, e)
+        return None
+    if not rows:
+        return None
+    df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close",
+                                     "volume"])
+    df["ts"] = pd.to_datetime(df["ts"], utc=True)
+    df = df.set_index("ts")
+    df.index.name = None
+    for col in ("open", "high", "low", "close", "volume"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+# =============================================================================
 # M-RS2 Phase 1 — proactive supply capture (native bars per (symbol, TF))
 # =============================================================================
 
