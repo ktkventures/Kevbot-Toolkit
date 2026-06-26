@@ -924,7 +924,18 @@ def _emit_stop(stop_config: dict) -> tuple:
     if method == 'percentage':
         pct = float(stop_config.get('percentage', 0.5))
         return f"stopPct = {pct}", f"close - close * (stopPct / 100.0)", ()
-    # swing / unknown → ATR fallback (matches our engine's fallback)
+    if method == 'swing':
+        # LONG swing stop (stop_target_methods.SwingStop): lowest low over the
+        # `lookback` bars BEFORE the entry bar — the engine excludes the current
+        # bar (buf[:-1][-lookback:]) — minus $padding. ta.lowest(low, lb)[1] is
+        # the lowest of the lookback bars ending one bar back (excludes current).
+        lb = int(stop_config.get('lookback', 5))
+        pad = float(stop_config.get('padding', 0.0))
+        setup = (f"swLb  = {lb}\n"
+                 f"swPad = {pad}\n"
+                 f"swLow = ta.lowest(low, swLb)")
+        return setup, "swLow[1] - swPad", ()
+    # unknown → ATR fallback (matches our engine's fallback)
     setup = ("stopAtrLen = 14\nstopMult = 1.5\n"
              "atrStopSeries = rorEma(rorTrueRange(), stopAtrLen)")
     return setup, "close - stopMult * atrStopSeries", ('rorEma', 'rorTrueRange')
