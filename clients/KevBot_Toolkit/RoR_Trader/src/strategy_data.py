@@ -68,6 +68,69 @@ def _rightsize_warmup_enabled() -> bool:
     byte-identical-proven, then flip ON. Instant rollback by unsetting."""
     return os.getenv("RORT_RIGHTSIZE_WARMUP", "0") == "1"
 
+
+# ── Coarse-secondary-from-1Min (the ~360× warmup blow-up fix) ──────────
+COARSE_SECONDARY_SECONDS = 3600
+"""A secondary TF at/above this (1Hour/4Hour/1Day) is "coarse": converging
+its indicator needs ~250 of its own bars = a long calendar span, which the
+default path pays by loading the sub-minute PRIMARY across that whole span
+and resampling UP (~360× blow-up for a 10Sec primary + 1Day gate). When
+RORT_COARSE_SECONDARY_FROM_1MIN is on we instead build the coarse secondary
+from 1Min (cache-accelerated) and inject it, sizing the primary warmup short."""
+
+
+def _coarse_secondary_from_1min_enabled() -> bool:
+    """Kill-switch (default OFF). When ON, coarse (>=1Hour) secondary gates are
+    built from 1Min and injected via `secondary_tf_dfs` instead of being
+    resampled from the sub-minute primary — source matches LIVE
+    `ralph_engine._load_warmup_df`, removing a latent backtest-vs-live
+    divergence. Instant rollback by unsetting."""
+    return os.getenv("RORT_COARSE_SECONDARY_FROM_1MIN", "0") == "1"
+
+
+def _tf_seconds_safe(tf: str) -> int:
+    """Canonical seconds for a TF label ('1Day'->86400). 60 on any miss."""
+    try:
+        from unified_engine import TIMEFRAME_SECONDS
+        return int(TIMEFRAME_SECONDS.get(tf, 60))
+    except Exception:
+        return 60
+
+
+def _tf_warmup_days(tf: str, bars: float) -> float:
+    """Calendar days needed to warm `bars` bars of `tf` (trading->calendar)."""
+    from data_loader import BARS_PER_DAY
+    bpd = BARS_PER_DAY.get(tf, 390) or 390
+    return math.ceil(bars / bpd * _TRADING_TO_CALENDAR)
+
+
+def _build_coarse_secondary_from_1min(symbol, coarse_tfs, start, end,
+                                      session, data_feed):
+    """Build coarse (>=1Hour) secondary OHLCV from a single 1Min load + resample
+    — the SAME source LIVE uses (`ralph_engine._load_warmup_df`) and identical
+    to what `prepare_data_with_indicators` would resample, only sourced from
+    1Min not the sub-minute primary. Returns {canonical_tf: DataFrame[OHLCV]}
+    (full series, last bar kept — matches prepare_data's internal resample at
+    services.py:360) or None on any miss → caller falls back to the resample
+    path. The 1Min load is bar_cache-accelerated when BAR_CACHE_ENABLED."""
+    try:
+        from data_loader import load_market_data, resample_to_timeframe
+        cols = ["open", "high", "low", "close", "volume"]
+        df1 = load_market_data(symbol, start_date=start, end_date=end,
+                               timeframe="1Min", feed=data_feed, session=session)
+        if df1 is None or len(df1) == 0:
+            return None
+        out = {}
+        for tf in coarse_tfs:
+            sec = resample_to_timeframe(df1[cols].copy(), tf)
+            if sec is not None and len(sec) > 0:
+                out[tf] = sec
+        return out or None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[CoarseSecondary] build-from-1Min failed %s %s: %s",
+                       symbol, coarse_tfs, e)
+        return None
+
 LEGACY_FALLBACK_DAYS = 90
 """Visible-window length for strategies that don't have
 `backtest_start_date` set (e.g. created via the API endpoint before
@@ -176,7 +239,7 @@ def compute_warmup_days(strat: dict, visible_days: float) -> float:
     # Right-sized, per-TF. Resolve secondaries from confluence (same
     # convention as load_strategy_data / services.get_strategy_trades).
     from data_loader import (
-        BARS_PER_DAY, get_required_tfs_from_confluence, get_tf_from_label,
+        get_required_tfs_from_confluence, get_tf_from_label,
     )
 
     primary_tf = strat.get("timeframe", "1Min")
@@ -187,13 +250,9 @@ def compute_warmup_days(strat: dict, visible_days: float) -> float:
     except Exception:
         sec_tfs = []
 
-    def _days(bars: float, tf: str) -> float:
-        bpd = BARS_PER_DAY.get(tf, 390) or 390
-        return math.ceil(bars / bpd * _TRADING_TO_CALENDAR)
-
-    days = _days(PRIMARY_WARMUP_BARS, primary_tf)
+    days = _tf_warmup_days(primary_tf, PRIMARY_WARMUP_BARS)
     for tf in sec_tfs:
-        days = max(days, _days(SECONDARY_WARMUP_BARS, tf))
+        days = max(days, _tf_warmup_days(tf, SECONDARY_WARMUP_BARS))
     return max(1.0, float(days))
 
 
@@ -246,15 +305,50 @@ def load_strategy_data(
         secondary_tfs = tuple(sorted(get_tf_from_label(lbl)
                                       for lbl in req_labels))
 
+    # Coarse-secondary-from-1Min (RORT_COARSE_SECONDARY_FROM_1MIN): for coarse
+    # (>=1Hour) secondary gates, build the secondary OHLCV from 1Min (cache-
+    # accelerated) over the long convergence span and inject it via
+    # `secondary_tf_dfs`, then re-size the PRIMARY warmup off the primary + any
+    # sub-1Hour secondaries ONLY. This avoids loading the sub-minute primary
+    # across the coarse span (~363d for a 1Day gate → the ~360× blow-up that
+    # hung sid 338's UAD). Source = 1Min → matches LIVE _load_warmup_df, closing
+    # a latent backtest-vs-live divergence. Inert when OFF / no coarse secondary.
+    sec_inject = None
+    coarse_tfs = tuple(t for t in secondary_tfs
+                       if _tf_seconds_safe(t) >= COARSE_SECONDARY_SECONDS)
+    # Scope to the normal strategy path — Mass Builder (secondary_tfs_override)
+    # has its own MTF-load expectations and is out of scope for this fix.
+    if (_coarse_secondary_from_1min_enabled() and coarse_tfs
+            and secondary_tfs_override is None):
+        sec_warmup_days = max(_tf_warmup_days(t, SECONDARY_WARMUP_BARS)
+                              for t in coarse_tfs)
+        sec_start = visible_start - pd.Timedelta(days=sec_warmup_days)
+        sec_inject = _build_coarse_secondary_from_1min(
+            strat["symbol"], coarse_tfs, sec_start.to_pydatetime(),
+            visible_end.to_pydatetime(),
+            strat.get("trading_session", "RTH"), data_feed)
+        # Re-size the PRIMARY warmup off primary + NON-coarse secondaries only
+        # (the coarse ones now come pre-built). Only when right-sizing is on —
+        # the legacy `visible_days * 2` window is already short, so leave it.
+        if sec_inject and _rightsize_warmup_enabled():
+            primary_tf = strat.get("timeframe", "1Min")
+            wd = _tf_warmup_days(primary_tf, PRIMARY_WARMUP_BARS)
+            for t in secondary_tfs:
+                if _tf_seconds_safe(t) < COARSE_SECONDARY_SECONDS:
+                    wd = max(wd, _tf_warmup_days(t, SECONDARY_WARMUP_BARS))
+            warmup_days = max(1.0, float(wd))
+            warmup_start = visible_start - pd.Timedelta(days=warmup_days)
+
     logger.info(
         "[StrategyData] sid=%s symbol=%s tf=%s anchor=%s "
         "visible=[%s, %s] visible_days=%.1f warmup_days=%.1f "
-        "warmup_start=%s sec_tfs=%s",
+        "warmup_start=%s sec_tfs=%s coarse_inject=%s",
         strat.get("id"), strat.get("symbol"), strat.get("timeframe"),
         anchor_source,
         visible_start.isoformat(), visible_end.isoformat(),
         visible_days, warmup_days, warmup_start.isoformat(),
         secondary_tfs,
+        (sorted(sec_inject.keys()) if sec_inject else None),
     )
 
     # Hand to the existing data-prep machinery using explicit start/end.
@@ -269,6 +363,7 @@ def load_strategy_data(
         data_feed=data_feed,
         session=strat.get("trading_session", "RTH"),
         secondary_tfs=secondary_tfs,
+        secondary_tf_dfs=sec_inject,
         strat=strat,
         model_override=model_override,
         required_confluence_ids=required_confluence_ids,

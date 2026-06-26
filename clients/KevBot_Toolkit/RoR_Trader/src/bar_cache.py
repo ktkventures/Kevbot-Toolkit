@@ -88,6 +88,77 @@ def _revision_horizon_min() -> int:
         return 45
 
 
+def _coarse_layer_read_enabled() -> bool:
+    """Kill-switch (default OFF). When ON, a request for a COARSE (>=1Hour) TF
+    that is a maintained capture target is served DIRECTLY from the materialized
+    layer (built from 1Min via materialize_derived — split-safe) instead of
+    re-resampling cached 1Min on every read. Inert unless an enabled 1Hour/1Day
+    target exists AND covers the range. Instant rollback by unsetting."""
+    return os.environ.get("RORT_COARSE_LAYER_READ", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _is_maintained_coarse_layer(symbol: str, timeframe: str) -> bool:
+    """True if `timeframe` is coarse (>=1Hour) AND an enabled capture target for
+    `symbol` — i.e. actively maintained by `maintain_symbol` (re-materialized
+    from 1Min). Only such layers are safe to read directly; a stray un-maintained
+    coarse layer would drift on revisions (see the cache_tf invariant note)."""
+    if _tf_seconds(timeframe) < 3600:
+        return False
+    try:
+        return any(t.get("symbol") == symbol and t.get("timeframe") == timeframe
+                   for t in get_capture_targets(enabled_only=True))
+    except Exception:
+        return False
+
+
+def _serve_coarse_layer(symbol: str, timeframe: str,
+                        start_dt: datetime, end_dt: datetime,
+                        session: str) -> Optional["pd.DataFrame"]:
+    """Serve a maintained coarse (1Hour/1Day) layer DIRECTLY from the
+    materialized rows (built from 1Min via `materialize_derived` — split-safe).
+    Refreshes ONLY the unsettled tail by re-materializing from FRESH 1Min — it
+    never calls `load_from_polygon` at a coarse TF (native daily/hourly carries
+    split bugs). Returns None (→ caller falls through to the safe 1Min-derive
+    path) when the layer can't fully cover the requested history, so coarse
+    indicators are never under-warmed. Byte-identical to the 1Min-derive path by
+    construction (same resample), gated by the fidelity parity suite."""
+    # SESSION guard: `materialize_derived` builds the layer from RAW 24/7 1Min,
+    # but the derive path filters 1Min BY SESSION before resampling (cached_load
+    # steps 5→6) — so for RTH/Extended the daily bars differ (different intraday
+    # bars aggregated). The materialized layer only matches the 24/7 case; for
+    # any other session fall through to the session-correct derive path.
+    if session and session != "24/7":
+        return None
+    # Coverage guard: the materialized layer must span the requested history,
+    # else fall through to derive-from-1Min (which loads the full range).
+    first = _min_cached_ts(symbol, timeframe)
+    if first is None or first > start_dt + timedelta(days=1):
+        return None
+    # Refresh the unsettled tail from fresh 1Min (small window; cheap).
+    horizon_min = _revision_horizon_min()
+    if horizon_min > 0:
+        unsettled = datetime.now(timezone.utc) - timedelta(minutes=horizon_min)
+        if end_dt > unsettled:
+            tail_from = max(start_dt, unsettled)
+            try:
+                # Make 1Min fresh for the tail (delta-fetch via the 1Min path),
+                # then re-resample the coarse tail from it. NEVER native coarse.
+                cached_load_market_data(symbol, timeframe="1Min",
+                                        start_date=tail_from, end_date=end_dt,
+                                        session="24/7")
+                materialize_derived(symbol, timeframe, tail_from, end_dt)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("bar_cache: coarse tail refresh %s/%s failed: %s",
+                               symbol, timeframe, e)
+    df = read_bars(symbol, timeframe, start_dt, end_dt)
+    if df is None or len(df) == 0:
+        return None
+    if session and session != "24/7":
+        df = _filter_session(df, session)
+    return df if len(df) > 0 else None
+
+
 # =============================================================================
 # Cache I/O
 # =============================================================================
@@ -327,6 +398,16 @@ def cached_load_market_data(
     # the request — never coarser (upsampling 1Min→10Sec was the bug that wrecked
     # sub-minute backtests; the guard below enforces it).
     target_s = _tf_seconds(timeframe)
+    # Coarse maintained-layer fast-path (RORT_COARSE_LAYER_READ): a 1Hour/1Day
+    # request that is an enabled capture target is served DIRECTLY from the
+    # materialized layer (built from 1Min — split-safe), skipping the per-read
+    # resample of ~363d of 1Min. Coverage-checked + unsettled-tail-refreshed in
+    # _serve_coarse_layer; returns None (→ derive-from-1Min below) on any miss.
+    if (_coarse_layer_read_enabled() and target_s >= 3600
+            and _is_maintained_coarse_layer(symbol, timeframe)):
+        served = _serve_coarse_layer(symbol, timeframe, start_dt, end_dt, session)
+        if served is not None:
+            return served
     if timeframe in ("1Sec", "1Min"):
         cache_tf = timeframe          # the only two native source layers
     elif target_s < 60:

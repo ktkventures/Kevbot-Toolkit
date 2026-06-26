@@ -20,11 +20,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/bar-cache", tags=["bar-cache"])
 
-# Native-fetchable capture resolutions. 1Sec + 1Min are the two source layers
-# (Kevin's plan); sub-minute is offered for volume-faithful primaries. Coarse
-# TFs (1Hour/1Day) are MATERIALIZED from 1Min in Phase 2 (serving), not
-# captured natively (native Polygon daily has split-adjustment bugs).
-_RESOLUTIONS = ["1Sec", "5Sec", "10Sec", "15Sec", "30Sec", "1Min"]
+# Capture resolutions selectable on the admin page. 1Sec + 1Min are the two
+# native SOURCE layers; sub-minute is offered for volume-faithful primaries.
+# Coarse TFs (1Hour/1Day) are MATERIALIZED from cached 1Min (split-safe) — their
+# backfill/maintain delegate to `bar_cache.materialize_derived` (never native
+# Polygon daily, which has split-adjustment bugs). They require the symbol's
+# 1Min layer to be captured first.
+_RESOLUTIONS = ["1Sec", "5Sec", "10Sec", "15Sec", "30Sec", "1Min", "1Hour", "1Day"]
 
 # (symbol, timeframe) -> status string: "running" | "done:+N" | "error:..."
 _backfills: dict[tuple, str] = {}

@@ -52,6 +52,12 @@ sys.path.insert(0, "src")
 NORTH_STAR_CANARY = 267  # TSLA-CANARY-10s-LooseConf: confluence + trigger, ~90%, 10Sec, fast
 ADMIN_USER = "19d47e46-f718-49a6-af32-5f5407f5b170"
 
+# Coarse-secondary canary: a 1Day-gated strategy (price-only SWING_123) used to
+# assert RORT_COARSE_SECONDARY_FROM_1MIN (build the coarse gate from 1Min + short
+# primary warmup) is fidelity-safe vs the legacy resample-from-primary path.
+COARSE_SECONDARY_CANARY = 338  # TEST-COARSEGATE-10s-1d-TSLA
+COARSE_SECONDARY_TOL = 3       # shares M-RS1's warmup-edge class (fix shrinks primary warmup)
+
 # (symbol, timeframe) combos to assert cache==native. MUST include uncached
 # sub-minute (the 2026-06-26 bug class) + cached-native + coarse + 1Sec.
 CACHE_PARITY_MATRIX = [
@@ -177,9 +183,60 @@ def _canary_killswitch_parity() -> list[tuple[str, bool, str]]:
     return results
 
 
+def _coarse_secondary_parity() -> list[tuple[str, bool, str]]:
+    """A coarse (1Day) gated strategy's trades must match with the coarse-
+    secondary source flipped: RORT_COARSE_SECONDARY_FROM_1MIN OFF (resample the
+    coarse gate from the sub-minute PRIMARY — the ~360x-blowup legacy path that
+    hung sid 338's UAD) vs ON (build it from 1Min + short primary warmup). For a
+    price-only daily gate the secondary OHLC is byte-identical (volume aside, the
+    documented 1Min!=Σsub-minute divergence — irrelevant to price gates); the
+    only trade-shift vector is the primary-warmup shrink, same class as
+    RORT_RIGHTSIZE_WARMUP → tol. Runs under the prod baseline (rightsize+cache
+    ON). NOTE: the OFF leg loads ~363d of the 10Sec primary → slow (minutes)."""
+    import importlib
+    from db import get_strategy_by_id_admin
+
+    def _trades(on):
+        os.environ["RORT_RIGHTSIZE_WARMUP"] = "1"
+        os.environ["BAR_CACHE_ENABLED"] = "1"
+        if on:
+            os.environ["RORT_COARSE_SECONDARY_FROM_1MIN"] = "1"
+        else:
+            os.environ.pop("RORT_COARSE_SECONDARY_FROM_1MIN", None)
+        import data_loader, services, bar_cache, strategy_data
+        importlib.reload(bar_cache); importlib.reload(data_loader)
+        importlib.reload(strategy_data); importlib.reload(services)
+        if hasattr(data_loader, "clear_1s_cache"):
+            data_loader.clear_1s_cache()
+        res = services.get_strategy_trades(
+            get_strategy_by_id_admin(COARSE_SECONDARY_CANARY, ADMIN_USER))
+        df = res[0] if isinstance(res, tuple) else res
+        if df is None or len(df) == 0:
+            return 0, frozenset()
+        col = "entry_fill_ts" if "entry_fill_ts" in df.columns else "entry_time"
+        return len(df), frozenset(df[col].astype(str))
+
+    label = (f"coarse-secondary canary {COARSE_SECONDARY_CANARY} parity: "
+             f"RORT_COARSE_SECONDARY_FROM_1MIN ON==OFF (tol={COARSE_SECONDARY_TOL})")
+    try:
+        n_off, s_off = _trades(False)
+        n_on, s_on = _trades(True)
+        symdiff = len(s_off ^ s_on)
+        countdiff = abs(n_off - n_on)
+        ok = countdiff <= COARSE_SECONDARY_TOL
+        detail = f"OFF={n_off} ON={n_on} symdiff={symdiff} countdiff={countdiff}"
+        if n_off == 0:
+            return [(label, "FAIL", f"{detail} (0 trades — registry/window broken)")]
+        return [(label, "PASS" if ok else "FAIL", detail)]
+    except Exception as ex:  # noqa: BLE001
+        return [(label, "FAIL", f"EXC {str(ex)[:120]}")]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true", help="cache matrix only (skip the engine canary)")
+    ap.add_argument("--coarse", action="store_true",
+                    help="also run the coarse-secondary canary parity (slow: ~363d primary load)")
     ap.add_argument("--day", default=None, help="settled comparison day YYYY-MM-DD")
     args = ap.parse_args()
 
@@ -199,6 +256,8 @@ def main() -> int:
     results += _cache_parity(day)
     if not args.quick:
         results += _canary_killswitch_parity()
+    if args.coarse:
+        results += _coarse_secondary_parity()
 
     print()
     for label, status, detail in results:
