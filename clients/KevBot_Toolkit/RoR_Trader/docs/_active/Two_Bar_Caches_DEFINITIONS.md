@@ -76,18 +76,37 @@ touch: revision/refresh → `bar_cache`; never `live_bars`.
 
 ---
 
-## Open questions (do not let these blur the distinction)
+## Verified facts (2026-06-25) — earlier alarms were measurement artifacts
 
-- **1-second REST revision window (REST Bars):** Polygon revises 1-second OHLC
-  for *days*. Observed 2026-06-25: a 3-day-old day (06-22) had ~197 1s OHLC
-  diffs vs a fresh REST pull, while fully-settled days (06-08, 06-15) were
-  byte-identical on overlapping timestamps. Implication: serving **Hi-Fi**
-  (1-second) from `bar_cache` is only byte-identical for *fully settled* days
-  unless the maintain cron's 1-second refresh window is widened past the
-  multi-day revision window. (This is why Hi-Fi-from-cache was reverted — a
-  **REST-vs-REST** staleness issue, nothing to do with Live Bars.)
-- **REST Bars coverage/session:** `bar_cache` is documented to store RAW
-  (extended-hours) bars with the session filter applied on read, but a spot
-  check showed ~27k cached rows/day vs ~46k from a fresh REST pull for TSLA 1s.
-  Needs confirming that REST Bars covers the full window Hi-Fi/backtests need
-  before relying on it for sub-minute. Tracked separately.
+Two scary findings were **debunked** after careful, row-count-verified testing
+(both were bugs in the *test harness*, not the cache):
+
+- **REST Bars 1-second is byte-identical to Polygon REST, and complete.** Clean
+  single-day comparison (TSLA): exact row-count parity every trading day
+  (06-16 25710=25710, 06-22 25095=25095; 06-19=0 both = Juneteenth holiday),
+  `only_in_cache=0`. A fully-settled day (06-16) is **literally zero-diff**
+  (`max|Δ|=0.0`, volume exact). Columns are `float8`.
+  - *Debunked "50% incomplete":* my baseline `load_from_polygon(end_date=d+1)`
+    pulled **two days** (Polygon's date range is inclusive) vs the cache's one.
+    Per-hour counts matched once corrected.
+- **Polygon does NOT revise settled intraday bars** (confirmed by Polygon docs:
+  minute aggregates recalc for 15 min then fold late trades only at EOD; second
+  aggregates settle after a 2s + 15min window; daily bars update continuously).
+  - *Debunked "revises over days":* the "~197 diffs" were a `1e-9` threshold
+    catching **sub-penny** values (compounded by the 2-day join). The only real
+    residual: a day captured *very soon* after formation (06-22) has ~0.2% of
+    bars differing by **≤5e-5** (half a thousandth of a cent; **0** above a
+    hundredth of a cent), from documented late-trade EOD folding. A maintain
+    re-fetch once the day is EOD-settled zeroes it; negligible for trades regardless.
+
+**Implication:** Hi-Fi (1-second) from REST Bars is viable and byte-identical.
+The speed win comes from a **single load-once read** (one `read_bars` over the
+whole period ≈5s for ~530k rows = ~5.7× vs Hi-Fi's current per-day Polygon
+fetches), NOT per-day reads (those are a wash). See
+`docs/_active/Design_M-RS2_Shared_Bar_Store.md`.
+
+## Remaining nice-to-have (not a blocker)
+
+- Maintain cron could re-fetch a just-captured day once it's EOD-settled to
+  drive the sub-penny residual to exactly zero. Low priority (≤5e-5 is
+  trade-irrelevant).
