@@ -272,8 +272,12 @@ def cached_load_market_data(
     if end_dt.tzinfo is None:
         end_dt = end_dt.replace(tzinfo=timezone.utc)
 
-    # Cache always stores 1Min bars; resample on read for coarser TFs.
-    cache_tf = "1Min"
+    # M-RS2 Phase 2: prefer the requested TF's NATIVE cache layer if it's
+    # present (sub-minute primaries like 30Sec, 1Min, native coarse) — read it
+    # directly, no resample, byte-identical to a native Polygon fetch. Fall
+    # back to the 1Min layer + resample for coarser TFs not natively cached
+    # (legacy path). This is what lets sub-minute strategies read from cache.
+    cache_tf = timeframe if _max_cached_ts(symbol, timeframe) is not None else "1Min"
 
     # 1. Find cached coverage
     last_cached = _max_cached_ts(symbol, cache_tf)
@@ -350,9 +354,15 @@ def cached_load_market_data(
     if fetch_failed_cold:
         return None
 
-    # 4. Range select from cache
-    df = _select_range(symbol, cache_tf, start_dt, end_dt)
-    if len(df) == 0:
+    # 4. Range select from cache — direct Postgres (fast) when a DSN is
+    # configured, else PostgREST. Both byte-identical (validated 2026-06-24).
+    if direct_pg_available():
+        df = read_bars(symbol, cache_tf, start_dt, end_dt)
+        if df is None:  # no rows via direct PG
+            df = _select_range(symbol, cache_tf, start_dt, end_dt)
+    else:
+        df = _select_range(symbol, cache_tf, start_dt, end_dt)
+    if df is None or len(df) == 0:
         # Nothing cached, nothing fetched — return None to let caller
         # fall back to Polygon (matches load_market_data semantics)
         return None
