@@ -177,6 +177,30 @@ from the secondary-TF snapshot + `_compare_cache_replay.py`. **Kill-switch `BAR_
 - **Real costs:** Postgres perf at tens of M rows (→ partition/index, maybe parquet hybrid);
   the one-time Polygon backfill per ticker; the operational fidelity guard.
 
+## Phase 2 PROGRESS (2026-06-24 autonomous, branch feat/m-rs2-phase2-readpath)
+- **Built `bar_cache.read_bars()`** — direct-PG read primitive (psycopg, raw cursor),
+  byte-identical to the REST read. Committed.
+- **Wiring surface is tiny (confirmed in code):** `prepare_data_with_indicators` loads ONLY the
+  PRIMARY via `load_market_data` (services.py:314); SECONDARIES are resampled from the primary
+  df (services.py:360), not separately loaded. So for sub-minute strategies the cache only needs
+  to serve the **one primary load** — everything downstream (secondaries, indicators, engine)
+  derives deterministically. Byte-identical primary ⇒ byte-identical full backtest.
+- **CONCLUSIVE A/B on sid 325's primary (TSLA 30Sec, 1 month):** Polygon 34,772 rows/16.0s vs
+  cache (read_bars) 34,772 rows/**1.82s = 8.8× faster, BYTE-IDENTICAL (0 value diffs).**
+  Sub-minute is the cache's sweet spot (Polygon's sub-minute fetch is slow).
+- **END-TO-END WIRED + VALIDATED (2026-06-25, committed 58296d4):** `cached_load_market_data`
+  now serves a natively-cached TF via `read_bars` (direct PG) when `BAR_CACHE_ENABLED`. A/B on
+  sid 325 `get_strategy_trades`: cache-on vs Polygon = **BYTE-IDENTICAL (442==442, 0 diffs),
+  1.8× faster (382s vs 700s warm)** — Polygon load was ~320s of the 700s, cache cut it to ~0.
+  Backtest-lane recompute only; full Railway Update-All (957s) also has algo lane + Hi-Fi +
+  persist → full-UAD ~1.3–1.5× until Hi-Fi-from-cache lands (the next lever).
+- **Remaining:**
+  (1) extend `cached_load_market_data` to serve any natively-cached TF via `read_bars` +
+  revision-fetch the tip (so `load_market_data(BAR_CACHE_ENABLED)` serves sub-minute from cache);
+  (2) end-to-end `get_strategy_trades(325)` cache-vs-Polygon byte-identical + timing; (3) point
+  Hi-Fi 1s at the cache; (4) deploy needs psycopg in requirements + SUPABASE_CONNECTION_STRING
+  on Railway. Backfill TSLA 30Sec was in progress (need its full window before end-to-end test).
+
 ## Phase 2 read-path + speed/reliability findings (2026-06-24, measured)
 Backfilled TSLA 1Min (235k, full year) + 1Sec (in progress, ~5.3M) and A/B'd loads:
 - **1-Min load (full year, 235k rows):** Polygon 9.3s · Supabase PostgREST 7.6s · **direct

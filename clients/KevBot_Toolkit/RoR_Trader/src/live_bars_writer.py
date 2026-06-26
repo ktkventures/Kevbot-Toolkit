@@ -1,4 +1,21 @@
-"""Fire-and-forget writer for the live_bars cache (Milestone 8.7).
+"""Fire-and-forget writer for the "Live Bars" cache (live_bars, M8.7).
+
+================================================================================
+THIS IS THE *LIVE BARS* CACHE — one of two bar caches. Do not confuse it with
+"REST Bars" (`bar_cache` table, written by bar_cache.py).
+
+  - Live Bars (this, `live_bars`): what the WebSocket saw at decision time
+    (source='ws_agg'). IMMUTABLE — a seen bar is NEVER post-corrected with
+    revised REST. Its value (replay, phantom/mistrade WS-visibility forensics)
+    depends on it staying *what we saw*. REST may gap-fill *missing* minutes
+    only (live_bars_rest_backfill.py, insert-only, source='rest_backfill').
+  - REST Bars (`bar_cache`): Polygon REST, revisable to track Polygon; backtest
+    speed/fidelity.
+
+RED LINE: never point the REST revision/refresh (overwrite-to-match-Polygon)
+logic at `live_bars`. Overwriting a seen bar here destroys the forensic record.
+Canonical reference: docs/_active/Two_Bar_Caches_DEFINITIONS.md
+================================================================================
 
 The worker calls write_bar() each time a BarBuilder finalizes a bar
 (primary AM bars from on_polygon_bar, sub-minute aggregations from
