@@ -310,29 +310,31 @@ def cached_load_market_data(
     # `else "1Min"` fallback upsampled every uncached sub-minute strategy —
     # 10Sec/15Sec dropped ~6x/~4x of their trades. 30Sec survived only because
     # TSLA 30Sec happened to be captured natively.)
-    #   - native TF cached    → read it directly (byte-identical).
-    #   - sub-minute uncached → derive from the native **1Sec** layer + downsample.
-    #                           Validated 2026-06-26 byte-identical to Polygon
-    #                           native sub-minute aggregates INCLUDING volume
-    #                           (10Sec/15Sec across 06-12/16/22: OHLC + volume 0
-    #                           diffs). 1Sec→sub-minute is a valid downsample.
-    #   - 1Min-or-coarser     → 1Min cache + downsample (the "always start from
-    #                           1Min" convention). NOTE: we deliberately do NOT
-    #                           derive 1Min from 1Sec — Polygon's native 1Min
-    #                           VOLUME diverges from summed 1Sec (822/944 bars,
-    #                           maxΔ 7300 sh on 06-16), so 1Min must stay native.
-    # The cache_tf chosen is ALWAYS finer-or-equal to the request — never coarser
-    # (upsampling 1Min→10Sec was the 2026-06-26 bug that wrecked 10Sec/15Sec
-    # backtests; the guard below enforces it).
+    # There are exactly TWO native SOURCE layers — **1Sec** and **1Min** —
+    # and EVERYTHING else is DERIVED by downsampling from one of them:
+    #   - 1Sec / 1Min          → read the source layer directly.
+    #   - sub-minute (<60s)     → downsample from native **1Sec** (validated
+    #                             byte-identical to Polygon native 10/15/30Sec
+    #                             INCLUDING volume, 06-12/16/22).
+    #   - 1Min-or-coarser       → downsample from native **1Min** (NOT 1Sec —
+    #                             Polygon's native 1Min volume diverges from
+    #                             summed 1Sec: 822/944 bars, maxΔ 7300 sh).
+    # We deliberately do NOT trust any natively-cached INTERMEDIATE layer (e.g. a
+    # stray 30Sec): those are separately maintained and drift on late-trade
+    # revisions (2026-06-26: an orphaned TSLA 30Sec layer was 1 bar stale vs
+    # Polygon while the 1Sec-derived 30Sec matched exactly). One source of truth
+    # per resolution = no drift. The chosen cache_tf is ALWAYS finer-or-equal to
+    # the request — never coarser (upsampling 1Min→10Sec was the bug that wrecked
+    # sub-minute backtests; the guard below enforces it).
     target_s = _tf_seconds(timeframe)
-    if _max_cached_ts(symbol, timeframe) is not None:
-        cache_tf = timeframe
+    if timeframe in ("1Sec", "1Min"):
+        cache_tf = timeframe          # the only two native source layers
     elif target_s < 60:
-        cache_tf = "1Sec"   # sub-minute → downsample from native 1Sec
+        cache_tf = "1Sec"             # sub-minute → derive from native 1Sec
     else:
-        cache_tf = "1Min"   # 1Min-or-coarser → downsample from native 1Min
-    # Hard guard: never read a layer coarser than requested (no upsampling) and
-    # never read a layer that isn't actually present → fall back to Polygon.
+        cache_tf = "1Min"             # 1Min-or-coarser → derive from native 1Min
+    # Hard guard: the source layer must be present + finer-or-equal (no upsample,
+    # no reading a layer that isn't there) → else fall back to Polygon.
     if _max_cached_ts(symbol, cache_tf) is None or _tf_seconds(cache_tf) > target_s:
         return None
 
