@@ -1500,16 +1500,22 @@ def append_new_trades_for_strategy(
         if do_full_update:
             try:
                 if engine_path == 'windowed':
-                    # KPI recompute — Priority 1 perf fix (2026-05-21).
-                    # Was: load_trades_for_strategy (full data JSONB per
-                    # row). Now: load_trades_kpi_fields_admin projects to
-                    # the 5 fields calculate_kpis uses (~15-20x lighter).
-                    # Same scope (no data_source filter — all lanes, as
-                    # the legacy call did), KPIs byte-identical.
-                    # Supersedes the 2026-05-20 algo-lane OOM-guard.
+                    # KPI recompute — Priority 1 perf fix (2026-05-21):
+                    # load_trades_kpi_fields_admin projects to the 5 fields
+                    # calculate_kpis uses (~15-20x lighter than select('*')).
+                    # 2026-06-26 FIX: scope to data_source_filter='backtest_%'.
+                    # This path previously loaded ALL lanes (no filter); once
+                    # the algo lane started mirroring the backtest lane, that
+                    # DOUBLE-COUNTED every trade (BT+ALGO = same trades twice),
+                    # inflating total_trades / daily_r / TPD / max_dd ~2x while
+                    # leaving win_rate/profit_factor (ratios) untouched. The
+                    # headline kpis are "backtest truth" (see module docstring),
+                    # so scope to the backtest lane — matching the BT-append
+                    # path's KPI source (append_new_backtest_trades_for_strategy).
                     from db import load_trades_kpi_fields_admin
                     all_db_trades = load_trades_kpi_fields_admin(
-                        strategy_id, user_id) or []
+                        strategy_id, user_id,
+                        data_source_filter='backtest_%') or []
                     full_trades_df = svc.trades_df_from_stored(all_db_trades)
                     # Trading days for KPI denominator: derive from the
                     # FULL trades period (entry_time min → exit_time max),
