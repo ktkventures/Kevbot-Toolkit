@@ -14,6 +14,15 @@ here until either (a) shipped + verified, or (b) explicitly deprecated.
 
 ## Active
 
+### Strategy KPIs double-counted (BT+ALGO) on append (`mode='new'`) recomputes
+- **Status:** ✅ FIXED-PENDING-VERIFY (2026-06-26, commit 6df2eb1) — verify by re-running an affected strategy and confirming KPIs match the single-lane (backtest_%) trade count.
+- **Discovered:** 2026-06-26 — Kevin re-ran UAD on sid 325; `total_trades`/Daily R/TPD/Max DD all **halved** (884→442, TPD 9.8→4.9, Daily R 4.13→2.14, Max DD -41.2→-20.4R) while **Win Rate (35.5%) + Profit Factor (1.73) stayed put**. That ratio-stable/count-halved pattern = textbook double-count.
+- **Root cause:** `append_new_trades_for_strategy` (the **algo-append** lane, `forward_test_service.py` ~1510) recomputed the strategy's headline `kpis` via `load_trades_kpi_fields_admin(strategy_id, user_id)` with **no `data_source_filter`** → loaded BOTH lanes (`backtest_%` + `cache_%`). Once the algo lane began mirroring the backtest lane, every trade was counted **twice**. Since `mode='new'` runs BT-append (correct, `backtest_%`) *then* algo-append (this, all-lanes), the doubled value **overwrote** the correct KPIs. A code comment even asserted "no data_source filter — all lanes … KPIs byte-identical" — true once, false after the lanes converged.
+- **Fleet evidence (2026-06-26):** un-rerun strategies showed `kpis.total_trades` = BT+ALGO (313: 978=484+494; 314: 660=330+330); strategies re-run via `mode='all'` showed the correct single lane (325: 442=BT; 321: 198=BT). `mode='all'` (line 252, `calculate_kpis(all_trades)` over the freshly-computed backtest set) was never affected.
+- **Fix:** scope that call to `data_source_filter='backtest_%'` (headline KPIs are "backtest truth" per the module docstring; matches the BT-append path's KPI source).
+- **Cleanup expectation:** every strategy last touched by an append (`mode='new'`) run still shows ~2x-inflated count-based KPIs until re-run. As the fleet gets re-run (or appended) on the fixed code, those will correct to true values (ratios unchanged). **Not a regression** — pre-existing display bug being cleaned up.
+- **NOT caused by the M-RS2 cache / M-RS1 warmup work** — surfaced by a re-run, but the bug predates today.
+
 ### Newer strategies appear to not trigger live (alerts) — investigate user-pack registry on the live worker
 - **Status:** OPEN — observation, not yet root-caused (logged 2026-06-25 from Kevin's report + corroborating context)
 - **Symptom:** Some of the newer strategies (the 308–337 cohort, mostly 15Sec/30Sec) seem to not be firing live alerts / not triggering as expected. Kevin has independently noticed this.
