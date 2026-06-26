@@ -556,6 +556,59 @@ def fetch_1s_bars_for_window(
     return combined.loc[mask]
 
 
+def prime_1s_cache_from_rest_bars(
+    ticker: str,
+    start_dt: datetime,
+    end_dt: datetime,
+    padding_seconds: int = 60,
+) -> int:
+    """Load-once: pull the whole [start, end] 1-second window from REST Bars
+    (`bar_cache`) in ONE direct-Postgres read and populate the per-day
+    ``_1s_cache`` that ``fetch_1s_bars_for_window`` reads from.
+
+    This is the M-RS2 "pull big swaths once" speedup for Hi-Fi Pass 2: instead
+    of N per-day Polygon fetches (one per distinct trade date), do a single
+    direct-PG read over the full period (~5s for ~530k rows vs ~29s of per-day
+    Polygon fetches — ~5.7x). REST Bars 1-second is byte-identical to a fresh
+    Polygon REST pull for settled days (see Two_Bar_Caches_DEFINITIONS.md).
+
+    Safe + transparent: gated on BAR_CACHE_ENABLED + a DSN. Returns the number
+    of day-frames primed; returns 0 on any miss (cache off, no DSN, no rows,
+    error) so the caller's existing fetch_1s_bars_for_window calls fall straight
+    back to per-day Polygon. Never clobbers a day already in _1s_cache (a fresher
+    Polygon fetch wins). The most-recent day, if REST Bars lags the requested
+    end, is re-fetched from Polygon by fetch_1s_bars_for_window's staleness
+    eviction — so the live tip stays correct.
+    """
+    try:
+        import bar_cache as _bc
+        if not (_bc.is_enabled() and _bc.direct_pg_available()):
+            return 0
+        padded_start = start_dt - timedelta(seconds=padding_seconds)
+        padded_end = end_dt + timedelta(seconds=padding_seconds)
+        df = _bc.read_bars(ticker, "1Sec", padded_start, padded_end)
+    except Exception as e:
+        logger.warning("[HIFI] prime_1s_cache_from_rest_bars failed for %s: %s",
+                       ticker, e)
+        return 0
+    if df is None or len(df) == 0:
+        return 0
+
+    poly_ticker = _to_polygon_ticker(ticker)
+    primed = 0
+    # Group the single big read into per-day frames keyed exactly like
+    # fetch_1s_bars_for_window expects ({poly_ticker}_{UTC-date}).
+    for d, day_df in df.groupby(df.index.date):
+        cache_key = f"{poly_ticker}_{d.isoformat()}"
+        if cache_key not in _1s_cache:  # don't clobber a fresher Polygon fetch
+            _1s_cache[cache_key] = day_df
+            primed += 1
+    if primed:
+        logger.info("[HIFI] Primed %d day(s) of 1-second bars for %s from "
+                    "REST Bars in one read (%d rows)", primed, ticker, len(df))
+    return primed
+
+
 def clear_1s_cache():
     """Clear the in-memory 1-second bar cache."""
     global _1s_cache

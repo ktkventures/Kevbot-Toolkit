@@ -628,6 +628,24 @@ def _hifi_resolve_trades(
     # Get timeframe duration in seconds for window calculation
     tf_seconds = _tf_to_seconds(timeframe)
 
+    # M-RS2 load-once: prime the in-memory 1-second cache with ONE direct-PG
+    # read over the whole trade span (instead of N per-day Polygon fetches in
+    # the loop below). No-op + transparent fallback when BAR_CACHE_ENABLED is
+    # off / symbol not cached — fetch_1s_bars_for_window still works per-trade.
+    try:
+        from data_loader import prime_1s_cache_from_rest_bars
+        _ts = []
+        for _c in ('entry_time', 'entry_fill_ts', 'exit_time', 'exit_fill_ts'):
+            if _c in trades_df.columns:
+                for _v in trades_df[_c].dropna():
+                    _d = _parse_dt(_v)
+                    if _d is not None:
+                        _ts.append(_d if _d.tzinfo else _d.replace(tzinfo=timezone.utc))
+        if _ts:
+            prime_1s_cache_from_rest_bars(symbol, min(_ts), max(_ts))
+    except Exception as _e:
+        logger.warning("[HIFI] load-once prime skipped: %s", _e)
+
     for idx in trades_df.index:
         trade = trades_df.loc[idx]
 
