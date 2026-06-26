@@ -14,6 +14,17 @@ here until either (a) shipped + verified, or (b) explicitly deprecated.
 
 ## Active
 
+### REST Bars cache UPSAMPLED 1Min→sub-minute → wrecked 10Sec/15Sec backtests (SEV)
+- **Status:** ✅ FIXED-PENDING-VERIFY (2026-06-26, commit b8bac23). Cache disabled in prod (`BAR_CACHE_ENABLED=0`) while verifying; fix is deployed + load-level byte-identical. Re-enable after a final check.
+- **Discovered:** 2026-06-26 — Kevin re-ran UAD on sid 275 (TSLA 10Sec) as a divergence test; backtest collapsed **193→29 trades** (~6.7× = the 1Min→10Sec upsample factor) and divergence deltas blew from seconds to minutes.
+- **Root cause:** `bar_cache.cached_load_market_data` chose `cache_tf="1Min"` for ANY TF not natively cached, then `resample_to_timeframe(1Min → 10Sec)`. That's **upsampling** (coarse→fine), which `resample_to_timeframe` (downsample-only) can't do — it yields sparse/garbage bars, so most of a sub-minute strategy's trades vanish. Hit any **sub-minute TF not captured natively**: TSLA 10Sec/15Sec, all SPY sub-minute. TSLA **30Sec survived** only because it's captured natively (read directly, no resample) — which is why 325 looked fine and masked the bug.
+- **Also re-explains:** 321 (15Sec) "597→198" earlier attributed to its canary window was actually THIS bug (cache-off=799, cache-on=198 ≈ 799/4, the 15Sec upsample factor). Mis-attributed.
+- **Fix:** choose `cache_tf` **finer-or-equal** to the request, never coarser. Sub-minute → downsample from native **1Sec** (validated byte-identical to Polygon native 10/15Sec **including volume**, 06-12/16/22). 1Min-or-coarser → native 1Min. Hard guard bails to Polygon if the chosen layer is absent or coarser. (1Min is NOT derived from 1Sec — its volume diverges 822/944 bars, so it stays a native layer; that part of the M-RS2 design was correct.)
+- **Validation:** load-level A/B `cached_load_market_data` vs native `load_from_polygon` — 10/15/30Sec/1Min all byte-identical (OHLCV, RTH + 24/7).
+- **Cleanup:** only **275 + 321** were recomputed while the cache was on → re-run them (cache off, or after re-enable) to restore correct backtests. 325 (30Sec) was unaffected.
+- **Why my validation missed it:** the 325 byte-identical check used a *natively-cached* TF (30Sec); the 321 A/B was cache-*off*. So the uncached-sub-minute upsample path was never exercised. **CI parity must cover cache-on==off for EVERY (symbol, TF) — especially uncached sub-minute.**
+- **Follow-up consideration:** sub-minute primary loads now read 1Sec (~6× more rows than native) → heavier memory/time; the cache's clear win stays the 1Min/coarse loads + Hi-Fi. Consider capturing native 10/15Sec, or bailing sub-minute primaries to Polygon, if memory/latency bites.
+
 ### Strategy KPIs double-counted (BT+ALGO) on append (`mode='new'`) recomputes
 - **Status:** ✅ FIXED-PENDING-VERIFY (2026-06-26, commit 6df2eb1) — verify by re-running an affected strategy and confirming KPIs match the single-lane (backtest_%) trade count.
 - **Discovered:** 2026-06-26 — Kevin re-ran UAD on sid 325; `total_trades`/Daily R/TPD/Max DD all **halved** (884→442, TPD 9.8→4.9, Daily R 4.13→2.14, Max DD -41.2→-20.4R) while **Win Rate (35.5%) + Profit Factor (1.73) stayed put**. That ratio-stable/count-halved pattern = textbook double-count.
