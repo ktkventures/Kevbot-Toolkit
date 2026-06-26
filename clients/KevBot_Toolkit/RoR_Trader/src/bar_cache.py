@@ -486,7 +486,15 @@ def read_bars(symbol: str, timeframe: str,
            "where symbol=%s and timeframe=%s and ts between %s and %s "
            "order by ts")
     try:
-        with psycopg.connect(dsn, connect_timeout=15) as conn:
+        # prepare_threshold=None disables psycopg3 auto-prepared-statements so
+        # this works on Supabase's TRANSACTION pooler (port 6543), which doesn't
+        # support prepared statements. The transaction pooler multiplexes many
+        # short per-call connections (read_bars opens one per call) far better
+        # than the SESSION pooler (5432), whose per-client connection cap we were
+        # exhausting → "Server disconnected" on both direct-PG AND PostgREST
+        # (2026-06-26). Harmless on 5432 too.
+        with psycopg.connect(dsn, connect_timeout=15,
+                             prepare_threshold=None) as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, (symbol, timeframe, start, end))
                 rows = cur.fetchall()
