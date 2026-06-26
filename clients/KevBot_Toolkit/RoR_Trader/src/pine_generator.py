@@ -951,35 +951,64 @@ _SESSION_CLOSE_ET = {
 
 
 def _emit_time_exit(time_exit_config: dict, session: str) -> tuple:
-    """Return (setup_lines, exit_bool_expr) for a time-based exit, or (None, None).
+    """Return (setup_lines, exit_bool_expr, reason) for a time-based exit, or
+    (None, None, None).
 
-    Faithful port of time_exit_packs.check_time_exit. Currently emits `eod_exit`
-    (force-flat N minutes before close). The engine converts the bar timestamp
-    (Polygon open-label) to US/Eastern and exits when hour*60+minute reaches
-    close − minutes_before; the exit fills at the bar CLOSE (exec type C). Pine's
-    `time` is the bar-open time, so `hour(time, "America/New_York")` matches the
-    engine's clock exactly, and process_orders_on_close fills at the bar close.
+    Faithful port of time_exit_packs.check_time_exit. Emits:
+    - `eod_exit`: force-flat N minutes before close. The engine converts the bar
+      timestamp (Polygon open-label) to US/Eastern and exits when hour*60+minute
+      reaches close − minutes_before. Pine's `time` is the bar-open time, so
+      `hour(time, "America/New_York")` matches the engine's clock exactly.
+    - `max_hold_bars`: exit once held for max_bars bars. The engine's
+      bars_held = bar_count − entry_bar_count (0 on the entry bar), exiting when
+      bars_held >= max_bars; the Pine counter mirrors that (0 on entry bar, +1
+      per held bar). Both fill at the bar CLOSE (exec type C).
 
-    Fail loud on any other method (e.g. max_hold_bars, time_of_day_exit): silently
-    dropping a time exit would diverge from the backtest (TV would hold overnight),
-    which is exactly the fidelity gap we refuse to ship."""
+    Fail loud on any other method (time_of_day_exit, session_exit): silently
+    dropping a time exit would diverge from the backtest, which is exactly the
+    fidelity gap we refuse to ship."""
     if not time_exit_config:
-        return None, None
+        return None, None, None
     method = time_exit_config.get('method')
-    if method != 'eod_exit':
-        raise ValueError(
-            f"no Pine emitter for time_exit method '{method}'. "
-            f"Add it to pine_generator._emit_time_exit (only 'eod_exit' so far).")
-    ch, cm = _SESSION_CLOSE_ET.get(session, (16, 0))
-    mins = int(time_exit_config.get('minutes_before_close', 15))
-    thresh = ch * 60 + cm - mins
-    setup = (
-        '// ── time exit: force flat N min before close (US/Eastern) ──\n'
-        f'eodThresh = {thresh}  // {ch:02d}:{cm:02d} ET close − {mins}m\n'
-        'etNowMin  = hour(time, "America/New_York") * 60 + '
-        'minute(time, "America/New_York")\n'
-        'eodExit   = etNowMin >= eodThresh')
-    return setup, 'eodExit'
+    if method == 'eod_exit':
+        ch, cm = _SESSION_CLOSE_ET.get(session, (16, 0))
+        mins = int(time_exit_config.get('minutes_before_close', 15))
+        thresh = ch * 60 + cm - mins
+        setup = (
+            '// ── time exit: force flat N min before close (US/Eastern) ──\n'
+            f'eodThresh = {thresh}  // {ch:02d}:{cm:02d} ET close − {mins}m\n'
+            'etNowMin  = hour(time, "America/New_York") * 60 + '
+            'minute(time, "America/New_York")\n'
+            'eodExit   = etNowMin >= eodThresh')
+        return setup, 'eodExit', 'eod_exit'
+    if method == 'max_hold_bars':
+        mb = int(time_exit_config.get('max_bars', 4))
+        setup = (
+            '// ── time exit: max hold bars (bars_held >= max_bars) ──\n'
+            'var int barsHeld = 0\n'
+            'barsHeld := strategy.position_size > 0 ? barsHeld + 1 : 0\n'
+            f'maxHoldExit = barsHeld >= {mb}')
+        return setup, 'maxHoldExit', 'max_hold_bars'
+    raise ValueError(
+        f"no Pine emitter for time_exit method '{method}'. "
+        f"Add it to pine_generator._emit_time_exit "
+        f"(only 'eod_exit' and 'max_hold_bars' so far).")
+
+
+def _resolve_first(*candidates):
+    """Return (emitter, base, resolved_str) for the first candidate an emitter
+    can actually emit. Most strategies put a resolvable name in the flat
+    entry_trigger / exit_trigger field, but some legacy ones keep an OLD alias
+    there (e.g. 'ema_pp_cross_short_up', 'macd_cross_bull') while the modern,
+    resolvable form lives in the *_confluence_id field. Try each in order so the
+    legacy alias falls through to the modern id instead of failing."""
+    for cand in candidates:
+        if not cand:
+            continue
+        em, base = _resolve_trigger(cand)
+        if em is not None and base is not None:
+            return em, base, cand
+    return None, None, None
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -994,29 +1023,32 @@ def generate_pine(strat: dict) -> str:
     name = strat.get('name') or f"sid {strat.get('id', '?')}"
     symbol = strat.get('symbol') or cfg.get('symbol') or 'SPY'
     primary_tf = cfg.get('timeframe') or strat.get('timeframe') or '1Min'
-    # Entry/exit triggers: modern strategies store flat triggers; Mass Builder
-    # strategies store them as confluence-group ids (entry_trigger_confluence_id
-    # / exit_trigger_confluence_ids). Fall back to the latter when the flat
-    # field is absent — _resolve_trigger handles both shapes.
-    entry_t = cfg.get('entry_trigger') or cfg.get('entry_trigger_confluence_id')
-    exit_t = cfg.get('exit_trigger')
-    if not exit_t:
-        _ex_ids = cfg.get('exit_trigger_confluence_ids') or []
-        exit_t = cfg.get('exit_trigger_confluence_id') or (
-            _ex_ids[0] if _ex_ids else None)
+    # Entry/exit triggers can appear in two shapes: a flat trigger string
+    # (entry_trigger / exit_trigger) and/or a confluence-group id
+    # (entry_trigger_confluence_id / exit_trigger_confluence_ids). Modern
+    # strategies use a resolvable flat name; Mass Builder uses the confluence id;
+    # some legacy strategies keep an OLD flat alias (e.g. 'macd_cross_bull') that
+    # no emitter knows, while the modern id sits alongside it. _resolve_first
+    # tries the flat field then the id so the legacy alias falls through.
+    entry_flat = cfg.get('entry_trigger')
+    entry_cid = cfg.get('entry_trigger_confluence_id')
+    exit_flat = cfg.get('exit_trigger')
+    _ex_ids = cfg.get('exit_trigger_confluence_ids') or []
+    exit_cid = cfg.get('exit_trigger_confluence_id') or (
+        _ex_ids[0] if _ex_ids else None)
     gates = list(cfg.get('confluence') or [])
     stop_cfg = cfg.get('stop_config') or {}
     time_exit_cfg = cfg.get('time_exit_config') or {}
     session = cfg.get('trading_session') or cfg.get('session') or 'RTH'
 
-    if not entry_t:
+    if not (entry_flat or entry_cid):
         raise ValueError(
             "strategy has no entry_trigger or entry_trigger_confluence_id")
 
-    prim, entry_base = _resolve_trigger(entry_t)
+    prim, entry_base, entry_t = _resolve_first(entry_flat, entry_cid)
     if prim is None:
         raise ValueError(
-            f"no Pine emitter for entry trigger '{entry_t}'. "
+            f"no Pine emitter for entry trigger '{entry_flat or entry_cid}'. "
             f"Add an emitter for its pack to pine_generator.EMITTERS.")
     entry_expr = prim.emit_trigger(entry_base)
     if entry_expr is None:
@@ -1024,6 +1056,7 @@ def generate_pine(strat: dict) -> str:
     # Exit can use a DIFFERENT pack than entry (Mass Builder commonly enters on
     # one pack and exits on another, e.g. swing_123 entry / ut_bot_v4 exit), so
     # resolve the exit with its OWN emitter — never silently drop it.
+    exit_t = exit_flat or exit_cid
     xit, exit_expr = None, None
     if exit_t and str(exit_t).strip().lower() == 'opposite_signal':
         # Exit on the inverse of the entry trigger (same pack), mirroring the
@@ -1038,11 +1071,11 @@ def generate_pine(strat: dict) -> str:
                 raise ValueError(
                     f"opposite_signal exit: emitter {prim.slug} can't emit "
                     f"opposite trigger '{opp}' of entry '{entry_t}'")
-    elif exit_t:
-        xit, exit_base = _resolve_trigger(exit_t)
+    elif exit_flat or exit_cid:
+        xit, exit_base, exit_t = _resolve_first(exit_flat, exit_cid)
         if xit is None or exit_base is None:
             raise ValueError(
-                f"no Pine emitter for exit trigger '{exit_t}'. "
+                f"no Pine emitter for exit trigger '{exit_flat or exit_cid}'. "
                 f"Add an emitter for its pack to pine_generator.EMITTERS.")
         exit_expr = xit.emit_trigger(exit_base)
         if exit_expr is None:
@@ -1099,8 +1132,8 @@ def generate_pine(strat: dict) -> str:
     stop_setup, stop_expr, stop_helpers = _emit_stop(stop_cfg)
     helpers_needed.update(stop_helpers)
 
-    # ── time exit (eod_exit etc.) ──
-    te_setup, te_expr = _emit_time_exit(time_exit_cfg, session)
+    # ── time exit (eod_exit / max_hold_bars) ──
+    te_setup, te_expr, te_reason = _emit_time_exit(time_exit_cfg, session)
 
     # ── helper lib ──
     for h in ('rorEma', 'rorTrueRange'):
@@ -1165,7 +1198,7 @@ def generate_pine(strat: dict) -> str:
     # override the signal exit, matching check_time_exit's precedence.
     if te_expr:
         L(f"if strategy.position_size > 0 and {te_expr}")
-        L('    strategy.close("L", comment="eod_exit")')
+        L(f'    strategy.close("L", comment="{te_reason}")')
     if exit_expr:
         L("if exitSig and strategy.position_size > 0")
         L(f'    strategy.close("L", comment="{exit_t}")')
