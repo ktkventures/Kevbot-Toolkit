@@ -188,7 +188,13 @@ from the secondary-TF snapshot + `_compare_cache_replay.py`. **Kill-switch `BAR_
 - **CONCLUSIVE A/B on sid 325's primary (TSLA 30Sec, 1 month):** Polygon 34,772 rows/16.0s vs
   cache (read_bars) 34,772 rows/**1.82s = 8.8× faster, BYTE-IDENTICAL (0 value diffs).**
   Sub-minute is the cache's sweet spot (Polygon's sub-minute fetch is slow).
-- **Remaining (reviewed next step — NOT done autonomously, touches shared load path):**
+- **END-TO-END WIRED + VALIDATED (2026-06-25, committed 58296d4):** `cached_load_market_data`
+  now serves a natively-cached TF via `read_bars` (direct PG) when `BAR_CACHE_ENABLED`. A/B on
+  sid 325 `get_strategy_trades`: cache-on vs Polygon = **BYTE-IDENTICAL (442==442, 0 diffs),
+  1.8× faster (382s vs 700s warm)** — Polygon load was ~320s of the 700s, cache cut it to ~0.
+  Backtest-lane recompute only; full Railway Update-All (957s) also has algo lane + Hi-Fi +
+  persist → full-UAD ~1.3–1.5× until Hi-Fi-from-cache lands (the next lever).
+- **Remaining:**
   (1) extend `cached_load_market_data` to serve any natively-cached TF via `read_bars` +
   revision-fetch the tip (so `load_market_data(BAR_CACHE_ENABLED)` serves sub-minute from cache);
   (2) end-to-end `get_strategy_trades(325)` cache-vs-Polygon byte-identical + timing; (3) point
