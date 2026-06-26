@@ -580,22 +580,33 @@ def prime_1s_cache_from_rest_bars(
     end, is re-fetched from Polygon by fetch_1s_bars_for_window's staleness
     eviction — so the live tip stays correct.
     """
+    # ALWAYS emit one [HIFI] load-once line summarizing the outcome, so we can
+    # tell from the logs whether the REST Bars cache actually served the 1-second
+    # (vs falling back to per-day Polygon, or finding days already warm in the
+    # long-lived process's _1s_cache) WITHOUT having to log-dive. 2026-06-26.
     try:
         import bar_cache as _bc
-        if not (_bc.is_enabled() and _bc.direct_pg_available()):
+        _enabled, _dsn = _bc.is_enabled(), _bc.direct_pg_available()
+        if not (_enabled and _dsn):
+            logger.info("[HIFI] load-once skipped for %s — BAR_CACHE_ENABLED=%s "
+                        "direct_pg=%s → per-day Polygon", ticker, _enabled, _dsn)
             return 0
         padded_start = start_dt - timedelta(seconds=padding_seconds)
         padded_end = end_dt + timedelta(seconds=padding_seconds)
         df = _bc.read_bars(ticker, "1Sec", padded_start, padded_end)
     except Exception as e:
-        logger.warning("[HIFI] prime_1s_cache_from_rest_bars failed for %s: %s",
+        logger.warning("[HIFI] load-once prime FAILED for %s: %s → per-day Polygon",
                        ticker, e)
         return 0
     if df is None or len(df) == 0:
+        logger.info("[HIFI] load-once: REST Bars returned 0 rows for %s [%s..%s] "
+                    "→ per-day Polygon", ticker,
+                    start_dt.isoformat()[:19], end_dt.isoformat()[:19])
         return 0
 
     poly_ticker = _to_polygon_ticker(ticker)
     primed = 0
+    warm = 0
     # Group the single big read into per-day frames keyed exactly like
     # fetch_1s_bars_for_window expects ({poly_ticker}_{UTC-date}).
     for d, day_df in df.groupby(df.index.date):
@@ -603,9 +614,11 @@ def prime_1s_cache_from_rest_bars(
         if cache_key not in _1s_cache:  # don't clobber a fresher Polygon fetch
             _1s_cache[cache_key] = day_df
             primed += 1
-    if primed:
-        logger.info("[HIFI] Primed %d day(s) of 1-second bars for %s from "
-                    "REST Bars in one read (%d rows)", primed, ticker, len(df))
+        else:
+            warm += 1  # already in-process (prior fetch) — load-once is moot here
+    logger.info("[HIFI] load-once for %s: read %d rows from REST Bars (direct-PG); "
+                "primed %d new day(s), %d already warm in-process",
+                ticker, len(df), primed, warm)
     return primed
 
 
