@@ -941,6 +941,47 @@ def _emit_stop(stop_config: dict) -> tuple:
     return setup, "close - stopMult * atrStopSeries", ('rorEma', 'rorTrueRange')
 
 
+# Market close times by session (hour, minute) in US/Eastern — mirrors
+# time_exit_packs._SESSION_CLOSE so the EOD threshold matches the engine.
+_SESSION_CLOSE_ET = {
+    'RTH': (16, 0), 'regular': (16, 0),
+    'extended': (20, 0), 'after_hours': (20, 0),
+    'pre_market': (9, 30),
+}
+
+
+def _emit_time_exit(time_exit_config: dict, session: str) -> tuple:
+    """Return (setup_lines, exit_bool_expr) for a time-based exit, or (None, None).
+
+    Faithful port of time_exit_packs.check_time_exit. Currently emits `eod_exit`
+    (force-flat N minutes before close). The engine converts the bar timestamp
+    (Polygon open-label) to US/Eastern and exits when hour*60+minute reaches
+    close − minutes_before; the exit fills at the bar CLOSE (exec type C). Pine's
+    `time` is the bar-open time, so `hour(time, "America/New_York")` matches the
+    engine's clock exactly, and process_orders_on_close fills at the bar close.
+
+    Fail loud on any other method (e.g. max_hold_bars, time_of_day_exit): silently
+    dropping a time exit would diverge from the backtest (TV would hold overnight),
+    which is exactly the fidelity gap we refuse to ship."""
+    if not time_exit_config:
+        return None, None
+    method = time_exit_config.get('method')
+    if method != 'eod_exit':
+        raise ValueError(
+            f"no Pine emitter for time_exit method '{method}'. "
+            f"Add it to pine_generator._emit_time_exit (only 'eod_exit' so far).")
+    ch, cm = _SESSION_CLOSE_ET.get(session, (16, 0))
+    mins = int(time_exit_config.get('minutes_before_close', 15))
+    thresh = ch * 60 + cm - mins
+    setup = (
+        '// ── time exit: force flat N min before close (US/Eastern) ──\n'
+        f'eodThresh = {thresh}  // {ch:02d}:{cm:02d} ET close − {mins}m\n'
+        'etNowMin  = hour(time, "America/New_York") * 60 + '
+        'minute(time, "America/New_York")\n'
+        'eodExit   = etNowMin >= eodThresh')
+    return setup, 'eodExit'
+
+
 # ───────────────────────────────────────────────────────────────────────────
 # Orchestrator
 # ───────────────────────────────────────────────────────────────────────────
@@ -965,6 +1006,7 @@ def generate_pine(strat: dict) -> str:
             _ex_ids[0] if _ex_ids else None)
     gates = list(cfg.get('confluence') or [])
     stop_cfg = cfg.get('stop_config') or {}
+    time_exit_cfg = cfg.get('time_exit_config') or {}
     session = cfg.get('trading_session') or cfg.get('session') or 'RTH'
 
     if not entry_t:
@@ -1057,6 +1099,9 @@ def generate_pine(strat: dict) -> str:
     stop_setup, stop_expr, stop_helpers = _emit_stop(stop_cfg)
     helpers_needed.update(stop_helpers)
 
+    # ── time exit (eod_exit etc.) ──
+    te_setup, te_expr = _emit_time_exit(time_exit_cfg, session)
+
     # ── helper lib ──
     for h in ('rorEma', 'rorTrueRange'):
         if h in helpers_needed:
@@ -1097,6 +1142,11 @@ def generate_pine(strat: dict) -> str:
         L(stop_setup)
         L("")
 
+    # ── time-exit setup ──
+    if te_expr:
+        L(te_setup)
+        L("")
+
     # ── orders ──
     L("// ── orders ──")
     L("entryGated = entrySig and gateAll")
@@ -1109,6 +1159,13 @@ def generate_pine(strat: dict) -> str:
         L("if strategy.position_size > 0 and not na(stopLevel)")
         L('    strategy.exit("stop", from_entry="L", stop=stopLevel, '
           'comment="stop_loss")')
+    # Time exit (priority 2 in the engine: after stop, before signal). The stop
+    # above is intrabar so it still wins on a bar that both gaps the stop AND is
+    # past the EOD threshold; emitting eod before the signal close lets it
+    # override the signal exit, matching check_time_exit's precedence.
+    if te_expr:
+        L(f"if strategy.position_size > 0 and {te_expr}")
+        L('    strategy.close("L", comment="eod_exit")')
     if exit_expr:
         L("if exitSig and strategy.position_size > 0")
         L(f'    strategy.close("L", comment="{exit_t}")')
