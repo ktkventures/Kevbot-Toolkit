@@ -21,6 +21,16 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-06-25
 
+- **~04:0x UTC (22:0x MT 06-25)** — `cd6056c` Merge M-RS2 Phase 2 (REST Bars read path + Hi-Fi load-once)
+  - Service(s) redeployed: Worker / api / frontend (push to dev)
+  - Observed cache gap: **deployed while markets CLOSED** → no live-capture/divergence
+    disruption expected. New dep `psycopg[binary]` installs on this build.
+  - Notes: **Code is INERT until env set** — `BAR_CACHE_ENABLED` off + no
+    `SUPABASE_CONNECTION_STRING` on Railway = falls back to Polygon, zero behavior change.
+    To activate: set `SUPABASE_CONNECTION_STRING` (session-pooler DSN) on **api + worker**,
+    then `BAR_CACHE_ENABLED=1`. Backup branch `dev-backup-2026-06-25-pre-mrs2-p2`. Once on,
+    backtest recompute reads REST Bars (1.8×) and Hi-Fi reads load-once 1s (4.26×), both
+    validated byte-identical. Watch first Update-All tomorrow for the speedup.
 - **~01:52 UTC (19:52 MT 06-25)** — `fe666a4` tasks ID column + EOD docs/corrections (no engine/worker code change)
   - Service(s) redeployed: frontend (ID column) / api / Worker (restart on push, no code delta)
   - Observed cache gap: (deploy window — expect ~1-2 min Worker restart gap)
