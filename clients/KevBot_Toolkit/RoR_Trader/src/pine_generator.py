@@ -867,6 +867,43 @@ def _emitter_for_interp(interp: str) -> Optional[PineEmitter]:
     return factory() if factory else None
 
 
+def _resolve_trigger(spec: str):
+    """Resolve a trigger spec to (emitter, base) where base is what
+    emit_trigger() accepts.
+
+    Two spec shapes occur in the wild:
+      • flat trigger (modern strategies):  'utv4_bull_flip', 'eppv3_cross_short_up'
+      • confluence-group id (Mass Builder): 'ut_bot_v4_default_bull_flip'
+        — these strategies store entry/exit as entry_trigger_confluence_id /
+        exit_trigger_confluence_ids instead of the flat field.
+
+    Confluence ids are '{pack_id}_{version}_{base}' (pack_id matches an EMITTERS
+    key, same as gate interpreters; version is e.g. 'default'). We resolve the
+    pack via EMITTERS — exactly how gates resolve — and find the base by trying
+    emit_trigger on progressively shorter suffixes (version tokens stripped).
+    Returns (None, None) if unresolved."""
+    if not spec:
+        return None, None
+    # 1) flat trigger — prefix registered in _TRIGGER_PREFIX
+    em = _emitter_for_trigger(spec)
+    if em is not None and em.emit_trigger(spec) is not None:
+        return em, spec
+    # 2) confluence-group id — longest matching pack_id prefix wins
+    s = spec.lower()
+    for pack_id in sorted(EMITTERS, key=len, reverse=True):
+        if s == pack_id or s.startswith(pack_id + '_'):
+            em = _emitter_for_interp(pack_id)
+            if em is None:
+                continue
+            toks = s[len(pack_id) + 1:].split('_')
+            for start in range(len(toks)):
+                base = '_'.join(toks[start:])
+                if base and em.emit_trigger(base) is not None:
+                    return em, base
+            return em, None
+    return None, None
+
+
 # ───────────────────────────────────────────────────────────────────────────
 # Stop emitter
 # ───────────────────────────────────────────────────────────────────────────
@@ -905,26 +942,63 @@ def generate_pine(strat: dict) -> str:
     name = strat.get('name') or f"sid {strat.get('id', '?')}"
     symbol = strat.get('symbol') or cfg.get('symbol') or 'SPY'
     primary_tf = cfg.get('timeframe') or strat.get('timeframe') or '1Min'
-    entry_t = cfg.get('entry_trigger')
+    # Entry/exit triggers: modern strategies store flat triggers; Mass Builder
+    # strategies store them as confluence-group ids (entry_trigger_confluence_id
+    # / exit_trigger_confluence_ids). Fall back to the latter when the flat
+    # field is absent — _resolve_trigger handles both shapes.
+    entry_t = cfg.get('entry_trigger') or cfg.get('entry_trigger_confluence_id')
     exit_t = cfg.get('exit_trigger')
+    if not exit_t:
+        _ex_ids = cfg.get('exit_trigger_confluence_ids') or []
+        exit_t = cfg.get('exit_trigger_confluence_id') or (
+            _ex_ids[0] if _ex_ids else None)
     gates = list(cfg.get('confluence') or [])
     stop_cfg = cfg.get('stop_config') or {}
     session = cfg.get('trading_session') or cfg.get('session') or 'RTH'
 
     if not entry_t:
-        raise ValueError("strategy has no entry_trigger")
+        raise ValueError(
+            "strategy has no entry_trigger or entry_trigger_confluence_id")
 
-    prim = _emitter_for_trigger(entry_t)
+    prim, entry_base = _resolve_trigger(entry_t)
     if prim is None:
         raise ValueError(
             f"no Pine emitter for entry trigger '{entry_t}'. "
             f"Add an emitter for its pack to pine_generator.EMITTERS.")
-    entry_expr = prim.emit_trigger(entry_t)
+    entry_expr = prim.emit_trigger(entry_base)
     if entry_expr is None:
         raise ValueError(f"emitter {prim.slug} can't emit trigger '{entry_t}'")
-    exit_expr = prim.emit_trigger(exit_t) if exit_t else None
+    # Exit can use a DIFFERENT pack than entry (Mass Builder commonly enters on
+    # one pack and exits on another, e.g. swing_123 entry / ut_bot_v4 exit), so
+    # resolve the exit with its OWN emitter — never silently drop it.
+    xit, exit_expr = None, None
+    if exit_t and str(exit_t).strip().lower() == 'opposite_signal':
+        # Exit on the inverse of the entry trigger (same pack), mirroring the
+        # engine's triggers.get_opposite_trigger() suffix pairing. If no opposite
+        # exists the engine no-ops (stop-only) — leave exit_expr None to match.
+        from triggers import get_opposite_trigger
+        opp = get_opposite_trigger(entry_base)
+        if opp is not None:
+            xit = prim
+            exit_expr = prim.emit_trigger(opp)
+            if exit_expr is None:
+                raise ValueError(
+                    f"opposite_signal exit: emitter {prim.slug} can't emit "
+                    f"opposite trigger '{opp}' of entry '{entry_t}'")
+    elif exit_t:
+        xit, exit_base = _resolve_trigger(exit_t)
+        if xit is None or exit_base is None:
+            raise ValueError(
+                f"no Pine emitter for exit trigger '{exit_t}'. "
+                f"Add an emitter for its pack to pine_generator.EMITTERS.")
+        exit_expr = xit.emit_trigger(exit_base)
+        if exit_expr is None:
+            raise ValueError(
+                f"emitter {xit.slug} can't emit exit trigger '{exit_t}'")
 
     helpers_needed = set(prim.helpers)
+    if xit is not None:
+        helpers_needed.update(xit.helpers)
     lines = []
     L = lines.append
 
@@ -981,6 +1055,11 @@ def generate_pine(strat: dict) -> str:
     # ── primary indicators + triggers ──
     L("// ── primary pack: " + prim.slug + " ──")
     L(prim.emit_primary_setup())
+    # Exit pack's indicator (only when it differs from the entry pack — e.g.
+    # swing_123 entry / ut_bot_v4 exit). Same pack ⇒ setup already emitted above.
+    if xit is not None and xit.slug != prim.slug:
+        L("// ── exit pack: " + xit.slug + " ──")
+        L(xit.emit_primary_setup())
     L(f"entrySig = {entry_expr}")
     if exit_expr:
         L(f"exitSig  = {exit_expr}")
