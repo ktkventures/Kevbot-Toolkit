@@ -42,3 +42,6 @@ python-jose[cryptography]>=3.3.0
 # AI Providers (Pack Builder)
 anthropic>=0.40.0
 openai>=1.40.0
+
+# M-RS2 REST Bars direct-Postgres reader (bar_cache.read_bars)
+psycopg[binary]>=3.1

@@ -1,6 +1,6 @@
 # RoR Trader — STATUS (read me first)
 
-**Updated: 2026-06-24.** This is the single doc to open for "what are we doing and why."
+**Updated: 2026-06-25.** This is the single doc to open for "what are we doing and why."
 It's the live priority list + current state. Deeper detail lives in the linked docs (kept
 in their current locations for now — see Doc Map). New observations get logged here (and in
 `Roadmap_Divergence_Hunting.md` for divergence specifics). Work board = the **dev_tasks
@@ -9,6 +9,32 @@ admin page** (`/admin/tasks`); today's items are #33–#40.
 ## North star
 Backtest and live produce the **same trades within ~5s**, so we can **trade reliably**.
 Current focus: the first real-money strategies (308–314, TSLA 15Sec).
+
+## 🟢 2026-06-25 — M-RS2 Phase 2 read path COMPLETE + Hi-Fi load-once (READ FIRST)
+- **Two bar caches now have canonical names** (Kevin): **"Live Bars"** (`live_bars`, WS,
+  immutable decision-time) vs **"REST Bars"** (`bar_cache`, Polygon REST, revisable). New
+  canonical doc `docs/_active/Two_Bar_Caches_DEFINITIONS.md` + red-line header banners on
+  `bar_cache.py` / `live_bars_writer.py`. The 2-3× recurring conflation risk is now codified.
+- **Read path wired + byte-identical** (`bar_cache.read_bars()` direct-PG + `cached_load_market_data`
+  native-TF): get_strategy_trades(325) cache-on = **442 trades, byte-identical, 1.8×** (382s vs 700s).
+- **Hi-Fi Pass 2 load-once** (`prime_1s_cache_from_rest_bars`): ONE direct-PG read over the whole
+  trade span feeds the per-day `_1s_cache` (Kevin's "pull big swaths once"). Validated end-to-end
+  on **sid 321 (799 trades): byte-identical across 9 cols, 4.26× (13.9s→3.3s)**.
+- **Composite full-Update-All estimate: ~1.5–2× faster** (Hi-Fi 4.3× + load 1.8×; engine/persist/
+  secondary unchanged = M-RS3 territory). On top of M-RS1 already shipped.
+- **⚠️ Two scary findings DEBUNKED as test-harness artifacts:** (1) "Polygon revises 1s over days"
+  = a `1e-9` threshold catching **sub-penny** float values; a settled day (06-16) is **literally
+  zero-diff**, and Polygon docs confirm intraday locks after 15min + EOD. (2) "REST Bars 1s ~50%
+  incomplete" = my baseline `load_from_polygon(end_date=d+1)` pulled **2 days** (inclusive range)
+  vs the cache's 1; clean per-day row counts match **exactly**. REST Bars is sound + complete + `float8`.
+- **All behind `BAR_CACHE_ENABLED` + a DSN; transparent Polygon fallback when off/uncached.**
+- **DEPLOY (option A):** branch `feat/m-rs2-phase2-readpath` → dev tonight (markets closed = safest:
+  no live-capture/divergence disruption). Needs `psycopg[binary]` in requirements (added) +
+  Kevin sets `SUPABASE_CONNECTION_STRING` on **api + worker**, then `BAR_CACHE_ENABLED=1`. Inert until set.
+- **NEXT (new, Kevin's idea = M-RS2 Phase 3):** extend the load-once direct-PG read + cross-strategy
+  sharing to the **algo / Live Bars lane** (dedup per-strategy `live_bars` reads). Live Bars supply
+  already exists (WS writer) — win is a fast *reader* + sharing, NOT a new supply, and it must read
+  **Live Bars, never REST** (keep decision-time fidelity). Board #42.
 
 ## 🟢 2026-06-24 PM — M-RS2 Phase 1 DEPLOYED + speed test (read first)
 - **Deployed to dev** (deb96e5 M-RS1 + dc053b3 M-RS2 Phase1 + e6b9221 deploy-log; backup
