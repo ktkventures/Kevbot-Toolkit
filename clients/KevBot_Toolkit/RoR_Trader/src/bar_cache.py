@@ -546,6 +546,12 @@ def backfill_symbol(
     if end_date.tzinfo is None:
         end_date = end_date.replace(tzinfo=timezone.utc)
 
+    # Coarse layers (>=1Hour) are DERIVED from the cached 1Min (split-safe) —
+    # NOT fetched native (native daily has split-adjustment bugs). See
+    # materialize_derived. Requires the 1Min layer to be backfilled first.
+    if _tf_seconds(timeframe) >= 3600:
+        return materialize_derived(symbol, timeframe, start_date, end_date)
+
     step = chunk_days or _BACKFILL_CHUNK_DAYS.get(timeframe, 30)
     total = 0
     cur = start_date
@@ -586,6 +592,13 @@ def maintain_symbol(symbol: str, timeframe: str) -> int:
     if last is None:
         return 0
     now = datetime.now(timezone.utc)
+    # Coarse layers: re-materialize a recent window from the (current) 1Min —
+    # covers the forming coarse bar + late-revision days (daily bars revise all
+    # day). Cheap (a few days of 1Min). The 1Min layer's own maintain keeps it
+    # fresh, so re-resampling the recent slice keeps the coarse layer current.
+    if _tf_seconds(timeframe) >= 3600:
+        return materialize_derived(symbol, timeframe,
+                                   min(last, now - timedelta(days=3)), now)
     unsettled_start = now - timedelta(minutes=_revision_horizon_min())
     fetch_from = min(last, unsettled_start)
     try:
@@ -601,6 +614,45 @@ def maintain_symbol(symbol: str, timeframe: str) -> int:
     n = _bulk_upsert(symbol, timeframe, df)
     logger.info("bar_cache.maintain_symbol: %s/%s extended from %s, +%d rows",
                 symbol, timeframe, fetch_from.isoformat(), n)
+    return n
+
+
+def materialize_derived(symbol: str, timeframe: str,
+                        start_date: datetime, end_date: datetime) -> int:
+    """Build a COARSE (>=1Hour) cache layer by resampling the cached **1Min** —
+    NOT by fetching native Polygon. Native Polygon daily/hourly carries
+    split-adjustment bugs (CLAUDE.md: native daily returned pre-split $4,700
+    NVDA), which is exactly why the backtest builds coarse TFs from 1Min. Doing
+    the same here keeps the cache byte-consistent with the backtest's own coarse
+    construction (cache == backtest), and lets coarse-TF live warmup / backtest
+    loads read ~246 daily rows instead of re-squishing ~140k 1-minute bars.
+
+    Reads the cached 1Min for [start,end] (must already be backfilled), resamples
+    to `timeframe`, upserts under the target TF key. Returns rows upserted."""
+    from data_loader import resample_to_timeframe
+    if start_date.tzinfo is None:
+        start_date = start_date.replace(tzinfo=timezone.utc)
+    if end_date.tzinfo is None:
+        end_date = end_date.replace(tzinfo=timezone.utc)
+    df1 = read_bars(symbol, "1Min", start_date, end_date)
+    if df1 is None or len(df1) == 0:
+        logger.warning("bar_cache.materialize_derived: no cached 1Min for %s "
+                       "[%s..%s] — backfill the 1Min layer first",
+                       symbol, start_date.date(), end_date.date())
+        return 0
+    try:
+        out = resample_to_timeframe(
+            df1[["open", "high", "low", "close", "volume"]].copy(), timeframe)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("bar_cache.materialize_derived: resample %s %s<-1Min "
+                       "failed: %s", symbol, timeframe, e)
+        return 0
+    if out is None or len(out) == 0:
+        return 0
+    n = _bulk_upsert(symbol, timeframe, out)
+    logger.info("bar_cache.materialize_derived: %s/%s <- 1Min [%s..%s]: "
+                "%d bars upserted (split-safe resample)",
+                symbol, timeframe, start_date.date(), end_date.date(), n)
     return n
 
 
