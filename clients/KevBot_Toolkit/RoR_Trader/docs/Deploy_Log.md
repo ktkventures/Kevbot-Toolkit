@@ -19,6 +19,17 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-06-26
+
+- **~18:5x UTC (12:5x MT 06-26)** — `a38f876` fix(live): seed cross-TF gate from warmed shadow (coarse 1H/4H/1D gates fire live)
+  - Service(s) redeployed: Worker / api / frontend (push to dev)
+  - ⚠️ **Deployed DURING live hours** (RTH) — Worker restart = ~1-2 min live_bars gap +
+    full re-warm. **Filter ~18:5x–19:0x UTC out of divergence readings.** Intentional
+    (Kevin wants to confirm coarse-gated strategies fire live this session, not wait).
+  - Notes: behavior change — strategies with ≥1Hour confluence gates (e.g. 310/313) should
+    now START firing live (were silent). Kill-switch `RORT_SEED_MTF_FROM_WARMUP=0` if it
+    misbehaves. Watch worker logs for `[MTF-SEED] tf=86400` + 310/313 alerts.
+
 ## 2026-06-25
 
 - **~04:0x UTC (22:0x MT 06-25)** — `cd6056c` Merge M-RS2 Phase 2 (REST Bars read path + Hi-Fi load-once)
