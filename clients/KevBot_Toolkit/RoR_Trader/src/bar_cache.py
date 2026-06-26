@@ -1,4 +1,21 @@
-"""Persistent bar cache backed by Supabase Postgres (bar_cache table).
+""""REST Bars" — persistent REST-canonical bar cache (bar_cache table).
+
+================================================================================
+THIS IS THE *REST BARS* CACHE — one of two bar caches. Do not confuse it with
+"Live Bars" (`live_bars` table, written by live_bars_writer.py).
+
+  - REST Bars (this, `bar_cache`): Polygon REST aggregates. REVISABLE on purpose
+    — maintain_symbol/revision-refresh re-pull and overwrite so it tracks current
+    Polygon REST (Polygon revises its own 1s/1min for days). Used for backtest
+    speed + fidelity. Byte-identical to a fresh Polygon REST pull is the GOAL.
+  - Live Bars (`live_bars`): what the WebSocket saw at decision time. IMMUTABLE —
+    a seen ws_agg bar is NEVER post-corrected. (REST only gap-fills *missing*
+    minutes there, insert-only, never overwriting a seen bar.)
+
+RED LINE: the overwrite-to-match-Polygon logic in this module touches ONLY
+`bar_cache`. It must NEVER be pointed at `live_bars`.
+Canonical reference: docs/_active/Two_Bar_Caches_DEFINITIONS.md
+================================================================================
 
 Wraps load_market_data so identical (symbol, timeframe, days, session)
 combos within a session don't re-fetch from Polygon. Also speeds up
