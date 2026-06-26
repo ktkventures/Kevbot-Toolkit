@@ -195,55 +195,68 @@ class UtBotV4Emitter(PineEmitter):
         p = self.params
         return int(p.get('atr_period', 10)), float(p.get('key_value', 1.0))
 
-    def emit_gate_function(self, state: str, fn_name: str) -> Optional[str]:
+    def _recursion(self, indent: str) -> str:
+        # UT Bot trailing stop + flips. Verbatim translation of
+        # UtBotV4Incremental (Wilder ATR α=1/period, 4-case ratchet). Reused at
+        # indent='' (primary-TF setup) and indent='    ' (inside a gate fn).
+        # var floats persist across bars; bullFlip/bearFlip are per-bar events.
         atr_p, key = self._params()
-        st = state.upper()
-        # The function computes the UT Bot trailing stop + flips, then returns
-        # the requested interpreter state. Verbatim translation of
-        # UtBotV4Incremental (Wilder ATR, 4-case ratchet).
-        if st == 'BULL_TREND':
-            ret = "(close > stop) and not bullFlip"
-        elif st == 'BEAR_TREND':
-            ret = "(close < stop) and not bearFlip"
-        elif st == 'BULL_FLIP':
-            ret = "bullFlip"
-        elif st == 'BEAR_FLIP':
-            ret = "bearFlip"
-        else:
-            return None
+        i = indent
         return (
-            f"{fn_name}() =>\n"
-            f"    var float atr  = na\n"
-            f"    var float stop = na\n"
-            f"    var float pc   = na\n"
-            f"    bool bullFlip = false\n"
-            f"    bool bearFlip = false\n"
-            f"    if na(stop)\n"
-            f"        tr = high - low\n"
-            f"        atr  := tr\n"
-            f"        stop := close - {key} * tr\n"
-            f"        pc   := close\n"
-            f"    else\n"
-            f"        tr = math.max(high - low, math.abs(high - pc),"
+            f"{i}var float atr  = na\n"
+            f"{i}var float stop = na\n"
+            f"{i}var float pc   = na\n"
+            f"{i}bool bullFlip = false\n"
+            f"{i}bool bearFlip = false\n"
+            f"{i}if na(stop)\n"
+            f"{i}    tr = high - low\n"
+            f"{i}    atr  := tr\n"
+            f"{i}    stop := close - {key} * tr\n"
+            f"{i}    pc   := close\n"
+            f"{i}else\n"
+            f"{i}    tr = math.max(high - low, math.abs(high - pc),"
             f" math.abs(low - pc))\n"
-            f"        atr := atr + (1.0 / {atr_p}) * (tr - atr)\n"
-            f"        nLoss = {key} * atr\n"
-            f"        ps = stop\n"
-            f"        float ns = na\n"
-            f"        if close > ps and pc > ps\n"
-            f"            ns := math.max(ps, close - nLoss)\n"
-            f"        else if close < ps and pc < ps\n"
-            f"            ns := math.min(ps, close + nLoss)\n"
-            f"        else if close > ps\n"
-            f"            ns := close - nLoss\n"
-            f"        else\n"
-            f"            ns := close + nLoss\n"
-            f"        bullFlip := pc <= ps and close > ns\n"
-            f"        bearFlip := pc >= ps and close < ns\n"
-            f"        stop := ns\n"
-            f"        pc   := close\n"
-            f"    {ret}"
+            f"{i}    atr := atr + (1.0 / {atr_p}) * (tr - atr)\n"
+            f"{i}    nLoss = {key} * atr\n"
+            f"{i}    ps = stop\n"
+            f"{i}    float ns = na\n"
+            f"{i}    if close > ps and pc > ps\n"
+            f"{i}        ns := math.max(ps, close - nLoss)\n"
+            f"{i}    else if close < ps and pc < ps\n"
+            f"{i}        ns := math.min(ps, close + nLoss)\n"
+            f"{i}    else if close > ps\n"
+            f"{i}        ns := close - nLoss\n"
+            f"{i}    else\n"
+            f"{i}        ns := close + nLoss\n"
+            f"{i}    bullFlip := pc <= ps and close > ns\n"
+            f"{i}    bearFlip := pc >= ps and close < ns\n"
+            f"{i}    stop := ns\n"
+            f"{i}    pc   := close"
         )
+
+    def emit_primary_setup(self) -> str:
+        return self._recursion('')
+
+    def emit_trigger(self, base: str) -> Optional[str]:
+        # Entry/exit triggers are the flip events (edge-triggered), mirroring
+        # SupertrendEmitter. The trend STATES are gate-only (emit_gate_function).
+        b = base.replace('utv4_', '')
+        return {
+            'bull_flip': "bullFlip",
+            'bear_flip': "bearFlip",
+        }.get(b)
+
+    def emit_gate_function(self, state: str, fn_name: str) -> Optional[str]:
+        st = state.upper()
+        ret = {
+            'BULL_TREND': "(close > stop) and not bullFlip",
+            'BEAR_TREND': "(close < stop) and not bearFlip",
+            'BULL_FLIP':  "bullFlip",
+            'BEAR_FLIP':  "bearFlip",
+        }.get(st)
+        if ret is None:
+            return None
+        return f"{fn_name}() =>\n{self._recursion('    ')}\n    {ret}"
 
 
 class EmaStackV2Emitter(PineEmitter):
@@ -830,6 +843,7 @@ _TRIGGER_PREFIX = {
     'esv2_': EmaStackV2Emitter,
     'mlv2_': MacdLineV2Emitter,
     'mhv2_': MacdHistV2Emitter,
+    'utv4_': UtBotV4Emitter,
     'st_': SupertrendEmitter,
     'rv2_': RvolV2Emitter,
     'rsi2_': RsiZones2Emitter,
