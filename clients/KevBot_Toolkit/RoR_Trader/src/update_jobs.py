@@ -19,6 +19,7 @@ the worker thread checks it between strategies and exits cleanly.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time as _time
 from typing import Optional
@@ -127,6 +128,20 @@ def start_update_job_async(
             })
             return
 
+        # RORT_UPDATE_ALL_SKIP_ALGO=1 → run the BACKTEST lane only, skipping the
+        # algo / Live-Bars lane. Faster, and the seam for the planned separate
+        # `update_all_algo_data` process. Default off = both lanes (current
+        # behavior). ⚠️ When on, the algo-history (`cache_%` trades) goes STALE
+        # until the algo lane runs separately → divergence three-way + algo
+        # views lag. Safe to skip: `mode='window'` already runs BT-only
+        # (algo=None) and the summary handles a None algo cleanly.
+        _skip_algo = os.environ.get('RORT_UPDATE_ALL_SKIP_ALGO', '').strip().lower() in (
+            '1', 'true', 'yes', 'on')
+        if _skip_algo:
+            logger.info("[update_job %s] RORT_UPDATE_ALL_SKIP_ALGO=1 → BACKTEST "
+                        "lane only (algo/Live-Bars lane skipped; algo-history "
+                        "will be stale until run separately)", job_id)
+
         per_strategy: dict[str, dict] = {}
         total = len(strategy_ids)
         succeeded = 0
@@ -163,15 +178,17 @@ def start_update_job_async(
             })
 
             try:
-                algo = None  # window mode only touches BT lane
+                algo = None  # window mode (+ RORT_UPDATE_ALL_SKIP_ALGO) only touch BT lane
                 if mode == 'all':
                     bt = recompute_and_persist_stored_trades(sid, user_id)
-                    algo = recompute_and_persist_algo_trades(sid, user_id)
+                    if not _skip_algo:
+                        algo = recompute_and_persist_algo_trades(sid, user_id)
                 elif mode == 'new':
                     bt = append_new_backtest_trades_for_strategy(
                         sid, user_id, force=True)
-                    algo = append_new_trades_for_strategy(
-                        sid, user_id, force=True)
+                    if not _skip_algo:
+                        algo = append_new_trades_for_strategy(
+                            sid, user_id, force=True)
                 elif mode == 'window':
                     # Window backfill — BT lane only. Caller must pass
                     # ISO timestamps; convert here.
