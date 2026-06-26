@@ -19,6 +19,14 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-06-25
+
+- **~01:52 UTC (19:52 MT 06-25)** — `fe666a4` tasks ID column + EOD docs/corrections (no engine/worker code change)
+  - Service(s) redeployed: frontend (ID column) / api / Worker (restart on push, no code delta)
+  - Observed cache gap: (deploy window — expect ~1-2 min Worker restart gap)
+  - Notes: Docs + frontend only. M-RS2 Phase 2 (read_bars) stays on feat/m-rs2-phase2-readpath,
+    NOT in this deploy. No kill-switch/env changes.
+
 ## 2026-06-24
 
 - **~22:14 UTC (16:14 MT)** — `deb96e5` M-RS1 per-TF warmup + `dc053b3` M-RS2 Phase 1 bar-cache supply
