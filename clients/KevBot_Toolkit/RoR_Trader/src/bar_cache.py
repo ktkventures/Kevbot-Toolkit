@@ -92,6 +92,20 @@ def _revision_horizon_min() -> int:
 # Cache I/O
 # =============================================================================
 
+def _tf_seconds(timeframe: str) -> int:
+    """Canonical TF string -> seconds. '10Sec'->10, '1Min'->60, '1Hour'->3600,
+    '1Day'->86400. Unknown -> 60 (1-minute) as a safe default. Used to enforce
+    the never-upsample invariant in cached_load_market_data."""
+    import re
+    m = re.match(r"^\s*(\d+)\s*(Sec|Min|Hour|Day|Week)", str(timeframe), re.I)
+    if not m:
+        return 60
+    n = int(m.group(1))
+    unit = m.group(2).lower()
+    return n * {"sec": 1, "min": 60, "hour": 3600,
+                "day": 86400, "week": 604800}[unit]
+
+
 def _max_cached_ts(symbol: str, timeframe: str) -> Optional[datetime]:
     """Return the latest ts in the cache for (symbol, timeframe), or None
     if nothing is cached yet. Uses ORDER BY + LIMIT 1 — should be cheap
@@ -289,12 +303,38 @@ def cached_load_market_data(
     if end_dt.tzinfo is None:
         end_dt = end_dt.replace(tzinfo=timezone.utc)
 
-    # M-RS2 Phase 2: prefer the requested TF's NATIVE cache layer if it's
-    # present (sub-minute primaries like 30Sec, 1Min, native coarse) — read it
-    # directly, no resample, byte-identical to a native Polygon fetch. Fall
-    # back to the 1Min layer + resample for coarser TFs not natively cached
-    # (legacy path). This is what lets sub-minute strategies read from cache.
-    cache_tf = timeframe if _max_cached_ts(symbol, timeframe) is not None else "1Min"
+    # M-RS2 Phase 2: choose which cache layer to read. CRITICAL INVARIANT: the
+    # chosen layer must be FINER-OR-EQUAL to the requested TF — NEVER coarser, or
+    # we'd have to UPSAMPLE (e.g. 1Min→10Sec), which produces sparse/garbage bars
+    # and silently wrecks sub-minute backtests. (Fixed 2026-06-26; the prior
+    # `else "1Min"` fallback upsampled every uncached sub-minute strategy —
+    # 10Sec/15Sec dropped ~6x/~4x of their trades. 30Sec survived only because
+    # TSLA 30Sec happened to be captured natively.)
+    #   - native TF cached    → read it directly (byte-identical).
+    #   - sub-minute uncached → derive from the native **1Sec** layer + downsample.
+    #                           Validated 2026-06-26 byte-identical to Polygon
+    #                           native sub-minute aggregates INCLUDING volume
+    #                           (10Sec/15Sec across 06-12/16/22: OHLC + volume 0
+    #                           diffs). 1Sec→sub-minute is a valid downsample.
+    #   - 1Min-or-coarser     → 1Min cache + downsample (the "always start from
+    #                           1Min" convention). NOTE: we deliberately do NOT
+    #                           derive 1Min from 1Sec — Polygon's native 1Min
+    #                           VOLUME diverges from summed 1Sec (822/944 bars,
+    #                           maxΔ 7300 sh on 06-16), so 1Min must stay native.
+    # The cache_tf chosen is ALWAYS finer-or-equal to the request — never coarser
+    # (upsampling 1Min→10Sec was the 2026-06-26 bug that wrecked 10Sec/15Sec
+    # backtests; the guard below enforces it).
+    target_s = _tf_seconds(timeframe)
+    if _max_cached_ts(symbol, timeframe) is not None:
+        cache_tf = timeframe
+    elif target_s < 60:
+        cache_tf = "1Sec"   # sub-minute → downsample from native 1Sec
+    else:
+        cache_tf = "1Min"   # 1Min-or-coarser → downsample from native 1Min
+    # Hard guard: never read a layer coarser than requested (no upsampling) and
+    # never read a layer that isn't actually present → fall back to Polygon.
+    if _max_cached_ts(symbol, cache_tf) is None or _tf_seconds(cache_tf) > target_s:
+        return None
 
     # 1. Find cached coverage
     last_cached = _max_cached_ts(symbol, cache_tf)
