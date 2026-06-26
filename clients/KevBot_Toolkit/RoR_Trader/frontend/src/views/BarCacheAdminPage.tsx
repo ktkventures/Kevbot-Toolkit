@@ -26,11 +26,18 @@ interface Target {
   max_ts: string | null;
   backfill_status: string | null;
 }
+interface ReadHealth {
+  read_enabled: boolean;
+  direct_pg_available: boolean;
+  sample_read_ok: boolean | null;
+  detail: string | null;
+}
 interface TargetsResp {
   targets: Target[];
   resolutions: string[];
   read_enabled: boolean;
   maintain_cron_enabled: boolean;
+  read_health?: ReadHealth;
 }
 
 const cell: React.CSSProperties = { padding: '7px 8px', verticalAlign: 'middle', fontSize: 13 };
@@ -162,7 +169,21 @@ export default function BarCacheAdminPage() {
             <span style={pill(resp?.maintain_cron_enabled ? 'var(--green)' : 'var(--text-tertiary)')}>
               maintain cron (BAR_CACHE_MAINTAIN_ENABLED): {resp?.maintain_cron_enabled ? 'ON' : 'off'}
             </span>
+            <span style={pill(resp?.read_health?.direct_pg_available ? 'var(--green)' : 'var(--red)')}>
+              direct-PG (SUPABASE_CONNECTION_STRING): {resp?.read_health?.direct_pg_available ? 'connected' : 'MISSING'}
+            </span>
+            <span style={pill(resp?.read_health?.sample_read_ok ? 'var(--green)'
+              : resp?.read_health?.sample_read_ok === false ? 'var(--red)' : 'var(--text-tertiary)')}>
+              live sample read: {resp?.read_health?.sample_read_ok === true ? 'OK'
+                : resp?.read_health?.sample_read_ok === false ? 'FAILED' : 'n/a'}
+            </span>
           </div>
+          {resp?.read_health?.detail && (
+            <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: -6, marginBottom: 12 }}>
+              read health (api service): {resp.read_health.detail}
+              {' · '}worker env confirmed separately via Update-All logs
+            </div>
+          )}
           {err && <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 10 }}>{err}</div>}
 
           {/* Add target */}

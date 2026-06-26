@@ -14,6 +14,15 @@ here until either (a) shipped + verified, or (b) explicitly deprecated.
 
 ## Active
 
+### Newer strategies appear to not trigger live (alerts) — investigate user-pack registry on the live worker
+- **Status:** OPEN — observation, not yet root-caused (logged 2026-06-25 from Kevin's report + corroborating context)
+- **Symptom:** Some of the newer strategies (the 308–337 cohort, mostly 15Sec/30Sec) seem to not be firing live alerts / not triggering as expected. Kevin has independently noticed this.
+- **Leading hypothesis — user-pack registry:** the newer strategies disproportionately use **user packs** (e.g. `ut_bot_v4`, `stoch`, multipack — see the TEST-P2-* and Mass cohorts), whereas the older fleet uses built-in triggers. If the **live worker's** pack registry fails to fully load at startup (`pack_registry.scan_and_load_all()` — api/main.py:~103 / worker startup), or a specific pack isn't registered, then user-pack **entry triggers silently fire ZERO** → 0 alerts, no error. This is the exact failure mode proven locally (see below) — just on the live worker instead of a script.
+  - **Check:** grep the live worker startup logs for `scan_and_load_all() -> N packs loaded` and confirm N is the full expected count; confirm the specific packs the silent strategies use (`ut_bot_v4` etc.) are in the registry; cross-check which silent sids are user-pack-based vs built-in.
+- **⚠️ Do NOT conflate with a local-harness artifact (2026-06-25):** during the M-RS2 Hi-Fi work, `get_strategy_trades()` returned 0 for 321/308/309/325 in an ad-hoc script — that was the SAME registry trap but in a *local* script that forgot `scan_and_load_all()`. Once the script loaded the registry (and used `get_strategy_by_id_admin` for the right strat shape), 321 produced **799 trades**. So the local 0 was a harness bug, NOT evidence the engine is broken. It IS, however, a live re-confirmation that "registry not loaded → user-pack triggers fire 0" — which is why it's the leading hypothesis for the live symptom. See `src/local_update.py` header (the 0-trades trap) + `feedback_local_script_pack_registry`.
+- **Other angles to rule out:** (a) `forward_test_start` recency — newer strategies have recent starts (e.g. 321 = 2026-06-19), so a short live window naturally has fewer alerts; (b) confluence too tight (the strategy genuinely rarely triggers); (c) session/TOD gating (the TZ-TEST sids 334–337 are deliberately session-gated). Distinguish "correctly quiet" from "silently broken" before fixing.
+- **Related:** existing silent-strategies finding (`project_silent_strategies_2026-05-06` — 6 MB mirrors fired 0/7d), `feedback_disabled_groups_kill_worker` (a disabled referenced group crashes the worker → whole-fleet silence).
+
 ### Manual Window Backfill over-produces ~17% extra trades vs UAD on same window
 - **Status:** WIP — feature shipped, marked "do not trust" on the admin page; needs root-cause + fix
 - **Discovered:** 2026-06-05 (parity test on sid 296 canary)
@@ -36,7 +45,12 @@ here until either (a) shipped + verified, or (b) explicitly deprecated.
 - **Until fixed, use UAD (Update All Data) to fill gaps.** UAD on sid 296 took 629s (~10.5min) tonight — slow but trustworthy.
 
 ### `alerts.live_model` field NULL on default-model strategies → rest_verifier silently skips them
-- **Status:** OPEN — root cause located; design intent ambiguous
+- **Status:** ✅ FIXED-VERIFIED (2026-06-18) — both dispatchers now fall back to
+  `get_default_live_model()` (shipped 2026-06-03, commit b2387ff): ralph_engine.py ~1836-1843,
+  worker.py ~234-242. Verified live: sid 308's 257 alerts (24h) all carry
+  `live_model='ws_rest_spliced'`, not NULL → new strategies 308-314 are correctly attributed +
+  verified. (The 1572-1575 / 228-231 line refs below are stale pre-fix locations.)
+- **Status (historical):** OPEN — root cause located; design intent ambiguous
 - **Discovered:** 2026-06-04 (Kevin pushed back on Layer 1 N/A claim — pointed out `live_model=None` falls back to default)
 - **Symptom:** Layer 1 (bar fidelity) in SOP is unusable for 89.7% of the fleet because `alerts.verification_status=NULL` everywhere.
 - **Fleet impact (24h sample, 5000 alerts):**

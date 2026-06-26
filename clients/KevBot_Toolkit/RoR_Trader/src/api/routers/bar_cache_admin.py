@@ -68,7 +68,47 @@ def list_targets(user=Depends(get_current_user)):
         "resolutions": _RESOLUTIONS,
         "read_enabled": _bar_cache_read_enabled(),
         "maintain_cron_enabled": _maintain_cron_enabled(),
+        "read_health": _read_health(),
     }
+
+
+def _read_health() -> dict:
+    """Live proof the REST Bars direct-Postgres read path works on THIS service.
+
+    Confirms the deploy env is wired: is BAR_CACHE_ENABLED on, is
+    SUPABASE_CONNECTION_STRING present, and can we ACTUALLY read_bars() a row
+    (i.e. the DSN connects + returns data). Surfaced on /admin/bar-cache so the
+    api-service env is visually verifiable. NOTE: reflects the API service only;
+    the worker (which runs Update-All) has its own env — confirm that from the
+    worker logs ('[HIFI] Primed N day(s) ... from REST Bars') on the next run.
+    """
+    import bar_cache
+    out = {
+        "read_enabled": _bar_cache_read_enabled(),
+        "direct_pg_available": bar_cache.direct_pg_available(),
+        "sample_read_ok": None,
+        "detail": None,
+    }
+    if not out["direct_pg_available"]:
+        out["detail"] = "SUPABASE_CONNECTION_STRING not set on this service"
+        return out
+    try:
+        targets = (bar_cache.get_capture_targets(enabled_only=True)
+                   or bar_cache.get_capture_targets(enabled_only=False))
+        if not targets:
+            out["detail"] = "DSN present but no capture targets configured"
+            return out
+        t0 = targets[0]
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=4)
+        df = bar_cache.read_bars(t0["symbol"], t0["timeframe"], start, end)
+        n = 0 if df is None else len(df)
+        out["sample_read_ok"] = n > 0
+        out["detail"] = f"{t0['symbol']}/{t0['timeframe']}: {n} rows in last 4d"
+    except Exception as e:  # noqa: BLE001
+        out["sample_read_ok"] = False
+        out["detail"] = str(e)[:160]
+    return out
 
 
 def _bar_cache_read_enabled() -> bool:
