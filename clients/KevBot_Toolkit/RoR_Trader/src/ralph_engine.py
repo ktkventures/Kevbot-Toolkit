@@ -2495,6 +2495,41 @@ class SymbolHub:
                     "seed_history cache reconcile failed sym=%s tf=%ss: %s",
                     self.symbol, tf_seconds, e)
 
+    def seed_mtf_from_shadow(self, tf_seconds: int) -> bool:
+        """Publish a freshly-warmed shadow's confluence into the cross-TF gate
+        dict (`_mtf_confluence[tf]`) right after warmup.
+
+        BUG FIX (2026-06-26): `_mtf_confluence[tf]` was ONLY ever populated on a
+        live `shadow.on_bar_close` — i.e. when a bar of that TF actually CLOSES
+        live. For COARSE secondary TFs (1Hour/4Hour/1Day) a bar almost never
+        closes during a session (a 1Day bar closes once/day), so their gate
+        state stayed ABSENT from `_mtf_confluence` → any entry trigger needing a
+        `1D-…`/`4H-…`/`1H-…` confluence had `subset_ok=0` FOREVER → the strategy
+        fired 0 alerts live while its backtest fired normally (310/313: 77/85
+        backtest trades in the live window, 0 alerts). The Bug-5 warmup already
+        seeds the shadow INDICATOR (e.g. 246 daily bars) — this derives the
+        confluence records from that warmed state (no extra indicator pass, via
+        `_derive_confluence_records`) and seeds the gate dict so coarse gates are
+        evaluable immediately, matching what the backtest sees (last CLOSED
+        coarse bar). Updated normally thereafter on each live coarse close.
+        Kill-switch RORT_SEED_MTF_FROM_WARMUP=0 reverts (instant rollback)."""
+        if os.getenv('RORT_SEED_MTF_FROM_WARMUP', '1') != '1':
+            return False
+        shadow = self._shadow_engines.get(tf_seconds)
+        if not (shadow and getattr(shadow.indicators, '_initialized', False)):
+            return False
+        try:
+            recs = shadow._derive_confluence_records()
+            self._mtf_confluence[tf_seconds] = recs
+            logger.info("[MTF-SEED] %s tf=%ss: seeded cross-TF gate from warmup "
+                        "(%d records) — coarse gates now evaluable pre-close",
+                        self.symbol, tf_seconds, len(recs))
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[MTF-SEED] seed_mtf_from_shadow failed %s tf=%ss: %s",
+                           self.symbol, tf_seconds, e)
+            return False
+
     def on_tick(self, price: float, volume: int, timestamp: datetime,
                 alert_callback: Callable = None, config: dict = None,
                 auditor: 'FidelityAuditor' = None,
@@ -4840,6 +4875,11 @@ class RalphEngine:
                 shadow = hub._shadow_engines.get(tf_seconds)
                 if shadow and len(warmup_df) > 0:
                     shadow.warmup(warmup_df)
+                    # Publish the warmed coarse-TF state into the cross-TF gate
+                    # dict so 1H/4H/1D gates are evaluable immediately (2026-06-26
+                    # fix — they were absent until a live close that never comes
+                    # intraday → coarse-gated strategies silent live).
+                    hub.seed_mtf_from_shadow(tf_seconds)
                     logger.info("Shadow warmup %s: tf=%ss bars=%d initialized=%s",
                                 sym, tf_seconds, len(warmup_df),
                                 shadow.indicators._initialized)

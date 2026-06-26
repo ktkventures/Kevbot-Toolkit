@@ -955,6 +955,14 @@ class DBRalphEngine:
                                         session=monitor.session)
                                     hub.seed_history(sec_tf, sec_df)
                                     shadow.warmup(sec_df)
+                                    # Publish warmed coarse-TF state into the
+                                    # cross-TF gate dict (2026-06-26 fix — see
+                                    # SymbolHub.seed_mtf_from_shadow). NOTE: this
+                                    # hot-reload path still uses days=7, which
+                                    # starves a 1Day shadow (~5 bars) — startup
+                                    # _warmup_all uses the Bug-5 TF-scaled load;
+                                    # widening this is a follow-up.
+                                    hub.seed_mtf_from_shadow(sec_tf)
                                 except Exception as se:
                                     logger.warning("Shadow warmup failed for %s/%s: %s",
                                                    sym, sec_tf_str, se)
