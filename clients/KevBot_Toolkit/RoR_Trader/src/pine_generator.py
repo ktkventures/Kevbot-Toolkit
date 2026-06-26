@@ -907,38 +907,56 @@ def _resolve_trigger(spec: str):
 # ───────────────────────────────────────────────────────────────────────────
 # Stop emitter
 # ───────────────────────────────────────────────────────────────────────────
-def _emit_stop(stop_config: dict) -> tuple:
-    """Return (setup_lines, stop_level_expr, helpers_needed). stop_level_expr
-    uses `close` (entry fill) — snapshotted at entry by the orchestrator."""
-    method = (stop_config or {}).get('method', 'atr')
-    if method == 'atr':
-        mult = float(stop_config.get('atr_mult', 1.5))
-        period = int(stop_config.get('atr_period', 14))
-        setup = (f"stopAtrLen = {period}\n"
-                 f"stopMult   = {mult}\n"
-                 f"atrStopSeries = rorEma(rorTrueRange(), stopAtrLen)")
-        return setup, "close - stopMult * atrStopSeries", ('rorEma', 'rorTrueRange')
-    if method == 'fixed_dollar':
-        amt = float(stop_config.get('dollar_amount', 1.0))
-        return f"stopDist = {amt}", "close - stopDist", ()
-    if method == 'percentage':
-        pct = float(stop_config.get('percentage', 0.5))
-        return f"stopPct = {pct}", f"close - close * (stopPct / 100.0)", ()
-    if method == 'swing':
-        # LONG swing stop (stop_target_methods.SwingStop): lowest low over the
-        # `lookback` bars BEFORE the entry bar — the engine excludes the current
-        # bar (buf[:-1][-lookback:]) — minus $padding. ta.lowest(low, lb)[1] is
-        # the lowest of the lookback bars ending one bar back (excludes current).
-        lb = int(stop_config.get('lookback', 5))
-        pad = float(stop_config.get('padding', 0.0))
-        setup = (f"swLb  = {lb}\n"
-                 f"swPad = {pad}\n"
-                 f"swLow = ta.lowest(low, swLb)")
-        return setup, "swLow[1] - swPad", ()
-    # unknown → ATR fallback (matches our engine's fallback)
-    setup = ("stopAtrLen = 14\nstopMult = 1.5\n"
-             "atrStopSeries = rorEma(rorTrueRange(), stopAtrLen)")
+# Stop-method emitters: each (stop_config) -> (setup_lines, stop_level_expr,
+# helpers_needed). stop_level_expr uses `close` (entry fill, snapshotted at entry
+# by the orchestrator). Registered in _STOP_EMITTERS so adding a method is one
+# entry, not another if/elif — and the readiness check can enumerate support.
+def _stop_atr(sc: dict) -> tuple:
+    mult = float(sc.get('atr_mult', 1.5))
+    period = int(sc.get('atr_period', 14))
+    setup = (f"stopAtrLen = {period}\n"
+             f"stopMult   = {mult}\n"
+             f"atrStopSeries = rorEma(rorTrueRange(), stopAtrLen)")
     return setup, "close - stopMult * atrStopSeries", ('rorEma', 'rorTrueRange')
+
+
+def _stop_fixed_dollar(sc: dict) -> tuple:
+    amt = float(sc.get('dollar_amount', 1.0))
+    return f"stopDist = {amt}", "close - stopDist", ()
+
+
+def _stop_percentage(sc: dict) -> tuple:
+    pct = float(sc.get('percentage', 0.5))
+    return f"stopPct = {pct}", "close - close * (stopPct / 100.0)", ()
+
+
+def _stop_swing(sc: dict) -> tuple:
+    # LONG swing stop (stop_target_methods.SwingStop): lowest low over the
+    # `lookback` bars BEFORE the entry bar — the engine excludes the current
+    # bar (buf[:-1][-lookback:]) — minus $padding. ta.lowest(low, lb)[1] is
+    # the lowest of the lookback bars ending one bar back (excludes current).
+    lb = int(sc.get('lookback', 5))
+    pad = float(sc.get('padding', 0.0))
+    setup = (f"swLb  = {lb}\n"
+             f"swPad = {pad}\n"
+             f"swLow = ta.lowest(low, swLb)")
+    return setup, "swLow[1] - swPad", ()
+
+
+_STOP_EMITTERS = {
+    'atr': _stop_atr,
+    'fixed_dollar': _stop_fixed_dollar,
+    'percentage': _stop_percentage,
+    'swing': _stop_swing,
+}
+
+
+def _emit_stop(stop_config: dict) -> tuple:
+    """Return (setup_lines, stop_level_expr, helpers_needed). Unknown method →
+    ATR fallback (matches the engine's fallback)."""
+    method = (stop_config or {}).get('method', 'atr')
+    handler = _STOP_EMITTERS.get(method, _stop_atr)
+    return handler(stop_config or {})
 
 
 # Market close times by session (hour, minute) in US/Eastern — mirrors
@@ -950,49 +968,62 @@ _SESSION_CLOSE_ET = {
 }
 
 
+# Time-exit emitters: each (time_exit_config, session) -> (setup, exit_bool_expr,
+# reason). Faithful ports of time_exit_packs.check_time_exit; both fill at the bar
+# CLOSE (exec type C). Registered in _TIME_EXIT_EMITTERS for uniform dispatch.
+def _time_eod(cfg: dict, session: str) -> tuple:
+    # Force-flat N minutes before close. The engine converts the bar timestamp
+    # (Polygon open-label) to US/Eastern and exits when hour*60+minute reaches
+    # close − minutes_before. Pine's `time` is the bar-open time, so
+    # hour(time, "America/New_York") matches the engine's clock exactly.
+    ch, cm = _SESSION_CLOSE_ET.get(session, (16, 0))
+    mins = int(cfg.get('minutes_before_close', 15))
+    thresh = ch * 60 + cm - mins
+    setup = (
+        '// ── time exit: force flat N min before close (US/Eastern) ──\n'
+        f'eodThresh = {thresh}  // {ch:02d}:{cm:02d} ET close − {mins}m\n'
+        'etNowMin  = hour(time, "America/New_York") * 60 + '
+        'minute(time, "America/New_York")\n'
+        'eodExit   = etNowMin >= eodThresh')
+    return setup, 'eodExit', 'eod_exit'
+
+
+def _time_max_hold(cfg: dict, session: str) -> tuple:
+    # Exit once held for max_bars bars. Engine bars_held = bar_count −
+    # entry_bar_count (0 on the entry bar), exiting when bars_held >= max_bars;
+    # the Pine counter mirrors that (0 on entry bar, +1 per held bar).
+    mb = int(cfg.get('max_bars', 4))
+    setup = (
+        '// ── time exit: max hold bars (bars_held >= max_bars) ──\n'
+        'var int barsHeld = 0\n'
+        'barsHeld := strategy.position_size > 0 ? barsHeld + 1 : 0\n'
+        f'maxHoldExit = barsHeld >= {mb}')
+    return setup, 'maxHoldExit', 'max_hold_bars'
+
+
+_TIME_EXIT_EMITTERS = {
+    'eod_exit': _time_eod,
+    'max_hold_bars': _time_max_hold,
+}
+
+
 def _emit_time_exit(time_exit_config: dict, session: str) -> tuple:
     """Return (setup_lines, exit_bool_expr, reason) for a time-based exit, or
-    (None, None, None).
+    (None, None, None) when there is none.
 
-    Faithful port of time_exit_packs.check_time_exit. Emits:
-    - `eod_exit`: force-flat N minutes before close. The engine converts the bar
-      timestamp (Polygon open-label) to US/Eastern and exits when hour*60+minute
-      reaches close − minutes_before. Pine's `time` is the bar-open time, so
-      `hour(time, "America/New_York")` matches the engine's clock exactly.
-    - `max_hold_bars`: exit once held for max_bars bars. The engine's
-      bars_held = bar_count − entry_bar_count (0 on the entry bar), exiting when
-      bars_held >= max_bars; the Pine counter mirrors that (0 on entry bar, +1
-      per held bar). Both fill at the bar CLOSE (exec type C).
-
-    Fail loud on any other method (time_of_day_exit, session_exit): silently
+    Fail loud on an unsupported method (time_of_day_exit, session_exit): silently
     dropping a time exit would diverge from the backtest, which is exactly the
     fidelity gap we refuse to ship."""
     if not time_exit_config:
         return None, None, None
     method = time_exit_config.get('method')
-    if method == 'eod_exit':
-        ch, cm = _SESSION_CLOSE_ET.get(session, (16, 0))
-        mins = int(time_exit_config.get('minutes_before_close', 15))
-        thresh = ch * 60 + cm - mins
-        setup = (
-            '// ── time exit: force flat N min before close (US/Eastern) ──\n'
-            f'eodThresh = {thresh}  // {ch:02d}:{cm:02d} ET close − {mins}m\n'
-            'etNowMin  = hour(time, "America/New_York") * 60 + '
-            'minute(time, "America/New_York")\n'
-            'eodExit   = etNowMin >= eodThresh')
-        return setup, 'eodExit', 'eod_exit'
-    if method == 'max_hold_bars':
-        mb = int(time_exit_config.get('max_bars', 4))
-        setup = (
-            '// ── time exit: max hold bars (bars_held >= max_bars) ──\n'
-            'var int barsHeld = 0\n'
-            'barsHeld := strategy.position_size > 0 ? barsHeld + 1 : 0\n'
-            f'maxHoldExit = barsHeld >= {mb}')
-        return setup, 'maxHoldExit', 'max_hold_bars'
-    raise ValueError(
-        f"no Pine emitter for time_exit method '{method}'. "
-        f"Add it to pine_generator._emit_time_exit "
-        f"(only 'eod_exit' and 'max_hold_bars' so far).")
+    handler = _TIME_EXIT_EMITTERS.get(method)
+    if handler is None:
+        raise ValueError(
+            f"no Pine emitter for time_exit method '{method}'. "
+            f"Add it to pine_generator._TIME_EXIT_EMITTERS (supported: "
+            f"{', '.join(sorted(_TIME_EXIT_EMITTERS))}).")
+    return handler(time_exit_config, session)
 
 
 def _resolve_first(*candidates):
