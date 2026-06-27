@@ -16,6 +16,7 @@ Usage:
 
 import logging
 import math
+import os
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,16 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import pandas as pd
 
 logger = logging.getLogger("unified_engine")
+
+
+def _suppress_eod_reentry() -> bool:
+    """Railway flag (default OFF) — the EOD re-entry-churn fix kill-switch.
+    When ON, don't OPEN a position inside a time-window exit (eod / time-of-day /
+    session); OFF preserves the legacy churn behavior. Flipping it is deliberate
+    (coordinate with the fidelity suite / UAD sequencing). Read at runtime so the
+    suite can toggle it. Mirrored in pine_generator._suppress_eod_reentry so
+    generated Pine always matches the engine's active flag state."""
+    return os.getenv("RORT_SUPPRESS_EOD_REENTRY", "0") == "1"
 
 # (Phase 2 cleanup) The `_warned_unpicklable_slugs` set used to dedupe
 # per-slug pickle-probe warnings in `snapshot_state(persistent=True)`. The
@@ -2484,6 +2495,18 @@ class PositionStateMachine:
         if self.state.last_exit_bar_count >= bar_count:
             return None
 
+        # Time-window guard: don't OPEN a position once a time-window exit (eod /
+        # time-of-day / session) would already fire on this bar — otherwise we'd
+        # enter only to be force-flattened next bar (the EOD re-entry churn).
+        # Mirrors the Pine entry guard `entryGated = ... and not eodExit`.
+        # (max_hold_bars is a duration limit, not a window: bars_held=0 makes
+        # check_time_exit a no-op for it, so it never suppresses entries.)
+        if _suppress_eod_reentry() and self.time_exit_config:
+            from time_exit_packs import check_time_exit
+            if check_time_exit(self.time_exit_config, bar_time, 0,
+                               self.strategy.get('trading_session', 'RTH')):
+                return None
+
         trigger_id = self.entry_trigger
         exec_type = get_trigger_exec_type(trigger_id)
 
@@ -2917,6 +2940,13 @@ class PositionStateMachine:
         # 1-bar cooldown: don't re-enter on the same bar we exited
         if self.state.last_exit_bar_count >= bar_count:
             return None
+
+        # Time-window guard (see check_entry): don't open inside a be-flat window.
+        if _suppress_eod_reentry() and self.time_exit_config:
+            from time_exit_packs import check_time_exit
+            if check_time_exit(self.time_exit_config, timestamp, 0,
+                               self.strategy.get('trading_session', 'RTH')):
+                return None
 
         # Confluence check
         if self.confluence_set and confluence_records:

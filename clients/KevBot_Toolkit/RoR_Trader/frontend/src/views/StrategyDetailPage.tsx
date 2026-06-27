@@ -16,7 +16,7 @@ import { StrategyHealthBadge, StrategyHealthDrawer, StrategyFidelityBadges, type
 import { useStrategyAlerts } from '@/hooks/queries/useAlerts';
 import { useBars } from '@/hooks/queries/useMarketData';
 import { useLiveBar } from '@/hooks/queries/useLiveBar';
-import { useGateParity, useLiveGateTelemetry, usePineExport } from '@/hooks/queries/useGateParity';
+import { useGateParity, useLiveGateTelemetry, usePineExport, usePineReadiness } from '@/hooks/queries/useGateParity';
 import GateParityOneSec, { extractOverlayLines } from '@/components/GateParityOneSec';
 import ParityDriftRibbon from '@/components/ParityDriftRibbon';
 import ParityDriftRibbonV2 from '@/components/ParityDriftRibbonV2';
@@ -657,6 +657,7 @@ const LANE_LABELS: Record<string, { label: string; color: string }> = {
  */
 function TradingViewExportTabContent({ strategyId }: { strategyId: number }) {
   const { data, isLoading, error } = usePineExport(strategyId);
+  const { data: readiness } = usePineReadiness(strategyId);
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -690,6 +691,13 @@ function TradingViewExportTabContent({ strategyId }: { strategyId: number }) {
         )}
       </div>
 
+      {readiness?.ready && (
+        <div className="text-xs mb-3 inline-flex items-center gap-1 px-2 py-1 rounded"
+             style={{ background: 'rgba(76,175,80,0.10)', border: '1px solid var(--border)', color: 'var(--green, #4caf50)' }}>
+          ✓ TradingView-export ready — all triggers, gates, stop &amp; time-exit wired
+        </div>
+      )}
+
       {isLoading && (
         <div className="text-sm py-4" style={{ color: 'var(--text-muted)' }}>Generating Pine…</div>
       )}
@@ -699,13 +707,19 @@ function TradingViewExportTabContent({ strategyId }: { strategyId: number }) {
         </div>
       )}
 
-      {data && !data.ok && (
+      {readiness && !readiness.ready && (
         <div className="rounded-lg p-3 mb-3 text-sm"
              style={{ background: 'rgba(244,67,54,0.08)', border: '1px solid var(--border)', color: 'var(--text)' }}>
-          <strong>Not yet portable:</strong> {data.error}
+          <strong>Not yet TradingView-export ready</strong> — {readiness.missing.length}{' '}
+          item{readiness.missing.length === 1 ? '' : 's'} to wire:
+          <ul className="text-xs mt-1 list-disc pl-5" style={{ color: 'var(--text)' }}>
+            {readiness.missing.map((g, i) => (
+              <li key={i}>{g.detail}</li>
+            ))}
+          </ul>
           <div className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-            Each indicator pack needs a one-time Pine emitter. Once added, every
-            strategy using that pack exports automatically.
+            Each indicator pack / stop / exit method needs a one-time Pine emitter.
+            Once added, every strategy using it exports automatically.
           </div>
         </div>
       )}
