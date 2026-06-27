@@ -195,55 +195,68 @@ class UtBotV4Emitter(PineEmitter):
         p = self.params
         return int(p.get('atr_period', 10)), float(p.get('key_value', 1.0))
 
-    def emit_gate_function(self, state: str, fn_name: str) -> Optional[str]:
+    def _recursion(self, indent: str) -> str:
+        # UT Bot trailing stop + flips. Verbatim translation of
+        # UtBotV4Incremental (Wilder ATR α=1/period, 4-case ratchet). Reused at
+        # indent='' (primary-TF setup) and indent='    ' (inside a gate fn).
+        # var floats persist across bars; bullFlip/bearFlip are per-bar events.
         atr_p, key = self._params()
-        st = state.upper()
-        # The function computes the UT Bot trailing stop + flips, then returns
-        # the requested interpreter state. Verbatim translation of
-        # UtBotV4Incremental (Wilder ATR, 4-case ratchet).
-        if st == 'BULL_TREND':
-            ret = "(close > stop) and not bullFlip"
-        elif st == 'BEAR_TREND':
-            ret = "(close < stop) and not bearFlip"
-        elif st == 'BULL_FLIP':
-            ret = "bullFlip"
-        elif st == 'BEAR_FLIP':
-            ret = "bearFlip"
-        else:
-            return None
+        i = indent
         return (
-            f"{fn_name}() =>\n"
-            f"    var float atr  = na\n"
-            f"    var float stop = na\n"
-            f"    var float pc   = na\n"
-            f"    bool bullFlip = false\n"
-            f"    bool bearFlip = false\n"
-            f"    if na(stop)\n"
-            f"        tr = high - low\n"
-            f"        atr  := tr\n"
-            f"        stop := close - {key} * tr\n"
-            f"        pc   := close\n"
-            f"    else\n"
-            f"        tr = math.max(high - low, math.abs(high - pc),"
+            f"{i}var float atr  = na\n"
+            f"{i}var float stop = na\n"
+            f"{i}var float pc   = na\n"
+            f"{i}bool bullFlip = false\n"
+            f"{i}bool bearFlip = false\n"
+            f"{i}if na(stop)\n"
+            f"{i}    tr = high - low\n"
+            f"{i}    atr  := tr\n"
+            f"{i}    stop := close - {key} * tr\n"
+            f"{i}    pc   := close\n"
+            f"{i}else\n"
+            f"{i}    tr = math.max(high - low, math.abs(high - pc),"
             f" math.abs(low - pc))\n"
-            f"        atr := atr + (1.0 / {atr_p}) * (tr - atr)\n"
-            f"        nLoss = {key} * atr\n"
-            f"        ps = stop\n"
-            f"        float ns = na\n"
-            f"        if close > ps and pc > ps\n"
-            f"            ns := math.max(ps, close - nLoss)\n"
-            f"        else if close < ps and pc < ps\n"
-            f"            ns := math.min(ps, close + nLoss)\n"
-            f"        else if close > ps\n"
-            f"            ns := close - nLoss\n"
-            f"        else\n"
-            f"            ns := close + nLoss\n"
-            f"        bullFlip := pc <= ps and close > ns\n"
-            f"        bearFlip := pc >= ps and close < ns\n"
-            f"        stop := ns\n"
-            f"        pc   := close\n"
-            f"    {ret}"
+            f"{i}    atr := atr + (1.0 / {atr_p}) * (tr - atr)\n"
+            f"{i}    nLoss = {key} * atr\n"
+            f"{i}    ps = stop\n"
+            f"{i}    float ns = na\n"
+            f"{i}    if close > ps and pc > ps\n"
+            f"{i}        ns := math.max(ps, close - nLoss)\n"
+            f"{i}    else if close < ps and pc < ps\n"
+            f"{i}        ns := math.min(ps, close + nLoss)\n"
+            f"{i}    else if close > ps\n"
+            f"{i}        ns := close - nLoss\n"
+            f"{i}    else\n"
+            f"{i}        ns := close + nLoss\n"
+            f"{i}    bullFlip := pc <= ps and close > ns\n"
+            f"{i}    bearFlip := pc >= ps and close < ns\n"
+            f"{i}    stop := ns\n"
+            f"{i}    pc   := close"
         )
+
+    def emit_primary_setup(self) -> str:
+        return self._recursion('')
+
+    def emit_trigger(self, base: str) -> Optional[str]:
+        # Entry/exit triggers are the flip events (edge-triggered), mirroring
+        # SupertrendEmitter. The trend STATES are gate-only (emit_gate_function).
+        b = base.replace('utv4_', '')
+        return {
+            'bull_flip': "bullFlip",
+            'bear_flip': "bearFlip",
+        }.get(b)
+
+    def emit_gate_function(self, state: str, fn_name: str) -> Optional[str]:
+        st = state.upper()
+        ret = {
+            'BULL_TREND': "(close > stop) and not bullFlip",
+            'BEAR_TREND': "(close < stop) and not bearFlip",
+            'BULL_FLIP':  "bullFlip",
+            'BEAR_FLIP':  "bearFlip",
+        }.get(st)
+        if ret is None:
+            return None
+        return f"{fn_name}() =>\n{self._recursion('    ')}\n    {ret}"
 
 
 class EmaStackV2Emitter(PineEmitter):
@@ -830,6 +843,7 @@ _TRIGGER_PREFIX = {
     'esv2_': EmaStackV2Emitter,
     'mlv2_': MacdLineV2Emitter,
     'mhv2_': MacdHistV2Emitter,
+    'utv4_': UtBotV4Emitter,
     'st_': SupertrendEmitter,
     'rv2_': RvolV2Emitter,
     'rsi2_': RsiZones2Emitter,
@@ -853,30 +867,179 @@ def _emitter_for_interp(interp: str) -> Optional[PineEmitter]:
     return factory() if factory else None
 
 
+def _resolve_trigger(spec: str):
+    """Resolve a trigger spec to (emitter, base) where base is what
+    emit_trigger() accepts.
+
+    Two spec shapes occur in the wild:
+      • flat trigger (modern strategies):  'utv4_bull_flip', 'eppv3_cross_short_up'
+      • confluence-group id (Mass Builder): 'ut_bot_v4_default_bull_flip'
+        — these strategies store entry/exit as entry_trigger_confluence_id /
+        exit_trigger_confluence_ids instead of the flat field.
+
+    Confluence ids are '{pack_id}_{version}_{base}' (pack_id matches an EMITTERS
+    key, same as gate interpreters; version is e.g. 'default'). We resolve the
+    pack via EMITTERS — exactly how gates resolve — and find the base by trying
+    emit_trigger on progressively shorter suffixes (version tokens stripped).
+    Returns (None, None) if unresolved."""
+    if not spec:
+        return None, None
+    # 1) flat trigger — prefix registered in _TRIGGER_PREFIX
+    em = _emitter_for_trigger(spec)
+    if em is not None and em.emit_trigger(spec) is not None:
+        return em, spec
+    # 2) confluence-group id — longest matching pack_id prefix wins
+    s = spec.lower()
+    for pack_id in sorted(EMITTERS, key=len, reverse=True):
+        if s == pack_id or s.startswith(pack_id + '_'):
+            em = _emitter_for_interp(pack_id)
+            if em is None:
+                continue
+            toks = s[len(pack_id) + 1:].split('_')
+            for start in range(len(toks)):
+                base = '_'.join(toks[start:])
+                if base and em.emit_trigger(base) is not None:
+                    return em, base
+            return em, None
+    return None, None
+
+
 # ───────────────────────────────────────────────────────────────────────────
 # Stop emitter
 # ───────────────────────────────────────────────────────────────────────────
-def _emit_stop(stop_config: dict) -> tuple:
-    """Return (setup_lines, stop_level_expr, helpers_needed). stop_level_expr
-    uses `close` (entry fill) — snapshotted at entry by the orchestrator."""
-    method = (stop_config or {}).get('method', 'atr')
-    if method == 'atr':
-        mult = float(stop_config.get('atr_mult', 1.5))
-        period = int(stop_config.get('atr_period', 14))
-        setup = (f"stopAtrLen = {period}\n"
-                 f"stopMult   = {mult}\n"
-                 f"atrStopSeries = rorEma(rorTrueRange(), stopAtrLen)")
-        return setup, "close - stopMult * atrStopSeries", ('rorEma', 'rorTrueRange')
-    if method == 'fixed_dollar':
-        amt = float(stop_config.get('dollar_amount', 1.0))
-        return f"stopDist = {amt}", "close - stopDist", ()
-    if method == 'percentage':
-        pct = float(stop_config.get('percentage', 0.5))
-        return f"stopPct = {pct}", f"close - close * (stopPct / 100.0)", ()
-    # swing / unknown → ATR fallback (matches our engine's fallback)
-    setup = ("stopAtrLen = 14\nstopMult = 1.5\n"
-             "atrStopSeries = rorEma(rorTrueRange(), stopAtrLen)")
+# Stop-method emitters: each (stop_config) -> (setup_lines, stop_level_expr,
+# helpers_needed). stop_level_expr uses `close` (entry fill, snapshotted at entry
+# by the orchestrator). Registered in _STOP_EMITTERS so adding a method is one
+# entry, not another if/elif — and the readiness check can enumerate support.
+def _stop_atr(sc: dict) -> tuple:
+    mult = float(sc.get('atr_mult', 1.5))
+    period = int(sc.get('atr_period', 14))
+    setup = (f"stopAtrLen = {period}\n"
+             f"stopMult   = {mult}\n"
+             f"atrStopSeries = rorEma(rorTrueRange(), stopAtrLen)")
     return setup, "close - stopMult * atrStopSeries", ('rorEma', 'rorTrueRange')
+
+
+def _stop_fixed_dollar(sc: dict) -> tuple:
+    amt = float(sc.get('dollar_amount', 1.0))
+    return f"stopDist = {amt}", "close - stopDist", ()
+
+
+def _stop_percentage(sc: dict) -> tuple:
+    pct = float(sc.get('percentage', 0.5))
+    return f"stopPct = {pct}", "close - close * (stopPct / 100.0)", ()
+
+
+def _stop_swing(sc: dict) -> tuple:
+    # LONG swing stop (stop_target_methods.SwingStop): lowest low over the
+    # `lookback` bars BEFORE the entry bar — the engine excludes the current
+    # bar (buf[:-1][-lookback:]) — minus $padding. ta.lowest(low, lb)[1] is
+    # the lowest of the lookback bars ending one bar back (excludes current).
+    lb = int(sc.get('lookback', 5))
+    pad = float(sc.get('padding', 0.0))
+    setup = (f"swLb  = {lb}\n"
+             f"swPad = {pad}\n"
+             f"swLow = ta.lowest(low, swLb)")
+    return setup, "swLow[1] - swPad", ()
+
+
+_STOP_EMITTERS = {
+    'atr': _stop_atr,
+    'fixed_dollar': _stop_fixed_dollar,
+    'percentage': _stop_percentage,
+    'swing': _stop_swing,
+}
+
+
+def _emit_stop(stop_config: dict) -> tuple:
+    """Return (setup_lines, stop_level_expr, helpers_needed). Unknown method →
+    ATR fallback (matches the engine's fallback)."""
+    method = (stop_config or {}).get('method', 'atr')
+    handler = _STOP_EMITTERS.get(method, _stop_atr)
+    return handler(stop_config or {})
+
+
+# Market close times by session (hour, minute) in US/Eastern — mirrors
+# time_exit_packs._SESSION_CLOSE so the EOD threshold matches the engine.
+_SESSION_CLOSE_ET = {
+    'RTH': (16, 0), 'regular': (16, 0),
+    'extended': (20, 0), 'after_hours': (20, 0),
+    'pre_market': (9, 30),
+}
+
+
+# Time-exit emitters: each (time_exit_config, session) -> (setup, exit_bool_expr,
+# reason). Faithful ports of time_exit_packs.check_time_exit; both fill at the bar
+# CLOSE (exec type C). Registered in _TIME_EXIT_EMITTERS for uniform dispatch.
+def _time_eod(cfg: dict, session: str) -> tuple:
+    # Force-flat N minutes before close. The engine converts the bar timestamp
+    # (Polygon open-label) to US/Eastern and exits when hour*60+minute reaches
+    # close − minutes_before. Pine's `time` is the bar-open time, so
+    # hour(time, "America/New_York") matches the engine's clock exactly.
+    ch, cm = _SESSION_CLOSE_ET.get(session, (16, 0))
+    mins = int(cfg.get('minutes_before_close', 15))
+    thresh = ch * 60 + cm - mins
+    setup = (
+        '// ── time exit: force flat N min before close (US/Eastern) ──\n'
+        f'eodThresh = {thresh}  // {ch:02d}:{cm:02d} ET close − {mins}m\n'
+        'etNowMin  = hour(time, "America/New_York") * 60 + '
+        'minute(time, "America/New_York")\n'
+        'eodExit   = etNowMin >= eodThresh')
+    return setup, 'eodExit', 'eod_exit'
+
+
+def _time_max_hold(cfg: dict, session: str) -> tuple:
+    # Exit once held for max_bars bars. Engine bars_held = bar_count −
+    # entry_bar_count (0 on the entry bar), exiting when bars_held >= max_bars;
+    # the Pine counter mirrors that (0 on entry bar, +1 per held bar).
+    mb = int(cfg.get('max_bars', 4))
+    setup = (
+        '// ── time exit: max hold bars (bars_held >= max_bars) ──\n'
+        'var int barsHeld = 0\n'
+        'barsHeld := strategy.position_size > 0 ? barsHeld + 1 : 0\n'
+        f'maxHoldExit = barsHeld >= {mb}')
+    return setup, 'maxHoldExit', 'max_hold_bars'
+
+
+_TIME_EXIT_EMITTERS = {
+    'eod_exit': _time_eod,
+    'max_hold_bars': _time_max_hold,
+}
+
+
+def _emit_time_exit(time_exit_config: dict, session: str) -> tuple:
+    """Return (setup_lines, exit_bool_expr, reason) for a time-based exit, or
+    (None, None, None) when there is none.
+
+    Fail loud on an unsupported method (time_of_day_exit, session_exit): silently
+    dropping a time exit would diverge from the backtest, which is exactly the
+    fidelity gap we refuse to ship."""
+    if not time_exit_config:
+        return None, None, None
+    method = time_exit_config.get('method')
+    handler = _TIME_EXIT_EMITTERS.get(method)
+    if handler is None:
+        raise ValueError(
+            f"no Pine emitter for time_exit method '{method}'. "
+            f"Add it to pine_generator._TIME_EXIT_EMITTERS (supported: "
+            f"{', '.join(sorted(_TIME_EXIT_EMITTERS))}).")
+    return handler(time_exit_config, session)
+
+
+def _resolve_first(*candidates):
+    """Return (emitter, base, resolved_str) for the first candidate an emitter
+    can actually emit. Most strategies put a resolvable name in the flat
+    entry_trigger / exit_trigger field, but some legacy ones keep an OLD alias
+    there (e.g. 'ema_pp_cross_short_up', 'macd_cross_bull') while the modern,
+    resolvable form lives in the *_confluence_id field. Try each in order so the
+    legacy alias falls through to the modern id instead of failing."""
+    for cand in candidates:
+        if not cand:
+            continue
+        em, base = _resolve_trigger(cand)
+        if em is not None and base is not None:
+            return em, base, cand
+    return None, None, None
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -891,26 +1054,68 @@ def generate_pine(strat: dict) -> str:
     name = strat.get('name') or f"sid {strat.get('id', '?')}"
     symbol = strat.get('symbol') or cfg.get('symbol') or 'SPY'
     primary_tf = cfg.get('timeframe') or strat.get('timeframe') or '1Min'
-    entry_t = cfg.get('entry_trigger')
-    exit_t = cfg.get('exit_trigger')
+    # Entry/exit triggers can appear in two shapes: a flat trigger string
+    # (entry_trigger / exit_trigger) and/or a confluence-group id
+    # (entry_trigger_confluence_id / exit_trigger_confluence_ids). Modern
+    # strategies use a resolvable flat name; Mass Builder uses the confluence id;
+    # some legacy strategies keep an OLD flat alias (e.g. 'macd_cross_bull') that
+    # no emitter knows, while the modern id sits alongside it. _resolve_first
+    # tries the flat field then the id so the legacy alias falls through.
+    entry_flat = cfg.get('entry_trigger')
+    entry_cid = cfg.get('entry_trigger_confluence_id')
+    exit_flat = cfg.get('exit_trigger')
+    _ex_ids = cfg.get('exit_trigger_confluence_ids') or []
+    exit_cid = cfg.get('exit_trigger_confluence_id') or (
+        _ex_ids[0] if _ex_ids else None)
     gates = list(cfg.get('confluence') or [])
     stop_cfg = cfg.get('stop_config') or {}
+    time_exit_cfg = cfg.get('time_exit_config') or {}
     session = cfg.get('trading_session') or cfg.get('session') or 'RTH'
 
-    if not entry_t:
-        raise ValueError("strategy has no entry_trigger")
+    if not (entry_flat or entry_cid):
+        raise ValueError(
+            "strategy has no entry_trigger or entry_trigger_confluence_id")
 
-    prim = _emitter_for_trigger(entry_t)
+    prim, entry_base, entry_t = _resolve_first(entry_flat, entry_cid)
     if prim is None:
         raise ValueError(
-            f"no Pine emitter for entry trigger '{entry_t}'. "
+            f"no Pine emitter for entry trigger '{entry_flat or entry_cid}'. "
             f"Add an emitter for its pack to pine_generator.EMITTERS.")
-    entry_expr = prim.emit_trigger(entry_t)
+    entry_expr = prim.emit_trigger(entry_base)
     if entry_expr is None:
         raise ValueError(f"emitter {prim.slug} can't emit trigger '{entry_t}'")
-    exit_expr = prim.emit_trigger(exit_t) if exit_t else None
+    # Exit can use a DIFFERENT pack than entry (Mass Builder commonly enters on
+    # one pack and exits on another, e.g. swing_123 entry / ut_bot_v4 exit), so
+    # resolve the exit with its OWN emitter — never silently drop it.
+    exit_t = exit_flat or exit_cid
+    xit, exit_expr = None, None
+    if exit_t and str(exit_t).strip().lower() == 'opposite_signal':
+        # Exit on the inverse of the entry trigger (same pack), mirroring the
+        # engine's triggers.get_opposite_trigger() suffix pairing. If no opposite
+        # exists the engine no-ops (stop-only) — leave exit_expr None to match.
+        from triggers import get_opposite_trigger
+        opp = get_opposite_trigger(entry_base)
+        if opp is not None:
+            xit = prim
+            exit_expr = prim.emit_trigger(opp)
+            if exit_expr is None:
+                raise ValueError(
+                    f"opposite_signal exit: emitter {prim.slug} can't emit "
+                    f"opposite trigger '{opp}' of entry '{entry_t}'")
+    elif exit_flat or exit_cid:
+        xit, exit_base, exit_t = _resolve_first(exit_flat, exit_cid)
+        if xit is None or exit_base is None:
+            raise ValueError(
+                f"no Pine emitter for exit trigger '{exit_flat or exit_cid}'. "
+                f"Add an emitter for its pack to pine_generator.EMITTERS.")
+        exit_expr = xit.emit_trigger(exit_base)
+        if exit_expr is None:
+            raise ValueError(
+                f"emitter {xit.slug} can't emit exit trigger '{exit_t}'")
 
     helpers_needed = set(prim.helpers)
+    if xit is not None:
+        helpers_needed.update(xit.helpers)
     lines = []
     L = lines.append
 
@@ -958,6 +1163,9 @@ def generate_pine(strat: dict) -> str:
     stop_setup, stop_expr, stop_helpers = _emit_stop(stop_cfg)
     helpers_needed.update(stop_helpers)
 
+    # ── time exit (eod_exit / max_hold_bars) ──
+    te_setup, te_expr, te_reason = _emit_time_exit(time_exit_cfg, session)
+
     # ── helper lib ──
     for h in ('rorEma', 'rorTrueRange'):
         if h in helpers_needed:
@@ -967,6 +1175,11 @@ def generate_pine(strat: dict) -> str:
     # ── primary indicators + triggers ──
     L("// ── primary pack: " + prim.slug + " ──")
     L(prim.emit_primary_setup())
+    # Exit pack's indicator (only when it differs from the entry pack — e.g.
+    # swing_123 entry / ut_bot_v4 exit). Same pack ⇒ setup already emitted above.
+    if xit is not None and xit.slug != prim.slug:
+        L("// ── exit pack: " + xit.slug + " ──")
+        L(xit.emit_primary_setup())
     L(f"entrySig = {entry_expr}")
     if exit_expr:
         L(f"exitSig  = {exit_expr}")
@@ -993,6 +1206,11 @@ def generate_pine(strat: dict) -> str:
         L(stop_setup)
         L("")
 
+    # ── time-exit setup ──
+    if te_expr:
+        L(te_setup)
+        L("")
+
     # ── orders ──
     L("// ── orders ──")
     L("entryGated = entrySig and gateAll")
@@ -1005,6 +1223,13 @@ def generate_pine(strat: dict) -> str:
         L("if strategy.position_size > 0 and not na(stopLevel)")
         L('    strategy.exit("stop", from_entry="L", stop=stopLevel, '
           'comment="stop_loss")')
+    # Time exit (priority 2 in the engine: after stop, before signal). The stop
+    # above is intrabar so it still wins on a bar that both gaps the stop AND is
+    # past the EOD threshold; emitting eod before the signal close lets it
+    # override the signal exit, matching check_time_exit's precedence.
+    if te_expr:
+        L(f"if strategy.position_size > 0 and {te_expr}")
+        L(f'    strategy.close("L", comment="{te_reason}")')
     if exit_expr:
         L("if exitSig and strategy.position_size > 0")
         L(f'    strategy.close("L", comment="{exit_t}")')
@@ -1042,3 +1267,98 @@ def generate_pine(strat: dict) -> str:
               f'text_size=size.small)')
 
     return "\n".join(lines) + "\n"
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Readiness check  (Design_TV_Export_Readiness.md §5)
+# ───────────────────────────────────────────────────────────────────────────
+def tv_export_readiness(strat: dict) -> dict:
+    """Inspect a strategy and return EVERY thing that blocks a faithful TV
+    export — not just the first (which is all generate_pine's ValueError shows).
+
+    Returns {ready: bool, missing: [gap, ...]} where each gap is a dict with a
+    machine-readable `kind` + fields and a human `detail`:
+      {kind:'trigger', role:'entry'|'exit', value:..., detail:...}
+      {kind:'gate',    interp:..., state:..., detail:...}
+      {kind:'stop',    method:...,            detail:...}
+      {kind:'time_exit', method:...,          detail:...}
+
+    Uses the SAME resolution path as generate_pine (_resolve_first,
+    _emitter_for_interp, _STOP_EMITTERS, _TIME_EXIT_EMITTERS) so readiness and the
+    actual export can never disagree. This is the badge/contract surface — keep it
+    a pure read (no Pine generated, never raises)."""
+    cfg = strat.get('config', strat) or {}
+    missing = []
+
+    # 1) entry trigger
+    entry_flat = cfg.get('entry_trigger')
+    entry_cid = cfg.get('entry_trigger_confluence_id')
+    entry_base = None
+    if not (entry_flat or entry_cid):
+        missing.append({'kind': 'trigger', 'role': 'entry', 'value': None,
+                        'detail': 'strategy has no entry trigger'})
+    else:
+        prim, entry_base, _ = _resolve_first(entry_flat, entry_cid)
+        if prim is None or entry_base is None:
+            v = entry_flat or entry_cid
+            missing.append({'kind': 'trigger', 'role': 'entry', 'value': v,
+                            'detail': f"no Pine emitter for entry trigger '{v}'"})
+
+    # 2) exit trigger (opposite_signal / cross-pack / none are all valid)
+    exit_flat = cfg.get('exit_trigger')
+    _ex_ids = cfg.get('exit_trigger_confluence_ids') or []
+    exit_cid = cfg.get('exit_trigger_confluence_id') or (
+        _ex_ids[0] if _ex_ids else None)
+    exit_t = exit_flat or exit_cid
+    if exit_t and str(exit_t).strip().lower() == 'opposite_signal':
+        # Faithful only if the entry resolved AND has an opposite; if there is no
+        # opposite the engine no-ops (stop-only), which the emitter mirrors — so a
+        # missing opposite is NOT a gap, only an unresolvable entry is (flagged above).
+        if entry_base is not None:
+            from triggers import get_opposite_trigger
+            opp = get_opposite_trigger(entry_base)
+            if opp is not None and prim.emit_trigger(opp) is None:
+                missing.append({'kind': 'trigger', 'role': 'exit',
+                                'value': 'opposite_signal',
+                                'detail': f"emitter {prim.slug} can't emit opposite "
+                                          f"trigger '{opp}' of the entry"})
+    elif exit_t:
+        xit, exit_base, _ = _resolve_first(exit_flat, exit_cid)
+        if xit is None or exit_base is None:
+            missing.append({'kind': 'trigger', 'role': 'exit', 'value': exit_t,
+                            'detail': f"no Pine emitter for exit trigger '{exit_t}'"})
+
+    # 3) confluence gates
+    for rec in (cfg.get('confluence') or []):
+        rec_clean = rec.replace('[CB]', '').replace('[PB]', '')
+        parts = rec_clean.split('-', 2)
+        if len(parts) != 3:
+            continue
+        _tf, interp, state = parts
+        em = _emitter_for_interp(interp)
+        if em is None:
+            missing.append({'kind': 'gate', 'interp': interp, 'state': state,
+                            'detail': f"no Pine emitter for gate interpreter '{interp}'"})
+        elif em.emit_gate_function(state, 'f_chk') is None:
+            missing.append({'kind': 'gate', 'interp': interp, 'state': state,
+                            'detail': f"emitter {em.slug} can't emit gate state '{state}'"})
+
+    # 4) stop method — unknown method silently ATR-fallbacks in generate_pine,
+    #    which would DIVERGE from the engine's real stop, so surface it here.
+    stop_cfg = cfg.get('stop_config') or {}
+    if stop_cfg:
+        sm = stop_cfg.get('method', 'atr')
+        if sm not in _STOP_EMITTERS:
+            missing.append({'kind': 'stop', 'method': sm,
+                            'detail': f"no Pine stop emitter for method '{sm}' "
+                                      f"(would silently fall back to ATR)"})
+
+    # 5) time-exit method
+    te = cfg.get('time_exit_config') or {}
+    if te:
+        tm = te.get('method')
+        if tm not in _TIME_EXIT_EMITTERS:
+            missing.append({'kind': 'time_exit', 'method': tm,
+                            'detail': f"no Pine time-exit emitter for method '{tm}'"})
+
+    return {'ready': len(missing) == 0, 'missing': missing}

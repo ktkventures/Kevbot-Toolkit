@@ -1392,6 +1392,28 @@ def pine_export(strategy_id: int, user=Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=f"pine-export failed: {e}")
 
 
+@router.get("/{strategy_id}/pine-readiness")
+def pine_readiness(strategy_id: int, user=Depends(get_current_user)):
+    """Structured TV-export readiness for the badge. Unlike pine-export (whose
+    `error` only shows the FIRST blocking gap), this returns EVERY gap so the UI
+    can list exactly what a strategy needs to be exportable + trade-ready via TV.
+
+    Returns {ready: bool, missing: [{kind, detail, ...}], caveats: [...]}.
+    See docs/_active/Design_TV_Export_Readiness.md §5.
+    """
+    strat = _get_or_404(strategy_id, user)
+    from pine_generator import tv_export_readiness
+    r = tv_export_readiness(strat)
+    cfg = strat.get('config') or {}
+    tf = (cfg.get('timeframe') or strat.get('timeframe') or '1Min')
+    caveats = []
+    if 'sec' in tf.lower():
+        caveats.append(
+            "Seconds chart: TradingView keeps only a few days of seconds "
+            "history, so the TV backtest will be shallow.")
+    return {'ready': r['ready'], 'missing': r['missing'], 'caveats': caveats}
+
+
 @router.get("/{strategy_id}/grace-shadow-comparison")
 def grace_shadow_comparison(
     strategy_id: int,
