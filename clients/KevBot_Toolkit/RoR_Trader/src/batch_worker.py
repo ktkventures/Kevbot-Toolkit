@@ -93,6 +93,21 @@ def main():
         raise SystemExit("[batch_worker] pack registry empty — refusing to "
                          "start (every recompute would return 0 trades)")
     parallelism = os.environ.get("RORT_RECOMPUTE_PARALLELISM", "1")
+    # Host resources — the parallelism ceiling. cpu_count() can overstate under
+    # a cgroup CPU quota; sched_getaffinity is closer to usable CPUs. RAM ÷ the
+    # per-worker footprint (~1.5-2.5GB on heavy 10Sec strats) caps safe N.
+    try:
+        _avail_cpu = len(os.sched_getaffinity(0))
+    except Exception:  # noqa: BLE001 — not on all platforms
+        _avail_cpu = os.cpu_count()
+    _ram_str = "?"
+    try:
+        import psutil
+        _ram_str = f"{psutil.virtual_memory().total / 1e9:.1f}GB"
+    except Exception:  # noqa: BLE001
+        pass
+    logger.info("[batch_worker] HOST: cpu_count=%s sched_affinity=%s ram=%s",
+                os.cpu_count(), _avail_cpu, _ram_str)
     logger.info("[batch_worker] up id=%s packs=%d parallelism=%s poll=%ss "
                 "stale_reclaim=%ss", WORKER_ID, npacks, parallelism,
                 POLL_INTERVAL_S, STALE_RECLAIM_S)
