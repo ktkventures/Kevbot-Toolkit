@@ -221,9 +221,13 @@ Stage 3 is in flight on the feature branch.
 - **Validated against TV:** ut_bot primary (sid 269), swing-stop (3/3 byte-exact),
   full strategy incl. swing entry + cross-pack exit + swing stop + eod_exit (sid 308
   TSLA 15Sec, trade-for-trade to the cent, EOD included).
-- **Known engine/Pine divergence (deferred fix):** EOD re-entry churn — the engine
-  takes new entries inside the flat-by window; the Pine faithfully mirrors it. The
-  fix (suppress entries once a time-exit would fire) must be applied to **both** the
-  engine (`check_entry` / `check_entry_intrabar`) and the Pine in lockstep, and will
-  shift `eod_exit` backtest P&L (run the fidelity/parity suite). Parked until the
-  concurrent engine work reaches a stable checkpoint.
+- **EOD re-entry churn — FIXED in lockstep (2026-06-26).** The engine used to take
+  new entries inside the flat-by window (entering only to be force-flat next bar);
+  the Pine faithfully mirrored it. Now a time-window guard in both
+  `check_entry`/`check_entry_intrabar` (reusing `check_time_exit` with bars_held=0,
+  so `max_hold_bars` — a duration, not a window — is unaffected) and the Pine
+  (`entryGated = ... and not eodExit`, gated only for window exits) suppresses
+  entries once a be-flat window would fire. This **shifts `eod_exit` backtest P&L**
+  (the churn trades vanish) — by design. Fidelity-parity suite is unaffected *by
+  construction* (it measures ON==OFF + cache parity = differences, which an
+  unconditional behavior change shifts equally), but confirm it stays 18/18.

@@ -985,7 +985,7 @@ def _time_eod(cfg: dict, session: str) -> tuple:
         'etNowMin  = hour(time, "America/New_York") * 60 + '
         'minute(time, "America/New_York")\n'
         'eodExit   = etNowMin >= eodThresh')
-    return setup, 'eodExit', 'eod_exit'
+    return setup, 'eodExit', 'eod_exit', True   # gates_entry: a be-flat window
 
 
 def _time_max_hold(cfg: dict, session: str) -> tuple:
@@ -998,7 +998,7 @@ def _time_max_hold(cfg: dict, session: str) -> tuple:
         'var int barsHeld = 0\n'
         'barsHeld := strategy.position_size > 0 ? barsHeld + 1 : 0\n'
         f'maxHoldExit = barsHeld >= {mb}')
-    return setup, 'maxHoldExit', 'max_hold_bars'
+    return setup, 'maxHoldExit', 'max_hold_bars', False  # duration, not a window
 
 
 _TIME_EXIT_EMITTERS = {
@@ -1008,14 +1008,17 @@ _TIME_EXIT_EMITTERS = {
 
 
 def _emit_time_exit(time_exit_config: dict, session: str) -> tuple:
-    """Return (setup_lines, exit_bool_expr, reason) for a time-based exit, or
-    (None, None, None) when there is none.
+    """Return (setup, exit_bool_expr, reason, gates_entry) for a time-based exit,
+    or (None, None, None, False) when there is none. gates_entry is True for
+    be-flat WINDOW exits (eod / time-of-day / session) — those also suppress new
+    entries (mirrors the engine's check_entry time-window guard) — and False for
+    duration limits like max_hold_bars.
 
     Fail loud on an unsupported method (time_of_day_exit, session_exit): silently
     dropping a time exit would diverge from the backtest, which is exactly the
     fidelity gap we refuse to ship."""
     if not time_exit_config:
-        return None, None, None
+        return None, None, None, False
     method = time_exit_config.get('method')
     handler = _TIME_EXIT_EMITTERS.get(method)
     if handler is None:
@@ -1164,7 +1167,8 @@ def generate_pine(strat: dict) -> str:
     helpers_needed.update(stop_helpers)
 
     # ── time exit (eod_exit / max_hold_bars) ──
-    te_setup, te_expr, te_reason = _emit_time_exit(time_exit_cfg, session)
+    te_setup, te_expr, te_reason, te_gates_entry = _emit_time_exit(
+        time_exit_cfg, session)
 
     # ── helper lib ──
     for h in ('rorEma', 'rorTrueRange'):
@@ -1213,7 +1217,14 @@ def generate_pine(strat: dict) -> str:
 
     # ── orders ──
     L("// ── orders ──")
-    L("entryGated = entrySig and gateAll")
+    # Suppress entries inside a be-flat time window (eod/time-of-day/session) —
+    # mirrors the engine's check_entry time-window guard so we don't open a
+    # position only to be force-flattened next bar. max_hold (gates_entry False)
+    # is a duration limit, not a window, so it never suppresses entries.
+    if te_expr and te_gates_entry:
+        L(f"entryGated = entrySig and gateAll and not {te_expr}")
+    else:
+        L("entryGated = entrySig and gateAll")
     L("var float stopLevel = na")
     L("if entryGated and strategy.position_size == 0")
     L('    strategy.entry("L", strategy.long)')

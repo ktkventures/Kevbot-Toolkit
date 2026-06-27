@@ -2484,6 +2484,18 @@ class PositionStateMachine:
         if self.state.last_exit_bar_count >= bar_count:
             return None
 
+        # Time-window guard: don't OPEN a position once a time-window exit (eod /
+        # time-of-day / session) would already fire on this bar — otherwise we'd
+        # enter only to be force-flattened next bar (the EOD re-entry churn).
+        # Mirrors the Pine entry guard `entryGated = ... and not eodExit`.
+        # (max_hold_bars is a duration limit, not a window: bars_held=0 makes
+        # check_time_exit a no-op for it, so it never suppresses entries.)
+        if self.time_exit_config:
+            from time_exit_packs import check_time_exit
+            if check_time_exit(self.time_exit_config, bar_time, 0,
+                               self.strategy.get('trading_session', 'RTH')):
+                return None
+
         trigger_id = self.entry_trigger
         exec_type = get_trigger_exec_type(trigger_id)
 
@@ -2917,6 +2929,13 @@ class PositionStateMachine:
         # 1-bar cooldown: don't re-enter on the same bar we exited
         if self.state.last_exit_bar_count >= bar_count:
             return None
+
+        # Time-window guard (see check_entry): don't open inside a be-flat window.
+        if self.time_exit_config:
+            from time_exit_packs import check_time_exit
+            if check_time_exit(self.time_exit_config, timestamp, 0,
+                               self.strategy.get('trading_session', 'RTH')):
+                return None
 
         # Confluence check
         if self.confluence_set and confluence_records:
