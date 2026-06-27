@@ -148,3 +148,34 @@ export function usePineExport(strategyId: number | null, enabled = true) {
     staleTime: 300_000,
   });
 }
+
+/**
+ * usePineReadiness — structured TV-export readiness for the badge. Returns EVERY
+ * blocking gap (not just the first like pine-export's `error`), so the UI can
+ * list exactly what a strategy needs to be exportable + trade-ready via TV.
+ */
+export interface PineReadinessGap {
+  kind: string; // 'trigger' | 'gate' | 'stop' | 'time_exit'
+  detail: string;
+  role?: string; // entry | exit (triggers)
+  interp?: string;
+  state?: string;
+  method?: string;
+  value?: string | null;
+}
+export interface PineReadinessResponse {
+  ready: boolean;
+  missing: PineReadinessGap[];
+  caveats: string[];
+}
+export function usePineReadiness(strategyId: number | null, enabled = true) {
+  return useQuery({
+    queryKey: ['pine-readiness', strategyId],
+    queryFn: () =>
+      apiFetch<PineReadinessResponse>(
+        `/api/strategies/${strategyId}/pine-readiness`,
+      ),
+    enabled: enabled && strategyId !== null,
+    staleTime: 300_000,
+  });
+}
