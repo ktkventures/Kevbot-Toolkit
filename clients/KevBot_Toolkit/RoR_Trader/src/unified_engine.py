@@ -16,6 +16,7 @@ Usage:
 
 import logging
 import math
+import os
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -24,6 +25,16 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import pandas as pd
 
 logger = logging.getLogger("unified_engine")
+
+
+def _suppress_eod_reentry() -> bool:
+    """Railway flag (default OFF) — the EOD re-entry-churn fix kill-switch.
+    When ON, don't OPEN a position inside a time-window exit (eod / time-of-day /
+    session); OFF preserves the legacy churn behavior. Flipping it is deliberate
+    (coordinate with the fidelity suite / UAD sequencing). Read at runtime so the
+    suite can toggle it. Mirrored in pine_generator._suppress_eod_reentry so
+    generated Pine always matches the engine's active flag state."""
+    return os.getenv("RORT_SUPPRESS_EOD_REENTRY", "0") == "1"
 
 # (Phase 2 cleanup) The `_warned_unpicklable_slugs` set used to dedupe
 # per-slug pickle-probe warnings in `snapshot_state(persistent=True)`. The
@@ -2490,7 +2501,7 @@ class PositionStateMachine:
         # Mirrors the Pine entry guard `entryGated = ... and not eodExit`.
         # (max_hold_bars is a duration limit, not a window: bars_held=0 makes
         # check_time_exit a no-op for it, so it never suppresses entries.)
-        if self.time_exit_config:
+        if _suppress_eod_reentry() and self.time_exit_config:
             from time_exit_packs import check_time_exit
             if check_time_exit(self.time_exit_config, bar_time, 0,
                                self.strategy.get('trading_session', 'RTH')):
@@ -2931,7 +2942,7 @@ class PositionStateMachine:
             return None
 
         # Time-window guard (see check_entry): don't open inside a be-flat window.
-        if self.time_exit_config:
+        if _suppress_eod_reentry() and self.time_exit_config:
             from time_exit_packs import check_time_exit
             if check_time_exit(self.time_exit_config, timestamp, 0,
                                self.strategy.get('trading_session', 'RTH')):

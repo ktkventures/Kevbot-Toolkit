@@ -221,13 +221,18 @@ Stage 3 is in flight on the feature branch.
 - **Validated against TV:** ut_bot primary (sid 269), swing-stop (3/3 byte-exact),
   full strategy incl. swing entry + cross-pack exit + swing stop + eod_exit (sid 308
   TSLA 15Sec, trade-for-trade to the cent, EOD included).
-- **EOD re-entry churn — FIXED in lockstep (2026-06-26).** The engine used to take
-  new entries inside the flat-by window (entering only to be force-flat next bar);
-  the Pine faithfully mirrored it. Now a time-window guard in both
-  `check_entry`/`check_entry_intrabar` (reusing `check_time_exit` with bars_held=0,
-  so `max_hold_bars` — a duration, not a window — is unaffected) and the Pine
-  (`entryGated = ... and not eodExit`, gated only for window exits) suppresses
-  entries once a be-flat window would fire. This **shifts `eod_exit` backtest P&L**
-  (the churn trades vanish) — by design. Fidelity-parity suite is unaffected *by
-  construction* (it measures ON==OFF + cache parity = differences, which an
-  unconditional behavior change shifts equally), but confirm it stays 18/18.
+- **EOD re-entry churn — FIXED in lockstep, behind a Railway flag (2026-06-26).**
+  The engine used to take new entries inside the flat-by window (entering only to
+  be force-flat next bar); the Pine faithfully mirrored it. Now a time-window guard
+  in both `check_entry`/`check_entry_intrabar` (reusing `check_time_exit` with
+  bars_held=0, so `max_hold_bars` — a duration, not a window — is unaffected) and
+  the Pine (`entryGated = ... and not eodExit`, window exits only) suppresses
+  entries once a be-flat window would fire. **Gated by `RORT_SUPPRESS_EOD_REENTRY`
+  (default OFF = legacy churn).** Both the engine and pine_generator read the same
+  flag, so generated Pine always matches the engine's *active* state — flipping the
+  flag changes both together (re-export Pine after a flip). Default-OFF means the
+  fix merges + ships with **zero backtest change**; enabling it **shifts `eod_exit`
+  backtest P&L** (churn trades vanish) and so is a deliberate flip coordinated with
+  the fidelity suite / UAD sequencing. Fidelity-parity suite is unaffected *by
+  construction* either way (it measures ON==OFF + cache parity = differences, which
+  an unconditional behavior change shifts equally); confirm it stays 18/18.

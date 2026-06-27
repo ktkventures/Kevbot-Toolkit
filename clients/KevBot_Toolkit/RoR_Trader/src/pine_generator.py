@@ -959,6 +959,15 @@ def _emit_stop(stop_config: dict) -> tuple:
     return handler(stop_config or {})
 
 
+def _suppress_eod_reentry() -> bool:
+    """Railway flag (default OFF) — mirror of unified_engine._suppress_eod_reentry.
+    When ON, generated Pine suppresses entries inside a be-flat time window
+    (entryGated = ... and not eodExit); OFF keeps the legacy churn so the exported
+    Pine matches the engine's ACTIVE flag state. Both read RORT_SUPPRESS_EOD_REENTRY
+    so a flag flip changes engine and (re-exported) Pine together."""
+    return os.getenv("RORT_SUPPRESS_EOD_REENTRY", "0") == "1"
+
+
 # Market close times by session (hour, minute) in US/Eastern — mirrors
 # time_exit_packs._SESSION_CLOSE so the EOD threshold matches the engine.
 _SESSION_CLOSE_ET = {
@@ -1221,7 +1230,7 @@ def generate_pine(strat: dict) -> str:
     # mirrors the engine's check_entry time-window guard so we don't open a
     # position only to be force-flattened next bar. max_hold (gates_entry False)
     # is a duration limit, not a window, so it never suppresses entries.
-    if te_expr and te_gates_entry:
+    if te_expr and te_gates_entry and _suppress_eod_reentry():
         L(f"entryGated = entrySig and gateAll and not {te_expr}")
     else:
         L("entryGated = entrySig and gateAll")
