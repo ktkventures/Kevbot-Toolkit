@@ -226,6 +226,110 @@ def _is_cancelled(job_id: str) -> bool:
         return bool(job and job.get('cancelled'))
 
 
+# ---------------------------------------------------------------------------
+# Parallel recompute (M-RS3 Phase 1)
+# ---------------------------------------------------------------------------
+# RORT_RECOMPUTE_PARALLELISM (default 1 == today's exact sequential loop) runs
+# the embarrassingly-parallel per-strategy unit across N processes. Threads do
+# NOT help: the engine process_bar loop is GIL-bound (~70% of cost is Python
+# CPU). Each worker is a fresh interpreter, so _pool_init re-arms the two
+# silent-failure traps — an unloaded pack registry (=> every recompute returns
+# 0 trades) and a fork-inherited Supabase admin client (=> shared socket). The
+# per-strategy compute is byte-identical to the sequential path: parallelism
+# only changes scheduling. See docs/_active/Design_M-RS3_Parallel_Recompute.md.
+
+def _status_rank(s: Optional[str]) -> int:
+    return {'error': 4, 'skipped': 3, 'appended': 2,
+            'refreshed': 2, 'no_new_trades': 1,
+            'no_trades': 1}.get(s or '', 0)
+
+
+def _lookup_strat_name(sid: int, user_id: str) -> str:
+    try:
+        from db import get_strategy_by_id_admin
+        meta = get_strategy_by_id_admin(sid, user_id)
+        return (meta or {}).get('name', f'sid {sid}')
+    except Exception:
+        return f'sid {sid}'
+
+
+def _pool_init(user_id: str) -> None:
+    """ProcessPoolExecutor initializer — runs ONCE per worker process.
+
+    A forked child inherits the parent's module globals, including the cached
+    Supabase admin client (a live socket; sharing it across processes corrupts
+    responses) and — under spawn — an unscanned pack registry. Re-arm both:
+      1. Null db._admin_client / _anon_client so each process builds its OWN.
+      2. scan_and_load_all() and assert packs>0 (the silent-0-trades trap;
+         feedback_worker_pack_registry_init / feedback_local_script_pack_registry).
+      3. set_admin_user_context so user-context helpers run without a JWT.
+    """
+    import db
+    # Force a fresh per-process admin client (never reuse a forked socket).
+    try:
+        with db._client_lock:
+            db._admin_client = None
+            db._anon_client = None
+    except Exception:
+        db._admin_client = None
+        db._anon_client = None
+    import pack_registry
+    loaded = pack_registry.scan_and_load_all()  # -> Dict[str, RegisteredPack]
+    npacks = len(loaded) if hasattr(loaded, '__len__') else (loaded or 0)
+    if not npacks:
+        raise RuntimeError(
+            f"[RECOMPUTE-POOL] pack registry empty (packs={npacks}) in worker — "
+            f"every recompute would silently return 0 trades; aborting")
+    db.set_admin_user_context(user_id)
+    logger.info("[RECOMPUTE-POOL] worker initialized: %d packs, user=%s",
+                npacks, (user_id or '')[:8])
+
+
+def _recompute_one(sid: int, user_id: str, job_type: str,
+                   force: bool) -> Dict[str, Any]:
+    """Compute BOTH lanes for one strategy. Picklable, top-level — runs in a
+    pool worker (parallel) or inline in the parent (N==1). Returns raw lane
+    results; the PARENT owns all job-state writes (no cross-process race on the
+    job row). Mirrors the original sequential loop body exactly, minus the
+    in-process per-strategy lock (which can't span processes; see caller)."""
+    t0 = time.time()
+    from api.services.forward_test_service import (
+        append_new_trades_for_strategy,
+        recompute_and_persist_stored_trades,
+        append_new_backtest_trades_for_strategy,
+        recompute_and_persist_algo_trades,
+    )
+    bt_r: Dict[str, Any] = {}
+    algo_r: Dict[str, Any] = {}
+    try:
+        if job_type == 'append_recent':
+            try:
+                bt_r = append_new_backtest_trades_for_strategy(
+                    sid, user_id, force=force)
+            except Exception as e:
+                bt_r = {'status': 'error', 'reason': str(e)}
+            try:
+                algo_r = append_new_trades_for_strategy(
+                    sid, user_id, force=force)
+            except Exception as e:
+                algo_r = {'status': 'error', 'reason': str(e)}
+        else:  # full_recompute
+            try:
+                bt_r = recompute_and_persist_stored_trades(
+                    sid, user_id, compute_parity=False)
+            except Exception as e:
+                bt_r = {'status': 'error', 'reason': str(e)}
+            try:
+                algo_r = recompute_and_persist_algo_trades(sid, user_id)
+            except Exception as e:
+                algo_r = {'status': 'error', 'reason': str(e)}
+    except Exception as e:
+        bt_r = {'status': 'error', 'error': str(e)}
+        algo_r = {'status': 'error', 'error': str(e)}
+    return {'sid': sid, 'bt_r': bt_r, 'algo_r': algo_r,
+            'elapsed': round(time.time() - t0, 2)}
+
+
 def _run_job_worker(job_id: str) -> None:
     """Daemon thread entry. Iterates strategies, calls the right helper.
 
@@ -265,85 +369,20 @@ def _run_job_worker(job_id: str) -> None:
     summary = dict(job['summary'])
 
     try:
-        for idx, sid in enumerate(strategy_ids):
-            if _is_cancelled(job_id):
-                _update_job(job_id,
-                            status='cancelled',
-                            completed_at=_now_iso(),
-                            progress_label='cancelled by user')
-                logger.info(
-                    "[RECOMPUTE-JOB] %s cancelled at idx=%s",
-                    job_id[:8], idx)
-                return
-
-            # Look up strategy name for progress display
-            strat_name = ''
-            try:
-                strat_meta = get_strategy_by_id_admin(sid, user_id)
-                strat_name = (strat_meta or {}).get('name', f'sid {sid}')
-            except Exception:
-                strat_name = f'sid {sid}'
-
-            _update_job(job_id,
-                        current_strategy_idx=idx,
-                        current_strategy_id=sid,
-                        current_strategy_name=strat_name,
-                        progress_label=f'running engine ({job_type})')
-
-            t0 = time.time()
-            bt_r: Dict[str, Any] = {}
-            algo_r: Dict[str, Any] = {}
-            try:
-                # Per-strategy lock prevents cron + manual jobs from
-                # racing on the same strategy. If both try the same sid
-                # at once, one waits for the other to release.
-                with _get_strategy_lock(sid):
-                    # Algo-model split (2026-05-08): each job_type fans
-                    # out to BOTH lanes (Option A — 2 buttons each fire
-                    # both backtest + algo lanes). Mirrors the new
-                    # /update?mode= endpoint dispatch table.
-                    if job_type == 'append_recent':
-                        # mode='new' equivalent
-                        try:
-                            bt_r = append_new_backtest_trades_for_strategy(
-                                sid, user_id, force=force)
-                        except Exception as e:
-                            bt_r = {'status': 'error', 'reason': str(e)}
-                        try:
-                            algo_r = append_new_trades_for_strategy(
-                                sid, user_id, force=force)
-                        except Exception as e:
-                            algo_r = {'status': 'error', 'reason': str(e)}
-                    else:  # full_recompute → mode='all' equivalent
-                        try:
-                            bt_r = recompute_and_persist_stored_trades(
-                                sid, user_id, compute_parity=False)
-                        except Exception as e:
-                            bt_r = {'status': 'error', 'reason': str(e)}
-                        try:
-                            algo_r = recompute_and_persist_algo_trades(
-                                sid, user_id)
-                        except Exception as e:
-                            algo_r = {'status': 'error', 'reason': str(e)}
-            except Exception as e:
-                logger.exception(
-                    "[RECOMPUTE-JOB] %s strategy=%s crashed: %s",
-                    job_id[:8], sid, e)
-                bt_r = {'status': 'error', 'error': str(e)}
-                algo_r = {'status': 'error', 'error': str(e)}
-
-            elapsed = round(time.time() - t0, 2)
-            # Combined per-strategy entry — pick the more-informative
-            # status for the row label, sum inserted counts across lanes.
+        # Assemble + publish one strategy's result. Closes over per_results /
+        # summary / job_id so the sequential and parallel branches share
+        # identical aggregation (the only difference between them is
+        # *scheduling*, never the recorded numbers).
+        def _publish_result(sid, strat_name, res):
+            bt_r = res['bt_r']
+            algo_r = res['algo_r']
+            elapsed = res['elapsed']
+            # Combined per-strategy entry — pick the more-informative status
+            # for the row label, sum inserted counts across lanes.
             bt_inserted = bt_r.get('inserted', bt_r.get('trades', 0)) or 0
             algo_inserted = algo_r.get('inserted') or 0
             combined_inserted = int(bt_inserted) + int(algo_inserted)
-
             # Status priority: error > skipped > non-zero-insert > zero-insert
-            def _status_rank(s):
-                return {'error': 4, 'skipped': 3, 'appended': 2,
-                        'refreshed': 2, 'no_new_trades': 1,
-                        'no_trades': 1}.get(s or '', 0)
             primary_status = bt_r.get('status') if _status_rank(bt_r.get('status')) >= _status_rank(algo_r.get('status')) else algo_r.get('status')
 
             per_entry = {
@@ -384,6 +423,95 @@ def _run_job_worker(job_id: str) -> None:
             _update_job(job_id,
                         per_strategy_results=list(per_results),
                         summary=dict(summary))
+
+        # M-RS3: parallelism degree. Default 1 == today's exact sequential
+        # path (also the kill-switch). >1 fans the catalog across N processes.
+        try:
+            parallelism = max(1, int(
+                os.getenv('RORT_RECOMPUTE_PARALLELISM', '1') or '1'))
+        except (TypeError, ValueError):
+            parallelism = 1
+
+        if parallelism <= 1:
+            # Sequential — byte-identical to the pre-M-RS3 loop. Keeps the
+            # in-process per-strategy lock (cron × manual de-race).
+            for idx, sid in enumerate(strategy_ids):
+                if _is_cancelled(job_id):
+                    _update_job(job_id, status='cancelled',
+                                completed_at=_now_iso(),
+                                progress_label='cancelled by user')
+                    logger.info("[RECOMPUTE-JOB] %s cancelled at idx=%s",
+                                job_id[:8], idx)
+                    return
+                strat_name = _lookup_strat_name(sid, user_id)
+                _update_job(job_id, current_strategy_idx=idx,
+                            current_strategy_id=sid,
+                            current_strategy_name=strat_name,
+                            progress_label=f'running engine ({job_type})')
+                # Per-strategy lock prevents cron + manual jobs from racing on
+                # the same sid. _recompute_one runs BOTH lanes (Option A,
+                # 2026-05-08), mirroring the /update?mode= dispatch table.
+                with _get_strategy_lock(sid):
+                    res = _recompute_one(sid, user_id, job_type, force)
+                _publish_result(sid, strat_name, res)
+        else:
+            # Parallel (M-RS3 Phase 1) — N worker processes over the
+            # embarrassingly-parallel catalog. The PARENT owns every job-state
+            # write (no cross-process race on the job row). The in-process
+            # per-strategy lock can't span processes; each sid is submitted
+            # once per job, and cross-job (cron) racing is a documented
+            # Phase-1 limitation that the default-OFF flag keeps inert.
+            import multiprocessing as _mp
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+            total = len(strategy_ids)
+            logger.info(
+                "[RECOMPUTE-JOB] %s PARALLEL N=%d over %d strategies (type=%s)",
+                job_id[:8], parallelism, total, job_type)
+            _update_job(
+                job_id,
+                progress_label=f'running engine ({job_type}) ×{parallelism}')
+            done = 0
+            # SPAWN context (not fork): the host (API/worker) is multithreaded,
+            # and fork-from-threaded can deadlock if a child inherits a held
+            # lock (e.g. db._client_lock). Spawn gives each worker a clean
+            # interpreter — _pool_init then loads the registry + a fresh admin
+            # client from scratch. Worker startup re-imports (~secs), amortized
+            # against ~193s/strat.
+            with ProcessPoolExecutor(max_workers=parallelism,
+                                     mp_context=_mp.get_context('spawn'),
+                                     initializer=_pool_init,
+                                     initargs=(user_id,)) as ex:
+                futs = {ex.submit(_recompute_one, sid, user_id, job_type,
+                                  force): sid for sid in strategy_ids}
+                for fut in as_completed(futs):
+                    sid = futs[fut]
+                    if _is_cancelled(job_id):
+                        _update_job(job_id, status='cancelled',
+                                    completed_at=_now_iso(),
+                                    progress_label='cancelled by user')
+                        logger.info(
+                            "[RECOMPUTE-JOB] %s cancelled (parallel) after "
+                            "%d/%d", job_id[:8], done, total)
+                        ex.shutdown(wait=False, cancel_futures=True)
+                        return
+                    try:
+                        res = fut.result()
+                    except Exception as e:
+                        logger.exception(
+                            "[RECOMPUTE-JOB] %s strategy=%s worker crashed: %s",
+                            job_id[:8], sid, e)
+                        res = {'sid': sid,
+                               'bt_r': {'status': 'error', 'error': str(e)},
+                               'algo_r': {'status': 'error', 'error': str(e)},
+                               'elapsed': 0}
+                    done += 1
+                    strat_name = _lookup_strat_name(sid, user_id)
+                    _update_job(
+                        job_id, current_strategy_idx=done,
+                        current_strategy_id=sid,
+                        current_strategy_name=strat_name,
+                        progress_label=f'{done}/{total} ({job_type}, ×{parallelism})')
+                    _publish_result(sid, strat_name, res)
 
         _update_job(job_id,
                     status='completed',
