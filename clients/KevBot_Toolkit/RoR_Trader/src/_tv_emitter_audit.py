@@ -1,9 +1,10 @@
-"""Offline audit: run generate_pine() over every strategy and report which
-ones export cleanly vs. fail, grouped by failure reason / missing pack.
+"""Offline TV-export readiness audit: run tv_export_readiness() over every
+strategy and report which export cleanly vs. what's missing, grouped by gap.
 
-This is the definitive work-list for TradingView-export emitter coverage:
-it mirrors the GET /strategies/{id}/pine-export endpoint exactly (same
-generate_pine call, same ValueError surface) but sweeps all strategies at once.
+This is the definitive offline work-list for emitter coverage. It shares the
+SAME code path as the GET /strategies/{id}/pine-readiness endpoint
+(pine_generator.tv_export_readiness) — so the audit and the live badge can never
+disagree. See docs/_active/Design_TV_Export_Readiness.md.
 
 Read-only against prod (admin client, bypasses RLS). Run from src/:
     ../.venv/bin/python _tv_emitter_audit.py
@@ -13,14 +14,8 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 from db import get_admin_client
-from pine_generator import generate_pine
-
-
-def _trigger_pack(trig):
-    """Best-effort pack label from a trigger string's prefix."""
-    if not trig:
-        return None
-    return trig.split('_')[0] + '_*'
+from pine_generator import tv_export_readiness
+from tv_export_canaries import coverage_summary
 
 
 def main():
@@ -31,47 +26,33 @@ def main():
     strats = res.data or []
     print(f"Auditing {len(strats)} strategies\n")
 
-    ok, fail = [], []
-    fail_by_reason = defaultdict(list)
-    pack_usage = defaultdict(lambda: {'ok': 0, 'fail': 0})
+    ready, not_ready = [], []
+    by_gap = defaultdict(list)
 
     for s in strats:
-        cfg = s.get('config') or {}
-        entry = cfg.get('entry_trigger')
-        gates = [g.get('interpreter') or g.get('pack') or g.get('name')
-                 for g in (cfg.get('confluence') or []) if isinstance(g, dict)]
-        label = f"sid {s['id']:>4} {s.get('symbol') or '?':<6} {(s.get('name') or '')[:34]:<34}"
-        try:
-            generate_pine(s)
-            ok.append(s['id'])
-            for p in [_trigger_pack(entry)] + gates:
-                if p:
-                    pack_usage[p]['ok'] += 1
-        except ValueError as e:
-            reason = str(e)
-            fail.append(s['id'])
-            fail_by_reason[reason].append(label.strip())
-            for p in [_trigger_pack(entry)] + gates:
-                if p:
-                    pack_usage[p]['fail'] += 1
-        except Exception as e:
-            reason = f"[NON-ValueError {type(e).__name__}] {e}"
-            fail.append(s['id'])
-            fail_by_reason[reason].append(label.strip())
+        r = tv_export_readiness(s)
+        label = (f"sid {s['id']:>4} {s.get('symbol') or '?':<6} "
+                 f"{(s.get('name') or '')[:34]:<34}").strip()
+        if r['ready']:
+            ready.append(s['id'])
+        else:
+            not_ready.append(s['id'])
+            for gap in r['missing']:
+                by_gap[gap['detail']].append(label)
 
-    print(f"=== RESULT: {len(ok)} OK / {len(fail)} FAIL ===\n")
-    print("--- FAILURES grouped by reason ---")
-    for reason, items in sorted(fail_by_reason.items(),
-                                key=lambda kv: -len(kv[1])):
-        print(f"\n[{len(items)}] {reason}")
+    print(f"=== RESULT: {len(ready)} READY / {len(not_ready)} NOT-READY ===\n")
+    print("--- GAPS grouped (every blocking issue, not just the first) ---")
+    for detail, items in sorted(by_gap.items(), key=lambda kv: -len(kv[1])):
+        print(f"\n[{len(items)}] {detail}")
         for it in items[:25]:
             print(f"      {it}")
         if len(items) > 25:
             print(f"      ... +{len(items) - 25} more")
 
-    print("\n--- PACK USAGE (entry-prefix + gate interpreters) ---")
-    for p, c in sorted(pack_usage.items(), key=lambda kv: -(kv[1]['ok'] + kv[1]['fail'])):
-        print(f"   {p:<22} ok={c['ok']:>3}  fail={c['fail']:>3}")
+    cov = coverage_summary()
+    print(f"\n--- PARITY CANARIES (validated vs merely-emitting) ---")
+    print(f"   {cov['validated']} validated, {cov['pending']} pending "
+          f"of {cov['total']} tracked components")
 
 
 if __name__ == '__main__':

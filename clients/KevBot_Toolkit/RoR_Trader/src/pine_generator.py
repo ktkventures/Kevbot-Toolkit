@@ -1267,3 +1267,98 @@ def generate_pine(strat: dict) -> str:
               f'text_size=size.small)')
 
     return "\n".join(lines) + "\n"
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Readiness check  (Design_TV_Export_Readiness.md §5)
+# ───────────────────────────────────────────────────────────────────────────
+def tv_export_readiness(strat: dict) -> dict:
+    """Inspect a strategy and return EVERY thing that blocks a faithful TV
+    export — not just the first (which is all generate_pine's ValueError shows).
+
+    Returns {ready: bool, missing: [gap, ...]} where each gap is a dict with a
+    machine-readable `kind` + fields and a human `detail`:
+      {kind:'trigger', role:'entry'|'exit', value:..., detail:...}
+      {kind:'gate',    interp:..., state:..., detail:...}
+      {kind:'stop',    method:...,            detail:...}
+      {kind:'time_exit', method:...,          detail:...}
+
+    Uses the SAME resolution path as generate_pine (_resolve_first,
+    _emitter_for_interp, _STOP_EMITTERS, _TIME_EXIT_EMITTERS) so readiness and the
+    actual export can never disagree. This is the badge/contract surface — keep it
+    a pure read (no Pine generated, never raises)."""
+    cfg = strat.get('config', strat) or {}
+    missing = []
+
+    # 1) entry trigger
+    entry_flat = cfg.get('entry_trigger')
+    entry_cid = cfg.get('entry_trigger_confluence_id')
+    entry_base = None
+    if not (entry_flat or entry_cid):
+        missing.append({'kind': 'trigger', 'role': 'entry', 'value': None,
+                        'detail': 'strategy has no entry trigger'})
+    else:
+        prim, entry_base, _ = _resolve_first(entry_flat, entry_cid)
+        if prim is None or entry_base is None:
+            v = entry_flat or entry_cid
+            missing.append({'kind': 'trigger', 'role': 'entry', 'value': v,
+                            'detail': f"no Pine emitter for entry trigger '{v}'"})
+
+    # 2) exit trigger (opposite_signal / cross-pack / none are all valid)
+    exit_flat = cfg.get('exit_trigger')
+    _ex_ids = cfg.get('exit_trigger_confluence_ids') or []
+    exit_cid = cfg.get('exit_trigger_confluence_id') or (
+        _ex_ids[0] if _ex_ids else None)
+    exit_t = exit_flat or exit_cid
+    if exit_t and str(exit_t).strip().lower() == 'opposite_signal':
+        # Faithful only if the entry resolved AND has an opposite; if there is no
+        # opposite the engine no-ops (stop-only), which the emitter mirrors — so a
+        # missing opposite is NOT a gap, only an unresolvable entry is (flagged above).
+        if entry_base is not None:
+            from triggers import get_opposite_trigger
+            opp = get_opposite_trigger(entry_base)
+            if opp is not None and prim.emit_trigger(opp) is None:
+                missing.append({'kind': 'trigger', 'role': 'exit',
+                                'value': 'opposite_signal',
+                                'detail': f"emitter {prim.slug} can't emit opposite "
+                                          f"trigger '{opp}' of the entry"})
+    elif exit_t:
+        xit, exit_base, _ = _resolve_first(exit_flat, exit_cid)
+        if xit is None or exit_base is None:
+            missing.append({'kind': 'trigger', 'role': 'exit', 'value': exit_t,
+                            'detail': f"no Pine emitter for exit trigger '{exit_t}'"})
+
+    # 3) confluence gates
+    for rec in (cfg.get('confluence') or []):
+        rec_clean = rec.replace('[CB]', '').replace('[PB]', '')
+        parts = rec_clean.split('-', 2)
+        if len(parts) != 3:
+            continue
+        _tf, interp, state = parts
+        em = _emitter_for_interp(interp)
+        if em is None:
+            missing.append({'kind': 'gate', 'interp': interp, 'state': state,
+                            'detail': f"no Pine emitter for gate interpreter '{interp}'"})
+        elif em.emit_gate_function(state, 'f_chk') is None:
+            missing.append({'kind': 'gate', 'interp': interp, 'state': state,
+                            'detail': f"emitter {em.slug} can't emit gate state '{state}'"})
+
+    # 4) stop method — unknown method silently ATR-fallbacks in generate_pine,
+    #    which would DIVERGE from the engine's real stop, so surface it here.
+    stop_cfg = cfg.get('stop_config') or {}
+    if stop_cfg:
+        sm = stop_cfg.get('method', 'atr')
+        if sm not in _STOP_EMITTERS:
+            missing.append({'kind': 'stop', 'method': sm,
+                            'detail': f"no Pine stop emitter for method '{sm}' "
+                                      f"(would silently fall back to ATR)"})
+
+    # 5) time-exit method
+    te = cfg.get('time_exit_config') or {}
+    if te:
+        tm = te.get('method')
+        if tm not in _TIME_EXIT_EMITTERS:
+            missing.append({'kind': 'time_exit', 'method': tm,
+                            'detail': f"no Pine time-exit emitter for method '{tm}'"})
+
+    return {'ready': len(missing) == 0, 'missing': missing}
