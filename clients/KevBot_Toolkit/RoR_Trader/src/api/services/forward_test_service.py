@@ -145,6 +145,30 @@ def recompute_and_persist_stored_trades(
             clear_current_user()
 
 
+def _earliest_backtest_entry(strategy_id: int):
+    """Earliest existing backtest-lane (`data_source LIKE 'backtest_%'`) trade
+    entry for the strategy as a UTC Timestamp, or None. Drives the recompute
+    PRESERVE-RANGE guard so a full recompute never truncates accumulated
+    history below what's already persisted. Read-only; admin client."""
+    try:
+        from db import get_admin_client
+        import pandas as _pd
+        rows = (get_admin_client().table('trades')
+                .select('entry_fill_ts')
+                .eq('strategy_id', strategy_id)
+                .like('data_source', 'backtest_%')
+                .order('entry_fill_ts')   # ascending → earliest first
+                .limit(1).execute().data)
+        if rows and rows[0].get('entry_fill_ts'):
+            ts = _pd.Timestamp(rows[0]['entry_fill_ts'])
+            return ts.tz_localize('UTC') if ts.tz is None else ts.tz_convert('UTC')
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[FT-RECOMPUTE] strategy=%s: earliest-backtest-entry "
+                       "query failed (%s) — preserve-range guard inert",
+                       strategy_id, e)
+    return None
+
+
 def _do_recompute(
     strategy_id: int,
     user_id: str,
@@ -172,8 +196,40 @@ def _do_recompute(
     # from the dough metadata onto .attrs, else calculate_kpis falls back to
     # count_trading_days(trades_df)=1 and inflates daily_r ~180x (see line ~190).
     import os as _os
+
+    # PRESERVE-RANGE GUARD (RORT_UAD_PRESERVE_RANGE, default ON): a FULL
+    # recompute must never SHRINK the persisted backtest date range. Strategies
+    # with no anchor (backtest_start_date / lookback / forward_test_start)
+    # resolve to `now - data_days` (resolve_visible_window step 4); a small
+    # data_days (e.g. 5) then DELETEs older backtest history on the DELETE+INSERT
+    # persist (sid 269: 176 trades Jun11-25 collapsed to 118 Jun22-26). Floor the
+    # recompute window at the earliest existing backtest-lane trade so we
+    # refresh/EXTEND, never truncate. Inert when the resolved window already
+    # covers the history (anchored or fresh strategies → recompute_strat == strat
+    # → byte-identical behavior). Skips the dough cache when flooring so we don't
+    # re-bake from a stale truncated dough.
+    recompute_strat = strat
+    _floored = False
+    if _os.getenv('RORT_UAD_PRESERVE_RANGE', '1') == '1':
+        try:
+            from strategy_data import resolve_visible_window
+            _vs, _ve, _anchor = resolve_visible_window(strat)
+            _emin = _earliest_backtest_entry(strategy_id)
+            if _emin is not None and _emin < _vs:
+                recompute_strat = {**strat,
+                                   'backtest_start_date': _emin.isoformat()}
+                _floored = True
+                logger.info(
+                    "[FT-RECOMPUTE] strategy=%s: PRESERVE-RANGE — resolved window "
+                    "(anchor=%s start=%s) would truncate below existing backtest "
+                    "min=%s; flooring to it (refresh+extend, no data loss)",
+                    strategy_id, _anchor, _vs.isoformat(), _emin.isoformat())
+        except Exception as _e:  # noqa: BLE001
+            logger.warning("[FT-RECOMPUTE] strategy=%s: preserve-range guard "
+                           "failed (%s) — proceeding unfloored", strategy_id, _e)
+
     all_trades = None
-    if _os.getenv('RORT_USE_DOUGH_CACHE', '0') == '1':
+    if _os.getenv('RORT_USE_DOUGH_CACHE', '0') == '1' and not _floored:
         try:
             import bar_cache_store as _bcs
             from unified_engine import run_trades_from_cache as _rtfc
@@ -213,7 +269,7 @@ def _do_recompute(
             all_trades = None
 
     if all_trades is None:
-        all_trades = svc.get_strategy_trades(strat)
+        all_trades = svc.get_strategy_trades(recompute_strat)
     logger.info(
         "[FT-RECOMPUTE] strategy=%s: %d trades", strategy_id, len(all_trades),
     )
