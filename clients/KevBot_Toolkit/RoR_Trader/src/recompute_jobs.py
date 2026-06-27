@@ -43,6 +43,13 @@ logger = logging.getLogger(__name__)
 _active_jobs: Dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 
+# M-RS3 Phase 2: job_ids whose state must MIRROR to the compute_jobs DB row.
+# The dedicated batch-worker seeds the in-memory job from a claimed row and adds
+# its id here so _update_job / _is_cancelled also read/write the durable row
+# (the API, a separate process, only sees the DB). Empty in the API process →
+# zero behavior change there.
+_REMOTE_JOB_IDS: set = set()
+
 # Per-strategy semaphore to prevent concurrent jobs racing on the same
 # strategy_id. Cron + manual trigger could otherwise both engine-replay
 # the same strategy at once (set-diff prevents duplicates but kpis would
@@ -115,6 +122,25 @@ def submit_recompute_job(
     if not user_id:
         raise ValueError("user_id required")
 
+    # M-RS3 Phase 2 (RORT_COMPUTE_REMOTE, default OFF): enqueue to the durable
+    # compute_jobs table for the dedicated batch-worker instead of running a
+    # daemon thread in THIS (API) process. Returns the row id; the frontend
+    # polls GET /api/jobs/{id} exactly as before (get_job_status reads the row).
+    try:
+        import compute_jobs_store
+        if compute_jobs_store.remote_enabled():
+            job_id = compute_jobs_store.enqueue(
+                user_id, strategy_ids, job_type, force)
+            logger.info(
+                "[RECOMPUTE-JOB] enqueued REMOTE job=%s type=%s strategies=%d "
+                "user=%s", job_id[:8], job_type, len(strategy_ids), user_id[:8])
+            return job_id
+    except Exception as e:  # noqa: BLE001
+        # Fail loud-ish but fall back to the in-process path so a queue/DB blip
+        # never wedges a user's Update click.
+        logger.warning("[RECOMPUTE-JOB] remote enqueue failed (%s) — falling "
+                       "back to in-process job", e)
+
     job_id = str(uuid.uuid4())
     now = _now_iso()
     job: Dict[str, Any] = {
@@ -160,10 +186,21 @@ def submit_recompute_job(
 
 
 def get_job_status(job_id: str) -> Optional[dict]:
-    """Snapshot of current job state. Returns None if job_id unknown."""
+    """Snapshot of current job state. Returns None if job_id unknown.
+
+    In-memory first (in-process jobs); falls back to the compute_jobs DB row
+    when remote mode is on, so the API can report a job the batch-worker owns."""
     with _jobs_lock:
         job = _active_jobs.get(job_id)
-        return dict(job) if job is not None else None
+        if job is not None:
+            return dict(job)
+    try:
+        import compute_jobs_store
+        if compute_jobs_store.remote_enabled():
+            return compute_jobs_store.get_row(job_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[RECOMPUTE-JOB] remote get_job_status failed: %s", e)
+    return None
 
 
 def cancel_job(job_id: str) -> bool:
@@ -176,13 +213,21 @@ def cancel_job(job_id: str) -> bool:
     """
     with _jobs_lock:
         job = _active_jobs.get(job_id)
-        if job is None:
-            return False
-        if job['status'] not in ('queued', 'running'):
-            return False
-        job['cancelled'] = True
-        job['progress_label'] = 'cancelling…'
-        return True
+        if job is not None:
+            if job['status'] not in ('queued', 'running'):
+                return False
+            job['cancelled'] = True
+            job['progress_label'] = 'cancelling…'
+            return True
+    # Remote job (owned by the batch-worker): flag cancel on the DB row; the
+    # worker polls it between strategies.
+    try:
+        import compute_jobs_store
+        if compute_jobs_store.remote_enabled():
+            return compute_jobs_store.request_cancel(job_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[RECOMPUTE-JOB] remote cancel failed: %s", e)
+    return False
 
 
 def list_jobs(
@@ -203,6 +248,18 @@ def list_jobs(
             if j.get('user_id') == user_id
             and (status is None or j.get('status') == status)
         ]
+    # Merge in durable rows (the batch-worker's jobs) when remote mode is on,
+    # de-duping by id so a job that's briefly both in-memory (mid-run on this
+    # process) and in the DB appears once.
+    try:
+        import compute_jobs_store
+        if compute_jobs_store.remote_enabled():
+            seen = {j.get('id') for j in snapshot}
+            for row in compute_jobs_store.list_rows(user_id, status, limit):
+                if row.get('id') not in seen:
+                    snapshot.append(row)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[RECOMPUTE-JOB] remote list_jobs failed: %s", e)
     snapshot.sort(key=lambda j: j.get('created_at', ''), reverse=True)
     return snapshot[:limit]
 
@@ -212,18 +269,38 @@ def list_jobs(
 # ---------------------------------------------------------------------------
 
 def _update_job(job_id: str, **kwargs) -> None:
-    """Thread-safe partial update on the in-memory job state."""
+    """Thread-safe partial update on the in-memory job state. For remote jobs
+    (batch-worker), ALSO mirror the update to the durable compute_jobs row so
+    the API (a separate process) sees live progress. All kwargs the worker
+    passes are compute_jobs columns."""
     with _jobs_lock:
         job = _active_jobs.get(job_id)
-        if job is None:
-            return
-        job.update(kwargs)
+        if job is not None:
+            job.update(kwargs)
+        remote = job_id in _REMOTE_JOB_IDS
+    if remote:
+        try:
+            import compute_jobs_store
+            compute_jobs_store.update_row(job_id, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[RECOMPUTE-JOB] remote progress mirror failed: %s", e)
 
 
 def _is_cancelled(job_id: str) -> bool:
     with _jobs_lock:
         job = _active_jobs.get(job_id)
-        return bool(job and job.get('cancelled'))
+        if job and job.get('cancelled'):
+            return True
+        remote = job_id in _REMOTE_JOB_IDS
+    # Remote cancel arrives via the DB row (the API writes it from another
+    # process); poll it between strategies.
+    if remote:
+        try:
+            import compute_jobs_store
+            return compute_jobs_store.is_cancelled(job_id)
+        except Exception:  # noqa: BLE001
+            return False
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -532,3 +609,46 @@ def _run_job_worker(job_id: str) -> None:
                     error=f'{type(e).__name__}: {e}',
                     per_strategy_results=per_results,
                     summary=summary)
+
+
+def run_remote_job(row: Dict[str, Any]) -> None:
+    """Execute a claimed `compute_jobs` row in THIS process (the batch-worker).
+
+    Seeds the in-memory job from the row so the existing _run_job_worker (and
+    _update_job / _is_cancelled) work unchanged, marks it remote so progress +
+    cancel mirror to the durable DB row the API reads, runs synchronously, then
+    evicts the in-memory copy. The pool degree still comes from
+    RORT_RECOMPUTE_PARALLELISM (set high on the dedicated service)."""
+    job_id = row['id']
+    sids = list(row.get('strategy_ids') or [])
+    job = {
+        'id': job_id,
+        'user_id': row['user_id'],
+        'strategy_ids': sids,
+        'job_type': row['job_type'],
+        'force': bool(row.get('force')),
+        'status': row.get('status', 'running'),
+        'created_at': row.get('created_at'),
+        'started_at': row.get('started_at'),
+        'completed_at': None,
+        'cancelled': bool(row.get('cancelled')),
+        'current_strategy_idx': row.get('current_strategy_idx', 0),
+        'current_strategy_id': None,
+        'current_strategy_name': None,
+        'progress_label': row.get('progress_label', 'running'),
+        'per_strategy_results': list(row.get('per_strategy_results') or []),
+        'summary': dict(row.get('summary') or {
+            'total_strategies': len(sids), 'total_inserted': 0,
+            'total_skipped': 0, 'total_failed': 0, 'total_appended': 0,
+        }),
+        'error': None,
+    }
+    with _jobs_lock:
+        _active_jobs[job_id] = job
+        _REMOTE_JOB_IDS.add(job_id)
+    try:
+        _run_job_worker(job_id)
+    finally:
+        with _jobs_lock:
+            _active_jobs.pop(job_id, None)
+            _REMOTE_JOB_IDS.discard(job_id)
