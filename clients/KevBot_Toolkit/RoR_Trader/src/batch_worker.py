@@ -93,21 +93,53 @@ def main():
         raise SystemExit("[batch_worker] pack registry empty — refusing to "
                          "start (every recompute would return 0 trades)")
     parallelism = os.environ.get("RORT_RECOMPUTE_PARALLELISM", "1")
-    # Host resources — the parallelism ceiling. cpu_count() can overstate under
-    # a cgroup CPU quota; sched_getaffinity is closer to usable CPUs. RAM ÷ the
-    # per-worker footprint (~1.5-2.5GB on heavy 10Sec strats) caps safe N.
-    try:
-        _avail_cpu = len(os.sched_getaffinity(0))
-    except Exception:  # noqa: BLE001 — not on all platforms
-        _avail_cpu = os.cpu_count()
-    _ram_str = "?"
+    # Resources. os.cpu_count()/psutil report the HOST (overstated under a
+    # container). The CONTAINER cgroup quota/limit is the real parallelism
+    # ceiling: CPU quota = usable cores; RAM ÷ per-worker footprint (~1.5-2.5GB
+    # on heavy 10Sec strats) caps safe N.
+    def _cgroup_limits():
+        cpu = ram = None
+        try:  # cgroup v2
+            q, p = open("/sys/fs/cgroup/cpu.max").read().split()
+            if q != "max":
+                cpu = int(q) / int(p)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            v = open("/sys/fs/cgroup/memory.max").read().strip()
+            if v != "max":
+                ram = int(v) / 1e9
+        except Exception:  # noqa: BLE001
+            pass
+        if cpu is None:  # cgroup v1
+            try:
+                q = int(open("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read())
+                p = int(open("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read())
+                if q > 0:
+                    cpu = q / p
+            except Exception:  # noqa: BLE001
+                pass
+        if ram is None:
+            try:
+                v = int(open("/sys/fs/cgroup/memory/memory.limit_in_bytes").read())
+                if v < 1e15:
+                    ram = v / 1e9
+            except Exception:  # noqa: BLE001
+                pass
+        return cpu, ram
+    _host_ram = "?"
     try:
         import psutil
-        _ram_str = f"{psutil.virtual_memory().total / 1e9:.1f}GB"
+        _host_ram = f"{psutil.virtual_memory().total / 1e9:.0f}GB"
     except Exception:  # noqa: BLE001
         pass
-    logger.info("[batch_worker] HOST: cpu_count=%s sched_affinity=%s ram=%s",
-                os.cpu_count(), _avail_cpu, _ram_str)
+    _cg_cpu, _cg_ram = _cgroup_limits()
+    logger.info(
+        "[batch_worker] RESOURCES host(cpu=%s ram=%s) CONTAINER(cpu_limit=%s "
+        "ram_limit=%s) — N should be <= min(cpu_limit, ram_limit/~2.5GB)",
+        os.cpu_count(), _host_ram,
+        f"{_cg_cpu:.1f}" if _cg_cpu else "unlimited",
+        f"{_cg_ram:.1f}GB" if _cg_ram else "unlimited")
     logger.info("[batch_worker] up id=%s packs=%d parallelism=%s poll=%ss "
                 "stale_reclaim=%ss", WORKER_ID, npacks, parallelism,
                 POLL_INTERVAL_S, STALE_RECLAIM_S)
