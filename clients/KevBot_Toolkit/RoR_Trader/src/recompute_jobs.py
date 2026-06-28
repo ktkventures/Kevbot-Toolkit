@@ -407,6 +407,183 @@ def _recompute_one(sid: int, user_id: str, job_type: str,
             'elapsed': round(time.time() - t0, 2)}
 
 
+# ---------------------------------------------------------------------------
+# Supervised pool (M-RS3 — hang recovery, RORT_RECOMPUTE_SUPERVISOR, default OFF)
+# ---------------------------------------------------------------------------
+# ProcessPoolExecutor.as_completed can DEADLOCK when a worker dies/stalls during
+# result handoff under concurrency (observed: a 67-strat fleet wedged at 66/67 —
+# the last worker finished its WORK but the pool never yielded; 338 alone ran
+# clean, proving it's a concurrency race, not strategy-specific). This
+# supervisor replaces the pool with one process PER strategy + a heartbeat
+# watchdog: a dead/frozen worker is reaped (proc.is_alive() / stale heartbeat)
+# WITHOUT hanging the batch, and a legitimately long-but-progressing worker is
+# NEVER capped (no wall-clock limit — only a stale heartbeat triggers a reap, so
+# a 2-year backtest that keeps ticking runs uninterrupted). Process-per-strategy
+# also frees memory between strategies (each exits after one), easing RAM.
+
+def _worker_entry(sid, user_id, job_type, force, heartbeat, result_q):
+    """One-strategy worker for the supervised pool. Inits the worker env, ticks
+    a liveness heartbeat on a daemon thread, runs both lanes, returns the result
+    via the queue. Top-level + picklable (spawn)."""
+    import time as _t
+    import threading
+    try:
+        _pool_init(user_id)
+    except Exception as e:  # noqa: BLE001
+        try:
+            result_q.put((sid, {
+                'sid': sid,
+                'bt_r': {'status': 'error', 'error': f'pool_init failed: {e}'},
+                'algo_r': {'status': 'error', 'error': 'pool_init failed'},
+                'elapsed': 0}))
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    stop = threading.Event()
+
+    def _hb():
+        while not stop.is_set():
+            try:
+                heartbeat[sid] = _t.time()
+            except Exception:  # noqa: BLE001
+                pass
+            stop.wait(5)
+    threading.Thread(target=_hb, daemon=True).start()
+    try:
+        res = _recompute_one(sid, user_id, job_type, force)
+    except Exception as e:  # noqa: BLE001
+        res = {'sid': sid,
+               'bt_r': {'status': 'error', 'error': str(e)},
+               'algo_r': {'status': 'error', 'error': str(e)},
+               'elapsed': 0}
+    finally:
+        stop.set()
+    try:
+        result_q.put((sid, res))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _run_pool_supervised(strategy_ids, user_id, job_type, force, n, job_id,
+                         publish, total) -> bool:
+    """Process-per-strategy supervisor with a heartbeat watchdog. Returns True
+    on completion, False if cancelled (finalization already written). `publish`
+    is _run_job_worker's _publish_result closure."""
+    import multiprocessing as _mp
+    import time as _time
+    try:
+        stall = max(60, int(os.getenv('RORT_RECOMPUTE_STALL_SECONDS', '900')))
+    except (TypeError, ValueError):
+        stall = 900
+    ctx = _mp.get_context('spawn')
+    mgr = ctx.Manager()
+    heartbeat = mgr.dict()
+    result_q = ctx.Queue()
+    logger.info("[RECOMPUTE-JOB] %s SUPERVISED N=%d over %d strategies "
+                "(type=%s) stall_reap=%ds", job_id[:8], n, total, job_type,
+                stall)
+    _update_job(job_id,
+                progress_label=f'running engine ({job_type}) ×{n} [supervised]')
+    pending = list(strategy_ids)
+    running = {}        # sid -> Process
+    dead_since = {}     # sid -> ts first seen dead w/o a result (crash grace)
+    done = 0
+
+    def _finish(sid, res, note=''):
+        nonlocal done
+        running.pop(sid, None)
+        dead_since.pop(sid, None)
+        done += 1
+        name = _lookup_strat_name(sid, user_id)
+        _update_job(job_id, current_strategy_idx=done, current_strategy_id=sid,
+                    current_strategy_name=name,
+                    progress_label=f'{done}/{total} ({job_type}, ×{n}){note}')
+        publish(sid, name, res)
+
+    try:
+        while pending or running:
+            if _is_cancelled(job_id):
+                for p in running.values():
+                    try:
+                        p.terminate()
+                    except Exception:  # noqa: BLE001
+                        pass
+                _update_job(job_id, status='cancelled',
+                            completed_at=_now_iso(),
+                            progress_label='cancelled by user')
+                logger.info("[RECOMPUTE-JOB] %s cancelled (supervised) %d/%d",
+                            job_id[:8], done, total)
+                return False
+
+            # Fill open slots.
+            while pending and len(running) < n:
+                sid = pending.pop(0)
+                heartbeat[sid] = _time.time()
+                p = ctx.Process(target=_worker_entry,
+                                args=(sid, user_id, job_type, force,
+                                      heartbeat, result_q),
+                                name=f"rc-{sid}", daemon=False)
+                p.start()
+                running[sid] = p
+
+            # Drain finished results (a worker puts its result then exits).
+            while True:
+                try:
+                    sid, res = result_q.get_nowait()
+                except Exception:  # noqa: BLE001 — queue.Empty
+                    break
+                if sid in running:
+                    running[sid].join(timeout=10)
+                _finish(sid, res)
+
+            # Reap: stalled (no heartbeat) or dead-without-result (crashed).
+            now = _time.time()
+            for sid, p in list(running.items()):
+                if not p.is_alive():
+                    # Result usually arrives just before exit; give a short
+                    # grace for the queue, else treat as a crash.
+                    if sid not in dead_since:
+                        dead_since[sid] = now
+                    elif now - dead_since[sid] > 20:
+                        logger.warning("[RECOMPUTE-JOB] %s sid=%s exited with "
+                                       "no result (crash/OOM) — marking errored",
+                                       job_id[:8], sid)
+                        p.join(timeout=5)
+                        _finish(sid, {
+                            'sid': sid,
+                            'bt_r': {'status': 'error',
+                                     'error': 'worker exited without result '
+                                              '(crash/OOM)'},
+                            'algo_r': {'status': 'error', 'error': 'crash/OOM'},
+                            'elapsed': 0}, note=f' crash {sid}')
+                    continue
+                hb = heartbeat.get(sid, now)
+                if now - hb > stall:
+                    logger.warning("[RECOMPUTE-JOB] %s REAPING wedged worker "
+                                   "sid=%s (no heartbeat %.0fs > %ds)",
+                                   job_id[:8], sid, now - hb, stall)
+                    try:
+                        p.terminate()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    p.join(timeout=10)
+                    _finish(sid, {
+                        'sid': sid,
+                        'bt_r': {'status': 'error',
+                                 'error': f'reaped: no heartbeat >{stall}s '
+                                          f'(wedged)'},
+                        'algo_r': {'status': 'error', 'error': 'reaped (wedged)'},
+                        'elapsed': 0}, note=f' reaped {sid}')
+
+            _time.sleep(1)
+        return True
+    finally:
+        try:
+            mgr.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _run_job_worker(job_id: str) -> None:
     """Daemon thread entry. Iterates strategies, calls the right helper.
 
@@ -532,63 +709,68 @@ def _run_job_worker(job_id: str) -> None:
                     res = _recompute_one(sid, user_id, job_type, force)
                 _publish_result(sid, strat_name, res)
         else:
-            # Parallel (M-RS3 Phase 1) — N worker processes over the
-            # embarrassingly-parallel catalog. The PARENT owns every job-state
-            # write (no cross-process race on the job row). The in-process
-            # per-strategy lock can't span processes; each sid is submitted
-            # once per job, and cross-job (cron) racing is a documented
-            # Phase-1 limitation that the default-OFF flag keeps inert.
-            import multiprocessing as _mp
-            from concurrent.futures import ProcessPoolExecutor, as_completed
             total = len(strategy_ids)
-            logger.info(
-                "[RECOMPUTE-JOB] %s PARALLEL N=%d over %d strategies (type=%s)",
-                job_id[:8], parallelism, total, job_type)
-            _update_job(
-                job_id,
-                progress_label=f'running engine ({job_type}) ×{parallelism}')
-            done = 0
-            # SPAWN context (not fork): the host (API/worker) is multithreaded,
-            # and fork-from-threaded can deadlock if a child inherits a held
-            # lock (e.g. db._client_lock). Spawn gives each worker a clean
-            # interpreter — _pool_init then loads the registry + a fresh admin
-            # client from scratch. Worker startup re-imports (~secs), amortized
-            # against ~193s/strat.
-            with ProcessPoolExecutor(max_workers=parallelism,
-                                     mp_context=_mp.get_context('spawn'),
-                                     initializer=_pool_init,
-                                     initargs=(user_id,)) as ex:
-                futs = {ex.submit(_recompute_one, sid, user_id, job_type,
-                                  force): sid for sid in strategy_ids}
-                for fut in as_completed(futs):
-                    sid = futs[fut]
-                    if _is_cancelled(job_id):
-                        _update_job(job_id, status='cancelled',
-                                    completed_at=_now_iso(),
-                                    progress_label='cancelled by user')
-                        logger.info(
-                            "[RECOMPUTE-JOB] %s cancelled (parallel) after "
-                            "%d/%d", job_id[:8], done, total)
-                        ex.shutdown(wait=False, cancel_futures=True)
-                        return
-                    try:
-                        res = fut.result()
-                    except Exception as e:
-                        logger.exception(
-                            "[RECOMPUTE-JOB] %s strategy=%s worker crashed: %s",
-                            job_id[:8], sid, e)
-                        res = {'sid': sid,
-                               'bt_r': {'status': 'error', 'error': str(e)},
-                               'algo_r': {'status': 'error', 'error': str(e)},
-                               'elapsed': 0}
-                    done += 1
-                    strat_name = _lookup_strat_name(sid, user_id)
-                    _update_job(
-                        job_id, current_strategy_idx=done,
-                        current_strategy_id=sid,
-                        current_strategy_name=strat_name,
-                        progress_label=f'{done}/{total} ({job_type}, ×{parallelism})')
-                    _publish_result(sid, strat_name, res)
+            # Robust supervisor (RORT_RECOMPUTE_SUPERVISOR=1, default OFF):
+            # process-per-strategy + heartbeat watchdog — recovers from the
+            # ProcessPoolExecutor concurrency-deadlock without capping long
+            # backtests. The default path stays the proven ProcessPoolExecutor.
+            if os.getenv('RORT_RECOMPUTE_SUPERVISOR', '0') == '1':
+                if not _run_pool_supervised(strategy_ids, user_id, job_type,
+                                            force, parallelism, job_id,
+                                            _publish_result, total):
+                    return  # cancelled (finalized inside the supervisor)
+            else:
+                # Parallel (M-RS3 Phase 1) — N worker processes over the
+                # embarrassingly-parallel catalog. The PARENT owns every
+                # job-state write. SPAWN context (host is multithreaded;
+                # fork-from-threaded can deadlock on an inherited lock like
+                # db._client_lock). NOTE: as_completed can wedge if a worker
+                # dies during result handoff under load — the supervisor above
+                # is the fix for that.
+                import multiprocessing as _mp
+                from concurrent.futures import ProcessPoolExecutor, as_completed
+                logger.info(
+                    "[RECOMPUTE-JOB] %s PARALLEL N=%d over %d strategies "
+                    "(type=%s)", job_id[:8], parallelism, total, job_type)
+                _update_job(
+                    job_id,
+                    progress_label=f'running engine ({job_type}) ×{parallelism}')
+                done = 0
+                with ProcessPoolExecutor(max_workers=parallelism,
+                                         mp_context=_mp.get_context('spawn'),
+                                         initializer=_pool_init,
+                                         initargs=(user_id,)) as ex:
+                    futs = {ex.submit(_recompute_one, sid, user_id, job_type,
+                                      force): sid for sid in strategy_ids}
+                    for fut in as_completed(futs):
+                        sid = futs[fut]
+                        if _is_cancelled(job_id):
+                            _update_job(job_id, status='cancelled',
+                                        completed_at=_now_iso(),
+                                        progress_label='cancelled by user')
+                            logger.info(
+                                "[RECOMPUTE-JOB] %s cancelled (parallel) after "
+                                "%d/%d", job_id[:8], done, total)
+                            ex.shutdown(wait=False, cancel_futures=True)
+                            return
+                        try:
+                            res = fut.result()
+                        except Exception as e:
+                            logger.exception(
+                                "[RECOMPUTE-JOB] %s strategy=%s worker crashed: "
+                                "%s", job_id[:8], sid, e)
+                            res = {'sid': sid,
+                                   'bt_r': {'status': 'error', 'error': str(e)},
+                                   'algo_r': {'status': 'error', 'error': str(e)},
+                                   'elapsed': 0}
+                        done += 1
+                        strat_name = _lookup_strat_name(sid, user_id)
+                        _update_job(
+                            job_id, current_strategy_idx=done,
+                            current_strategy_id=sid,
+                            current_strategy_name=strat_name,
+                            progress_label=f'{done}/{total} ({job_type}, ×{parallelism})')
+                        _publish_result(sid, strat_name, res)
 
         _update_job(job_id,
                     status='completed',
