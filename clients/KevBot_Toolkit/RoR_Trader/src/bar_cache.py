@@ -574,8 +574,14 @@ def read_bars(symbol: str, timeframe: str,
         # than the SESSION pooler (5432), whose per-client connection cap we were
         # exhausting → "Server disconnected" on both direct-PG AND PostgREST
         # (2026-06-26). Harmless on 5432 too.
+        # autocommit=True: read_bars is a pure SELECT and needs no transaction.
+        # In autocommit the connection can never enter "idle in transaction", so a
+        # slow read that hits statement_timeout (postgres role = 2min) cannot strand
+        # an aborted txn on the Supavisor-pooled backend — the #7 bar-leak that
+        # bloated `trades` to 1.4 GB on 2026-06-28 (idle-in-txn pinned xmin, blocked
+        # autovacuum). Ideal pairing with the transaction pooler; reads are identical.
         with psycopg.connect(dsn, connect_timeout=15,
-                             prepare_threshold=None) as conn:
+                             prepare_threshold=None, autocommit=True) as conn:
             with conn.cursor() as cur:
                 cur.execute(sql, (symbol, timeframe, start, end))
                 rows = cur.fetchall()
