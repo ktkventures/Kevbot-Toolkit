@@ -441,14 +441,42 @@ def _worker_entry(sid, user_id, job_type, force, heartbeat, result_q):
         return
     stop = threading.Event()
 
+    def _progress():
+        """A monotonic CPU+I/O counter. It advances whenever the worker does
+        real work — engine CPU (process_bar) or Polygon/DB I/O — so a genuinely
+        long backtest keeps advancing it and is NEVER reaped, while a deadlocked
+        (alive-but-idle) worker leaves it flat and IS reaped. No wall-clock cap."""
+        try:
+            import psutil
+            p = psutil.Process()
+            ct = p.cpu_times()
+            val = float(ct.user + ct.system)
+            try:
+                io = p.io_counters()
+                val += (io.read_bytes + io.write_bytes) / 1e6
+            except Exception:  # noqa: BLE001 — io_counters not always available
+                pass
+            return val
+        except Exception:  # noqa: BLE001 — psutil absent → CPU-only via os.times
+            t = os.times()
+            return float(t[0] + t[1])
+
     def _hb():
         while not stop.is_set():
             try:
-                heartbeat[sid] = _t.time()
+                heartbeat[sid] = (_t.time(), _progress())
             except Exception:  # noqa: BLE001
                 pass
             stop.wait(5)
     threading.Thread(target=_hb, daemon=True).start()
+
+    # Test affordance (RORT_TEST_HANG_SID; never set in prod) — simulate a
+    # wedged/crashed worker so the supervisor's reap paths can be validated.
+    if str(sid) == os.getenv('RORT_TEST_HANG_SID', '').strip():
+        if os.getenv('RORT_TEST_HANG_MODE', 'wedge') == 'crash':
+            os._exit(1)                 # hard crash: tests is_alive recovery
+        while True:                     # 'wedge': alive + heartbeat ticks, but
+            _t.sleep(30)                # no CPU/IO → tests progress-stall reap
     try:
         res = _recompute_one(sid, user_id, job_type, force)
     except Exception as e:  # noqa: BLE001
@@ -487,18 +515,37 @@ def _run_pool_supervised(strategy_ids, user_id, job_type, force, n, job_id,
     pending = list(strategy_ids)
     running = {}        # sid -> Process
     dead_since = {}     # sid -> ts first seen dead w/o a result (crash grace)
+    progress_adv = {}   # sid -> (last progress counter, ts it last advanced)
     done = 0
 
     def _finish(sid, res, note=''):
         nonlocal done
         running.pop(sid, None)
         dead_since.pop(sid, None)
+        progress_adv.pop(sid, None)
         done += 1
         name = _lookup_strat_name(sid, user_id)
         _update_job(job_id, current_strategy_idx=done, current_strategy_id=sid,
                     current_strategy_name=name,
                     progress_label=f'{done}/{total} ({job_type}, ×{n}){note}')
         publish(sid, name, res)
+
+    def _reap(sid, p, why):
+        logger.warning("[RECOMPUTE-JOB] %s REAPING sid=%s: %s",
+                       job_id[:8], sid, why)
+        try:
+            p.kill()                    # SIGKILL — can't be blocked by a wedge
+        except Exception:  # noqa: BLE001
+            try:
+                p.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+        p.join(timeout=10)
+        _finish(sid, {
+            'sid': sid,
+            'bt_r': {'status': 'error', 'error': f'reaped: {why}'},
+            'algo_r': {'status': 'error', 'error': 'reaped'},
+            'elapsed': 0}, note=f' reaped {sid}')
 
     try:
         while pending or running:
@@ -518,7 +565,7 @@ def _run_pool_supervised(strategy_ids, user_id, job_type, force, n, job_id,
             # Fill open slots.
             while pending and len(running) < n:
                 sid = pending.pop(0)
-                heartbeat[sid] = _time.time()
+                heartbeat[sid] = (_time.time(), 0.0)   # (ts, progress) tuple
                 p = ctx.Process(target=_worker_entry,
                                 args=(sid, user_id, job_type, force,
                                       heartbeat, result_q),
@@ -536,17 +583,19 @@ def _run_pool_supervised(strategy_ids, user_id, job_type, force, n, job_id,
                     running[sid].join(timeout=10)
                 _finish(sid, res)
 
-            # Reap: stalled (no heartbeat) or dead-without-result (crashed).
+            # Reap: crashed (dead w/o result), frozen (heartbeat thread stalled),
+            # or wedged (alive but CPU/IO progress flat for the stall window —
+            # a long BUT progressing backtest keeps advancing and is untouched).
             now = _time.time()
             for sid, p in list(running.items()):
                 if not p.is_alive():
-                    # Result usually arrives just before exit; give a short
-                    # grace for the queue, else treat as a crash.
+                    # Result usually arrives just before exit; brief grace for
+                    # the queue, else treat as a crash.
                     if sid not in dead_since:
                         dead_since[sid] = now
                     elif now - dead_since[sid] > 20:
-                        logger.warning("[RECOMPUTE-JOB] %s sid=%s exited with "
-                                       "no result (crash/OOM) — marking errored",
+                        logger.warning("[RECOMPUTE-JOB] %s sid=%s exited with no "
+                                       "result (crash/OOM) — errored",
                                        job_id[:8], sid)
                         p.join(timeout=5)
                         _finish(sid, {
@@ -557,23 +606,21 @@ def _run_pool_supervised(strategy_ids, user_id, job_type, force, n, job_id,
                             'algo_r': {'status': 'error', 'error': 'crash/OOM'},
                             'elapsed': 0}, note=f' crash {sid}')
                     continue
-                hb = heartbeat.get(sid, now)
-                if now - hb > stall:
-                    logger.warning("[RECOMPUTE-JOB] %s REAPING wedged worker "
-                                   "sid=%s (no heartbeat %.0fs > %ds)",
-                                   job_id[:8], sid, now - hb, stall)
-                    try:
-                        p.terminate()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    p.join(timeout=10)
-                    _finish(sid, {
-                        'sid': sid,
-                        'bt_r': {'status': 'error',
-                                 'error': f'reaped: no heartbeat >{stall}s '
-                                          f'(wedged)'},
-                        'algo_r': {'status': 'error', 'error': 'reaped (wedged)'},
-                        'elapsed': 0}, note=f' reaped {sid}')
+                hb = heartbeat.get(sid)
+                if hb is None:
+                    continue            # worker hasn't ticked yet
+                ts, prog = hb
+                if now - ts > stall:    # heartbeat thread itself stalled (frozen)
+                    _reap(sid, p, f'no heartbeat >{stall:.0f}s (frozen)')
+                    continue
+                # Require a MEANINGFUL advance (>0.5 cpu-sec or 0.5 MB I/O) so
+                # the heartbeat thread's own micro-overhead never masks a wedge.
+                # A CPU-bound backtest advances by ~1/sec → always clears this.
+                prev = progress_adv.get(sid)
+                if prev is None or prog > prev[0] + 0.5:
+                    progress_adv[sid] = (prog, now)     # advancing — healthy
+                elif now - prev[1] > stall:
+                    _reap(sid, p, f'no CPU/IO progress >{stall:.0f}s (wedged)')
 
             _time.sleep(1)
         return True
