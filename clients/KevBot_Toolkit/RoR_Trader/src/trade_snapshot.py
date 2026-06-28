@@ -59,7 +59,10 @@ def _fetch_trades(c, sid):
     return out
 
 
-def snapshot(sids, label):
+def build_snapshot_dict(sids, progress=None):
+    """Core capture used by BOTH the CLI and the admin API: per-strategy keyed
+    trades. `progress(i, sid, n)` is an optional callback. Returns
+    {str(sid): {"n": int, "trades": {entry|exit: {val fields}}}}."""
     c = db.get_admin_client()
     snap = {}
     for i, sid in enumerate(sids):
@@ -69,9 +72,53 @@ def snapshot(sids, label):
             k = "|".join(str(t.get(f)) for f in KEY_FIELDS)
             keyed[k] = {f: t.get(f) for f in VAL_FIELDS}
         snap[str(sid)] = {"n": len(trades), "trades": keyed}
-        if i % 10 == 0:
-            print(f"  [{i}/{len(sids)}] sid {sid}: {len(trades)} trades",
-                  flush=True)
+        if progress:
+            progress(i, sid, len(trades))
+    return snap
+
+
+def diff_dicts(before, after):
+    """Structured trade-level diff used by the admin API. `before`/`after` are
+    the per-strategy dicts from build_snapshot_dict. Returns a JSON-safe summary
+    + per-strategy added/removed/changed counts with a few samples."""
+    sids = sorted(set(before) | set(after), key=lambda x: int(x))
+    per = []
+    tot = {"added": 0, "removed": 0, "changed": 0, "identical_strats": 0}
+    for sid in sids:
+        bt = (before.get(sid) or {}).get("trades", {})
+        at = (after.get(sid) or {}).get("trades", {})
+        bk, ak = set(bt), set(at)
+        added = sorted(ak - bk)
+        removed = sorted(bk - ak)
+        changed = [k for k in (bk & ak) if bt[k] != at[k]]
+        if not (added or removed or changed):
+            tot["identical_strats"] += 1
+            continue
+        tot["added"] += len(added)
+        tot["removed"] += len(removed)
+        tot["changed"] += len(changed)
+        per.append({
+            "strategy_id": int(sid),
+            "n_before": len(bt), "n_after": len(at),
+            "added": len(added), "removed": len(removed),
+            "changed": len(changed),
+            "sample_added": [{"key": k, **at[k]} for k in added[:3]],
+            "sample_removed": [{"key": k, **bt[k]} for k in removed[:3]],
+            "sample_changed": [
+                {"key": k, "diff": {f: [bt[k].get(f), at[k].get(f)]
+                                    for f in VAL_FIELDS if bt[k].get(f) != at[k].get(f)}}
+                for k in changed[:3]],
+        })
+    tot["n_strategies"] = len(sids)
+    tot["changed_strategies"] = len(per)
+    return {"summary": tot, "per_strategy": per}
+
+
+def snapshot(sids, label):
+    snap = build_snapshot_dict(
+        sids, progress=lambda i, sid, n: (
+            print(f"  [{i}/{len(sids)}] sid {sid}: {n} trades", flush=True)
+            if i % 10 == 0 else None))
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     path = f"/tmp/trade_snapshot_{label}_{stamp}.json"
     json.dump({"label": label, "taken_at": stamp, "user": USER,
