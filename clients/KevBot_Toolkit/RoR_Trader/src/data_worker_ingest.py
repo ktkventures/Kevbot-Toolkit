@@ -144,6 +144,20 @@ def _polygon_1s(symbol: str, start_dt: datetime, end_dt: datetime) -> pd.DataFra
     return df
 
 
+def _write_through(symbol: str, timeframe: str, df) -> None:
+    """Persist the just-ingested NATIVE bars into bar_cache (gated default-OFF via
+    RORT_BARCACHE_WRITETHROUGH). Defensive: write-through must NEVER break the ingest
+    hot path, so all errors are swallowed with a warning. 1Sec from SymbolBarStore,
+    native 1Min from CoarseBarStore (NOT the 1s-resample — Step 1: resample volume
+    diverges). See Design_BarCache_WriteThrough_Unification.md."""
+    try:
+        import bar_cache
+        bar_cache.write_through_bars(symbol, timeframe, df)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[data-worker] write-through %s/%s failed: %s",
+                        symbol, timeframe, e)
+
+
 def run_ingest_cycle(store, metrics: IngestMetrics) -> None:
     """One provisional-ingest cycle — fetch the trailing window, upsert."""
     t0 = _time.monotonic()
@@ -158,6 +172,7 @@ def run_ingest_cycle(store, metrics: IngestMetrics) -> None:
                         store.symbol, e)
         return
     result = store.upsert_bars(df)
+    _write_through(store.symbol, "1Sec", df)
     latency = None
     if len(df) > 0:
         newest = df.index[-1].to_pydatetime()
@@ -184,6 +199,7 @@ def prime_store(store, window_minutes: int) -> dict:
                         store.symbol, e)
         return {'appended': 0, 'total_bars': 0}
     result = store.upsert_bars(df)
+    _write_through(store.symbol, "1Sec", df)
     logger.info("[data-worker] prime_store %s: backfilled %d bars "
                 "(total=%d span covers ~%dmin)", store.symbol,
                 result.get('appended', 0), result.get('total_bars', 0),
@@ -236,6 +252,7 @@ def prime_coarse_store(coarse_store, days: int) -> dict:
                         coarse_store.symbol, e)
         return {'appended': 0, 'total_bars': 0}
     result = coarse_store.upsert_bars(df)
+    _write_through(coarse_store.symbol, "1Min", df)  # native 1Min (Step 1)
     floor = int(390 * days * 0.7)  # RTH-only conservative floor
     bar_count = result.get('total_bars', 0)
     if bar_count < floor:
@@ -277,6 +294,7 @@ def run_coarse_ingest_cycle(coarse_store, metrics: IngestMetrics) -> None:
                         coarse_store.symbol, e)
         return
     result = coarse_store.upsert_bars(df)
+    _write_through(coarse_store.symbol, "1Min", df)  # native 1Min (Step 1)
     metrics.record_coarse(result)
     if result.get('revised'):
         logger.info("[data-worker] coarse %s: revised=%d appended=%d "
@@ -301,6 +319,14 @@ def run_recon_cycle(store, metrics: IngestMetrics, window_minutes: int) -> None:
                         store.symbol, e)
         return
     result = store.upsert_bars(df)
+    _write_through(store.symbol, "1Sec", df)
+    # Flip settled=true for bars that aged past the threshold since their last
+    # write (gated; cheap bounded UPDATE on the small still-false tail).
+    try:
+        import bar_cache
+        bar_cache.settle_sweep(store.symbol)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[data-worker] settle_sweep %s failed: %s", store.symbol, e)
     metrics.record_recon(result)
     if result.get('revised'):
         logger.info("[data-worker] recon %s: revised=%d appended=%d "
