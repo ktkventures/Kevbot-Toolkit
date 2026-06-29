@@ -327,6 +327,98 @@ def _bulk_upsert(symbol: str, timeframe: str, df: pd.DataFrame) -> int:
 
 
 # =============================================================================
+# Continuous write-through (REST stream unification)
+# Design_BarCache_WriteThrough_Unification.md — make the data-worker's reconciled
+# REST stream persist into bar_cache so it's continuously fresh and ALL consumers
+# read one live source. ALL gated default-OFF; no-op until RORT_BARCACHE_WRITETHROUGH.
+# =============================================================================
+
+def writethrough_enabled() -> bool:
+    """Kill-switch (default OFF). When ON, the data-worker ingest cycles persist
+    their reconciled native bars into bar_cache (settled marked). Instant rollback
+    by unsetting — consumers fall back to the pull-on-read path."""
+    return os.environ.get("RORT_BARCACHE_WRITETHROUGH", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _settle_min() -> int:
+    """Minutes after which a bar is SETTLED (permanent truth). Default 16 (15min
+    FINRA + 2s + small pad; tunable Monday). Tighter than the 45min read-horizon."""
+    try:
+        return max(0, int(os.environ.get("RORT_SHADOW_SETTLE_MIN", "16")))
+    except ValueError:
+        return 16
+
+
+def write_through_bars(symbol: str, timeframe: str, df) -> int:
+    """Persist NATIVE bars from the data-worker stream into bar_cache (gated).
+
+    Called from the ingest cycles with native 1Sec (SymbolBarStore) and native
+    1Min (CoarseBarStore) — NOT the 1s-resampled 1Min (Step 1 2026-06-28: resample
+    volume diverges from native). Idempotent upsert (on_conflict symbol,timeframe,
+    ts), last-write-wins: the unsettled tail overwrites the same rows each cycle so
+    there's NO row growth (churn-safe; respects #6/#7). Stamps `settled`
+    (ts <= now-settle_min) and `revised_at`. No-op when the flag is off."""
+    if not writethrough_enabled() or df is None or len(df) == 0:
+        return 0
+    from db import get_admin_client
+    client = get_admin_client()
+    now = datetime.now(timezone.utc)
+    settle_cut = now - timedelta(minutes=_settle_min())
+    now_iso = now.isoformat()
+    payload = []
+    for ts, row in df.iterrows():
+        if not hasattr(ts, "isoformat"):
+            continue
+        tsx = ts if ts.tzinfo else ts.tz_localize("UTC")
+        payload.append({
+            "symbol": symbol, "timeframe": timeframe, "ts": tsx.isoformat(),
+            "open": float(row.get("open", 0) or 0),
+            "high": float(row.get("high", 0) or 0),
+            "low": float(row.get("low", 0) or 0),
+            "close": float(row.get("close", 0) or 0),
+            "volume": float(row.get("volume", 0) or 0),
+            "settled": bool(tsx <= settle_cut),
+            "revised_at": now_iso,
+        })
+    if not payload:
+        return 0
+    CHUNK = 1000
+    wrote = 0
+    for i in range(0, len(payload), CHUNK):
+        chunk = payload[i:i + CHUNK]
+        try:
+            client.table("bar_cache").upsert(
+                chunk, on_conflict="symbol,timeframe,ts").execute()
+            wrote += len(chunk)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("bar_cache write-through failed %s/%s offset %d: %s",
+                           symbol, timeframe, i, e)
+    return wrote
+
+
+def settle_sweep(symbol: str) -> int:
+    """Flip settled=true for this symbol's aged-out unsettled rows — bars that
+    crossed the settle threshold AFTER their last write (so the tail re-write
+    window didn't re-stamp them). Cheap, bounded UPDATE over only the small
+    still-false tail. Gated; call periodically from a recon cycle."""
+    if not writethrough_enabled():
+        return 0
+    from db import get_admin_client
+    client = get_admin_client()
+    settle_cut = (datetime.now(timezone.utc)
+                  - timedelta(minutes=_settle_min())).isoformat()
+    try:
+        r = (client.table("bar_cache").update({"settled": True})
+             .eq("symbol", symbol).eq("settled", False)
+             .lt("ts", settle_cut).execute())
+        return len(r.data or [])
+    except Exception as e:  # noqa: BLE001
+        logger.warning("bar_cache settle_sweep failed %s: %s", symbol, e)
+        return 0
+
+
+# =============================================================================
 # Public API
 # =============================================================================
 
