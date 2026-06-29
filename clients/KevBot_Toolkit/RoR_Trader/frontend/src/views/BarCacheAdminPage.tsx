@@ -1,12 +1,13 @@
 /**
- * Bar-Cache Admin — M-RS2 Phase 1 control surface.
+ * Bar-Cache Supply — the one source-of-truth control surface.
  *
- * Manage which (symbol, timeframe) native layers we capture + keep updated.
- * Per-target: row count, coverage span, last backfill / maintain. Actions:
- * add target, enable/disable, backfill-now, maintain-all, delete.
- * Capture resolutions are native-fetchable (1Sec..1Min); coarse TFs are
- * materialized from 1Min in Phase 2 (serving), not captured here.
- * Talks to /api/bar-cache. All hooks before any early return (Terser rules).
+ * Catalog-driven: rows are every (symbol, timeframe) any strategy uses (all
+ * accounts) — NOT a manually-managed target list. Per row: coverage span vs
+ * target depth, live freshness (write-through), unsettled tail, and a
+ * backfill-to-a-start-date control with status. Strategies read bar_cache as
+ * their primary source, so this page is where we confirm "one fresh source +
+ * enough history". Talks to /api/bar-cache. All hooks before any early return
+ * (Terser rules).
  */
 'use client';
 
@@ -14,18 +15,6 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Card from '@/components/Card';
 import { apiFetch } from '@/lib/api/client';
 
-interface Target {
-  symbol: string;
-  timeframe: string;
-  enabled: boolean;
-  capture_days: number | null;
-  last_backfill_at: string | null;
-  last_maintained_at: string | null;
-  rows: number | null;
-  min_ts: string | null;
-  max_ts: string | null;
-  backfill_status: string | null;
-}
 interface ReadHealth {
   read_enabled: boolean;
   direct_pg_available: boolean;
@@ -39,10 +28,10 @@ interface SupplyCoverage {
   max_ts: string | null;
   last_revised: string | null;
   unsettled: number;
+  backfill_status?: string | null;
+  target_days?: number | null;
 }
 interface TargetsResp {
-  targets: Target[];
-  resolutions: string[];
   read_enabled: boolean;
   maintain_cron_enabled: boolean;
   writethrough_enabled?: boolean;
@@ -53,7 +42,7 @@ interface TargetsResp {
 const cell: React.CSSProperties = { padding: '7px 8px', verticalAlign: 'middle', fontSize: 13 };
 const input: React.CSSProperties = {
   background: 'var(--bg-input)', color: 'var(--text-primary)',
-  border: '1px solid var(--border)', borderRadius: 6, padding: '5px 7px', fontSize: 13,
+  border: '1px solid var(--border)', borderRadius: 6, padding: '4px 6px', fontSize: 12,
 };
 const btn = (bg: string): React.CSSProperties => ({
   background: bg, color: '#fff', border: 'none', borderRadius: 6,
@@ -108,7 +97,13 @@ export default function BarCacheAdminPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [nt, setNt] = useState({ symbol: '', timeframe: '1Sec', capture_days: 365 });
+  // Per-row backfill start date (YYYY-MM-DD); defaults to 1y ago when unset.
+  const [starts, setStarts] = useState<Record<string, string>>({});
+
+  // Default backfill floor = 1 year back, on BOTH 1Sec and 1Min (deep 1Sec is
+  // wanted for hi-fi backtesting). Stable across renders.
+  const defaultStart = useMemo(
+    () => new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10), []);
 
   const load = useCallback(async () => {
     try {
@@ -122,45 +117,19 @@ export default function BarCacheAdminPage() {
     }
   }, []);
 
-  // Auto-refresh every 4s so backfill progress + row counts stay live.
+  // Auto-refresh every 4s so backfill progress + freshness stay live.
   useEffect(() => {
     load();
     const id = setInterval(load, 4000);
     return () => clearInterval(id);
   }, [load]);
 
-  const addTarget = useCallback(async () => {
-    const sym = nt.symbol.trim().toUpperCase();
-    if (!sym) return;
-    setBusy('add');
-    try {
-      await apiFetch('/api/bar-cache/targets', {
-        method: 'POST',
-        body: JSON.stringify({ symbol: sym, timeframe: nt.timeframe, capture_days: nt.capture_days, enabled: true }),
-      });
-      setNt({ ...nt, symbol: '' });
-      await load();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-    }
-  }, [nt, load]);
-
-  const toggleEnabled = useCallback(async (t: Target) => {
-    await apiFetch('/api/bar-cache/targets', {
-      method: 'POST',
-      body: JSON.stringify({ symbol: t.symbol, timeframe: t.timeframe, enabled: !t.enabled, capture_days: t.capture_days }),
-    });
-    await load();
-  }, [load]);
-
-  const backfill = useCallback(async (t: Target) => {
-    setBusy(`bf:${t.symbol}/${t.timeframe}`);
+  const backfill = useCallback(async (sym: string, tf: string, startDate: string) => {
+    setBusy(`bf:${sym}/${tf}`);
     try {
       await apiFetch('/api/bar-cache/backfill', {
         method: 'POST',
-        body: JSON.stringify({ symbol: t.symbol, timeframe: t.timeframe, days: t.capture_days || 365 }),
+        body: JSON.stringify({ symbol: sym, timeframe: tf, start_date: startDate }),
       });
       await load();
     } catch (e) {
@@ -170,24 +139,6 @@ export default function BarCacheAdminPage() {
     }
   }, [load]);
 
-  const removeTarget = useCallback(async (t: Target) => {
-    if (!confirm(`Remove capture target ${t.symbol}/${t.timeframe}? (cached bars are NOT deleted)`)) return;
-    await apiFetch(`/api/bar-cache/targets/${t.symbol}/${t.timeframe}`, { method: 'DELETE' });
-    await load();
-  }, [load]);
-
-  const maintainAll = useCallback(async () => {
-    setBusy('maintain');
-    try {
-      await apiFetch('/api/bar-cache/maintain', { method: 'POST', body: JSON.stringify({}) });
-      await load();
-    } finally {
-      setBusy(null);
-    }
-  }, [load]);
-
-  const resolutions = useMemo(() => resp?.resolutions ?? ['1Sec', '1Min'], [resp]);
-  const targets = useMemo(() => resp?.targets ?? [], [resp]);
   const coverage = useMemo(() => resp?.supply_coverage ?? [], [resp]);
   // The stream is "active" if any layer was written within the last 2 minutes —
   // the real proof write-through is running (independent of which service holds
@@ -200,7 +151,7 @@ export default function BarCacheAdminPage() {
   }, [resp]);
 
   if (loading && !resp) {
-    return <Card><div style={{ padding: 20 }}>Loading bar-cache config…</div></Card>;
+    return <Card><div style={{ padding: 20 }}>Loading bar-cache supply…</div></Card>;
   }
 
   return (
@@ -210,10 +161,10 @@ export default function BarCacheAdminPage() {
           <h2 style={{ margin: '0 0 4px', fontSize: 18 }}>Bar-Cache Supply</h2>
           <div style={{ color: 'var(--text-tertiary)', fontSize: 13, marginBottom: 12 }}>
             One continuously-fresh source of truth. The data-worker streams native Polygon bars (1Sec + 1Min)
-            write-through into <code>bar_cache</code>; all consumers (backtests, charts, recompute) read it.
-            The live stream below is the freshness proof; the targets table is the historical-depth registry.
+            write-through into <code>bar_cache</code>; strategies read it as their primary source. Symbols come
+            from the catalog (every strategy, all accounts) — set a start date per layer to backfill its history.
           </div>
-          <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
             <span style={pill(streamActive ? 'var(--green)' : 'var(--red)')}>
               write-through stream: {streamActive ? 'ACTIVE (writing)' : 'quiet / stale'}
             </span>
@@ -221,10 +172,10 @@ export default function BarCacheAdminPage() {
               read path (BAR_CACHE_ENABLED): {resp?.read_enabled ? 'ON' : 'off'}
             </span>
             <span style={pill(resp?.maintain_cron_enabled ? 'var(--green)' : 'var(--text-tertiary)')}>
-              maintain cron (BAR_CACHE_MAINTAIN_ENABLED): {resp?.maintain_cron_enabled ? 'ON' : 'off'}
+              maintain cron: {resp?.maintain_cron_enabled ? 'ON' : 'off'}
             </span>
             <span style={pill(resp?.read_health?.direct_pg_available ? 'var(--green)' : 'var(--red)')}>
-              direct-PG (SUPABASE_CONNECTION_STRING): {resp?.read_health?.direct_pg_available ? 'connected' : 'MISSING'}
+              direct-PG: {resp?.read_health?.direct_pg_available ? 'connected' : 'MISSING'}
             </span>
             <span style={pill(resp?.read_health?.sample_read_ok ? 'var(--green)'
               : resp?.read_health?.sample_read_ok === false ? 'var(--red)' : 'var(--text-tertiary)')}>
@@ -233,52 +184,25 @@ export default function BarCacheAdminPage() {
             </span>
           </div>
           {resp?.read_health?.detail && (
-            <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: -6, marginBottom: 12 }}>
+            <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 6 }}>
               read health (api service): {resp.read_health.detail}
-              {' · '}worker env confirmed separately via Update-All logs
             </div>
           )}
-          {err && <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 10 }}>{err}</div>}
-
-          {/* Add target */}
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <input
-              style={{ ...input, width: 110, textTransform: 'uppercase' }}
-              placeholder="SYMBOL"
-              value={nt.symbol}
-              onChange={(e) => setNt({ ...nt, symbol: e.target.value })}
-              onKeyDown={(e) => { if (e.key === 'Enter') addTarget(); }}
-            />
-            <select style={input} value={nt.timeframe} onChange={(e) => setNt({ ...nt, timeframe: e.target.value })}>
-              {resolutions.map((r) => <option key={r} value={r}>{r}</option>)}
-            </select>
-            <input
-              style={{ ...input, width: 90 }}
-              type="number"
-              value={nt.capture_days}
-              onChange={(e) => setNt({ ...nt, capture_days: Number(e.target.value) })}
-            />
-            <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>days back</span>
-            <button style={btn('var(--blue)')} disabled={busy === 'add'} onClick={addTarget}>
-              {busy === 'add' ? 'Adding…' : '+ Add target'}
-            </button>
-            <button style={btn('var(--amber, #d98c00)')} disabled={busy === 'maintain'} onClick={maintainAll}>
-              {busy === 'maintain' ? 'Maintaining…' : 'Maintain all now'}
-            </button>
-          </div>
+          {err && <div style={{ color: 'var(--red)', fontSize: 13, marginTop: 10 }}>{err}</div>}
         </div>
       </Card>
 
-      {/* Supply coverage + freshness — every tracked symbol (all accounts), not
-          just whatever is printing this second. */}
+      {/* Supply coverage + freshness — every catalog symbol × source layer, with a
+          per-row backfill-to-start-date control. */}
       <Card>
         <div style={{ padding: 16 }}>
           <h3 style={{ margin: '0 0 4px', fontSize: 15 }}>Supply Coverage &amp; Freshness</h3>
           <div style={{ color: 'var(--text-tertiary)', fontSize: 12, marginBottom: 10 }}>
-            Every symbol any strategy uses (all accounts) × source layer. <b>Coverage</b> = how much history
-            we hold; <b>last write</b>/<b>lag</b> = freshness (green ≤2 min = streaming now; gray = quiet, normal
-            after-hours); <b>unsettled</b> = provisional tail (settles after ~16 min). <b style={{ color: 'var(--red)' }}>NO
-            DATA</b> = a strategy needs this symbol but the cache is empty (backfill gap).
+            <b>Coverage</b> = history held; <b>span/target</b> shows it against the backfill floor (amber = under
+            target). <b>Lag</b> = freshness (green ≤2 min = streaming; gray = quiet, normal after-hours).
+            <b> Unsettled</b> = provisional tail (settles ~16 min). <b style={{ color: 'var(--red)' }}>NO DATA</b> =
+            a strategy needs this symbol but the cache is empty. Set a start date and <b>Backfill</b> to fill
+            history (default 1 year, on both 1Sec and 1Min).
           </div>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
@@ -286,103 +210,80 @@ export default function BarCacheAdminPage() {
                 <th style={cell}>Symbol</th>
                 <th style={cell}>TF</th>
                 <th style={cell}>Coverage (UTC dates)</th>
-                <th style={cell}>Span</th>
-                <th style={cell}>Last write (UTC)</th>
+                <th style={cell}>Span / target</th>
+                <th style={cell}>Last write</th>
                 <th style={cell}>Lag</th>
                 <th style={cell}>Unsettled</th>
                 <th style={cell}>Status</th>
+                <th style={cell}>Backfill from</th>
+                <th style={cell}></th>
               </tr>
             </thead>
             <tbody>
               {coverage.length === 0 && (
-                <tr><td style={{ ...cell, color: 'var(--text-tertiary)' }} colSpan={8}>No tracked symbols.</td></tr>
+                <tr><td style={{ ...cell, color: 'var(--text-tertiary)' }} colSpan={10}>No tracked symbols.</td></tr>
               )}
               {coverage.map((f) => {
+                const key = `${f.symbol}/${f.timeframe}`;
                 const lag = ageSec(f.last_revised);
                 const sd = spanDays(f.min_ts, f.max_ts);
+                const tgt = f.target_days ?? null;
+                const under = sd != null && tgt != null && sd < tgt * 0.9;
                 const missing = !f.max_ts;
                 const status = missing
                   ? { label: 'NO DATA', bg: 'var(--red)' }
                   : (lag != null && lag <= 120
                     ? { label: 'streaming', bg: 'var(--green)' }
                     : { label: 'quiet', bg: 'var(--text-tertiary)' });
+                const running = f.backfill_status === 'running';
+                const startVal = starts[key] ?? defaultStart;
                 return (
-                  <tr key={`${f.symbol}/${f.timeframe}`} style={{ borderBottom: '1px solid var(--border)' }}>
+                  <tr key={key} style={{ borderBottom: '1px solid var(--border)' }}>
                     <td style={{ ...cell, fontWeight: 600 }}>{f.symbol}</td>
                     <td style={cell}>{f.timeframe}</td>
                     <td style={{ ...cell, fontSize: 12, color: 'var(--text-tertiary)' }}>
                       {fmtDate(f.min_ts)} → {fmtDate(f.max_ts)}
                     </td>
-                    <td style={{ ...cell, fontSize: 12 }}>{sd == null ? '—' : `${Math.round(sd)}d`}</td>
+                    <td style={{ ...cell, fontSize: 12, color: under ? 'var(--amber, #d98c00)' : undefined }}>
+                      {sd == null ? '—' : `${Math.round(sd)}d`}{tgt != null ? ` / ${tgt}d` : ''}
+                    </td>
                     <td style={{ ...cell, fontSize: 12, color: 'var(--text-tertiary)' }}>{fmtTs(f.last_revised)}</td>
                     <td style={{ ...cell, fontWeight: 600, color: lagColor(lag) }}>{fmtAge(lag)}</td>
                     <td style={cell}>{fmtNum(f.unsettled)}</td>
                     <td style={cell}><span style={pill(status.bg)}>{status.label}</span></td>
+                    <td style={cell}>
+                      <input
+                        type="date"
+                        style={{ ...input, width: 130 }}
+                        value={startVal}
+                        max={new Date(Date.now() - 86400000).toISOString().slice(0, 10)}
+                        onChange={(e) => setStarts((s) => ({ ...s, [key]: e.target.value }))}
+                      />
+                    </td>
+                    <td style={cell}>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <button
+                          style={btn(running ? 'var(--text-tertiary)' : 'var(--blue)')}
+                          disabled={running || busy === `bf:${key}`}
+                          onClick={() => backfill(f.symbol, f.timeframe, startVal)}
+                        >
+                          {busy === `bf:${key}` ? '…' : 'Backfill'}
+                        </button>
+                        {running
+                          ? <span style={pill('var(--amber, #d98c00)')}>running…</span>
+                          : (f.backfill_status
+                            ? <span style={{ fontSize: 12, color: f.backfill_status.startsWith('error') ? 'var(--red)' : 'var(--text-tertiary)' }}>
+                              {f.backfill_status}
+                            </span>
+                            : null)}
+                      </div>
+                    </td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
         </div>
-      </Card>
-
-      <Card>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-          <thead>
-            <tr style={{ textAlign: 'left', color: 'var(--text-tertiary)', fontSize: 12, borderBottom: '1px solid var(--border)' }}>
-              <th style={cell}>Symbol</th>
-              <th style={cell}>TF</th>
-              <th style={cell}>On</th>
-              <th style={cell}>Days</th>
-              <th style={cell}>Rows</th>
-              <th style={cell}>Coverage (UTC)</th>
-              <th style={cell}>Last backfill</th>
-              <th style={cell}>Last maintain</th>
-              <th style={cell}>Backfill status</th>
-              <th style={cell}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {targets.length === 0 && (
-              <tr><td style={{ ...cell, color: 'var(--text-tertiary)' }} colSpan={10}>No capture targets yet — add one above.</td></tr>
-            )}
-            {targets.map((t) => (
-              <tr key={`${t.symbol}/${t.timeframe}`} style={{ borderBottom: '1px solid var(--border)' }}>
-                <td style={{ ...cell, fontWeight: 600 }}>{t.symbol}</td>
-                <td style={cell}>{t.timeframe}</td>
-                <td style={cell}>
-                  <button style={btn(t.enabled ? 'var(--green)' : 'var(--text-tertiary)')} onClick={() => toggleEnabled(t)}>
-                    {t.enabled ? 'on' : 'off'}
-                  </button>
-                </td>
-                <td style={cell}>{t.capture_days ?? '—'}</td>
-                <td style={cell}>{fmtNum(t.rows)}</td>
-                <td style={{ ...cell, fontSize: 12, color: 'var(--text-tertiary)' }}>
-                  {fmtTs(t.min_ts)} → {fmtTs(t.max_ts)}
-                </td>
-                <td style={{ ...cell, fontSize: 12 }}>{fmtTs(t.last_backfill_at)}</td>
-                <td style={{ ...cell, fontSize: 12 }}>{fmtTs(t.last_maintained_at)}</td>
-                <td style={{ ...cell, fontSize: 12 }}>
-                  {t.backfill_status === 'running'
-                    ? <span style={pill('var(--amber, #d98c00)')}>running…</span>
-                    : (t.backfill_status || '—')}
-                </td>
-                <td style={cell}>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button
-                      style={btn('var(--blue)')}
-                      disabled={busy === `bf:${t.symbol}/${t.timeframe}` || t.backfill_status === 'running'}
-                      onClick={() => backfill(t)}
-                    >
-                      Backfill
-                    </button>
-                    <button style={btn('var(--red)')} onClick={() => removeTarget(t)}>✕</button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
       </Card>
     </div>
   );
