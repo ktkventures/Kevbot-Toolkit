@@ -66,9 +66,12 @@ def list_targets(user=Depends(get_current_user)):
     cfg = {(t["symbol"], t["timeframe"]): t
            for t in bar_cache.get_capture_targets(enabled_only=False)}
     cov = bar_cache.supply_coverage(_tracked_symbols()) or []
+    remote_bf = _remote_backfill_status()
     for row in cov:
         k = (row["symbol"], row["timeframe"])
-        row["backfill_status"] = _backfills.get(k)
+        # Backfills run on the batch-worker now (compute_jobs); prefer that status,
+        # fall back to the legacy in-process dict.
+        row["backfill_status"] = remote_bf.get(k) or _backfills.get(k)
         row["target_days"] = (cfg.get(k) or {}).get("capture_days")
     return {
         "resolutions": _RESOLUTIONS,
@@ -96,6 +99,38 @@ def _tracked_symbols() -> list:
         logger.warning("bar-cache _tracked_symbols: strategies read failed: %s", e)
     import bar_cache
     return sorted({t["symbol"] for t in bar_cache.get_capture_targets(enabled_only=False)})
+
+
+def _remote_backfill_status() -> dict:
+    """Map (symbol, timeframe) -> latest backfill job status from compute_jobs
+    (the batch-worker queue), over a recent window so the UI shows running +
+    just-finished. Values: 'running' | the job's progress_label (e.g. 'done:+N')
+    | 'error'."""
+    out: dict = {}
+    try:
+        since = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
+        rows = (_admin().table("compute_jobs")
+                .select("payload,status,progress_label,created_at")
+                .eq("job_type", "backfill").gte("created_at", since)
+                .order("created_at").execute().data) or []
+        for r in rows:
+            p = r.get("payload") or {}
+            sym, tf = p.get("symbol"), p.get("timeframe")
+            if not sym or not tf:
+                continue
+            st = r.get("status")
+            if st in ("queued", "running"):
+                label = "running"
+            elif st == "completed":
+                label = r.get("progress_label") or "done"
+            elif st == "failed":
+                label = "error"
+            else:
+                label = st
+            out[(sym, tf)] = label  # ordered by created_at → latest wins
+    except Exception as e:  # noqa: BLE001
+        logger.warning("bar-cache remote backfill status failed: %s", e)
+    return out
 
 
 def _writethrough_enabled() -> bool:
@@ -229,6 +264,17 @@ def trigger_backfill(payload: dict = Body(...), user=Depends(get_current_user)):
         logger.warning("bar-cache: persist target %s/%s failed (continuing): %s",
                        sym, tf, e)
 
+    # Prefer the batch-worker (off the api service) when the remote queue is on;
+    # 1yr of 1Sec is ~5.8M rows, too heavy to run in the API process.
+    try:
+        import recompute_jobs
+        job_id = recompute_jobs.submit_backfill_job(
+            sym, tf, start.isoformat(), end.isoformat())
+        return {"started": True, "remote": True, "job_id": job_id}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("bar-cache backfill remote enqueue failed (%s) — running "
+                       "in-process fallback", e)
+
     def run():
         _backfills[key] = "running"
         try:
@@ -243,7 +289,7 @@ def trigger_backfill(payload: dict = Body(...), user=Depends(get_current_user)):
 
     threading.Thread(target=run, daemon=True,
                      name=f"bc-backfill-{sym}-{tf}").start()
-    return {"started": True}
+    return {"started": True, "remote": False}
 
 
 @router.get("/backfill/status")

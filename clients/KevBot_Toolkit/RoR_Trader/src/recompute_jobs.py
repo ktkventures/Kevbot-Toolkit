@@ -840,6 +840,67 @@ def _run_job_worker(job_id: str) -> None:
                     summary=summary)
 
 
+def submit_backfill_job(symbol: str, timeframe: str, start_iso: str,
+                        end_iso: Optional[str] = None,
+                        user_id: str = "bar-cache") -> str:
+    """Enqueue a bar_cache backfill to run on the batch-worker (OFF the api
+    service). Returns the compute_jobs id; poll get_job_status(job_id). Requires
+    the remote queue (RORT_COMPUTE_REMOTE); raises if it's off so the caller can
+    fall back to an in-process backfill."""
+    import compute_jobs_store
+    if not compute_jobs_store.remote_enabled():
+        raise RuntimeError("remote compute queue disabled (RORT_COMPUTE_REMOTE)")
+    payload = {"symbol": symbol, "timeframe": timeframe,
+               "start": start_iso, "end": end_iso}
+    job_id = compute_jobs_store.enqueue(user_id, [], "backfill", payload=payload)
+    logger.info("[BACKFILL-JOB] enqueued %s %s/%s from=%s",
+                job_id[:8], symbol, timeframe, start_iso)
+    return job_id
+
+
+def _run_backfill_remote(row: Dict[str, Any]) -> None:
+    """Execute a 'backfill' compute_jobs row on the batch-worker: pull symbol /
+    timeframe / window from payload, run bar_cache.backfill_symbol, and mirror
+    status to the durable row so the Supply page can watch it. Coverage also
+    grows live (min_ts extends) as chunks land — visible progress without a
+    per-chunk callback."""
+    import compute_jobs_store
+    import bar_cache
+    job_id = row["id"]
+    p = row.get("payload") or {}
+    sym, tf = p.get("symbol"), p.get("timeframe")
+
+    def _parse(s):
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    start = _parse(p.get("start"))
+    end = _parse(p.get("end")) or datetime.now(timezone.utc)
+    label = f"{sym}/{tf}"
+    if not sym or not tf or start is None:
+        compute_jobs_store.update_row(
+            job_id, status="failed", completed_at=_now_iso(),
+            error=f"bad backfill payload: {p}")
+        return
+    try:
+        compute_jobs_store.update_row(job_id, progress_label=f"backfilling {label}")
+        n = bar_cache.backfill_symbol(sym, tf, start, end)
+        compute_jobs_store.update_row(
+            job_id, status="completed", completed_at=_now_iso(),
+            progress_label=f"done:+{n}",
+            summary={"symbol": sym, "timeframe": tf, "inserted": int(n)})
+        logger.info("[BACKFILL-JOB] %s %s done +%s", job_id[:8], label, n)
+    except Exception as e:  # noqa: BLE001
+        compute_jobs_store.update_row(
+            job_id, status="failed", completed_at=_now_iso(),
+            error=f"{type(e).__name__}: {str(e)[:200]}")
+        logger.exception("[BACKFILL-JOB] %s %s failed: %s", job_id[:8], label, e)
+
+
 def run_remote_job(row: Dict[str, Any]) -> None:
     """Execute a claimed `compute_jobs` row in THIS process (the batch-worker).
 
@@ -848,6 +909,9 @@ def run_remote_job(row: Dict[str, Any]) -> None:
     cancel mirror to the durable DB row the API reads, runs synchronously, then
     evicts the in-memory copy. The pool degree still comes from
     RORT_RECOMPUTE_PARALLELISM (set high on the dedicated service)."""
+    if row.get('job_type') == 'backfill':
+        _run_backfill_remote(row)
+        return
     job_id = row['id']
     sids = list(row.get('strategy_ids') or [])
     job = {

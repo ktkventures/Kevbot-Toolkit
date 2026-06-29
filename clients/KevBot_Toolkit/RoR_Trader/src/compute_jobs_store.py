@@ -39,9 +39,11 @@ def _client():
 
 
 def enqueue(user_id: str, strategy_ids: List[int], job_type: str,
-            force: bool = False) -> str:
+            force: bool = False, payload: Optional[Dict[str, Any]] = None) -> str:
     """INSERT a queued job row; returns the job_id. Mirrors the in-memory job
-    dict so a later get_row() is a drop-in for get_job_status()."""
+    dict so a later get_row() is a drop-in for get_job_status(). `payload` carries
+    params for non-strategy job types (e.g. 'backfill': {symbol, timeframe, start,
+    end}); ignored by the strategy recompute path."""
     job_id = str(uuid.uuid4())
     row = {
         "id": job_id,
@@ -62,6 +64,7 @@ def enqueue(user_id: str, strategy_ids: List[int], job_type: str,
             "total_appended": 0,
         },
         "cancelled": False,
+        "payload": payload,
     }
     _client().table(TABLE).insert(row).execute()
     logger.info("[COMPUTE-JOBS] enqueued %s type=%s n=%d user=%s",

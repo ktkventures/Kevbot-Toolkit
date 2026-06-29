@@ -49,10 +49,17 @@ path.
 - **Registry = `(symbol, lookback)`.** Lookback default **1 year**, **UI-adjustable** (extend → triggers
   a deeper one-time `backfill_symbol`; this is Kevin's "expand the backtest data" lever). Can extend
   beyond 1y later.
-  - **Lookback must be PER-RESOLUTION (not one flat number).** 1 year of **1Sec** ≈ ~5.8M rows/symbol
-    (~23k bars/RTH-day) — fleet-wide that is enormous. Want **deep 1Min (e.g. 1y)** but a **shallow
-    1Sec window** (days–weeks, only what sub-minute strategies + provisional detection need). Model
-    lookback as `{'1Min': 365d, '1Sec': Nd}`, not a single value.
+  - **Lookback PER-RESOLUTION, both DEEP (Kevin override 2026-06-29).** Default **1 year on BOTH
+    1Min AND 1Sec** — Kevin wants deep 1Sec (~5.8M rows/symbol/yr) because 1Sec IS the hi-fi backtest
+    source; "store once here, strategies read it as their primary source." (Supersedes the earlier
+    "shallow 1Sec" assumption.) Control is a **per-(symbol,timeframe) start date** → backfill to it.
+  - **PAGE REDESIGN SHIPPED 2026-06-29 (PRs #9-#11):** the Bar-Cache Supply page is now ONE
+    catalog-driven module — `supply_coverage()` lists every (symbol,tf) any strategy uses (all accounts)
+    with coverage span vs target, write-through freshness (lag/unsettled), and a per-row backfill-to-
+    start-date control + live status. **Manual add-target / enable / delete / maintain-all REMOVED** per
+    Kevin (no manual or auto target management; the catalog IS the registry). `/backfill` takes
+    `start_date` and persists the chosen depth (`capture_days`). Diagnosed coverage gaps: only SPY/TSLA
+    were ever backfilled (1Sec ~272d); DIA/KO ~6d, TSLL 1d, AAPL none — all need a 1yr backfill.
 - **Stream-maintain everything in the registry:** the data-worker streams write-through 1Sec+1Min for
   **every symbol in the supply** (not just symbols with eligible streaming strategies) — continuous
   freshness on the recent edge; backfill provides the historical depth. Same `bar_cache`, one store.
