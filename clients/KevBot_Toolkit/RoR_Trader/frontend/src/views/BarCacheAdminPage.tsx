@@ -32,11 +32,20 @@ interface ReadHealth {
   sample_read_ok: boolean | null;
   detail: string | null;
 }
+interface LiveFreshness {
+  symbol: string;
+  timeframe: string;
+  last_bar: string | null;
+  last_revised: string | null;
+  unsettled: number;
+}
 interface TargetsResp {
   targets: Target[];
   resolutions: string[];
   read_enabled: boolean;
   maintain_cron_enabled: boolean;
+  writethrough_enabled?: boolean;
+  live_freshness?: LiveFreshness[] | null;
   read_health?: ReadHealth;
 }
 
@@ -60,6 +69,26 @@ function fmtTs(ts: string | null): string {
 }
 function fmtNum(n: number | null): string {
   return n == null ? '—' : n.toLocaleString();
+}
+// Age (now − ts) in seconds, or null if no ts.
+function ageSec(ts: string | null): number | null {
+  if (!ts) return null;
+  const t = new Date(ts.endsWith('Z') || ts.includes('+') ? ts : ts + 'Z').getTime();
+  if (Number.isNaN(t)) return null;
+  return Math.max(0, (Date.now() - t) / 1000);
+}
+function fmtAge(sec: number | null): string {
+  if (sec == null) return '—';
+  if (sec < 90) return `${Math.round(sec)}s`;
+  if (sec < 5400) return `${Math.round(sec / 60)}m`;
+  return `${(sec / 3600).toFixed(1)}h`;
+}
+// Freshness color: green ≤60s, amber ≤5min, red older (or gray if unknown).
+function freshColor(sec: number | null): string {
+  if (sec == null) return 'var(--text-tertiary)';
+  if (sec <= 60) return 'var(--green)';
+  if (sec <= 300) return 'var(--amber, #d98c00)';
+  return 'var(--red)';
 }
 
 export default function BarCacheAdminPage() {
@@ -147,6 +176,16 @@ export default function BarCacheAdminPage() {
 
   const resolutions = useMemo(() => resp?.resolutions ?? ['1Sec', '1Min'], [resp]);
   const targets = useMemo(() => resp?.targets ?? [], [resp]);
+  const liveFresh = useMemo(() => resp?.live_freshness ?? [], [resp]);
+  // The stream is "active" if any layer was written within the last 2 minutes —
+  // the real proof write-through is running (independent of which service holds
+  // the RORT_BARCACHE_WRITETHROUGH flag).
+  const streamActive = useMemo(() => {
+    const ages = (resp?.live_freshness ?? [])
+      .map((f) => ageSec(f.last_revised))
+      .filter((s): s is number => s != null);
+    return ages.length > 0 && Math.min(...ages) <= 120;
+  }, [resp]);
 
   if (loading && !resp) {
     return <Card><div style={{ padding: 20 }}>Loading bar-cache config…</div></Card>;
@@ -156,13 +195,16 @@ export default function BarCacheAdminPage() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: 16 }}>
       <Card>
         <div style={{ padding: 16 }}>
-          <h2 style={{ margin: '0 0 4px', fontSize: 18 }}>Bar-Cache Supply (M-RS2 Phase 1)</h2>
+          <h2 style={{ margin: '0 0 4px', fontSize: 18 }}>Bar-Cache Supply</h2>
           <div style={{ color: 'var(--text-tertiary)', fontSize: 13, marginBottom: 12 }}>
-            Capture native Polygon bars per (symbol, timeframe) once, reuse everywhere. 1Sec + 1Min are the
-            source layers; sub-minute materializes from 1Sec, coarse from 1Min (Phase 2). All inert until the
-            read path is wired.
+            One continuously-fresh source of truth. The data-worker streams native Polygon bars (1Sec + 1Min)
+            write-through into <code>bar_cache</code>; all consumers (backtests, charts, recompute) read it.
+            The live stream below is the freshness proof; the targets table is the historical-depth registry.
           </div>
           <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+            <span style={pill(streamActive ? 'var(--green)' : 'var(--red)')}>
+              write-through stream: {streamActive ? 'ACTIVE (writing)' : 'quiet / stale'}
+            </span>
             <span style={pill(resp?.read_enabled ? 'var(--green)' : 'var(--text-tertiary)')}>
               read path (BAR_CACHE_ENABLED): {resp?.read_enabled ? 'ON' : 'off'}
             </span>
@@ -212,6 +254,50 @@ export default function BarCacheAdminPage() {
               {busy === 'maintain' ? 'Maintaining…' : 'Maintain all now'}
             </button>
           </div>
+        </div>
+      </Card>
+
+      {/* Live write-through freshness — what the stream is maintaining right now. */}
+      <Card>
+        <div style={{ padding: 16 }}>
+          <h3 style={{ margin: '0 0 4px', fontSize: 15 }}>Live Write-Through Stream</h3>
+          <div style={{ color: 'var(--text-tertiary)', fontSize: 12, marginBottom: 10 }}>
+            Layers the data-worker is writing <em>right now</em> (have an unsettled tail). Lag = time since the
+            last write (green ≤60s). Unsettled = provisional tail bars (permanent after ~16 min). An empty list
+            means the stream is quiet — expected outside market hours.
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--text-tertiary)', fontSize: 12, borderBottom: '1px solid var(--border)' }}>
+                <th style={cell}>Symbol</th>
+                <th style={cell}>TF</th>
+                <th style={cell}>Last bar (edge, UTC)</th>
+                <th style={cell}>Last write (UTC)</th>
+                <th style={cell}>Lag</th>
+                <th style={cell}>Unsettled</th>
+              </tr>
+            </thead>
+            <tbody>
+              {liveFresh.length === 0 && (
+                <tr><td style={{ ...cell, color: 'var(--text-tertiary)' }} colSpan={6}>
+                  No layers currently streaming — stream quiet (expected outside market hours).
+                </td></tr>
+              )}
+              {liveFresh.map((f) => {
+                const lag = ageSec(f.last_revised);
+                return (
+                  <tr key={`${f.symbol}/${f.timeframe}`} style={{ borderBottom: '1px solid var(--border)' }}>
+                    <td style={{ ...cell, fontWeight: 600 }}>{f.symbol}</td>
+                    <td style={cell}>{f.timeframe}</td>
+                    <td style={{ ...cell, fontSize: 12, color: 'var(--text-tertiary)' }}>{fmtTs(f.last_bar)}</td>
+                    <td style={{ ...cell, fontSize: 12, color: 'var(--text-tertiary)' }}>{fmtTs(f.last_revised)}</td>
+                    <td style={{ ...cell, fontWeight: 600, color: freshColor(lag) }}>{fmtAge(lag)}</td>
+                    <td style={cell}>{fmtNum(f.unsettled)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </Card>
 

@@ -70,8 +70,20 @@ def list_targets(user=Depends(get_current_user)):
         "resolutions": _RESOLUTIONS,
         "read_enabled": _bar_cache_read_enabled(),
         "maintain_cron_enabled": _maintain_cron_enabled(),
+        "writethrough_enabled": _writethrough_enabled(),
+        "live_freshness": bar_cache.live_freshness(),
         "read_health": _read_health(),
     }
+
+
+def _writethrough_enabled() -> bool:
+    """Whether the data-worker is writing its continuous REST stream through to
+    bar_cache (RORT_BARCACHE_WRITETHROUGH). NOTE: this reads the flag on the API
+    service's env for display parity; the actual writer is the Data Worker
+    service — `live_freshness` (recent revised_at) is the real proof it's writing."""
+    import os
+    return os.environ.get("RORT_BARCACHE_WRITETHROUGH", "").strip().lower() in (
+        "1", "true", "yes", "on")
 
 
 def _read_health() -> dict:
