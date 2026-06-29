@@ -85,6 +85,13 @@ KILL_SWITCHES = [
 
 PRICE_TOL = 1e-4  # a hundredth of a cent — below this is float-storage noise, not a real diff
 
+# Symbols the data-worker streams write-through into bar_cache (the 2026-06-29
+# burn-in set). Keep in sync with the Bar Cache Supply registry as coverage grows
+# (Design_BarCache_WriteThrough_Unification §3.5). The write-through gate validates
+# each of these against a fresh Polygon pull on settled bars.
+WRITETHROUGH_SYMBOLS = ["TSLA", "SPY", "DIA", "KO", "TSLL"]
+WRITETHROUGH_TFS = ["1Sec", "1Min"]  # the two NATIVE source layers the stream persists
+
 
 def _settled_test_day(override: str | None) -> dt.date:
     """A settled TRADING day that actually has data — not a weekend OR a holiday.
@@ -232,11 +239,88 @@ def _coarse_secondary_parity() -> list[tuple[str, bool, str]]:
         return [(label, "FAIL", f"EXC {str(ex)[:120]}")]
 
 
+def _writethrough_parity(day: dt.date) -> list[tuple[str, str, str]]:
+    """The bars the data-worker WROTE THROUGH into bar_cache must be byte-identical
+    to a fresh Polygon REST pull, on SETTLED bars (§6 #1 — write-through must not
+    become a divergence source).
+
+    Reads the bar_cache table DIRECTLY (`bc.read_bars`, no delta-fetch) so it
+    validates what the stream actually persisted — NOT a read-path backfill that
+    would mask a missing-bar gap. Only settled bars are checked: bars older than
+    the settle window (RORT_SHADOW_SETTLE_MIN, default 16) are permanent truth; the
+    unsettled tail is provisional by design and excluded. For TODAY the window is
+    [open, now-settle-pad]; for a past day the whole day is settled.
+
+    Volume IS compared here (unlike the resample caveat): the stream persists NATIVE
+    1Sec + 1Min, and `load_from_polygon` returns the same native bars, so volume must
+    match exactly — that is precisely the property Step 1 said to protect."""
+    import bar_cache as bc
+    import data_loader as dl
+    os.environ["BAR_CACHE_ENABLED"] = "1"
+    s = dt.datetime(day.year, day.month, day.day, tzinfo=dt.timezone.utc)
+    pad = dt.timedelta(minutes=bc._settle_min() + 5)
+    now = dt.datetime.now(dt.timezone.utc)
+    e_settled = min(s + dt.timedelta(days=1) - dt.timedelta(seconds=1), now - pad)
+    if e_settled <= s:
+        return [(f"writethrough {day} (no settled window yet)", "SKIP", "too early in the day")]
+    results = []
+    for sym in WRITETHROUGH_SYMBOLS:
+        for tf in WRITETHROUGH_TFS:
+            label = f"writethrough {sym}/{tf}/RTH"
+            try:
+                wrote = bc.read_bars(sym, tf, s, e_settled)  # raw table read — what the stream wrote
+                nat = dl.load_from_polygon(sym, timeframe=tf, start_date=s.replace(hour=0),
+                                           end_date=s.replace(hour=0), session="RTH")
+                if nat is not None:
+                    nat = nat[(nat.index >= s) & (nat.index <= e_settled)]
+                if nat is None or len(nat) == 0:
+                    results.append((label, "SKIP", "no native data"))
+                    continue
+                if wrote is None or len(wrote) == 0:
+                    results.append((label, "FAIL",
+                                    f"bar_cache empty, native={len(nat)} — stream not writing {sym}/{tf}?"))
+                    continue
+                wrote = dl._filter_session(wrote, "RTH")
+                wrote = wrote[(wrote.index >= s) & (wrote.index <= e_settled)]
+                cols = ["open", "high", "low", "close", "volume"]
+                # Two distinct signals, not one. (a) WITHIN the window the stream
+                # actually covered ([first-wrote-bar, e_settled]), native must equal
+                # wrote byte-identical — holes or value diffs HERE mean the stream is
+                # a divergence source = real FAIL. (b) A LEADING gap (native bars
+                # before the stream's first written bar) is missing *history*, not a
+                # streaming bug — happens when write-through is enabled mid-session or
+                # a symbol is newly streamed. That's a backfill task (blocks
+                # BAR_CACHE_ENABLED for the symbol per §5), surfaced as WARN not FAIL.
+                cover_start = wrote.index.min()
+                lead_gap = int((nat.index < cover_start).sum())
+                nat_cov = nat[nat.index >= cover_start]
+                j = nat_cov[cols].join(wrote[cols], lsuffix="_n", rsuffix="_c", how="inner")
+                diffs = sum(int(((j[c + "_n"] - j[c + "_c"]).abs() > PRICE_TOL).sum()) for c in cols)
+                rowmm = abs(len(nat_cov) - len(wrote))
+                within_ok = (diffs == 0 and rowmm == 0)
+                detail = (f"native={len(nat)} wrote={len(wrote)} | within-coverage: "
+                          f"OHLCVdiffs={diffs} rowMM={rowmm} | lead_gap={lead_gap}")
+                if not within_ok:
+                    results.append((label, "FAIL", detail + "  ← holes/diffs WITHIN coverage (stream bug)"))
+                elif lead_gap > 0:
+                    results.append((label, "WARN", detail +
+                                    f"  ← faithful, but {lead_gap} bars of pre-coverage history missing "
+                                    f"(backfill before BAR_CACHE_ENABLED)"))
+                else:
+                    results.append((label, "PASS", detail))
+            except Exception as ex:  # noqa: BLE001
+                results.append((label, "FAIL", f"EXC {str(ex)[:120]}"))
+    return results
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true", help="cache matrix only (skip the engine canary)")
     ap.add_argument("--coarse", action="store_true",
                     help="also run the coarse-secondary canary parity (slow: ~363d primary load)")
+    ap.add_argument("--writethrough", action="store_true",
+                    help="also run the write-through parity gate (bar_cache stream writes == Polygon, "
+                         "settled bars). Defaults to TODAY (where the stream's data lives); --day overrides.")
     ap.add_argument("--day", default=None, help="settled comparison day YYYY-MM-DD")
     args = ap.parse_args()
 
@@ -258,6 +342,10 @@ def main() -> int:
         results += _canary_killswitch_parity()
     if args.coarse:
         results += _coarse_secondary_parity()
+    if args.writethrough:
+        wt_day = dt.date.fromisoformat(args.day) if args.day else dt.date.today()
+        print(f"--- write-through gate: settled bars on {wt_day} ---")
+        results += _writethrough_parity(wt_day)
 
     print()
     for label, status, detail in results:
@@ -266,14 +354,17 @@ def main() -> int:
     failures = sum(1 for _, s, _ in results if s == "FAIL")
     passes = sum(1 for _, s, _ in results if s == "PASS")
     skips = sum(1 for _, s, _ in results if s == "SKIP")
+    warns = sum(1 for _, s, _ in results if s == "WARN")
     if failures:
-        print(f"❌ {failures} FAILED ({passes} pass, {skips} skip) — fidelity regression. Do NOT ship.")
+        print(f"❌ {failures} FAILED ({passes} pass, {warns} warn, {skips} skip) — fidelity regression. Do NOT ship.")
         return 1
     if passes == 0:
         print(f"❌ 0 real checks ran ({skips} skipped — no data). The suite tested NOTHING; "
               f"fix the comparison day so the bug class is actually exercised.")
         return 1
     msg = f"✅ all {passes} checks passed — cache byte-identical across TFs; canary trades stable under flags."
+    if warns:
+        msg += (f"  ⚠️ {warns} WARN (faithful but incomplete coverage — backfill needed; not a regression).")
     if skips:
         msg += f"  ({skips} skipped for no data)"
     print(msg)

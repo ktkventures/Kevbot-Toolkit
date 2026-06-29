@@ -19,7 +19,65 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-06-29
+
+- **~17:55 UTC (11:55 MT 06-29)** — `2010063` (PR #6) feat(bar_cache): write-through unification step 2 + `9595387` (PR #5) read_bars autocommit bar-leak fix
+  - Service(s) redeployed: ALL dev services on push to dev — api / Worker / **Data Worker** /
+    Streamlit / frontend / flat-file-cron / batch-worker. Data Worker confirmed `2010063` SUCCESS.
+  - **Write-through gated default-OFF** (`RORT_BARCACHE_WRITETHROUGH` unset on Data Worker → off in code).
+    No live behavior change; ships the code so Kevin can flip the flag for the live RTH burn-in.
+  - Bar-leak fix (#7 idle-in-txn strand) now live via PR #5. Migration `bar_cache.settled`+`revised_at`
+    was already applied to prod in a prior session (metadata-only).
+  - Worker re-warm on restart → expect ~1–8 min gap from ~17:56 UTC; filter from divergence readings.
+  - Backup of pre-merge dev: branch `backup/dev-pre-writethrough-0629` (origin/dev @ bc9cf21).
+
+- **~17:5x UTC (11:5x MT 06-29)** — FLAG FLIP: set `RORT_BARCACHE_WRITETHROUGH=1` on **Data Worker**
+  (env-triggered redeploy, dep `938ec23a`). Live RTH burn-in begins. Flag read per-call at runtime,
+  so the redeploy is what activates it. Instant rollback = unset the var (forces another redeploy).
+  Watching: bar_cache write-through writes (settled/revised_at), Data Worker logs for write-through
+  warnings, and the ~1–8 min restart gap on this service only (alert Worker unaffected).
+  - **~18:31 UTC FOLLOW-UP FIX (DB, not deploy):** burn-in monitoring caught `settle_sweep` 57014
+    statement-timeouts on TSLA/SPY/TSLL — the sweep UPDATE (`symbol=X AND settled=false AND ts<cut`)
+    had no index on `settled` (only PK), so it scanned millions of rows. Added partial index
+    `idx_bar_cache_unsettled ON bar_cache(symbol, ts) WHERE settled=false` via CREATE INDEX
+    CONCURRENTLY (non-blocking, 64s). Migration: `src/migrations/bar_cache_unsettled_index.sql`.
+    After: sweep plan = Index Scan; drained 1532-row backlog in 2.4s; failures stopped 18:33:15;
+    unsettled bounded ~3k with 0 stuck past the 16-min window. Data correct throughout (flag lag only).
+
 ## 2026-06-26
+
+- **~late UTC 06-26** — `4a22777` fix(recompute): preserve-range guard (UAD no longer truncates to data_days)
+  - Service(s) redeployed: api / Worker / frontend (push to dev)
+  - Kill-switch `RORT_UAD_PRESERVE_RANGE` (default ON). Isolated to `recompute_and_persist`;
+    fidelity parity suite 18/18 green (unaffected — suite reads via get_strategy_trades). Validated
+    read-only sid 265: 122→280 trades (range preserved 06-11..06-26 vs truncated 06-22..06-26).
+  - Weekend / markets closed → Worker re-warm is harmless. NEXT: safe to do the fleet-wide
+    "Update All Data on everything" pass once this is confirmed deployed (no more truncation).
+
+- **~23:31 UTC (17:31 MT 06-26)** — `1e4daa0` chore: re-trigger deploy of b47bbbc (coarse-secondary fix)
+  - Service(s) redeployed: api / Worker / frontend (push to dev)
+  - **WHY:** the `b47bbbc` push (~22:xx) FAILED to deploy on a **Railway deploy-infra incident**
+    (prisma deploymentSnapshot.upsert FATAL: server login failing; "deployments slow to go out"
+    banner). Build succeeded — not a code issue. Empty re-trigger commit deployed cleanly once
+    the incident eased. api confirmed: fresh Uvicorn startup, no import errors.
+  - **VALIDATED:** `RORT_COARSE_SECONDARY_FROM_1MIN=1` (api) + b47bbbc → sid 338 "Update All Data"
+    completed in **~76s / 817 trades** (job 105732732) — previously hung 17+ min. Coarse UAD fixed.
+  - Worker restart ~23:39 → ~8-min warmup (filter ~23:39–23:48 UTC from divergence readings).
+
+- **~22:xx UTC (16:xx MT 06-26)** — `b47bbbc` fix(backtest): build coarse (>=1H) secondary gate from 1Min (FAILED deploy — Railway incident; superseded by 1e4daa0)
+  - Service(s) redeployed: Worker / api / frontend (push to dev)
+  - **INERT** — both kill-switches default OFF (`RORT_COARSE_SECONDARY_FROM_1MIN`, `RORT_COARSE_LAYER_READ`).
+    No behavior change until enabled. Fidelity parity suite green (18/18, flags-off baseline).
+  - Notes: fixes the coarse-gate UAD hang (sid 338) when enabled. Worker restart = ~8-min warmup + brief
+    338-canary interruption. After-hours.
+
+- **~20:30 UTC (14:30 MT 06-26)** — Worker **restart only** (no code change; `railway redeploy`)
+  - Service(s) redeployed: Worker
+  - Purpose: re-run `_warmup_all` to seed coarse-TF gates after-hours + warm new canary sid 338.
+  - ✅ **Verified the coarse-gate fix:** boot logs `[MTF-SEED] TSLA tf=86400s (5 records)`,
+    `tf=14400s (3)`, `tf=3600s (2)` — 1Day/4H/1H gate dicts now POPULATED at warmup (were empty).
+    `Warmup TSLA: strat=338 tf=10s bars=11700 initialized=True`.
+  - After-hours → minimal divergence impact; no filtering needed for live readings.
 
 - **~18:5x UTC (12:5x MT 06-26)** — `a38f876` fix(live): seed cross-TF gate from warmed shadow (coarse 1H/4H/1D gates fire live)
   - Service(s) redeployed: Worker / api / frontend (push to dev)
