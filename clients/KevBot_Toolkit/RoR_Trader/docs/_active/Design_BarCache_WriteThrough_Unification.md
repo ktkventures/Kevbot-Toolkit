@@ -188,9 +188,17 @@ fixes staleness; run a sub-minute strategy window for trade-level confirmation.
      r is mark-to-market vs current price, so two RTH runs seconds apart differ benignly.
    - STILL TODO under this step: tune `RORT_SHADOW_SETTLE_MIN` against live obs; (optional) run the
      trade diff on more canaries post-close.
-4. Flip `BAR_CACHE_ENABLED` on so consumers read the unified source; retire maintain cron for covered.
-   **PRE-REQ (see §5 ORDERING):** full-depth backfill first, or scope the flip to fully-backfilled
-   symbols; trade-level gate (§6 #3) must stay clean before/after.
+4. ✅ **EFFECTIVELY COMPLETE (verified 2026-06-29).** `BAR_CACHE_ENABLED` was ALREADY `=1` in prod on
+   api / Worker / batch-worker (set during M-RS2) and the read path is LIVE, not inert
+   (`data_loader.load_market_data:751` → `cached_load_market_data` with delta-fetch + Polygon
+   fallback). So consumers already read `bar_cache`; today's write-through (Step 3) completed the loop
+   by making that cache CONTINUOUSLY FRESH instead of pull-on-read. Gates green (§6 #2/#3). The feared
+   backfill PRE-REQ is moot: `cached_load_market_data` heals leading gaps on read — verified DIA/KO/TSLL
+   1Sec return byte-identical full native data (10274/8657/14631, diffs=0) and the read upserts the gap
+   back into the table. **Maintain cron NOT retired** — `BAR_CACHE_MAINTAIN_ENABLED=true` stays on the
+   Worker as the freshness net for symbols NOT yet streamed; retiring it is bound to Step 5 (fleet-wide
+   coverage), per §3.5/§5. Net: for the 5 streamed symbols (incl. the real-money TSLA canaries) the
+   unification is fully live now; Step 5 scales it to the rest of the fleet.
 5. Supply-page coverage model (§3.5): auto-enroll, UI lookback control, stream all registry symbols.
    Concrete tasks now named in §3.5: **per-resolution lookback** (deep 1Min / shallow 1Sec); change
    data-worker symbol discovery to the supply registry (`data_worker.py`); auto-enroll hook in
