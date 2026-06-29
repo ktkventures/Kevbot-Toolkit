@@ -71,9 +71,27 @@ def list_targets(user=Depends(get_current_user)):
         "read_enabled": _bar_cache_read_enabled(),
         "maintain_cron_enabled": _maintain_cron_enabled(),
         "writethrough_enabled": _writethrough_enabled(),
-        "live_freshness": bar_cache.live_freshness(),
+        "supply_coverage": bar_cache.supply_coverage(_tracked_symbols()),
         "read_health": _read_health(),
     }
+
+
+def _tracked_symbols() -> list:
+    """Every symbol any strategy uses, across ALL accounts (admin-level) — the
+    set the bar cache should be maintaining as the source of truth. Until the
+    formal supply registry IS the streaming source (Step 5), this 'demand' set is
+    the accurate tracked set; a symbol here with no coverage is a gap to backfill.
+    Falls back to whatever's in bar_cache_config if the strategies read fails."""
+    try:
+        rows = _admin().table("strategies").select("symbol").execute().data or []
+        syms = sorted({(r.get("symbol") or "").strip().upper()
+                       for r in rows if r.get("symbol")})
+        if syms:
+            return syms
+    except Exception as e:  # noqa: BLE001
+        logger.warning("bar-cache _tracked_symbols: strategies read failed: %s", e)
+    import bar_cache
+    return sorted({t["symbol"] for t in bar_cache.get_capture_targets(enabled_only=False)})
 
 
 def _writethrough_enabled() -> bool:

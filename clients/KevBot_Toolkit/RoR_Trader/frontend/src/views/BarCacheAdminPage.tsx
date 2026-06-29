@@ -32,10 +32,11 @@ interface ReadHealth {
   sample_read_ok: boolean | null;
   detail: string | null;
 }
-interface LiveFreshness {
+interface SupplyCoverage {
   symbol: string;
   timeframe: string;
-  last_bar: string | null;
+  min_ts: string | null;
+  max_ts: string | null;
   last_revised: string | null;
   unsettled: number;
 }
@@ -45,7 +46,7 @@ interface TargetsResp {
   read_enabled: boolean;
   maintain_cron_enabled: boolean;
   writethrough_enabled?: boolean;
-  live_freshness?: LiveFreshness[] | null;
+  supply_coverage?: SupplyCoverage[] | null;
   read_health?: ReadHealth;
 }
 
@@ -83,12 +84,23 @@ function fmtAge(sec: number | null): string {
   if (sec < 5400) return `${Math.round(sec / 60)}m`;
   return `${(sec / 3600).toFixed(1)}h`;
 }
-// Freshness color: green ≤60s, amber ≤5min, red older (or gray if unknown).
-function freshColor(sec: number | null): string {
+// Lag color for the live edge: green ≤2min = actively streaming; gray older =
+// quiet/settled (normal after-hours), NOT an error. Missing data is flagged
+// separately (the real red signal), so we don't false-alarm on overnight quiet.
+function lagColor(sec: number | null): string {
   if (sec == null) return 'var(--text-tertiary)';
-  if (sec <= 60) return 'var(--green)';
-  if (sec <= 300) return 'var(--amber, #d98c00)';
-  return 'var(--red)';
+  return sec <= 120 ? 'var(--green)' : 'var(--text-tertiary)';
+}
+// Coverage span in days between min_ts and max_ts.
+function spanDays(minTs: string | null, maxTs: string | null): number | null {
+  if (!minTs || !maxTs) return null;
+  const a = new Date(minTs.endsWith('Z') || minTs.includes('+') ? minTs : minTs + 'Z').getTime();
+  const b = new Date(maxTs.endsWith('Z') || maxTs.includes('+') ? maxTs : maxTs + 'Z').getTime();
+  if (Number.isNaN(a) || Number.isNaN(b)) return null;
+  return Math.max(0, (b - a) / 86400000);
+}
+function fmtDate(ts: string | null): string {
+  return ts ? ts.slice(0, 10) : '—';
 }
 
 export default function BarCacheAdminPage() {
@@ -176,12 +188,12 @@ export default function BarCacheAdminPage() {
 
   const resolutions = useMemo(() => resp?.resolutions ?? ['1Sec', '1Min'], [resp]);
   const targets = useMemo(() => resp?.targets ?? [], [resp]);
-  const liveFresh = useMemo(() => resp?.live_freshness ?? [], [resp]);
+  const coverage = useMemo(() => resp?.supply_coverage ?? [], [resp]);
   // The stream is "active" if any layer was written within the last 2 minutes —
   // the real proof write-through is running (independent of which service holds
   // the RORT_BARCACHE_WRITETHROUGH flag).
   const streamActive = useMemo(() => {
-    const ages = (resp?.live_freshness ?? [])
+    const ages = (resp?.supply_coverage ?? [])
       .map((f) => ageSec(f.last_revised))
       .filter((s): s is number => s != null);
     return ages.length > 0 && Math.min(...ages) <= 120;
@@ -257,42 +269,55 @@ export default function BarCacheAdminPage() {
         </div>
       </Card>
 
-      {/* Live write-through freshness — what the stream is maintaining right now. */}
+      {/* Supply coverage + freshness — every tracked symbol (all accounts), not
+          just whatever is printing this second. */}
       <Card>
         <div style={{ padding: 16 }}>
-          <h3 style={{ margin: '0 0 4px', fontSize: 15 }}>Live Write-Through Stream</h3>
+          <h3 style={{ margin: '0 0 4px', fontSize: 15 }}>Supply Coverage &amp; Freshness</h3>
           <div style={{ color: 'var(--text-tertiary)', fontSize: 12, marginBottom: 10 }}>
-            Layers the data-worker is writing <em>right now</em> (have an unsettled tail). Lag = time since the
-            last write (green ≤60s). Unsettled = provisional tail bars (permanent after ~16 min). An empty list
-            means the stream is quiet — expected outside market hours.
+            Every symbol any strategy uses (all accounts) × source layer. <b>Coverage</b> = how much history
+            we hold; <b>last write</b>/<b>lag</b> = freshness (green ≤2 min = streaming now; gray = quiet, normal
+            after-hours); <b>unsettled</b> = provisional tail (settles after ~16 min). <b style={{ color: 'var(--red)' }}>NO
+            DATA</b> = a strategy needs this symbol but the cache is empty (backfill gap).
           </div>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ textAlign: 'left', color: 'var(--text-tertiary)', fontSize: 12, borderBottom: '1px solid var(--border)' }}>
                 <th style={cell}>Symbol</th>
                 <th style={cell}>TF</th>
-                <th style={cell}>Last bar (edge, UTC)</th>
+                <th style={cell}>Coverage (UTC dates)</th>
+                <th style={cell}>Span</th>
                 <th style={cell}>Last write (UTC)</th>
                 <th style={cell}>Lag</th>
                 <th style={cell}>Unsettled</th>
+                <th style={cell}>Status</th>
               </tr>
             </thead>
             <tbody>
-              {liveFresh.length === 0 && (
-                <tr><td style={{ ...cell, color: 'var(--text-tertiary)' }} colSpan={6}>
-                  No layers currently streaming — stream quiet (expected outside market hours).
-                </td></tr>
+              {coverage.length === 0 && (
+                <tr><td style={{ ...cell, color: 'var(--text-tertiary)' }} colSpan={8}>No tracked symbols.</td></tr>
               )}
-              {liveFresh.map((f) => {
+              {coverage.map((f) => {
                 const lag = ageSec(f.last_revised);
+                const sd = spanDays(f.min_ts, f.max_ts);
+                const missing = !f.max_ts;
+                const status = missing
+                  ? { label: 'NO DATA', bg: 'var(--red)' }
+                  : (lag != null && lag <= 120
+                    ? { label: 'streaming', bg: 'var(--green)' }
+                    : { label: 'quiet', bg: 'var(--text-tertiary)' });
                 return (
                   <tr key={`${f.symbol}/${f.timeframe}`} style={{ borderBottom: '1px solid var(--border)' }}>
                     <td style={{ ...cell, fontWeight: 600 }}>{f.symbol}</td>
                     <td style={cell}>{f.timeframe}</td>
-                    <td style={{ ...cell, fontSize: 12, color: 'var(--text-tertiary)' }}>{fmtTs(f.last_bar)}</td>
+                    <td style={{ ...cell, fontSize: 12, color: 'var(--text-tertiary)' }}>
+                      {fmtDate(f.min_ts)} → {fmtDate(f.max_ts)}
+                    </td>
+                    <td style={{ ...cell, fontSize: 12 }}>{sd == null ? '—' : `${Math.round(sd)}d`}</td>
                     <td style={{ ...cell, fontSize: 12, color: 'var(--text-tertiary)' }}>{fmtTs(f.last_revised)}</td>
-                    <td style={{ ...cell, fontWeight: 600, color: freshColor(lag) }}>{fmtAge(lag)}</td>
+                    <td style={{ ...cell, fontWeight: 600, color: lagColor(lag) }}>{fmtAge(lag)}</td>
                     <td style={cell}>{fmtNum(f.unsettled)}</td>
+                    <td style={cell}><span style={pill(status.bg)}>{status.label}</span></td>
                   </tr>
                 );
               })}
