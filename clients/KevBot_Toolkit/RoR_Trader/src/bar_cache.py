@@ -693,6 +693,48 @@ def read_bars(symbol: str, timeframe: str,
     return df
 
 
+def live_freshness() -> Optional[list]:
+    """Per (symbol, timeframe) write-through freshness for the layers the stream
+    is CURRENTLY maintaining — those with an unsettled tail (settled=false).
+
+    Index-backed via idx_bar_cache_unsettled (the partial index over only the
+    unsettled rows), so it scans the small live tail, NOT the 14M-row table —
+    safe to poll. Returns the edge ts, the last revised_at (write time), and the
+    unsettled-tail size per layer: the at-a-glance "is the stream fresh + actually
+    writing" view for the admin Bar-Cache Supply page. This reflects what
+    WRITE-THROUGH is doing, independent of the manually-configured capture
+    targets (bar_cache_config) — closing the gap where the supply page only
+    showed configured targets, not the live stream. None if no DSN.
+    """
+    dsn = os.environ.get("SUPABASE_CONNECTION_STRING")
+    if not dsn:
+        return None
+    sql = ("select symbol, timeframe, max(ts) as last_bar, "
+           "max(revised_at) as last_revised, count(*) as unsettled "
+           "from bar_cache where settled = false "
+           "group by symbol, timeframe order by symbol, timeframe")
+    try:
+        import psycopg
+        with psycopg.connect(dsn, connect_timeout=15,
+                             prepare_threshold=None, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                rows = cur.fetchall()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("bar_cache.live_freshness failed: %s", e)
+        return None
+    out = []
+    for sym, tf, last_bar, last_rev, unsettled in rows:
+        out.append({
+            "symbol": sym,
+            "timeframe": tf,
+            "last_bar": last_bar.isoformat() if last_bar else None,
+            "last_revised": last_rev.isoformat() if last_rev else None,
+            "unsettled": int(unsettled),
+        })
+    return out
+
+
 # =============================================================================
 # M-RS2 Phase 1 — proactive supply capture (native bars per (symbol, TF))
 # =============================================================================
