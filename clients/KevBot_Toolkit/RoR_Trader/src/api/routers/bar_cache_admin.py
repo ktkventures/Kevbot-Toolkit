@@ -59,19 +59,23 @@ def _row_stats(symbol: str, timeframe: str) -> dict:
 
 @router.get("/targets")
 def list_targets(user=Depends(get_current_user)):
-    """All configured capture targets + their live row stats + backfill status."""
+    """Supply coverage + freshness for EVERY tracked symbol (catalog-driven), with
+    the configured target depth + live backfill status merged into each row. The
+    page is one module now — no separate manual-targets table."""
     import bar_cache
-    targets = bar_cache.get_capture_targets(enabled_only=False)
-    for t in targets:
-        t.update(_row_stats(t["symbol"], t["timeframe"]))
-        t["backfill_status"] = _backfills.get((t["symbol"], t["timeframe"]))
+    cfg = {(t["symbol"], t["timeframe"]): t
+           for t in bar_cache.get_capture_targets(enabled_only=False)}
+    cov = bar_cache.supply_coverage(_tracked_symbols()) or []
+    for row in cov:
+        k = (row["symbol"], row["timeframe"])
+        row["backfill_status"] = _backfills.get(k)
+        row["target_days"] = (cfg.get(k) or {}).get("capture_days")
     return {
-        "targets": targets,
         "resolutions": _RESOLUTIONS,
         "read_enabled": _bar_cache_read_enabled(),
         "maintain_cron_enabled": _maintain_cron_enabled(),
         "writethrough_enabled": _writethrough_enabled(),
-        "supply_coverage": bar_cache.supply_coverage(_tracked_symbols()),
+        "supply_coverage": cov,
         "read_health": _read_health(),
     }
 
@@ -186,25 +190,48 @@ def delete_target(symbol: str, timeframe: str, user=Depends(get_current_user)):
 
 @router.post("/backfill")
 def trigger_backfill(payload: dict = Body(...), user=Depends(get_current_user)):
-    """Fire-and-forget backfill of [now - days, now] for one target. Returns
-    immediately; poll GET /targets (rows) + GET /backfill/status."""
+    """Fire-and-forget backfill of [start, now] for one (symbol, timeframe).
+    `start_date` (ISO) sets the floor — backfill everything from that date to now;
+    falls back to `days` back if no start_date. Persists the chosen depth as the
+    capture target (so the layer is tracked at that depth). Returns immediately;
+    poll GET /targets (coverage + backfill_status)."""
     import bar_cache
     sym = (payload.get("symbol") or "").strip().upper()
     tf = (payload.get("timeframe") or "").strip()
-    days = int(payload.get("days") or 365)
     if not sym or not tf:
         raise HTTPException(status_code=400,
                             detail="symbol and timeframe are required")
+    end = datetime.now(timezone.utc)
+    sd = payload.get("start_date")
+    if sd:
+        try:
+            start = datetime.fromisoformat(str(sd).replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400,
+                                detail=f"bad start_date: {sd!r} (want ISO 8601)")
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+    else:
+        start = end - timedelta(days=int(payload.get("days") or 365))
+    if start >= end:
+        raise HTTPException(status_code=400, detail="start_date must be in the past")
     key = (sym, tf)
     if _backfills.get(key) == "running":
         raise HTTPException(status_code=409,
                             detail="backfill already running for this target")
+    # Persist the chosen depth as the tracked capture target (catalog-driven, but
+    # the depth is the operator's lever) so re-backfills / future maintenance know
+    # the intended history floor.
+    try:
+        bar_cache.set_capture_target(
+            sym, tf, enabled=True, capture_days=max(1, (end - start).days))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("bar-cache: persist target %s/%s failed (continuing): %s",
+                       sym, tf, e)
 
     def run():
         _backfills[key] = "running"
         try:
-            end = datetime.now(timezone.utc)
-            start = end - timedelta(days=days)
             n = bar_cache.backfill_symbol(sym, tf, start, end)
             _admin().table("bar_cache_config").update(
                 {"last_backfill_at": datetime.now(timezone.utc).isoformat()}
