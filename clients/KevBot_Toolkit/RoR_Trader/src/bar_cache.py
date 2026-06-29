@@ -693,44 +693,57 @@ def read_bars(symbol: str, timeframe: str,
     return df
 
 
-def live_freshness() -> Optional[list]:
-    """Per (symbol, timeframe) write-through freshness for the layers the stream
-    is CURRENTLY maintaining — those with an unsettled tail (settled=false).
+def supply_coverage(symbols: list, timeframes=("1Sec", "1Min")) -> Optional[list]:
+    """Per (symbol, timeframe) COVERAGE + FRESHNESS for ALL tracked symbols — the
+    source-of-truth status view for the admin Bar-Cache Supply page.
 
-    Index-backed via idx_bar_cache_unsettled (the partial index over only the
-    unsettled rows), so it scans the small live tail, NOT the 14M-row table —
-    safe to poll. Returns the edge ts, the last revised_at (write time), and the
-    unsettled-tail size per layer: the at-a-glance "is the stream fresh + actually
-    writing" view for the admin Bar-Cache Supply page. This reflects what
-    WRITE-THROUGH is doing, independent of the manually-configured capture
-    targets (bar_cache_config) — closing the gap where the supply page only
-    showed configured targets, not the live stream. None if no DSN.
+    Unlike a "currently-writing" filter, this returns a row for EVERY tracked
+    (symbol, timeframe) — including symbols that are quiet after-hours, illiquid
+    (DIA/KO), or have NO data yet (a strategy exists but the cache is empty → an
+    actionable gap). That's what makes the page a registry view, not just a
+    snapshot of whatever is printing this second.
+
+    Per layer: coverage span (min/max ts = how much history), last write
+    (revised_at of the edge bar = freshness), and unsettled-tail size. Every
+    aggregate is index-backed — min/max/edge ride the PK (symbol,timeframe,ts);
+    the unsettled count rides idx_bar_cache_unsettled — so the correlated
+    subqueries stay sub-millisecond even on the 14M-row table (safe to poll).
+
+    `symbols` is the tracked set (e.g. every symbol any strategy uses, across
+    ALL accounts — admin-level). None if no DSN / no symbols.
     """
     dsn = os.environ.get("SUPABASE_CONNECTION_STRING")
-    if not dsn:
+    if not dsn or not symbols:
         return None
-    sql = ("select symbol, timeframe, max(ts) as last_bar, "
-           "max(revised_at) as last_revised, count(*) as unsettled "
-           "from bar_cache where settled = false "
-           "group by symbol, timeframe order by symbol, timeframe")
+    sql = (
+        "SELECT s.sym, t.tf,"
+        " (SELECT min(ts) FROM bar_cache b WHERE b.symbol=s.sym AND b.timeframe=t.tf) AS min_ts,"
+        " (SELECT max(ts) FROM bar_cache b WHERE b.symbol=s.sym AND b.timeframe=t.tf) AS max_ts,"
+        " (SELECT revised_at FROM bar_cache b WHERE b.symbol=s.sym AND b.timeframe=t.tf"
+        "  ORDER BY ts DESC LIMIT 1) AS last_revised,"
+        " (SELECT count(*) FROM bar_cache b WHERE b.symbol=s.sym AND b.timeframe=t.tf"
+        "  AND settled=false) AS unsettled"
+        " FROM unnest(%s::text[]) AS s(sym) CROSS JOIN unnest(%s::text[]) AS t(tf)"
+        " ORDER BY s.sym, t.tf")
     try:
         import psycopg
         with psycopg.connect(dsn, connect_timeout=15,
                              prepare_threshold=None, autocommit=True) as conn:
             with conn.cursor() as cur:
-                cur.execute(sql)
+                cur.execute(sql, (list(symbols), list(timeframes)))
                 rows = cur.fetchall()
     except Exception as e:  # noqa: BLE001
-        logger.warning("bar_cache.live_freshness failed: %s", e)
+        logger.warning("bar_cache.supply_coverage failed: %s", e)
         return None
     out = []
-    for sym, tf, last_bar, last_rev, unsettled in rows:
+    for sym, tf, min_ts, max_ts, last_rev, unsettled in rows:
         out.append({
             "symbol": sym,
             "timeframe": tf,
-            "last_bar": last_bar.isoformat() if last_bar else None,
+            "min_ts": min_ts.isoformat() if min_ts else None,
+            "max_ts": max_ts.isoformat() if max_ts else None,
             "last_revised": last_rev.isoformat() if last_rev else None,
-            "unsettled": int(unsettled),
+            "unsettled": int(unsettled or 0),
         })
     return out
 
