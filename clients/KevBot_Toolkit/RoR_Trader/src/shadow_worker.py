@@ -89,12 +89,74 @@ def _start_health_thread(stop_evt: threading.Event) -> threading.Thread:
 
 def _idle_loop(stop_evt: threading.Event):
     """Inert heartbeat loop: prove liveness/crash-isolation, touch nothing.
-    Used in {button, cron} mode always, and in {shadow} mode until Step C lands."""
+    Used in {button, cron} mode (the lane is owned by another path)."""
     idle_logged = False
     while _running:
         if not idle_logged:
-            logger.info("[shadow_worker] inert — idling (no engine manager yet)")
+            logger.info("[shadow_worker] inert — idling (lane owned elsewhere)")
             idle_logged = True
+        for _ in range(POLL_INTERVAL_S):
+            if not _running:
+                break
+            time.sleep(1)
+
+
+def _dry_run_default() -> bool:
+    """Default ON — shadow mode COMPUTES but writes nothing until explicitly armed via
+    RORT_SHADOW_DRY_RUN=0. A second safety gate beyond the lane-mode flag."""
+    return os.environ.get("RORT_SHADOW_DRY_RUN", "1").strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+def _resident_loop(stop_evt: threading.Event):
+    """The continuous-resident backtest lane (Step C). Per cycle: refresh the slot set,
+    then poll each eligible slot (advance its resident engine to now-LAG, write new
+    settled trades). dry_run computes + logs but writes nothing."""
+    import pack_registry
+    npacks = len(pack_registry.scan_and_load_all())
+    if not npacks:
+        raise SystemExit("[shadow_worker] pack registry empty — refusing to start "
+                         "(every engine would return 0 trades)")
+
+    from shadow_manager import ResidentEngineManager
+    shard = os.environ.get("RORT_SHADOW_SHARD", "").strip()
+    symbols = {s.strip() for s in shard.split(",") if s.strip()} or None
+    dry = _dry_run_default()
+    mgr = ResidentEngineManager(shard_symbols=symbols, dry_run=dry)
+    logger.warning("[shadow_worker] RESIDENT lane active — dry_run=%s shard=%s packs=%d "
+                   "(dry_run writes NOTHING; arm with RORT_SHADOW_DRY_RUN=0)",
+                   dry, symbols or "(all)", npacks)
+
+    reload_every = int(os.environ.get("RORT_SHADOW_RELOAD_S", "300"))
+    last_discover = 0.0
+    while _running:
+        now = time.monotonic()
+        if now - last_discover > reload_every:
+            try:
+                slots = mgr.discover()
+                elig = sum(1 for s in slots.values() if s.eligible)
+                logger.info("[shadow_worker] tracking %d strategies (%d eligible)",
+                            len(slots), elig)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[shadow_worker] discover failed: %s", e)
+            last_discover = now
+
+        wrote = 0
+        for slot in list(mgr.slots.values()):
+            if not _running:
+                break
+            if not slot.eligible:
+                continue
+            try:
+                res = mgr.poll(slot)
+                wrote += res.get('inserted', 0) or 0
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[shadow_worker] sid=%s poll failed: %s", slot.sid, e,
+                               exc_info=True)
+        if wrote:
+            logger.info("[shadow_worker] cycle %s %d trades",
+                        "would-write" if dry else "wrote", wrote)
+
         for _ in range(POLL_INTERVAL_S):
             if not _running:
                 break
@@ -133,13 +195,11 @@ def main():
                     "%s path; this service stays inert.", mode, mode)
         _idle_loop(stop_evt)
     else:
-        # Step C will: load pack registry (fail loud), warm a resident engine per
-        # strategy on this symbol shard, poll bar_cache for new SETTLED bars, apply
-        # them incrementally (never re-window), and emit backtest_<model> trades
-        # (settled committed, unsettled-tail provisional). Inert until then.
-        logger.warning("[shadow_worker] lane_mode=shadow but the resident engine "
-                        "manager is not implemented yet (Step C) — staying inert.")
-        _idle_loop(stop_evt)
+        # Resident backtest lane (Step C): warm a resident engine per strategy on this
+        # symbol shard, poll bar_cache for new SETTLED bars, apply incrementally (never
+        # re-window), emit backtest_<model> trades. dry_run (default) computes only.
+        # Unsettled-tail provisional emission is a follow-up increment.
+        _resident_loop(stop_evt)
 
     stop_evt.set()
     logger.info("[shadow_worker] stopped")

@@ -113,14 +113,26 @@ on 4/4 canaries (263/267/194/136), byte-identical for BOTH **PATH C** (single fe
 (bootstrap-warm @60% + 5 batched polls = the service's bootstrap-then-poll loop) — proving the in-process
 warm needs NO boundary heal (the heal is only for cross-RESTART serialize = Step D).
 
-**REMAINING (integration, lands next — needs the flag/dev to truly exercise):**
-1. `ResidentEngineManager` — per-symbol shard: discover strategies, bootstrap each engine (warm from a
-   bounded from-cold window up to `now-LAG`, then resident), poll `bar_cache` for new settled bars, fan out.
-2. Trade write path — reuse `forward_test_service._serialize_trades` + `db.insert_trade_admin` (idempotent
-   on the `(strategy_id, entry_fill_ts, exit_fill_ts)` unique index), `data_source=backtest_<model>`.
-3. **Provisional tail** — a `provisional` BOOLEAN column on `trades` (migration); emit unsettled-tail trades
-   marked `provisional=true`, flip false on settle. Decision §6: one lane, one flag, still shown in history.
-4. Wire `shadow_worker.py`'s shadow-mode branch to run the manager (still gated default-OFF).
+**DONE — `src/shadow_manager.py::ResidentEngineManager`** (settled-only v1) + wired into `shadow_worker.py`'s
+shadow-mode branch. discover() reuses the data-worker filters + `classify_strategy` (REST models only),
+scoped to the shard; `advance()` windowed-re-prepares per poll (warm user-pack/secondary columns) and feeds
+ONLY new bars into the resident engine (per-slot user context); `poll()` advances to `now-LAG` and writes
+new settled trades via `_serialize_trades`+`insert_trade_admin` (`provisional=false`, idempotent unique idx).
+- `trades.provisional` BOOLEAN column **applied to prod** (`migrations/trades_provisional_column.sql`).
+- **Manager gate GREEN** — `_shadow_manager_validate.py` drives the REAL manager (bootstrap + 6 independent
+  re-prepare polls = the live loop) vs from-cold: 4/4 canaries (263/267/194/136) byte-identical settled
+  trades. Proves the per-poll windowed re-prepare reproduces the one-shot's user-pack/secondary columns.
+- **Wired + smoke-tested**: `RORT_BACKTEST_LANE_MODE=shadow` runs `_resident_loop` — discovered 28 TSLA
+  strategies, dry-run "would-write 908 trades", wrote nothing. **Two safety gates**: lane-mode flag (default
+  `button`) AND `RORT_SHADOW_DRY_RUN` (default `1` = compute-only; arm writes with `=0`).
+
+**REMAINING for Step C/follow-ups:**
+1. **Provisional tail** — feed the <LAG unsettled bars to an engine CLONE (so the resident engine stays
+   pinned to the settled boundary), emit those trades `provisional=true`, flip false on settle. Column ready.
+2. **Re-prepare perf** — each poll re-prepares a full warmup-sized window (~2-3× from-cold in validation);
+   the live loop should prepare only the incremental new window (small warmup buffer) or extend a cached frame.
+3. **Bootstrap anchor** — bootstrap currently re-emits from `now-BOOTSTRAP_DAYS`; wire it to the DB max-entry
+   anchor (catch-up semantics) so it re-emits exactly the gap since the lane was last current.
 
 ### Step D — Cold bootstrap + crash recovery (the only place snapshots are used)
 On startup / new strategy / crash: warm from a bounded from-cold window (or a snapshot) ONCE, then go
