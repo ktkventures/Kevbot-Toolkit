@@ -1,37 +1,40 @@
-"""M-RS4 Phase 3 — Step A POSITIVE byte-identity proof (offline, no live market).
+"""M-RS4 Phase 3 — Step A/C POSITIVE byte-identity proof (offline, no live market).
 
 Sibling of `_shadow_replay_harness.py`. That harness proved the NEGATIVE result:
 snapshot-CHAINED resume (PATH B) is NOT byte-identical to a from-cold run (~4% of
-trades drop/change at chunk boundaries) — which is the "append breaks things" root.
+trades drop/change at chunk boundaries) — the "append breaks things" root, and exactly
+what `data_worker_engine.run_store_fed_window` does today.
 
-This harness proves the POSITIVE premise Phase 3 is built on: a SINGLE warmed engine
-fed each bar ONCE, incrementally, never re-windowed / never resumed (the
-continuous-resident design) IS byte-identical to a from-cold full recompute.
+This harness proves the POSITIVE premise Phase 3 is built on: a SINGLE warmed engine fed
+each bar ONCE, incrementally, never re-windowed / never resumed (the continuous-resident
+design — `shadow_engine.ResidentStrategyEngine`) IS byte-identical to a from-cold full
+recompute. It exercises the ACTUAL production class, so if run_unified_backtest's per-bar
+loop ever drifts from ResidentStrategyEngine's, this test goes red.
 
-  PATH A  from-cold one-shot : run_unified_backtest(full_df)            — today's recompute
-  PATH C  continuous-resident: ONE UnifiedStrategy, warmed on the same df, fed bar-by-bar
-                               via process_bar() — exactly what the shadow-worker will do.
+  PATH A  from-cold one-shot      : run_unified_backtest(full_df)         — today's recompute
+  PATH C  resident, single feed   : ONE ResidentStrategyEngine.feed(full_df) bar-by-bar
+  PATH D  resident, BOOTSTRAP+poll: warm on df[:split], then feed the tail in K batches —
+                                    exactly the service's "bootstrap once, then poll for
+                                    new settled bars" loop. Trades (warm + all batches)
+                                    must still equal PATH A.
 
-Both run over the SAME prepared df, so the only variable is "one-shot internal loop"
-vs "resident external feed." If A == C byte-identical (the trade_snapshot KEY/VAL gate)
-across the canaries, the resident design is faithful BY CONSTRUCTION and Step B (build
-the service) is unlocked. If they differ, this pinpoints the hidden cross-bar / df-level
-state the resident engine must reproduce — i.e. exactly what would otherwise leak.
-
-Scope: this proves the CONTINUOUS equivalence (warm + run as one engine). The cold
-bootstrap-boundary heal (warm to T, then feed the tail) is Step D, validated separately.
+All paths run over the SAME prepared df, isolating "one-shot loop" vs "resident feed" vs
+"resident bootstrap+batched feed." A==C==D byte-identical (the trade_snapshot KEY/VAL
+gate) across the canaries ⇒ the resident design is faithful BY CONSTRUCTION, including
+the bootstrap-then-steady-state path. The cold-RESTART heal across a serialize boundary
+is Step D (separate; this proves the in-process warm needs no heal).
 
 Usage:  PYTHONPATH=. ../.venv/bin/python _resident_replay_harness.py [SIDS] [DAYS]
-  SIDS   comma-separated strategy ids (default a single canary). The Step A GATE is
-         >=3 canaries green INCLUDING a sub-minute primary and a secondary-TF-gated one
-         (e.g. 338 = sub-min primary + 1Day gate covers both; pair with 267 + a 1Min).
+  SIDS   comma-separated strategy ids (default a single canary). The GATE is >=3 canaries
+         green INCLUDING a sub-minute primary and a secondary-TF-gated one (e.g. 267 =
+         10Sec + 2Min covers both; pair with a 1Min + a multi/coarse-secondary one).
   DAYS   window length anchored on each strategy's latest real backtest trade (default 1).
 """
 import os, sys, logging
 from datetime import datetime, timedelta, timezone
 
-# Determinism: full warmup load, no secondary-TF snapshot fast path. Both paths
-# share ONE df, so this only affects df-prep cost, never the A-vs-C comparison.
+# Determinism: full warmup load, no secondary-TF snapshot fast path. All paths share
+# ONE df, so this only affects df-prep cost, never the A/C/D comparison.
 os.environ["RORT_SECONDARY_TF_SNAPSHOT"] = "0"
 os.environ["USE_DB"] = "true"
 from dotenv import load_dotenv
@@ -44,6 +47,8 @@ import math
 SIDS = [int(s) for s in sys.argv[1].split(",")] if len(sys.argv) > 1 else [263]
 DAYS = float(sys.argv[2]) if len(sys.argv) > 2 else 1.0
 WARMUP = int(os.environ.get("HARNESS_WARMUP", "300"))
+BATCHES = int(os.environ.get("HARNESS_BATCHES", "5"))   # PATH D poll-batch count
+SPLIT_FRAC = float(os.environ.get("HARNESS_SPLIT_FRAC", "0.6"))  # PATH D warm fraction
 ADMIN_USER = "19d47e46-f718-49a6-af32-5f5407f5b170"
 
 import db
@@ -54,22 +59,14 @@ print(f"registry: {len(_np) if isinstance(_np, dict) else _np} packs", flush=Tru
 
 import pandas as pd
 from db import get_admin_client, get_strategy_by_id_admin
-from services import (
-    prepare_data_with_indicators, get_secondary_tf_map,
-)
+from services import prepare_data_with_indicators, get_secondary_tf_map
 from data_loader import (
     BARS_PER_DAY, get_required_tfs_from_confluence, get_tf_from_label,
 )
 import general_packs as gp_module
-from unified_engine import (
-    run_unified_backtest, UnifiedStrategy, INTRABAR_LEVEL_MAP,
-)
+from unified_engine import run_unified_backtest
+from shadow_engine import ResidentStrategyEngine
 from trade_snapshot import KEY_FIELDS, VAL_FIELDS
-
-_BUILTIN_INTERPS = {
-    'EMA_STACK', 'EMA_PRICE_POSITION', 'EMA_PRICE_POSITION_V2',
-    'MACD_LINE', 'MACD_HISTOGRAM', 'VWAP', 'RVOL', 'UTBOT', 'UTBOT_V2',
-}
 
 
 def keyed(df):
@@ -84,8 +81,8 @@ def keyed(df):
 
 
 def prepare_window_df(strat, model, since_dt, until_dt):
-    """Mirror get_strategy_trades_for_window's cold (no-resume) df-prep so PATH A
-    and PATH C share an identical, fully-warmed df."""
+    """Mirror get_strategy_trades_for_window's cold (no-resume) df-prep so all paths
+    share an identical, fully-warmed df."""
     timeframe = strat.get('timeframe', '1Min')
     req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
     sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
@@ -116,79 +113,23 @@ def prepare_window_df(strat, model, since_dt, until_dt):
     return df, sec_tfs
 
 
-class ResidentEngine:
-    """Prototype of the Phase 3 shadow-worker engine: ONE warmed UnifiedStrategy,
-    fed bars one at a time. Replicates run_unified_backtest's per-bar input
-    construction VERBATIM so the only difference from PATH A is the drive loop
-    (external feed vs internal loop). Never re-windows, never resumes."""
-
-    def __init__(self, strategy, general_packs, df, secondary_tf_map):
-        self.strat = UnifiedStrategy(strategy, general_packs)
-        self.secondary_tf_map = secondary_tf_map
-        # Static, per-df column detection — copied from run_unified_backtest.
-        self._user_interp_cols = [
-            ik for ik in self.strat.trigger_eval.required_interpreters
-            if ik not in _BUILTIN_INTERPS and ik in df.columns
-        ]
-        _required_trig_set = {f'trig_{t}' for t in self.strat.trigger_eval.required_triggers}
-        self._user_trig_cols = [
-            col for col in df.columns
-            if col in _required_trig_set and col.startswith('trig_')
-        ]
-        self._user_indicator_cols = set()
-        for base_trigger in self.strat.trigger_eval.required_triggers:
-            for suffix in ('_ib', '_lc', '_cc', '_hm', '_hl'):
-                if base_trigger.endswith(suffix):
-                    base = base_trigger[:-len(suffix)]
-                    if base in INTRABAR_LEVEL_MAP:
-                        level_col = INTRABAR_LEVEL_MAP[base].get('column', '')
-                        if level_col and level_col in df.columns:
-                            self._user_indicator_cols.add(level_col)
-                    break
-
-    def feed_bar(self, row, ts):
-        """Apply ONE bar incrementally; return the 0-2 trade dicts it closed/opened."""
-        bar = {
-            'open': float(row['open']),
-            'high': float(row['high']),
-            'low': float(row['low']),
-            'close': float(row['close']),
-            'volume': float(row.get('volume', 0)),
-            'timestamp': ts,
-        }
-        mtf_records = None
-        if self.secondary_tf_map:
-            mtf_set = set()
-            for tf_label, cols in self.secondary_tf_map.items():
-                for col in cols:
-                    val = row.get(col)
-                    if val is not None and pd.notna(val):
-                        base_interp = col.rsplit('__', 1)[0]
-                        mtf_set.add(f"{tf_label}-{base_interp}-{val}")
-            if mtf_set:
-                mtf_records = mtf_set
-
-        user_pack_data = None
-        if self._user_interp_cols or self._user_trig_cols or self._user_indicator_cols:
-            up_interps, up_triggers, up_indicators = {}, {}, {}
-            for col in self._user_interp_cols:
-                val = row.get(col)
-                if val is not None and pd.notna(val):
-                    up_interps[col] = str(val)
-            for col in self._user_trig_cols:
-                val = row.get(col)
-                up_triggers[col[5:]] = bool(val) if pd.notna(val) else False
-            for col in self._user_indicator_cols:
-                val = row.get(col)
-                if val is not None and pd.notna(val):
-                    up_indicators[col] = float(val)
-            if up_interps or up_triggers or up_indicators:
-                user_pack_data = {'interps': up_interps, 'triggers': up_triggers,
-                                  'indicators': up_indicators}
-
-        bar_trades, _ind, _interp, _trig = self.strat.process_bar(
-            bar, mtf_records=mtf_records, partial=False, user_pack_data=user_pack_data)
-        return bar_trades
+def _cmp(label, A, X, sid):
+    ka, kx = set(A), set(X)
+    added, removed = kx - ka, ka - kx
+    changed = [k for k in (ka & kx) if A[k] != X[k]]
+    ok = not added and not removed and not changed
+    print(f"    {label}: {len(X):4d} trades  added(X-only)={len(added)} "
+          f"removed(A-only)={len(removed)} changed={len(changed)}  "
+          f"{'✅' if ok else '❌'}", flush=True)
+    if not ok:
+        for k in list(removed)[:2]:
+            print(f"        A-only: {k}\n            {A[k]}", flush=True)
+        for k in list(added)[:2]:
+            print(f"        {label}-only: {k}\n            {X[k]}", flush=True)
+        for k in changed[:3]:
+            diffs = {f: (A[k][f], X[k][f]) for f in VAL_FIELDS if A[k][f] != X[k][f]}
+            print(f"        changed {k}: {diffs}", flush=True)
+    return ok
 
 
 def run_sid(sid):
@@ -199,7 +140,6 @@ def run_sid(sid):
     tf = strat.get("timeframe")
     model = strat.get("backtest_model")
 
-    # Anchor on the strategy's latest real backtest trade (settled RTH activity).
     c = get_admin_client()
     mx = (c.table("trades").select("entry_fill_ts").eq("strategy_id", sid)
           .like("data_source", "backtest_%").order("entry_fill_ts", desc=True)
@@ -225,44 +165,37 @@ def run_sid(sid):
     print(f"    df: {len(df)} bars  secondary_tfs={sec_tfs or '()'}", flush=True)
 
     import time
-    # PATH A — from-cold one-shot
+    # PATH A — from-cold one-shot (the reference)
     t = time.time()
     df_A, _ = run_unified_backtest(
-        df, strat, general_packs=enabled_gen,
-        secondary_tf_map=sec_tf_map, include_open_position=False,
-        last_bar_partial=False)
+        df, strat, general_packs=enabled_gen, secondary_tf_map=sec_tf_map,
+        include_open_position=False, last_bar_partial=False)
     A = keyed(df_A)
-    ta = time.time() - t
+    print(f"    PATH A (one-shot)   : {len(A):4d} trades  {time.time()-t:5.1f}s", flush=True)
 
-    # PATH C — continuous-resident, bar-by-bar over the SAME df
-    t = time.time()
-    eng = ResidentEngine(strat, enabled_gen, df, sec_tf_map)
-    trades_C = []
-    for i in range(len(df)):
-        trades_C.extend(eng.feed_bar(df.iloc[i], df.index[i]))
-    C = keyed(pd.DataFrame(trades_C) if trades_C else pd.DataFrame())
-    tc = time.time() - t
+    # PATH C — resident, single feed over the whole df
+    eng_c = ResidentStrategyEngine(strat, enabled_gen)
+    C = keyed(pd.DataFrame(eng_c.feed(df, sec_tf_map) or []))
+    ok_c = _cmp("PATH C (resident 1-feed)", A, C, sid)
 
-    ka, kc = set(A), set(C)
-    added = kc - ka
-    removed = ka - kc
-    changed = [k for k in (ka & kc) if A[k] != C[k]]
-    ok = not added and not removed and not changed
-    print(f"    PATH A (one-shot)   : {len(A):4d} trades  {ta:5.1f}s", flush=True)
-    print(f"    PATH C (resident)   : {len(C):4d} trades  {tc:5.1f}s", flush=True)
-    print(f"    A={len(A)} C={len(C)} added(C-only)={len(added)} "
-          f"removed(A-only)={len(removed)} changed={len(changed)}", flush=True)
-    if ok:
-        print(f"    ✅ sid {sid}: BYTE-IDENTICAL — resident feed == from-cold.", flush=True)
-    else:
-        print(f"    ❌ sid {sid}: DIVERGENCE — resident feed != from-cold:", flush=True)
-        for k in list(removed)[:3]:
-            print(f"        A-only: {k}\n            {A[k]}", flush=True)
-        for k in list(added)[:3]:
-            print(f"        C-only: {k}\n            {C[k]}", flush=True)
-        for k in changed[:5]:
-            diffs = {f: (A[k][f], C[k][f]) for f in VAL_FIELDS if A[k][f] != C[k][f]}
-            print(f"        changed {k}: {diffs}", flush=True)
+    # PATH D — resident BOOTSTRAP + poll: warm on df[:split], feed the tail in K batches
+    split = max(1, int(len(df) * SPLIT_FRAC))
+    eng_d = ResidentStrategyEngine(strat, enabled_gen)
+    trades_d = list(eng_d.feed(df.iloc[:split], sec_tf_map) or [])   # bootstrap warm
+    tail = df.iloc[split:]
+    if len(tail) > 0:
+        edges = [int(len(tail) * i / BATCHES) for i in range(BATCHES + 1)]
+        for b in range(BATCHES):
+            seg = tail.iloc[edges[b]:edges[b + 1]]
+            if len(seg) > 0:
+                trades_d.extend(eng_d.feed(seg, sec_tf_map) or [])
+    D = keyed(pd.DataFrame(trades_d or []))
+    ok_d = _cmp(f"PATH D (warm@{split}+{BATCHES}×)", A, D, sid)
+
+    ok = ok_c and ok_d
+    print(f"    {'✅' if ok else '❌'} sid {sid}: resident {'==' if ok else '!='} "
+          f"from-cold (C {'ok' if ok_c else 'FAIL'}, D {'ok' if ok_d else 'FAIL'})",
+          flush=True)
     return ok
 
 
@@ -277,15 +210,15 @@ for sid in SIDS:
         results[sid] = None
 
 print("\n" + "=" * 64)
-print("STEP A GATE — continuous-resident byte-identity")
+print("STEP A/C GATE — continuous-resident byte-identity (single feed + bootstrap+poll)")
 green = [s for s, r in results.items() if r is True]
 red = [s for s, r in results.items() if r is False]
 skipped = [s for s, r in results.items() if r is None]
 print(f"  green={green}  red={red}  skipped={skipped}")
 if red:
-    print("  ❌ GATE RED — do NOT build the shadow-worker service yet.")
+    print("  ❌ GATE RED — do NOT flip RORT_BACKTEST_LANE_MODE=shadow.")
 elif len(green) >= 3:
-    print("  ✅ GATE GREEN (>=3 canaries) — Step B (scaffold service) unlocked.")
+    print("  ✅ GATE GREEN (>=3 canaries) — resident engine core validated.")
 elif green:
     print(f"  🟡 {len(green)} green, none red — add canaries to reach the >=3 gate "
           "(incl. a sub-minute + a secondary-TF-gated strategy).")

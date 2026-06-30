@@ -95,10 +95,32 @@ Validated locally: button/shadow idle, invalid-mode fail-loud, disabled-exit, an
 created in the dashboard (points at `Dockerfile.shadow-worker`) — a deploy step, not in-repo.** NOT yet
 flipped: the flag stays `button` everywhere; Kevin/backend agent sequence the flip.
 
-### Step C — The resident engine manager (the core)
+### Step C — The resident engine manager (the core) — 🟡 IN PROGRESS (engine core done 2026-06-30)
 Per symbol shard: load + warm engines for that symbol's strategies; poll `bar_cache` for new settled bars
 since each engine's last `ts`; apply incrementally; emit `backtest_<model>` trades (settled committed,
 unsettled-tail provisional). Never re-window in steady state. Reuse the existing engine + snapshot codec.
+
+> **Key contrast (verified):** the Data Worker's `data_worker_engine.run_store_fed_window` is per-strategy
+> + per-symbol-store-fed BUT **snapshot-resumes every tick** (+ a 60-bar warmup-replay workaround for the
+> user-pack snapshot-drop bug) — i.e. it IS the ~4%-lossy PATH B. Step C replaces that tick with a LIVE
+> in-memory engine held across polls. Not a copy — a re-architecture of the same per-strategy/per-symbol shape.
+
+**DONE — `src/shadow_engine.py::ResidentStrategyEngine`** (the pure-compute core, promoted from the harness).
+Holds ONE live `UnifiedStrategy`; `feed(df_new)` applies only bars after `last_bar_ts` via `process_bar`
+(per-bar input construction lifted verbatim from `run_unified_backtest`); never serializes/re-windows. No IO
+(the manager owns bar_cache reads + trade writes). Validated by the extended `_resident_replay_harness.py`
+on 4/4 canaries (263/267/194/136), byte-identical for BOTH **PATH C** (single feed) and **PATH D**
+(bootstrap-warm @60% + 5 batched polls = the service's bootstrap-then-poll loop) — proving the in-process
+warm needs NO boundary heal (the heal is only for cross-RESTART serialize = Step D).
+
+**REMAINING (integration, lands next — needs the flag/dev to truly exercise):**
+1. `ResidentEngineManager` — per-symbol shard: discover strategies, bootstrap each engine (warm from a
+   bounded from-cold window up to `now-LAG`, then resident), poll `bar_cache` for new settled bars, fan out.
+2. Trade write path — reuse `forward_test_service._serialize_trades` + `db.insert_trade_admin` (idempotent
+   on the `(strategy_id, entry_fill_ts, exit_fill_ts)` unique index), `data_source=backtest_<model>`.
+3. **Provisional tail** — a `provisional` BOOLEAN column on `trades` (migration); emit unsettled-tail trades
+   marked `provisional=true`, flip false on settle. Decision §6: one lane, one flag, still shown in history.
+4. Wire `shadow_worker.py`'s shadow-mode branch to run the manager (still gated default-OFF).
 
 ### Step D — Cold bootstrap + crash recovery (the only place snapshots are used)
 On startup / new strategy / crash: warm from a bounded from-cold window (or a snapshot) ONCE, then go
