@@ -429,12 +429,19 @@ def cached_load_market_data(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     session: str = "RTH",
+    no_backfill: bool = False,
 ) -> Optional[pd.DataFrame]:
     """Drop-in cache wrapper around load_from_polygon for stocks.
 
     Reads the cache for [start, end], delta-fetches any gap from
     Polygon, upserts the gap into the cache, and returns the requested
     range with the session filter applied.
+
+    `no_backfill` (M-RS4 Phase 3): when True, NEVER fetch Polygon / upsert —
+    read-only over whatever is already cached. Used by the shadow-worker so a
+    read-only consumer can't trigger Polygon calls or write the shared cache
+    (the data-worker owns ingest). The caller must tolerate a short/empty result
+    when the cache doesn't cover the range.
 
     Crypto / Alpaca / mock paths bypass this and route through the
     original load_market_data — caching them is out of scope for V1.
@@ -557,6 +564,12 @@ def cached_load_market_data(
             rev_from = max(start_dt, unsettled_start)
             if rev_from < end_dt:
                 fetch_ranges.append((rev_from, end_dt))
+
+    # Read-only consumers (shadow-worker): never fetch Polygon / write the cache.
+    # Serve whatever is cached; the caller tolerates a short range (the data-worker
+    # owns keeping the cache current).
+    if no_backfill:
+        fetch_ranges = []
 
     # 3. Execute fetches + upsert
     fetch_failed_cold = False

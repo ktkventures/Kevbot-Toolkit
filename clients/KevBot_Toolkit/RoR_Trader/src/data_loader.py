@@ -747,9 +747,15 @@ def load_market_data(
     end_date: Optional[datetime] = None,
     feed: str = "sip",
     session: str = "RTH",
+    no_backfill: bool = False,
 ) -> pd.DataFrame:
     """
     Load market data, preferring Alpaca if configured.
+
+    `no_backfill` (M-RS4 Phase 3): read-only cache access — never fetch Polygon
+    or write the cache, and do NOT fall through to a direct Polygon call when the
+    cache is short. For read-only consumers (shadow-worker). Returns whatever is
+    cached (possibly empty); caller tolerates a short range.
 
     Args:
         symbol: Stock symbol (e.g., "SPY") or crypto (e.g., "BTC/USD")
@@ -780,10 +786,17 @@ def load_market_data(
             if is_enabled():
                 df = cached_load_market_data(
                     symbol=symbol, days=days, timeframe=timeframe,
-                    start_date=start_date, end_date=end_date, session=session)
+                    start_date=start_date, end_date=end_date, session=session,
+                    no_backfill=no_backfill)
                 if df is not None and len(df) > 0:
                     _last_actual_source = "Polygon (cached)"
                     return df
+                if no_backfill:
+                    # Read-only: do NOT fall through to direct Polygon — return
+                    # whatever the cache had (possibly empty). Caller tolerates it.
+                    _last_actual_source = "Polygon (cached, read-only)"
+                    import pandas as _pd
+                    return df if df is not None else _pd.DataFrame()
                 # Cache returned None (e.g. cold + Polygon failed) — fall
                 # through to direct Polygon call as a safety net
         except Exception as _cache_err:  # noqa: F841

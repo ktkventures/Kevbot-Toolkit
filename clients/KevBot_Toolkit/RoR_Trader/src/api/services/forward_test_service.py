@@ -2560,7 +2560,15 @@ def recompute_and_persist_algo_trades(
                 'reason': f'strategy {strategy_id} not found',
                 'inserted': 0}
 
-    cfg = (strat.get('config') or {})
+    # get_strategy_by_id_admin FLATTENS config (spreads its keys to the top level),
+    # so strat.get('config') is None — building cfg from it yields a 1-key dict that
+    # the _stamp_config shrink-guard then REFUSES (averts a config wipe, but silently
+    # drops the last_recompute_until_ts / algo-snapshot update → algo lane never skips
+    # + cold-starts each run). Read the raw JSONB directly, exactly like
+    # append_new_trades_for_strategy (forward_test_service.py:1148). (2026-06-30 fix)
+    _raw_resp = get_admin_client().table('strategies').select('config') \
+        .eq('id', strategy_id).eq('user_id', user_id).single().execute()
+    cfg = dict(_raw_resp.data.get('config') or {}) if _raw_resp.data else {}
     algo_model = cfg.get('algo_model') or cfg.get('backtest_model') \
         or strat.get('algo_model') or strat.get('backtest_model')
     now_iso = datetime.now(timezone.utc).isoformat()

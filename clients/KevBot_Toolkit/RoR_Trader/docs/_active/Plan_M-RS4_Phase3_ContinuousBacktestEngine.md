@@ -63,32 +63,142 @@ Phase 3 is **"wrap the existing engine in a resident, sharded service,"** not gr
 
 ## 4. Build steps (ordered; each gated; offline-validatable where noted)
 
-### Step A — PROVE the continuous-resident design is byte-identical (foundational, offline)
+### Step A — PROVE the continuous-resident design is byte-identical (foundational, offline) — ✅ GREEN 2026-06-30
 Build the positive-validation harness M-RS3 §7.5 called for: drive `process_bar` one bar at a time into a
 SINGLE warmed engine over a historical RTH day (no re-window, no resume) and show the resulting trades are
 **byte-identical** to a from-cold `full_recompute` of that day (PATH A). Extends `_shadow_replay_harness.py`.
 **Gate: byte-identical on ≥3 canaries (incl. a sub-minute + a secondary-TF-gated strategy). Until this is
 green, do NOT build the service.** Weekend-validatable (markets closed).
 
-### Step B — Scaffold the `shadow-worker` service (inert)
+**DONE — `src/_resident_replay_harness.py`** (sibling of the negative-result `_shadow_replay_harness.py`).
+PATH A = `run_unified_backtest(full_df)`; PATH C = one `UnifiedStrategy` warmed on the SAME df and fed
+bar-by-bar via `process_bar` (a `ResidentEngine` prototype of the shadow-worker), replicating the per-bar
+input construction verbatim. Both paths share an identical prepared df, isolating "one-shot loop vs resident
+feed." **Result: 4/4 canaries byte-identical (added=removed=changed=0):** 263 (10Sec TSLA, no sec, 481t),
+267 (10Sec TSLA + 2Min, 529t — sub-min AND secondary-gated), 194 (1Min TSLL + 2Min/10Min, 5t), 136 (1Min
+SPY + 15Min, 44t). Confirms the resident design is faithful BY CONSTRUCTION across sub-minute primaries,
+coarse + multi secondary-TF gates, and multiple symbols. **Step B unlocked.** Run:
+`PYTHONPATH=. ../.venv/bin/python _resident_replay_harness.py 263,267,194,136 1`.
+
+### Step B — Scaffold the `shadow-worker` service (inert) — ✅ SCAFFOLDED 2026-06-30
 `Dockerfile.shadow-worker` + a resident loop gated by `RORT_BACKTEST_LANE_MODE` (∈ button/cron/**shadow**;
 default `button` = today). Heartbeat/liveness (batch-worker mold). Claims a symbol shard. Does NOTHING
 until the mode flag flips. Ship to dev inert.
 
-### Step C — The resident engine manager (the core)
+**DONE — `src/shadow_worker.py` + `Dockerfile.shadow-worker`** (batch-worker mold). SIGTERM/SIGINT
+graceful stop, `/tmp/shadow_worker_alive` health file on a daemon thread, `SHADOW_WORKER_DISABLED`
+kill-switch. `RORT_BACKTEST_LANE_MODE` read at startup (default `button`; **fails loud** on an invalid
+value — never silently picks a different lane source); `RORT_SHADOW_SHARD` for the symbol shard. Inert in
+every mode (idle heartbeat only) — in `shadow` it logs "engine manager not implemented (Step C)" and idles.
+Validated locally: button/shadow idle, invalid-mode fail-loud, disabled-exit, and the Polygon CI guard
+(`_check_no_direct_polygon.py`) stays green (shadow_worker calls no Polygon). **Railway service itself is
+created in the dashboard (points at `Dockerfile.shadow-worker`) — a deploy step, not in-repo.** NOT yet
+flipped: the flag stays `button` everywhere; Kevin/backend agent sequence the flip.
+
+### Step C — The resident engine manager (the core) — 🟡 IN PROGRESS (engine core done 2026-06-30)
 Per symbol shard: load + warm engines for that symbol's strategies; poll `bar_cache` for new settled bars
 since each engine's last `ts`; apply incrementally; emit `backtest_<model>` trades (settled committed,
 unsettled-tail provisional). Never re-window in steady state. Reuse the existing engine + snapshot codec.
 
-### Step D — Cold bootstrap + crash recovery (the only place snapshots are used)
+> **Key contrast (verified):** the Data Worker's `data_worker_engine.run_store_fed_window` is per-strategy
+> + per-symbol-store-fed BUT **snapshot-resumes every tick** (+ a 60-bar warmup-replay workaround for the
+> user-pack snapshot-drop bug) — i.e. it IS the ~4%-lossy PATH B. Step C replaces that tick with a LIVE
+> in-memory engine held across polls. Not a copy — a re-architecture of the same per-strategy/per-symbol shape.
+
+**DONE — `src/shadow_engine.py::ResidentStrategyEngine`** (the pure-compute core, promoted from the harness).
+Holds ONE live `UnifiedStrategy`; `feed(df_new)` applies only bars after `last_bar_ts` via `process_bar`
+(per-bar input construction lifted verbatim from `run_unified_backtest`); never serializes/re-windows. No IO
+(the manager owns bar_cache reads + trade writes). Validated by the extended `_resident_replay_harness.py`
+on 4/4 canaries (263/267/194/136), byte-identical for BOTH **PATH C** (single feed) and **PATH D**
+(bootstrap-warm @60% + 5 batched polls = the service's bootstrap-then-poll loop) — proving the in-process
+warm needs NO boundary heal (the heal is only for cross-RESTART serialize = Step D).
+
+**DONE — `src/shadow_manager.py::ResidentEngineManager`** (settled-only v1) + wired into `shadow_worker.py`'s
+shadow-mode branch. discover() reuses the data-worker filters + `classify_strategy` (REST models only),
+scoped to the shard; `advance()` windowed-re-prepares per poll (warm user-pack/secondary columns) and feeds
+ONLY new bars into the resident engine (per-slot user context); `poll()` advances to `now-LAG` and writes
+new settled trades via `_serialize_trades`+`insert_trade_admin` (`provisional=false`, idempotent unique idx).
+- `trades.provisional` BOOLEAN column **applied to prod** (`migrations/trades_provisional_column.sql`).
+- **Manager gate GREEN** — `_shadow_manager_validate.py` drives the REAL manager (bootstrap + 6 independent
+  re-prepare polls = the live loop) vs from-cold: 4/4 canaries (263/267/194/136) byte-identical settled
+  trades. Proves the per-poll windowed re-prepare reproduces the one-shot's user-pack/secondary columns.
+- **Wired + smoke-tested**: `RORT_BACKTEST_LANE_MODE=shadow` runs `_resident_loop` — discovered 28 TSLA
+  strategies, dry-run "would-write 908 trades", wrote nothing. **Two safety gates**: lane-mode flag (default
+  `button`) AND `RORT_SHADOW_DRY_RUN` (default `1` = compute-only; arm writes with `=0`).
+
+**Provisional tail — ✅ DONE 2026-06-30 (gated default-OFF):** instead of an engine clone (blocked by the
+user-pack pickle issue), `_provisional_tail` does a bounded from-cold recompute over `(settled_until-warmup,
+now]` (`last_bar_partial=True`, `include_open_position=True`) and emits trades partitioned **by EXIT**: the
+resident lane owns `exit <= settled_until`; provisional owns `exit > settled_until` + any open position
+(disjoint keys, no gap for trades open across the boundary). Re-true: per poll a **targeted** delete of
+provisional rows whose exit has settled runs BEFORE the settled write (dodges the `(sid,entry,exit)` unique
+collision); a **full** delete-all + recompute + insert runs on its own cadence (`RORT_SHADOW_PROVISIONAL_S`,
+default 60s) so rows persist between refreshes. `provisional` added to `db.TRADE_COLUMN_FIELDS` (else it'd
+land in the `data` JSONB, not the column). Gated `RORT_SHADOW_PROVISIONAL` (default 0). Offline dry-run
+validated (sid 267: 4 tail trades, partition correct, no writes). DB write/delete paths exercise live in F.
+
+**Read-path fix — ✅ DONE 2026-06-30 (surfaced by the live dev dry-run).** The first bring-up showed the
+shadow read path BACKFILLING bar_cache from Polygon (`POST .../bar_cache 201`) and reading multi-day 1Sec for
+sub-minute warmup — both a deviation from §3 (read-only, no Polygon) and the coarse-secondary warmup blow-up.
+Two fixes, validated byte-identical:
+- **A (read reduction):** new `services.prepare_strategy_window_df` reuses the secondary-TF-snapshot fast path
+  (warmup off the PRIMARY, coarse secondary injected from cache — byte-identical by construction) instead of a
+  naive multi-day 1Sec load. `shadow_manager.prepare_window` now calls it.
+- **B (read-only):** `no_backfill` threaded `cached_load_market_data → load_market_data →
+  prepare_data_with_indicators → _secondary_snapshot_load_extend`; shadow reads bar_cache READ-ONLY (no
+  Polygon, no cache writes, no direct-Polygon fallthrough), gated `RORT_SHADOW_READ_ONLY_BARS` (default on).
+- **Gate:** `_shadow_manager_validate.py` (now toggles `MANAGER_SNAPSHOT`): run1 snapshot-off read-only 263+267
+  byte-identical; run2 snapshot-ON fast path (the dev path) 267+136 byte-identical. All vs true from-cold.
+- Default `no_backfill=False` on every threaded fn → zero behavior change for existing callers.
+
+**REMAINING follow-ups (optimization, not correctness):**
+1. **Re-prepare perf** — each poll still re-prepares (now a SHORT primary window, not multi-day); could prepare
+   only the incremental new window or extend a cached frame for further speedup.
+2. **Bootstrap anchor** — bootstrap re-emits from `now-BOOTSTRAP_DAYS`; wire to the DB max-entry anchor.
+3. **Cache retention** — confirm bar_cache 1Sec retention covers the (reduced) primary warmup so read-only
+   reads aren't short on dev; if short, the data-worker keeps the needed window warm.
+
+### Step D — Cold bootstrap + crash recovery — ✅ CORRECTNESS PROVEN 2026-06-30 (snapshot = optional)
 On startup / new strategy / crash: warm from a bounded from-cold window (or a snapshot) ONCE, then go
 resident. Heal the bootstrap boundary (edge-band-replace) so the one cold-start boundary doesn't leak the
 ~4%. Handle **strategy edits** → re-warm that engine; **secondary-TF / cross-TF** resident state.
 
-### Step E — Point consumers at the fresh lane (Phase 2 folds in here)
+**KEY FINDING:** crash recovery needs **no snapshot and no heal for correctness** — the cold re-bootstrap
+IS recovery, and it's byte-identical by construction. The manager already cold-bootstraps any cold engine
+(slot.engine None → warm from-cold), so a restarted shadow-worker self-heals on the next poll.
+- **Proven:** `_shadow_manager_validate.py` with `VALIDATE_RESTART_POLL` DISCARDS the resident engine
+  mid-stream and cold re-bootstraps — 263 + 267 (both mid-position at the boundary) byte-identical to
+  from-cold. So a crash/restart/redeploy loses nothing; it just re-warms.
+- **Strategy edits** already handled: `EngineSlot.classify()` drops the engine on a fingerprint change →
+  next poll cold-bootstraps the new config. Idempotent writes (unique idx) make re-emission safe.
+- **DEFERRED (optimization only):** serialize the resident engine to skip the re-warm on restart, with
+  edge-band heal of that one boundary (the persistent snapshot is the ~4%-lossy path, hence the heal). Not
+  needed for correctness; a latency/cost win for large fleets. Also TODO on restart: re-hydrate
+  `last_entry_written` from `get_max_entry_ts_admin` (cosmetic — the unique index already prevents dupes).
+
+### Step C/D perf — no-new-bar cadence gate (done)
+`poll()` skips the re-prepare when no new full settled bar has formed since `last_processed_ts` (mirrors
+data_worker_engine.tick_strategy) — kills the bulk of steady-state cost (re-prepping a warmup window for
+zero new bars). The deeper win (prepare only the incremental window vs a full warmup window) is left
+conservative — warmup is parity #1.
+
+### Step E — Point consumers at the fresh lane (Phase 2 folds in here) — ✅ DONE 2026-06-30
 Default strategy view + KPIs + Health/Divergence/Parity read the continuously-fresh `trades` `backtest_%`
 lane instead of the stale `stored_trades` JSONB. Done in this phase so the read-path fix and the
 trustworthy data land together (no interim throwaway).
+
+**Findings + what was needed:**
+- **Trades read-path = ALREADY cut over** (Phase 40): `USE_TRADES_TABLE=true` (api/Worker/batch-worker) +
+  `db._row_to_strategy(hydrate_trades=True)` overwrites `stored_trades` from the `trades` table (scoped
+  `backtest_%`) on every strategy load. The `hydrate_trades=False` paths are only the lite-list + Worker
+  monitor (intentionally trade-less). So the UI's trades already come from the table the shadow keeps fresh —
+  no read-path refactor needed.
+- **Derived-metrics gap (the actual Step E work):** the shadow writes TRADES but the UI's KPIs/equity/Health
+  come from the persisted `kpis`/`equity_curve_data` columns, which would lag. **Fixed:** `shadow_manager`
+  now recomputes KPIs + equity (reusing `data_worker_engine.recompute_kpis_for_strategy`, incl. Hi-Fi pass)
+  on a **per-slot debounce** (`maybe_recompute_kpis`, gated `RORT_SHADOW_RECOMPUTE_KPIS` default-on,
+  `RORT_SHADOW_KPI_DEBOUNCE_S=300`) — fires when a slot wrote new trades. Validated end-to-end on sid 194
+  (kpis_computed_at advanced, all KPI fields recomputed, flag reset).
 
 ### Step F — Validate + roll out (gated, canary → fleet)
 1. Step A replay gate green. 2. `fidelity_parity_suite.py` 18/18. 3. `trade_snapshot` byte-identical:
