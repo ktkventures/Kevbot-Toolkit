@@ -486,6 +486,23 @@ def fetch_1s_bars_for_window(
     padded_start = start_dt - timedelta(seconds=padding_seconds)
     padded_end = end_dt + timedelta(seconds=padding_seconds)
 
+    # M-RS4 Phase 1 — serve 1Sec from the REST Bar Cache (bar_cache) FIRST so no
+    # consumer hits Polygon directly. prime_1s_cache_from_rest_bars is gated on
+    # BAR_CACHE_ENABLED + a DSN, never clobbers a fresher in-process day, and a
+    # miss/error returns 0 → the per-day Polygon loop below runs unchanged (so
+    # this is a pure speed+unification win with an automatic Polygon fallback).
+    # REST Bars 1Sec is byte-identical to a fresh Polygon pull on settled bars
+    # (parity-gated); the live tip re-fetches via the staleness eviction below.
+    # Kill-switch: RORT_FETCH1S_FROM_CACHE=0.
+    if os.environ.get("RORT_FETCH1S_FROM_CACHE", "1").strip().lower() in (
+            "1", "true", "yes", "on"):
+        try:
+            prime_1s_cache_from_rest_bars(
+                ticker, start_dt, end_dt, padding_seconds=padding_seconds)
+        except Exception as _prime_err:  # noqa: BLE001 — never block the fetch
+            logger.warning("[HIFI] inline prime failed for %s (%s) — per-day Polygon",
+                           ticker, _prime_err)
+
     # Collect all needed dates
     dates_needed = set()
     cursor = padded_start.date()
@@ -513,7 +530,16 @@ def fetch_1s_bars_for_window(
                 needed_end_ts = pd.Timestamp(padded_end)
                 if needed_end_ts.tzinfo is None:
                     needed_end_ts = needed_end_ts.tz_localize('UTC')
-                if needed_end_ts > cached_max:
+                # Only treat a short cache as STALE when the request reaches into
+                # the still-settling recent window (~revision horizon). For a fully
+                # SETTLED past window, bar_cache/Polygon are complete, and a last
+                # bar before padded_end just means "no trade in the tail" — evicting
+                # there would needlessly re-fetch identical data from Polygon and
+                # defeat the bar_cache routing (M-RS4 Phase 1). The original
+                # eviction (2026-06-05) targeted today's mid-aggregation cache, so
+                # scoping it to the settling edge preserves that fix.
+                _settling_edge = datetime.now(timezone.utc) - timedelta(minutes=45)
+                if needed_end_ts > cached_max and needed_end_ts >= _settling_edge:
                     logger.info(
                         "[HIFI] 1s cache stale for %s on %s "
                         "(cached through %s, requested through %s) "
