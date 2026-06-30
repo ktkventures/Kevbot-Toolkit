@@ -206,12 +206,16 @@ fixes staleness; run a sub-minute strategy window for trade-level confirmation.
    Worker as the freshness net for symbols NOT yet streamed; retiring it is bound to Step 5 (fleet-wide
    coverage), per §3.5/§5. Net: for the 5 streamed symbols (incl. the real-money TSLA canaries) the
    unification is fully live now; Step 5 scales it to the rest of the fleet.
-5. Supply-page coverage model (§3.5): auto-enroll, UI lookback control, stream all registry symbols.
-   Concrete tasks now named in §3.5: **per-resolution lookback** (deep 1Min / shallow 1Sec); change
-   data-worker symbol discovery to the supply registry (`data_worker.py`); auto-enroll hook in
-   `api/routers/strategies.py` extending `get_capture_targets`/`bar_cache_config`; ensure
-   `idx_bar_cache_unsettled` exists at enrollment.
-6. (Later) provisional/divergence-detection layer on the unsettled tail (the per-second goal).
+5. ⏭️ **MOVED to `Plan_M-RS4_PipeThrough_SingleSource.md` Phase 4 — REVISED to MANUAL-ONLY** (Kevin
+   2026-06-29 reversed auto-enroll: the Supply page is the sole authority; the builder reads the cache,
+   never Polygon). Per-resolution lookback now **deep on BOTH** 1Min+1Sec (1yr floor). "Stream all supply
+   symbols" (data-worker discovery → supply registry) stays. **Do this work in M-RS4, not here.**
+6. ⏭️ **MOVED to `Plan_M-RS4_PipeThrough_SingleSource.md` sequencing #5** — provisional/divergence layer
+   on the unsettled tail (per-second), on top of the continuous resident engine.
+
+> **This doc is now the historical record of the SHIPPED write-through (Steps 1–4). The forward plan is
+> `Plan_M-RS4_PipeThrough_SingleSource.md` — it absorbs Steps 5–6 and adds the consumer-routing /
+> continuous-engine work.**
 
 ## Pointers
 - `data_worker_ingest.py` (ingest/recon cycles, upsert_bars), `bar_store.py` (in-memory store),
