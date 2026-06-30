@@ -110,15 +110,27 @@ def run_sid(sid):
           flush=True)
 
     # MANAGER — bootstrap to T0 (same left edge), then K polls re-preparing each time.
+    # RESTART (Step D): if VALIDATE_RESTART_POLL=p, after poll p we DISCARD the resident
+    # engine and cold re-bootstrap at that boundary — simulating a crash + restart with
+    # NO snapshot. If the combined trades still equal from-cold, crash recovery via cold
+    # re-bootstrap is byte-identical (no snapshot/heal needed for correctness).
+    restart_poll = int(os.environ.get("VALIDATE_RESTART_POLL", "0"))
     t = time.time()
     mgr.advance(slot, until_dt=T0, since_override=T0)   # bootstrap warm; discard its trades
     edges = [T0 + (T_end - T0) * (i / POLLS) for i in range(POLLS + 1)]
     acc = []
     for i in range(POLLS):
         acc.extend(mgr.advance(slot, until_dt=edges[i + 1]))
+        if restart_poll and (i + 1) == restart_poll:
+            slot.engine = None
+            slot.last_processed_ts = None
+            mgr.advance(slot, until_dt=edges[i + 1], since_override=edges[i + 1])  # re-warm
+            print(f"    ↻ simulated crash + cold re-bootstrap after poll {restart_poll}",
+                  flush=True)
     M = keyed(pd.DataFrame(acc) if acc else pd.DataFrame(), after=T0_iso)
-    print(f"    MANAGER (bootstrap+{POLLS}×): {len(M):4d} steady trades  "
-          f"{time.time()-t:5.1f}s", flush=True)
+    tag = f"bootstrap+{POLLS}×" + (f", restart@{restart_poll}" if restart_poll else "")
+    print(f"    MANAGER ({tag}): {len(M):4d} steady trades  {time.time()-t:5.1f}s",
+          flush=True)
 
     ka, km = set(A), set(M)
     added, removed = km - ka, ka - km

@@ -134,10 +134,29 @@ new settled trades via `_serialize_trades`+`insert_trade_admin` (`provisional=fa
 3. **Bootstrap anchor** — bootstrap currently re-emits from `now-BOOTSTRAP_DAYS`; wire it to the DB max-entry
    anchor (catch-up semantics) so it re-emits exactly the gap since the lane was last current.
 
-### Step D — Cold bootstrap + crash recovery (the only place snapshots are used)
+### Step D — Cold bootstrap + crash recovery — ✅ CORRECTNESS PROVEN 2026-06-30 (snapshot = optional)
 On startup / new strategy / crash: warm from a bounded from-cold window (or a snapshot) ONCE, then go
 resident. Heal the bootstrap boundary (edge-band-replace) so the one cold-start boundary doesn't leak the
 ~4%. Handle **strategy edits** → re-warm that engine; **secondary-TF / cross-TF** resident state.
+
+**KEY FINDING:** crash recovery needs **no snapshot and no heal for correctness** — the cold re-bootstrap
+IS recovery, and it's byte-identical by construction. The manager already cold-bootstraps any cold engine
+(slot.engine None → warm from-cold), so a restarted shadow-worker self-heals on the next poll.
+- **Proven:** `_shadow_manager_validate.py` with `VALIDATE_RESTART_POLL` DISCARDS the resident engine
+  mid-stream and cold re-bootstraps — 263 + 267 (both mid-position at the boundary) byte-identical to
+  from-cold. So a crash/restart/redeploy loses nothing; it just re-warms.
+- **Strategy edits** already handled: `EngineSlot.classify()` drops the engine on a fingerprint change →
+  next poll cold-bootstraps the new config. Idempotent writes (unique idx) make re-emission safe.
+- **DEFERRED (optimization only):** serialize the resident engine to skip the re-warm on restart, with
+  edge-band heal of that one boundary (the persistent snapshot is the ~4%-lossy path, hence the heal). Not
+  needed for correctness; a latency/cost win for large fleets. Also TODO on restart: re-hydrate
+  `last_entry_written` from `get_max_entry_ts_admin` (cosmetic — the unique index already prevents dupes).
+
+### Step C/D perf — no-new-bar cadence gate (done)
+`poll()` skips the re-prepare when no new full settled bar has formed since `last_processed_ts` (mirrors
+data_worker_engine.tick_strategy) — kills the bulk of steady-state cost (re-prepping a warmup window for
+zero new bars). The deeper win (prepare only the incremental window vs a full warmup window) is left
+conservative — warmup is parity #1.
 
 ### Step E — Point consumers at the fresh lane (Phase 2 folds in here)
 Default strategy view + KPIs + Health/Divergence/Parity read the continuously-fresh `trades` `backtest_%`

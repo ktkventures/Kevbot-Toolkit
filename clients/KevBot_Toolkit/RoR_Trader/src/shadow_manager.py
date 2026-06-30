@@ -260,11 +260,24 @@ class ResidentEngineManager:
         return inserted
 
     def poll(self, slot: EngineSlot, now: Optional[datetime] = None) -> dict:
-        """One settled poll for a slot: advance to `now - LAG`, write new closed trades."""
+        """One settled poll for a slot: advance to `now - LAG`, write new closed trades.
+
+        Cadence gate: when the engine is already warm and no NEW full settled bar has
+        formed since `last_processed_ts`, skip — re-preparing a warmup-sized window every
+        cycle for zero new bars is the bulk of the steady-state cost. Mirrors
+        data_worker_engine.tick_strategy's no_new_bar gate. (A cold engine always runs:
+        the first poll must bootstrap.)
+        """
         if not slot.eligible:
             return {'status': 'ineligible', 'reason': slot.ineligible_reason}
         now = now or datetime.now(timezone.utc)
         settled_until = now - timedelta(minutes=LAG_MINUTES)
+        if slot.engine is not None and slot.last_processed_ts is not None:
+            import pandas as pd
+            last_dt = pd.Timestamp(slot.last_processed_ts).to_pydatetime()
+            if settled_until <= last_dt + timedelta(seconds=slot.tf_seconds):
+                return {'status': 'no_new_bar', 'inserted': 0,
+                        'last_bar_ts': slot.last_processed_ts}
         closed = self.advance(slot, settled_until)
         new = self._filter_new(slot, closed)
         inserted = self.commit(slot, new)
