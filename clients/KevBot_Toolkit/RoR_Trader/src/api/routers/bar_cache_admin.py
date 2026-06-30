@@ -84,21 +84,110 @@ def list_targets(user=Depends(get_current_user)):
 
 
 def _tracked_symbols() -> list:
-    """Every symbol any strategy uses, across ALL accounts (admin-level) — the
-    set the bar cache should be maintaining as the source of truth. Until the
-    formal supply registry IS the streaming source (Step 5), this 'demand' set is
-    the accurate tracked set; a symbol here with no coverage is a gap to backfill.
-    Falls back to whatever's in bar_cache_config if the strategies read fails."""
+    """Every symbol we maintain = strategy symbols (all accounts) UNION manually-
+    added capture targets (`bar_cache_config`). The union is what lets a MANUALLY
+    added ticker (no strategy yet) appear on the page — the Supply page is the sole
+    authority on what's cached (M-RS4 Phase 4, manual-add). Admin-level."""
+    syms: set = set()
     try:
         rows = _admin().table("strategies").select("symbol").execute().data or []
-        syms = sorted({(r.get("symbol") or "").strip().upper()
-                       for r in rows if r.get("symbol")})
-        if syms:
-            return syms
+        syms |= {(r.get("symbol") or "").strip().upper()
+                 for r in rows if r.get("symbol")}
     except Exception as e:  # noqa: BLE001
         logger.warning("bar-cache _tracked_symbols: strategies read failed: %s", e)
+    try:
+        import bar_cache
+        syms |= {(t.get("symbol") or "").strip().upper()
+                 for t in bar_cache.get_capture_targets(enabled_only=False)
+                 if t.get("symbol")}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("bar-cache _tracked_symbols: targets read failed: %s", e)
+    return sorted(s for s in syms if s)
+
+
+@router.post("/add-ticker")
+def add_ticker(payload: dict = Body(...), user=Depends(get_current_user)):
+    """Manually enroll a NEW ticker: create **1Min + 1Sec** capture targets and
+    kick off a **1-year backfill on BOTH** (on the batch-worker). The Supply page
+    is the sole authority on what's cached — no auto-enroll elsewhere."""
     import bar_cache
-    return sorted({t["symbol"] for t in bar_cache.get_capture_targets(enabled_only=False)})
+    import recompute_jobs
+    sym = (payload.get("symbol") or "").strip().upper()
+    if not sym:
+        raise HTTPException(status_code=400, detail="symbol required")
+    days = int(payload.get("days") or 365)
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+    jobs = {}
+    for tf in ("1Min", "1Sec"):
+        try:
+            bar_cache.set_capture_target(sym, tf, enabled=True, capture_days=days)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("add-ticker %s/%s target failed: %s", sym, tf, e)
+        try:
+            jobs[tf] = recompute_jobs.submit_backfill_job(
+                sym, tf, start.isoformat(), end.isoformat())
+        except Exception as e:  # noqa: BLE001
+            logger.warning("add-ticker %s/%s backfill enqueue failed: %s", sym, tf, e)
+            jobs[tf] = None
+    return {"ok": True, "symbol": sym, "days": days, "jobs": jobs}
+
+
+@router.post("/verify")
+def verify_vs_polygon(payload: dict = Body(...), user=Depends(get_current_user)):
+    """Windowed cache-vs-Polygon parity check (self-serve diagnostic). Pulls JUST
+    the requested [start, end] window from Polygon and diffs it against `bar_cache`
+    — surgical, never a whole-cache scan. For investigating a weird-looking trade:
+    look at the previous few hundred candles and confirm they printed right."""
+    import bar_cache
+    import data_loader as dl
+    sym = (payload.get("symbol") or "").strip().upper()
+    tf = (payload.get("timeframe") or "1Sec").strip()
+    if not sym:
+        raise HTTPException(status_code=400, detail="symbol required")
+    try:
+        s = datetime.fromisoformat(str(payload["start"]).replace("Z", "+00:00"))
+        e = datetime.fromisoformat(str(payload["end"]).replace("Z", "+00:00"))
+    except (KeyError, ValueError):
+        raise HTTPException(status_code=400, detail="start/end ISO timestamps required")
+    if s.tzinfo is None:
+        s = s.replace(tzinfo=timezone.utc)
+    if e.tzinfo is None:
+        e = e.replace(tzinfo=timezone.utc)
+    if e <= s or (e - s).days > 7:
+        raise HTTPException(status_code=400,
+                            detail="window must be > 0 and <= 7 days (keep it surgical)")
+    cached = bar_cache.read_bars(sym, tf, s, e)
+    nat = dl.load_from_polygon(sym, timeframe=tf, start_date=s.replace(hour=0),
+                               end_date=e, session="24/7")
+    if nat is not None:
+        nat = nat[(nat.index >= s) & (nat.index <= e)]
+    if cached is not None:
+        cached = cached[(cached.index >= s) & (cached.index <= e)]
+    cn = 0 if cached is None else len(cached)
+    pn = 0 if nat is None else len(nat)
+    cols = ["open", "high", "low", "close", "volume"]
+    diffs = 0
+    samples = []
+    if cached is not None and nat is not None and cn and pn:
+        j = nat[cols].join(cached[cols], lsuffix="_p", rsuffix="_c", how="outer")
+        for c in cols:
+            diffs += int((j[c + "_p"].fillna(-1) - j[c + "_c"].fillna(-1)).abs().gt(1e-4).sum())
+        # up to 8 sample mismatched timestamps
+        mism = j[(j["close_p"].fillna(-1) - j["close_c"].fillna(-1)).abs().gt(1e-4)
+                 | j["close_c"].isna() | j["close_p"].isna()].head(8)
+        for ts, r in mism.iterrows():
+            samples.append({"ts": ts.isoformat(),
+                            "polygon_close": None if r.isna()["close_p"] else float(r["close_p"]),
+                            "cache_close": None if r.isna()["close_c"] else float(r["close_c"])})
+    return {
+        "symbol": sym, "timeframe": tf,
+        "start": s.isoformat(), "end": e.isoformat(),
+        "cache_rows": cn, "polygon_rows": pn,
+        "row_mismatch": abs(cn - pn), "ohlcv_diffs": diffs,
+        "byte_identical": (cn == pn and diffs == 0 and cn > 0),
+        "samples": samples,
+    }
 
 
 def _remote_backfill_status() -> dict:
