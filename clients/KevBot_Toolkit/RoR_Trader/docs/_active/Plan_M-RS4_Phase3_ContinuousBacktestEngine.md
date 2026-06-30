@@ -63,12 +63,22 @@ Phase 3 is **"wrap the existing engine in a resident, sharded service,"** not gr
 
 ## 4. Build steps (ordered; each gated; offline-validatable where noted)
 
-### Step A — PROVE the continuous-resident design is byte-identical (foundational, offline)
+### Step A — PROVE the continuous-resident design is byte-identical (foundational, offline) — ✅ GREEN 2026-06-30
 Build the positive-validation harness M-RS3 §7.5 called for: drive `process_bar` one bar at a time into a
 SINGLE warmed engine over a historical RTH day (no re-window, no resume) and show the resulting trades are
 **byte-identical** to a from-cold `full_recompute` of that day (PATH A). Extends `_shadow_replay_harness.py`.
 **Gate: byte-identical on ≥3 canaries (incl. a sub-minute + a secondary-TF-gated strategy). Until this is
 green, do NOT build the service.** Weekend-validatable (markets closed).
+
+**DONE — `src/_resident_replay_harness.py`** (sibling of the negative-result `_shadow_replay_harness.py`).
+PATH A = `run_unified_backtest(full_df)`; PATH C = one `UnifiedStrategy` warmed on the SAME df and fed
+bar-by-bar via `process_bar` (a `ResidentEngine` prototype of the shadow-worker), replicating the per-bar
+input construction verbatim. Both paths share an identical prepared df, isolating "one-shot loop vs resident
+feed." **Result: 4/4 canaries byte-identical (added=removed=changed=0):** 263 (10Sec TSLA, no sec, 481t),
+267 (10Sec TSLA + 2Min, 529t — sub-min AND secondary-gated), 194 (1Min TSLL + 2Min/10Min, 5t), 136 (1Min
+SPY + 15Min, 44t). Confirms the resident design is faithful BY CONSTRUCTION across sub-minute primaries,
+coarse + multi secondary-TF gates, and multiple symbols. **Step B unlocked.** Run:
+`PYTHONPATH=. ../.venv/bin/python _resident_replay_harness.py 263,267,194,136 1`.
 
 ### Step B — Scaffold the `shadow-worker` service (inert)
 `Dockerfile.shadow-worker` + a resident loop gated by `RORT_BACKTEST_LANE_MODE` (∈ button/cron/**shadow**;
