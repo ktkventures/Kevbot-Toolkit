@@ -38,6 +38,23 @@ interface TargetsResp {
   supply_coverage?: SupplyCoverage[] | null;
   read_health?: ReadHealth;
 }
+interface VerifyResult {
+  byte_identical?: boolean;
+  cache_rows?: number;
+  polygon_rows?: number;
+  row_mismatch?: number;
+  ohlcv_diffs?: number;
+  samples?: { ts: string; polygon_close: number | null; cache_close: number | null }[];
+  error?: string;
+}
+interface VerifyState {
+  symbol: string;
+  timeframe: string;
+  start: string;
+  end: string;
+  loading: boolean;
+  result: VerifyResult | null;
+}
 
 const cell: React.CSSProperties = { padding: '7px 8px', verticalAlign: 'middle', fontSize: 13 };
 const input: React.CSSProperties = {
@@ -99,6 +116,8 @@ export default function BarCacheAdminPage() {
   const [busy, setBusy] = useState<string | null>(null);
   // Per-row backfill start date (YYYY-MM-DD); defaults to 1y ago when unset.
   const [starts, setStarts] = useState<Record<string, string>>({});
+  const [addSym, setAddSym] = useState('');
+  const [verify, setVerify] = useState<VerifyState | null>(null);
 
   // Default backfill floor = 1 year back, on BOTH 1Sec and 1Min (deep 1Sec is
   // wanted for hi-fi backtesting). Stable across renders.
@@ -138,6 +157,49 @@ export default function BarCacheAdminPage() {
       setBusy(null);
     }
   }, [load]);
+
+  const addTicker = useCallback(async () => {
+    const sym = addSym.trim().toUpperCase();
+    if (!sym) return;
+    setBusy('add');
+    try {
+      await apiFetch('/api/bar-cache/add-ticker', {
+        method: 'POST', body: JSON.stringify({ symbol: sym }),
+      });
+      setAddSym('');
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }, [addSym, load]);
+
+  const openVerify = useCallback((symbol: string, timeframe: string) => {
+    const end = new Date();
+    const start = new Date(end.getTime() - 60 * 60 * 1000); // default: last hour
+    const fmt = (d: Date) => new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+      .toISOString().slice(0, 16); // local time for datetime-local
+    setVerify({ symbol, timeframe, start: fmt(start), end: fmt(end), loading: false, result: null });
+  }, []);
+
+  const runVerify = useCallback(async () => {
+    if (!verify) return;
+    setVerify({ ...verify, loading: true, result: null });
+    try {
+      const r = await apiFetch<VerifyResult>('/api/bar-cache/verify', {
+        method: 'POST',
+        body: JSON.stringify({
+          symbol: verify.symbol, timeframe: verify.timeframe,
+          start: new Date(verify.start).toISOString(),
+          end: new Date(verify.end).toISOString(),
+        }),
+      });
+      setVerify((v) => (v ? { ...v, loading: false, result: r } : v));
+    } catch (e) {
+      setVerify((v) => (v ? { ...v, loading: false, result: { error: e instanceof Error ? e.message : String(e) } } : v));
+    }
+  }, [verify]);
 
   const coverage = useMemo(() => resp?.supply_coverage ?? [], [resp]);
   // The stream is "active" if any layer was written within the last 2 minutes —
@@ -189,6 +251,23 @@ export default function BarCacheAdminPage() {
             </div>
           )}
           {err && <div style={{ color: 'var(--red)', fontSize: 13, marginTop: 10 }}>{err}</div>}
+
+          {/* Manual add-ticker — the page is the sole authority on what's cached. */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 14 }}>
+            <input
+              style={{ ...input, width: 120, textTransform: 'uppercase' }}
+              placeholder="ADD TICKER"
+              value={addSym}
+              onChange={(e) => setAddSym(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') addTicker(); }}
+            />
+            <button style={btn('var(--blue)')} disabled={busy === 'add' || !addSym.trim()} onClick={addTicker}>
+              {busy === 'add' ? 'Adding…' : '+ Add ticker (1yr · 1Min + 1Sec)'}
+            </button>
+            <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>
+              enrolls both layers and backfills 1 year on the batch-worker
+            </span>
+          </div>
         </div>
       </Card>
 
@@ -269,6 +348,13 @@ export default function BarCacheAdminPage() {
                         >
                           {busy === `bf:${key}` ? '…' : 'Backfill'}
                         </button>
+                        <button
+                          style={btn('var(--text-tertiary)')}
+                          title="Compare a window of this layer against a live Polygon pull"
+                          onClick={() => openVerify(f.symbol, f.timeframe)}
+                        >
+                          Verify
+                        </button>
                         {running
                           ? <span style={pill('var(--amber, #d98c00)')}>running…</span>
                           : (f.backfill_status
@@ -285,6 +371,72 @@ export default function BarCacheAdminPage() {
           </table>
         </div>
       </Card>
+
+      {/* Verify-vs-Polygon — windowed, self-serve. Pulls just the chosen window
+          from Polygon and diffs it against bar_cache. */}
+      {verify && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 1000,
+            display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={() => setVerify(null)}
+        >
+          <div
+            style={{ background: 'var(--bg-card, #1a1d24)', border: '1px solid var(--border)',
+              borderRadius: 10, padding: 20, width: 520, maxWidth: '92vw' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <h3 style={{ margin: 0, fontSize: 15 }}>Verify vs Polygon — {verify.symbol} / {verify.timeframe}</h3>
+              <button style={btn('var(--text-tertiary)')} onClick={() => setVerify(null)}>✕</button>
+            </div>
+            <div style={{ color: 'var(--text-tertiary)', fontSize: 12, marginBottom: 12 }}>
+              Pulls just this window from Polygon and diffs it against <code>bar_cache</code> (≤ 7 days).
+            </div>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 12 }}>
+              <label style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>start (local)<br />
+                <input type="datetime-local" style={input} value={verify.start}
+                  onChange={(e) => setVerify((v) => (v ? { ...v, start: e.target.value } : v))} />
+              </label>
+              <label style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>end (local)<br />
+                <input type="datetime-local" style={input} value={verify.end}
+                  onChange={(e) => setVerify((v) => (v ? { ...v, end: e.target.value } : v))} />
+              </label>
+              <button style={btn('var(--blue)')} disabled={verify.loading} onClick={runVerify}>
+                {verify.loading ? 'Checking…' : 'Run check'}
+              </button>
+            </div>
+            {verify.result && (
+              verify.result.error
+                ? <div style={{ color: 'var(--red)', fontSize: 13 }}>{verify.result.error}</div>
+                : (
+                  <div style={{ fontSize: 13 }}>
+                    <div style={{ marginBottom: 8 }}>
+                      <span style={pill(verify.result.byte_identical ? 'var(--green)' : 'var(--red)')}>
+                        {verify.result.byte_identical ? 'BYTE-IDENTICAL' : 'MISMATCH'}
+                      </span>
+                    </div>
+                    <div style={{ color: 'var(--text-tertiary)' }}>
+                      cache rows: <b style={{ color: 'var(--text-primary)' }}>{verify.result.cache_rows}</b>
+                      {'  ·  '}polygon rows: <b style={{ color: 'var(--text-primary)' }}>{verify.result.polygon_rows}</b>
+                      {'  ·  '}row mismatch: <b style={{ color: 'var(--text-primary)' }}>{verify.result.row_mismatch}</b>
+                      {'  ·  '}OHLCV diffs: <b style={{ color: 'var(--text-primary)' }}>{verify.result.ohlcv_diffs}</b>
+                    </div>
+                    {verify.result.samples && verify.result.samples.length > 0 && (
+                      <div style={{ marginTop: 10 }}>
+                        <div style={{ color: 'var(--text-tertiary)', fontSize: 12, marginBottom: 4 }}>sample mismatches:</div>
+                        {verify.result.samples.map((sm) => (
+                          <div key={sm.ts} style={{ fontSize: 12, fontFamily: 'monospace', color: 'var(--text-tertiary)' }}>
+                            {sm.ts.slice(0, 19).replace('T', ' ')} — polygon {sm.polygon_close ?? '—'} vs cache {sm.cache_close ?? '—'}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -48,6 +48,7 @@ ALLOWLIST = {
     "worker.py",                 # live_bars 1Min gap fill
     os.path.join("api", "routers", "admin_parity.py"),  # admin parity diagnostic
     os.path.join("api", "routers", "rest_verifier.py"),
+    os.path.join("api", "routers", "bar_cache_admin.py"),  # windowed Verify-vs-Polygon diagnostic
 }
 
 
