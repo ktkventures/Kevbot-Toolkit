@@ -182,10 +182,23 @@ data_worker_engine.tick_strategy) — kills the bulk of steady-state cost (re-pr
 zero new bars). The deeper win (prepare only the incremental window vs a full warmup window) is left
 conservative — warmup is parity #1.
 
-### Step E — Point consumers at the fresh lane (Phase 2 folds in here)
+### Step E — Point consumers at the fresh lane (Phase 2 folds in here) — ✅ DONE 2026-06-30
 Default strategy view + KPIs + Health/Divergence/Parity read the continuously-fresh `trades` `backtest_%`
 lane instead of the stale `stored_trades` JSONB. Done in this phase so the read-path fix and the
 trustworthy data land together (no interim throwaway).
+
+**Findings + what was needed:**
+- **Trades read-path = ALREADY cut over** (Phase 40): `USE_TRADES_TABLE=true` (api/Worker/batch-worker) +
+  `db._row_to_strategy(hydrate_trades=True)` overwrites `stored_trades` from the `trades` table (scoped
+  `backtest_%`) on every strategy load. The `hydrate_trades=False` paths are only the lite-list + Worker
+  monitor (intentionally trade-less). So the UI's trades already come from the table the shadow keeps fresh —
+  no read-path refactor needed.
+- **Derived-metrics gap (the actual Step E work):** the shadow writes TRADES but the UI's KPIs/equity/Health
+  come from the persisted `kpis`/`equity_curve_data` columns, which would lag. **Fixed:** `shadow_manager`
+  now recomputes KPIs + equity (reusing `data_worker_engine.recompute_kpis_for_strategy`, incl. Hi-Fi pass)
+  on a **per-slot debounce** (`maybe_recompute_kpis`, gated `RORT_SHADOW_RECOMPUTE_KPIS` default-on,
+  `RORT_SHADOW_KPI_DEBOUNCE_S=300`) — fires when a slot wrote new trades. Validated end-to-end on sid 194
+  (kpis_computed_at advanced, all KPI fields recomputed, flag reset).
 
 ### Step F — Validate + roll out (gated, canary → fleet)
 1. Step A replay gate green. 2. `fidelity_parity_suite.py` 18/18. 3. `trade_snapshot` byte-identical:

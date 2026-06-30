@@ -71,6 +71,14 @@ READ_ONLY_BARS = os.getenv("RORT_SHADOW_READ_ONLY_BARS", "1").strip().lower() in
 # Default ON; gate off with RORT_SHADOW_PERSIST_SNAPSHOT=0.
 PERSIST_SNAPSHOT = os.getenv("RORT_SHADOW_PERSIST_SNAPSHOT", "1").strip().lower() in (
     "1", "true", "yes", "on")
+# Step E: after the shadow writes new trades, the strategy's kpis/equity_curve/Health
+# would otherwise lag (the UI hydrates fresh TRADES from the table, but derived metrics
+# come from the persisted `kpis`/`equity_curve_data` columns). Recompute them on a
+# per-slot debounce (mirrors data_worker_engine's streaming KPI loop) so the whole view
+# stays fresh. Default ON; gate off with RORT_SHADOW_RECOMPUTE_KPIS=0.
+RECOMPUTE_KPIS = os.getenv("RORT_SHADOW_RECOMPUTE_KPIS", "1").strip().lower() in (
+    "1", "true", "yes", "on")
+KPI_DEBOUNCE_S = int(os.getenv("RORT_SHADOW_KPI_DEBOUNCE_S", "300"))
 
 
 def prepare_window(strat: dict, model, since_dt: datetime, until_dt: datetime,
@@ -104,6 +112,8 @@ class EngineSlot:
         self.last_processed_ts = None           # tz-aware Timestamp (engine boundary)
         self.last_entry_written: Optional[str] = None
         self.last_provisional_at = None         # monotonic stamp of last prov refresh
+        self.has_traded_since_kpi = False       # set on a settled write; drives KPI recompute
+        self.last_kpi_at = None                 # monotonic stamp of last KPI recompute
         self.classify()
 
     def classify(self) -> None:
@@ -359,6 +369,32 @@ class ResidentEngineManager:
                                slot.sid, e)
         return self._write_provisional(slot, tail)
 
+    def maybe_recompute_kpis(self, slot: EngineSlot) -> bool:
+        """Recompute the strategy's KPIs + equity curve from its (now-fresh) backtest_%
+        lane, on a per-slot debounce — so the UI's derived metrics track the trades the
+        shadow just wrote (Step E). Reuses data_worker_engine.recompute_kpis_for_strategy
+        (KPIs + equity + Hi-Fi pass). No-op in dry_run / when nothing new traded / not due.
+        Returns True if it recomputed."""
+        import time as _time
+        if not RECOMPUTE_KPIS or self.dry_run or not slot.has_traded_since_kpi:
+            return False
+        nowm = _time.monotonic()
+        if slot.last_kpi_at is not None and nowm - slot.last_kpi_at < KPI_DEBOUNCE_S:
+            return False
+        slot.last_kpi_at = nowm
+        try:
+            from data_worker_engine import StrategyEngineState, classify_strategy, \
+                recompute_kpis_for_strategy
+            st = StrategyEngineState(slot.sid, slot.uid, slot.strat)
+            classify_strategy(st)
+            st.has_traded_since_kpi = True
+            recompute_kpis_for_strategy(st)
+            slot.has_traded_since_kpi = False
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[shadow] sid=%s KPI recompute failed: %s", slot.sid, e)
+            return False
+
     def poll(self, slot: EngineSlot, now: Optional[datetime] = None) -> dict:
         """One poll for a slot: (optionally clear provisional →) advance the resident
         engine to `now - LAG` and write new settled trades → (optionally re-emit the
@@ -398,8 +434,11 @@ class ResidentEngineManager:
             closed = self.advance(slot, settled_until)
             new = self._filter_new(slot, closed)
             inserted = self.commit(slot, new)
+            if inserted > 0:
+                slot.has_traded_since_kpi = True
 
         prov = self.refresh_provisional(slot, now, settled_until)
+        kpis = self.maybe_recompute_kpis(slot)   # debounced; refreshes derived metrics
         status = 'ok' if new_settled_bar else 'no_new_bar'
-        return {'status': status, 'inserted': inserted,
-                'provisional': max(prov, 0), 'last_bar_ts': slot.last_processed_ts}
+        return {'status': status, 'inserted': inserted, 'provisional': max(prov, 0),
+                'kpis_recomputed': kpis, 'last_bar_ts': slot.last_processed_ts}
