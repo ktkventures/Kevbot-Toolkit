@@ -79,8 +79,44 @@ def list_targets(user=Depends(get_current_user)):
         "maintain_cron_enabled": _maintain_cron_enabled(),
         "writethrough_enabled": _writethrough_enabled(),
         "supply_coverage": cov,
+        "ws_freshness": _ws_freshness(_tracked_symbols()),
         "read_health": _read_health(),
     }
+
+
+def _ws_freshness(symbols: list) -> list:
+    """Per (symbol, timeframe_seconds) WS-bar freshness from `live_bars`, over the
+    ENGINE-CONSUMED sources (ws/ws_agg/rest_correction/rest_insert/warmup_seed —
+    what the live engine actually saw, NOT cosmetic rest_backfill). Powers the
+    Supply page's 'WS Bars' tab so both streams are verifiable at a glance."""
+    import os
+    dsn = os.environ.get("SUPABASE_CONNECTION_STRING")
+    if not dsn or not symbols:
+        return []
+    sql = ("select symbol, timeframe_seconds, max(bar_start) last_bar, "
+           "max(last_updated_at) last_written, count(*) bars_1d "
+           "from live_bars where symbol = any(%s) "
+           "and bar_start > now() - interval '1 day' "
+           "and source in ('ws','ws_agg','rest_correction','rest_insert','warmup_seed') "
+           "group by symbol, timeframe_seconds order by symbol, timeframe_seconds")
+    out = []
+    try:
+        import psycopg
+        with psycopg.connect(dsn, connect_timeout=15, prepare_threshold=None,
+                             autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, (list(symbols),))
+                for sym, tfs, last_bar, last_written, n in cur.fetchall():
+                    out.append({
+                        "symbol": sym,
+                        "tf_seconds": tfs,
+                        "last_bar": last_bar.isoformat() if last_bar else None,
+                        "last_written": last_written.isoformat() if last_written else None,
+                        "bars_1d": int(n or 0),
+                    })
+    except Exception as e:  # noqa: BLE001
+        logger.warning("bar-cache _ws_freshness failed: %s", e)
+    return out
 
 
 def _tracked_symbols() -> list:
