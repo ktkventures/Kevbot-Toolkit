@@ -26,7 +26,23 @@ replace append (G).
 
 ---
 
-## 2. Fix 1 — Incremental KPI recompute (kill the reload-all)
+## 1b. CRITICAL refinement (2026-06-30) — Hi-Fi is fidelity-critical AND reloads-all
+The two-phase fix (§3, shipped) decouples KPI **and Hi-Fi** (Hi-Fi runs inside
+`recompute_kpis_for_strategy`) onto the bounded Phase-2 cadence. **Hi-Fi Pass 2 is what makes a `rest_hifi`
+backtest match LIVE down to the SECOND** — it walks 1-sec bars to pin entry to the exact second and resolve
+which exit level (stop/target) hit first (it can CHANGE the outcome on ambiguous bars). The resident engine
+emits trades at PRIMARY-TF bar resolution; Hi-Fi is the per-second refinement. So **deferring Hi-Fi lags
+per-second alignment**: recent trades stay bar-aligned (possibly wrong-exit) until Phase 2 reaches them
+(~every N/KPI_PER_CYCLE cycles → minutes, growing with fleet size). Eventually-correct, but a real-time
+per-second/divergence gap.
+
+**You cannot just "run Hi-Fi promptly" — Hi-Fi ALSO reload-alls** (`run_hifi_pass2` → `load_trades_admin`
+loads ALL trades then incremental-FILTERS; the filter is incremental, the LOAD is not). So both KPI and Hi-Fi
+hit the same reload-all wall. **⇒ Fix 1 (incremental LOAD) is required for per-second FIDELITY, not just
+throughput** — make both load only the recent window so Hi-Fi can run every poll cheaply and keep per-second
+alignment current. This RE-ELEVATES Fix 1 (was deprioritized after the two-phase pivot).
+
+## 2. Fix 1 — Incremental load for KPI **and Hi-Fi** (kill the reload-all)
 **Today:** `maybe_recompute_kpis` (shadow_manager) → `data_worker_engine.recompute_kpis_for_strategy`, which
 **reloads every backtest trade** for the strategy, recomputes KPIs + equity curve from scratch, runs Hi-Fi.
 The DB reload (N paginated GETs) is the dominant cost and it repeats on every debounce fire.
