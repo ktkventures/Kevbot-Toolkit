@@ -403,7 +403,8 @@ class ResidentEngineManager:
             logger.warning("[shadow] sid=%s KPI recompute failed: %s", slot.sid, e)
             return False
 
-    def poll(self, slot: EngineSlot, now: Optional[datetime] = None) -> dict:
+    def poll(self, slot: EngineSlot, now: Optional[datetime] = None,
+             skip_kpis: bool = False) -> dict:
         """One poll for a slot: (optionally clear provisional →) advance the resident
         engine to `now - LAG` and write new settled trades → (optionally re-emit the
         provisional tail).
@@ -413,6 +414,10 @@ class ResidentEngineManager:
         warmup-sized window for zero new bars is the bulk of the steady-state cost
         (mirrors data_worker_engine.tick_strategy). Provisional refresh runs on its own
         (slower) cadence regardless, since the forming bar changes continuously.
+
+        `skip_kpis` (scheduling fix): when True, do NOT run the (heavy) KPI recompute
+        inline — the resident loop runs it as a separate, bounded phase so one strategy's
+        KPI work can't starve another's trade-advance. See Plan_M-RS4_Phase3_Scheduling_Fixes.
         """
         if not slot.eligible:
             return {'status': 'ineligible', 'reason': slot.ineligible_reason}
@@ -446,7 +451,22 @@ class ResidentEngineManager:
                 slot.has_traded_since_kpi = True
 
         prov = self.refresh_provisional(slot, now, settled_until)
-        kpis = self.maybe_recompute_kpis(slot)   # debounced; refreshes derived metrics
+        kpis = False if skip_kpis else self.maybe_recompute_kpis(slot)
         status = 'ok' if new_settled_bar else 'no_new_bar'
         return {'status': status, 'inserted': inserted, 'provisional': max(prov, 0),
                 'kpis_recomputed': kpis, 'last_bar_ts': slot.last_processed_ts}
+
+    def kpi_due_slots(self) -> list:
+        """Eligible slots that have traded since their last KPI recompute and whose
+        debounce has elapsed — ordered OLDEST-recompute-first (fairness, so no slot is
+        starved indefinitely). The resident loop drains a bounded number of these per
+        cycle, off the trade-advance hot path."""
+        import time as _time
+        if not RECOMPUTE_KPIS:
+            return []
+        nowm = _time.monotonic()
+        due = [s for s in self.slots.values()
+               if s.eligible and s.has_traded_since_kpi
+               and (s.last_kpi_at is None or nowm - s.last_kpi_at >= KPI_DEBOUNCE_S)]
+        due.sort(key=lambda s: (s.last_kpi_at if s.last_kpi_at is not None else -1.0))
+        return due

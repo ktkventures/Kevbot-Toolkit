@@ -130,6 +130,11 @@ def _resident_loop(stop_evt: threading.Event):
                    dry, symbols or "(all)", f"{len(sids)} ids" if sids else "(none)", npacks)
 
     reload_every = int(os.environ.get("RORT_SHADOW_RELOAD_S", "300"))
+    # Scheduling fix (Plan_M-RS4_Phase3_Scheduling_Fixes): the KPI recompute is heavy
+    # (reload-all-trades + Hi-Fi). Running it inline starved trade-advances on the tail
+    # of the loop. So: Phase 1 advances EVERY slot (fast, keeps all trades fresh); Phase 2
+    # drains only KPI_PER_CYCLE KPI recomputes, oldest-first (fairness), off the hot path.
+    kpi_per_cycle = int(os.environ.get("RORT_SHADOW_KPI_PER_CYCLE", "3"))
     last_discover = 0.0
     while _running:
         now = time.monotonic()
@@ -143,6 +148,7 @@ def _resident_loop(stop_evt: threading.Event):
                 logger.warning("[shadow_worker] discover failed: %s", e)
             last_discover = now
 
+        # Phase 1 — advance ALL slots (fast trade-writes); KPI deferred to phase 2.
         wrote = 0
         for slot in list(mgr.slots.values()):
             if not _running:
@@ -150,14 +156,27 @@ def _resident_loop(stop_evt: threading.Event):
             if not slot.eligible:
                 continue
             try:
-                res = mgr.poll(slot)
+                res = mgr.poll(slot, skip_kpis=True)
                 wrote += res.get('inserted', 0) or 0
             except Exception as e:  # noqa: BLE001
                 logger.warning("[shadow_worker] sid=%s poll failed: %s", slot.sid, e,
                                exc_info=True)
-        if wrote:
-            logger.info("[shadow_worker] cycle %s %d trades",
-                        "would-write" if dry else "wrote", wrote)
+
+        # Phase 2 — bounded KPI recomputes, oldest-recompute-first (no starvation).
+        kpis_done = 0
+        for slot in mgr.kpi_due_slots()[:kpi_per_cycle]:
+            if not _running:
+                break
+            try:
+                if mgr.maybe_recompute_kpis(slot):
+                    kpis_done += 1
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[shadow_worker] sid=%s KPI recompute failed: %s",
+                               slot.sid, e, exc_info=True)
+
+        if wrote or kpis_done:
+            logger.info("[shadow_worker] cycle %s %d trades · %d KPI recomputes",
+                        "would-write" if dry else "wrote", wrote, kpis_done)
 
         for _ in range(POLL_INTERVAL_S):
             if not _running:
