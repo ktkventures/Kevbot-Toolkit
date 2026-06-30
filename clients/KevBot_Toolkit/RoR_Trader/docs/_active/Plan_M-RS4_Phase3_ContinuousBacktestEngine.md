@@ -137,11 +137,26 @@ default 60s) so rows persist between refreshes. `provisional` added to `db.TRADE
 land in the `data` JSONB, not the column). Gated `RORT_SHADOW_PROVISIONAL` (default 0). Offline dry-run
 validated (sid 267: 4 tail trades, partition correct, no writes). DB write/delete paths exercise live in F.
 
+**Read-path fix — ✅ DONE 2026-06-30 (surfaced by the live dev dry-run).** The first bring-up showed the
+shadow read path BACKFILLING bar_cache from Polygon (`POST .../bar_cache 201`) and reading multi-day 1Sec for
+sub-minute warmup — both a deviation from §3 (read-only, no Polygon) and the coarse-secondary warmup blow-up.
+Two fixes, validated byte-identical:
+- **A (read reduction):** new `services.prepare_strategy_window_df` reuses the secondary-TF-snapshot fast path
+  (warmup off the PRIMARY, coarse secondary injected from cache — byte-identical by construction) instead of a
+  naive multi-day 1Sec load. `shadow_manager.prepare_window` now calls it.
+- **B (read-only):** `no_backfill` threaded `cached_load_market_data → load_market_data →
+  prepare_data_with_indicators → _secondary_snapshot_load_extend`; shadow reads bar_cache READ-ONLY (no
+  Polygon, no cache writes, no direct-Polygon fallthrough), gated `RORT_SHADOW_READ_ONLY_BARS` (default on).
+- **Gate:** `_shadow_manager_validate.py` (now toggles `MANAGER_SNAPSHOT`): run1 snapshot-off read-only 263+267
+  byte-identical; run2 snapshot-ON fast path (the dev path) 267+136 byte-identical. All vs true from-cold.
+- Default `no_backfill=False` on every threaded fn → zero behavior change for existing callers.
+
 **REMAINING follow-ups (optimization, not correctness):**
-1. **Re-prepare perf** — each poll re-prepares a full warmup-sized window (~2-3× from-cold in validation);
-   the live loop should prepare only the incremental new window (small warmup buffer) or extend a cached frame.
-2. **Bootstrap anchor** — bootstrap currently re-emits from `now-BOOTSTRAP_DAYS`; wire it to the DB max-entry
-   anchor (catch-up semantics) so it re-emits exactly the gap since the lane was last current.
+1. **Re-prepare perf** — each poll still re-prepares (now a SHORT primary window, not multi-day); could prepare
+   only the incremental new window or extend a cached frame for further speedup.
+2. **Bootstrap anchor** — bootstrap re-emits from `now-BOOTSTRAP_DAYS`; wire to the DB max-entry anchor.
+3. **Cache retention** — confirm bar_cache 1Sec retention covers the (reduced) primary warmup so read-only
+   reads aren't short on dev; if short, the data-worker keeps the needed window warm.
 
 ### Step D — Cold bootstrap + crash recovery — ✅ CORRECTNESS PROVEN 2026-06-30 (snapshot = optional)
 On startup / new strategy / crash: warm from a bounded from-cold window (or a snapshot) ONCE, then go

@@ -59,43 +59,26 @@ PROVISIONAL_ENABLED = os.getenv("RORT_SHADOW_PROVISIONAL", "0").strip().lower() 
 PROVISIONAL_REFRESH_S = int(os.getenv("RORT_SHADOW_PROVISIONAL_S", "60"))
 
 
-def _warmup_days(timeframe: str, sec_tfs: tuple) -> int:
-    """Warmup window sized off the LONGEST (binding) TF — mirrors
-    get_strategy_trades_for_window (services.py)."""
-    from data_loader import BARS_PER_DAY
-    all_tfs = [timeframe] + list(sec_tfs)
-    bpds = [BARS_PER_DAY.get(tf, 390) for tf in all_tfs]
-    binding_bpd = min(bpd for bpd in bpds if bpd > 0) if bpds else 390
-    return max(1, math.ceil(WARMUP_BARS / max(binding_bpd, 0.001) * 365 / 252))
+# Read-only cache access (M-RS4 Phase 3): the shadow-worker reads bar_cache but must
+# NOT backfill it from Polygon (the data-worker owns ingest; plan §3). Default ON.
+READ_ONLY_BARS = os.getenv("RORT_SHADOW_READ_ONLY_BARS", "1").strip().lower() in (
+    "1", "true", "yes", "on")
 
 
 def prepare_window(strat: dict, model, since_dt: datetime, until_dt: datetime,
                    timeframe: str, sec_tfs: tuple):
-    """Cold (no-snapshot) windowed prepare → fully-warmed df for `(since-warmup, until]`.
-    Mirrors get_strategy_trades_for_window's prep so the engine sees identical inputs."""
-    import pandas as pd
-    from services import prepare_data_with_indicators
-
-    wd = _warmup_days(timeframe, sec_tfs)
-    since_naive = since_dt.replace(tzinfo=None) if since_dt.tzinfo else since_dt
-    end_naive = until_dt.replace(tzinfo=None) if until_dt.tzinfo else until_dt
-    start_date = since_naive - timedelta(days=wd)
-
-    df = prepare_data_with_indicators(
-        strat['symbol'], seed=strat.get('data_seed', 42),
-        start_date=start_date, end_date=end_naive, timeframe=timeframe,
-        data_feed="sip", session=strat.get('trading_session', 'RTH'),
-        secondary_tfs=sec_tfs, secondary_tf_dfs=None, strat=strat,
-        model_override=model,
+    """Fully-warmed df for `(since-warmup, until]` via the shared production prep
+    (`services.prepare_strategy_window_df`) — which uses the secondary-TF-snapshot
+    fast path (warmup off the PRIMARY, coarse secondary injected from cache) instead
+    of reading multi-day 1Sec, and reads the cache READ-ONLY (no Polygon backfill).
+    `timeframe`/`sec_tfs` are derived inside the shared prep; kept in the signature
+    for call-site clarity."""
+    from services import prepare_strategy_window_df
+    return prepare_strategy_window_df(
+        strat, since_dt, until_dt, warmup_bars=WARMUP_BARS, data_feed="sip",
+        model_override=model, no_backfill=READ_ONLY_BARS,
+        persist_snapshot=False,   # read-only consumer never writes the snapshot
     )
-    if df is None or len(df) == 0:
-        return df
-    end_clip = pd.Timestamp(end_naive)
-    if df.index.tz is not None and end_clip.tz is None:
-        end_clip = end_clip.tz_localize('UTC')
-    elif df.index.tz is None and end_clip.tz is not None:
-        end_clip = end_clip.tz_localize(None)
-    return df[df.index <= end_clip]
 
 
 class EngineSlot:

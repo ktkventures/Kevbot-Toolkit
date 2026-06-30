@@ -20,7 +20,7 @@ Usage:  PYTHONPATH=. ../.venv/bin/python _shadow_manager_validate.py [SIDS] [DAY
 import os, sys, logging
 from datetime import datetime, timedelta, timezone
 
-os.environ["RORT_SECONDARY_TF_SNAPSHOT"] = "0"
+os.environ.setdefault("RORT_SECONDARY_TF_SNAPSHOT", "0")  # override to 1 to test fast path
 os.environ["USE_DB"] = "true"
 from dotenv import load_dotenv
 load_dotenv(".env", override=True)
@@ -44,7 +44,8 @@ from db import get_admin_client, get_strategy_by_id_admin
 from services import get_secondary_tf_map
 import general_packs as gp_module
 from unified_engine import run_unified_backtest
-from shadow_manager import ResidentEngineManager, EngineSlot, prepare_window
+from shadow_manager import ResidentEngineManager, EngineSlot
+from services import prepare_strategy_window_df
 from trade_snapshot import KEY_FIELDS, VAL_FIELDS
 
 
@@ -92,10 +93,18 @@ def run_sid(sid):
         print(f"sid {sid}: ineligible ({slot.ineligible_reason}) — skipping", flush=True)
         return None
 
-    # REFERENCE — from-cold over [T0-warmup, T_end].
+    # REFERENCE — true from-cold over [T0-warmup, T_end]: FULL resample (snapshot OFF),
+    # backfill ALLOWED (warms the cache so the read-only manager path below finds its
+    # bars), snapshot not persisted. The manager then runs with MANAGER_SNAPSHOT (0 =
+    # full-resample read-only correctness; 1 = the dev fast path) — comparing it to this
+    # full-resample ground truth.
+    mgr_snap = os.environ.get("MANAGER_SNAPSHOT", "0")
+    os.environ["RORT_SECONDARY_TF_SNAPSHOT"] = "0"
     import time
     t = time.time()
-    df_ref = prepare_window(strat, model, T0, T_end, slot.timeframe, slot.sec_tfs)
+    df_ref = prepare_strategy_window_df(
+        strat, T0, T_end, warmup_bars=300, data_feed="sip", model_override=model,
+        no_backfill=False, persist_snapshot=False)
     if df_ref is None or len(df_ref) < 2:
         print(f"sid {sid}: only {0 if df_ref is None else len(df_ref)} bars — skipping",
               flush=True)
@@ -115,6 +124,7 @@ def run_sid(sid):
     # NO snapshot. If the combined trades still equal from-cold, crash recovery via cold
     # re-bootstrap is byte-identical (no snapshot/heal needed for correctness).
     restart_poll = int(os.environ.get("VALIDATE_RESTART_POLL", "0"))
+    os.environ["RORT_SECONDARY_TF_SNAPSHOT"] = mgr_snap   # manager mode (0=full, 1=fast path)
     t = time.time()
     mgr.advance(slot, until_dt=T0, since_override=T0)   # bootstrap warm; discard its trades
     edges = [T0 + (T_end - T0) * (i / POLLS) for i in range(POLLS + 1)]

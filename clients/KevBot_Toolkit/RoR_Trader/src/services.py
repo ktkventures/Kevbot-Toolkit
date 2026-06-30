@@ -198,8 +198,13 @@ def prepare_data_with_indicators(
     model_override: Optional[str] = None,
     required_confluence_ids: Optional[set] = None,
     force_scope: bool = False,
+    no_backfill: bool = False,
 ) -> pd.DataFrame:
     """Load market data and run all indicators, interpreters, and trigger detection.
+
+    `no_backfill` (M-RS4 Phase 3): read-only cache access on the primary REST load
+    (no Polygon fetch / no cache write, no direct-Polygon fallthrough). For the
+    read-only shadow-worker path. Only affects the non-injected REST load.
 
     Extracted from app.py:634 — identical logic, no @st.cache_data.
 
@@ -314,7 +319,7 @@ def prepare_data_with_indicators(
         df = load_market_data(symbol, days=days, seed=seed,
                               start_date=start_date, end_date=end_date,
                               timeframe=timeframe, feed=data_feed,
-                              session=session)
+                              session=session, no_backfill=no_backfill)
 
     if len(df) == 0:
         return df
@@ -869,11 +874,14 @@ def _has_valid_secondary_snapshot(strat: dict, model_id: str | None = None) -> b
 
 
 def _secondary_snapshot_load_extend(strat, sec_tfs, until_dt, primary_tf,
-                                 session, data_feed, model_id):
+                                 session, data_feed, model_id, no_backfill=False):
     """Load the cached secondary series + extend it with a SHORT fresh load
     from the last cached bar → until. Returns {canonical_tf: DataFrame} keyed
     for prepare_data's secondary_tf_dfs, or None on any miss (caller falls back
-    to full resample). Byte-identical to fresh full resample by construction."""
+    to full resample). Byte-identical to fresh full resample by construction.
+
+    `no_backfill`: the short recent-extend load reads the cache read-only (no
+    Polygon) for the shadow-worker path."""
     try:
         import pandas as _pd
         import secondary_tf_snapshot as STC
@@ -896,7 +904,8 @@ def _secondary_snapshot_load_extend(strat, sec_tfs, until_dt, primary_tf,
         _start = start.tz_localize(None) if getattr(start, 'tz', None) is not None else start
         _until = until_dt.replace(tzinfo=None) if getattr(until_dt, 'tzinfo', None) else until_dt
         recent = load_market_data(strat['symbol'], start_date=_start, end_date=_until,
-                                  timeframe=primary_tf, feed=data_feed, session=session)
+                                  timeframe=primary_tf, feed=data_feed, session=session,
+                                  no_backfill=no_backfill)
         extended = STC.extend_secondary_ohlcv(cached, recent, tuple(sec_tfs))
         return extended
     except Exception as _e:
@@ -929,6 +938,81 @@ def _secondary_snapshot_persist(strat, df, sec_tfs, model_id):
         c.table('strategies').update({'config': full_cfg}).eq('id', sid).execute()
     except Exception as _e:
         _logger.warning("secondary-snapshot persist failed (%s) — non-fatal", _e)
+
+
+def prepare_strategy_window_df(
+    strat: dict, since_dt: datetime, until_dt: datetime,
+    warmup_bars: int = 300, data_feed: str = "sip",
+    model_override: Optional[str] = None,
+    no_backfill: bool = False, persist_snapshot: bool = True,
+) -> pd.DataFrame:
+    """Prepare the fully-warmed, indicator-enriched df for the window WITHOUT
+    running the engine — the data-prep half of get_strategy_trades_for_window
+    (the no-resume path), factored out for the shadow-worker's resident engine
+    (`shadow_manager`). Returns bars in `(since-warmup, until]` with all primary +
+    secondary-TF / user-pack columns computed.
+
+    Uses the secondary-TF-snapshot fast path (warmup sized off the PRIMARY only,
+    coarse secondary injected from cache — byte-identical to a full resample by
+    construction) when `RORT_SECONDARY_TF_SNAPSHOT=1` and a valid snapshot exists;
+    otherwise the full path (warmup off the binding/coarsest TF). This avoids the
+    coarse-secondary warmup blow-up (multi-day primary read at 1Sec) that a naive
+    windowed prepare hits — see Plan_M-RS4_Phase3, project_coarse_secondary_warmup_blowup.
+
+    no_backfill: read-only cache reads (shadow-worker — no Polygon, no cache writes).
+    persist_snapshot: write the secondary snapshot on a full compute (pass False for
+        the read-only shadow path so it never writes).
+    """
+    import math
+    from data_loader import (
+        BARS_PER_DAY, get_required_tfs_from_confluence, get_tf_from_label,
+    )
+    timeframe = strat.get('timeframe', '1Min')
+    req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+    sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
+
+    _sec_inject = None
+    if _secondary_snapshot_enabled() and sec_tfs:
+        _sec_inject = _secondary_snapshot_load_extend(
+            strat, sec_tfs, until_dt, timeframe,
+            strat.get('trading_session', 'RTH'), data_feed, model_override,
+            no_backfill=no_backfill)
+    _used_sec_snapshot = _sec_inject is not None
+
+    if _used_sec_snapshot:
+        primary_bpd = BARS_PER_DAY.get(timeframe, 390)
+        warmup_days = max(1, math.ceil(warmup_bars / max(primary_bpd, 0.001) * 365 / 252))
+    else:
+        all_tfs = [timeframe] + list(sec_tfs)
+        bpds = [BARS_PER_DAY.get(tf, 390) for tf in all_tfs]
+        binding_bpd = min(bpd for bpd in bpds if bpd > 0) if bpds else 390
+        warmup_days = max(1, math.ceil(warmup_bars / max(binding_bpd, 0.001) * 365 / 252))
+
+    since_naive = since_dt.replace(tzinfo=None) if since_dt.tzinfo else since_dt
+    end_date = until_dt.replace(tzinfo=None) if until_dt.tzinfo else until_dt
+    start_date = since_naive - timedelta(days=warmup_days)
+
+    df = prepare_data_with_indicators(
+        strat['symbol'], seed=strat.get('data_seed', 42),
+        start_date=start_date, end_date=end_date, timeframe=timeframe,
+        data_feed=data_feed, session=strat.get('trading_session', 'RTH'),
+        secondary_tfs=sec_tfs, secondary_tf_dfs=_sec_inject, strat=strat,
+        model_override=model_override, no_backfill=no_backfill)
+    if df is None or len(df) == 0:
+        return df
+
+    # On a FULL compute (no snapshot used), persist the snapshot so the NEXT read
+    # takes the fast path — unless the read-only caller opted out.
+    if (persist_snapshot and _secondary_snapshot_enabled() and sec_tfs
+            and not _used_sec_snapshot):
+        _secondary_snapshot_persist(strat, df, sec_tfs, model_override)
+
+    _end_clip = pd.Timestamp(end_date)
+    if df.index.tz is not None and _end_clip.tz is None:
+        _end_clip = _end_clip.tz_localize('UTC')
+    elif df.index.tz is None and _end_clip.tz is not None:
+        _end_clip = _end_clip.tz_localize(None)
+    return df[df.index <= _end_clip]
 
 
 def get_strategy_trades(strat: dict, data_feed: str = "sip", model_override: str | None = None) -> pd.DataFrame:
