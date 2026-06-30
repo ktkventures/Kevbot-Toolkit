@@ -63,6 +63,14 @@ PROVISIONAL_REFRESH_S = int(os.getenv("RORT_SHADOW_PROVISIONAL_S", "60"))
 # NOT backfill it from Polygon (the data-worker owns ingest; plan §3). Default ON.
 READ_ONLY_BARS = os.getenv("RORT_SHADOW_READ_ONLY_BARS", "1").strip().lower() in (
     "1", "true", "yes", "on")
+# Persist the secondary-TF snapshot on a full compute so the NEXT bootstrap of a
+# secondary-gated strategy takes the cheap fast path (warmup off the PRIMARY) instead
+# of a slow multi-day full resample. This writes only the strategy's OWN config cache
+# (secondary_snapshot_b64) — NOT bar_cache/Polygon — so it preserves the read-only-bars
+# contract while fixing bootstrap perf for strategies the append lane hasn't warmed.
+# Default ON; gate off with RORT_SHADOW_PERSIST_SNAPSHOT=0.
+PERSIST_SNAPSHOT = os.getenv("RORT_SHADOW_PERSIST_SNAPSHOT", "1").strip().lower() in (
+    "1", "true", "yes", "on")
 
 
 def prepare_window(strat: dict, model, since_dt: datetime, until_dt: datetime,
@@ -77,7 +85,8 @@ def prepare_window(strat: dict, model, since_dt: datetime, until_dt: datetime,
     return prepare_strategy_window_df(
         strat, since_dt, until_dt, warmup_bars=WARMUP_BARS, data_feed="sip",
         model_override=model, no_backfill=READ_ONLY_BARS,
-        persist_snapshot=False,   # read-only consumer never writes the snapshot
+        persist_snapshot=PERSIST_SNAPSHOT,  # warm the per-strategy snapshot cache for
+                                            # a cheap next bootstrap (config cache only)
     )
 
 
