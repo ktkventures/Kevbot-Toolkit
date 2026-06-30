@@ -121,11 +121,13 @@ def _resident_loop(stop_evt: threading.Event):
     from shadow_manager import ResidentEngineManager
     shard = os.environ.get("RORT_SHADOW_SHARD", "").strip()
     symbols = {s.strip() for s in shard.split(",") if s.strip()} or None
+    sid_raw = os.environ.get("RORT_SHADOW_SIDS", "").strip()
+    sids = {int(s) for s in sid_raw.split(",") if s.strip().isdigit()} or None
     dry = _dry_run_default()
-    mgr = ResidentEngineManager(shard_symbols=symbols, dry_run=dry)
-    logger.warning("[shadow_worker] RESIDENT lane active — dry_run=%s shard=%s packs=%d "
-                   "(dry_run writes NOTHING; arm with RORT_SHADOW_DRY_RUN=0)",
-                   dry, symbols or "(all)", npacks)
+    mgr = ResidentEngineManager(shard_symbols=symbols, dry_run=dry, shard_sids=sids)
+    logger.warning("[shadow_worker] RESIDENT lane active — dry_run=%s shard=%s sids=%s "
+                   "packs=%d (dry_run writes NOTHING; arm with RORT_SHADOW_DRY_RUN=0)",
+                   dry, symbols or "(all)", f"{len(sids)} ids" if sids else "(none)", npacks)
 
     reload_every = int(os.environ.get("RORT_SHADOW_RELOAD_S", "300"))
     last_discover = 0.0

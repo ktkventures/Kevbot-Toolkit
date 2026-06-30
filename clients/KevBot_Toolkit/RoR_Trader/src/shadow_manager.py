@@ -140,8 +140,13 @@ class ResidentEngineManager:
     """Owns the resident engines for a symbol shard. The shadow-worker constructs one,
     calls discover() periodically, and poll()s each eligible slot on a cadence."""
 
-    def __init__(self, shard_symbols=None, dry_run: bool = False):
+    def __init__(self, shard_symbols=None, dry_run: bool = False, shard_sids=None):
         self.shard_symbols = set(shard_symbols) if shard_symbols else None
+        # Precise per-strategy shard (RORT_SHADOW_SIDS): when set, scope to EXACTLY these
+        # strategy ids (overrides the symbol shard). Lets us shadow a specific set — e.g.
+        # only the extended-hours strategies — without arming whole symbols (which would
+        # re-mix already-reconciled RTH lanes).
+        self.shard_sids = set(int(s) for s in shard_sids) if shard_sids else None
         self.dry_run = dry_run
         self.slots: dict[int, EngineSlot] = {}
         self._enabled_gen = None
@@ -175,10 +180,13 @@ class ResidentEngineManager:
                 cfg = strat.get('config') if isinstance(strat.get('config'), dict) else {}
                 if cfg.get('snapshot_subscribe_enabled', True) is False:
                     continue
-                if self.shard_symbols and strat.get('symbol') not in self.shard_symbols:
-                    continue
                 sid = strat.get('id')
                 if sid is None:
+                    continue
+                if self.shard_sids is not None:
+                    if sid not in self.shard_sids:
+                        continue
+                elif self.shard_symbols and strat.get('symbol') not in self.shard_symbols:
                     continue
                 seen.add(sid)
                 slot = self.slots.get(sid)
