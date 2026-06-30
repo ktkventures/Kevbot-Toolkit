@@ -231,6 +231,21 @@ class ResidentEngineManager:
 
             if slot.engine is None:
                 slot.engine = ResidentStrategyEngine(slot.strat, self._gen_packs())
+                # Bootstrap anchor: hydrate last_entry_written from the DB so the engine's
+                # warm-window re-emissions (which re-derive the strategy's existing trades)
+                # are filtered out instead of re-attempted one-by-one → flooding 409
+                # conflicts and bogging the loop. The resident lane writes FORWARD (entry >
+                # anchor); deep/interspersed historical gaps are the nightly full_recompute
+                # backstop's job (per Plan §G). In-memory anchor resets on restart, so do
+                # this on every (re)bootstrap.
+                if slot.last_entry_written is None:
+                    try:
+                        from db import get_max_entry_ts_admin
+                        slot.last_entry_written = get_max_entry_ts_admin(
+                            slot.sid, slot.uid, data_source_filter='backtest_%')
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("[shadow] sid=%s anchor hydrate failed: %s",
+                                       slot.sid, e)
 
             new = slot.engine.feed(df, sec_tf_map)
         slot.last_processed_ts = slot.engine.last_bar_ts
