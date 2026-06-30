@@ -31,11 +31,19 @@ interface SupplyCoverage {
   backfill_status?: string | null;
   target_days?: number | null;
 }
+interface WsFreshness {
+  symbol: string;
+  tf_seconds: number;
+  last_bar: string | null;
+  last_written: string | null;
+  bars_1d: number;
+}
 interface TargetsResp {
   read_enabled: boolean;
   maintain_cron_enabled: boolean;
   writethrough_enabled?: boolean;
   supply_coverage?: SupplyCoverage[] | null;
+  ws_freshness?: WsFreshness[] | null;
   read_health?: ReadHealth;
 }
 interface VerifyResult {
@@ -108,6 +116,12 @@ function spanDays(minTs: string | null, maxTs: string | null): number | null {
 function fmtDate(ts: string | null): string {
   return ts ? ts.slice(0, 10) : '—';
 }
+function tfLabel(sec: number): string {
+  if (sec < 60) return `${sec}Sec`;
+  if (sec < 3600) return `${sec / 60}Min`;
+  if (sec < 86400) return `${sec / 3600}Hour`;
+  return `${sec / 86400}Day`;
+}
 
 export default function BarCacheAdminPage() {
   const [resp, setResp] = useState<TargetsResp | null>(null);
@@ -118,6 +132,7 @@ export default function BarCacheAdminPage() {
   const [starts, setStarts] = useState<Record<string, string>>({});
   const [addSym, setAddSym] = useState('');
   const [verify, setVerify] = useState<VerifyState | null>(null);
+  const [tab, setTab] = useState<'rest' | 'ws'>('rest');
 
   // Default backfill floor = 1 year back, on BOTH 1Sec and 1Min (deep 1Sec is
   // wanted for hi-fi backtesting). Stable across renders.
@@ -202,6 +217,7 @@ export default function BarCacheAdminPage() {
   }, [verify]);
 
   const coverage = useMemo(() => resp?.supply_coverage ?? [], [resp]);
+  const wsRows = useMemo(() => resp?.ws_freshness ?? [], [resp]);
   // The stream is "active" if any layer was written within the last 2 minutes —
   // the real proof write-through is running (independent of which service holds
   // the RORT_BARCACHE_WRITETHROUGH flag).
@@ -271,8 +287,18 @@ export default function BarCacheAdminPage() {
         </div>
       </Card>
 
-      {/* Supply coverage + freshness — every catalog symbol × source layer, with a
-          per-row backfill-to-start-date control. */}
+      {/* Tabs — REST Bars (bar_cache, backtest source) vs WS Bars (live_bars,
+          the engine-consumed hybrid the algo lane / live model see). */}
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button style={btn(tab === 'rest' ? 'var(--blue)' : 'var(--text-tertiary)')} onClick={() => setTab('rest')}>
+          REST Bars (bar_cache)
+        </button>
+        <button style={btn(tab === 'ws' ? 'var(--blue)' : 'var(--text-tertiary)')} onClick={() => setTab('ws')}>
+          WS Bars (live_bars)
+        </button>
+      </div>
+
+      {tab === 'rest' && (
       <Card>
         <div style={{ padding: 16 }}>
           <h3 style={{ margin: '0 0 4px', fontSize: 15 }}>Supply Coverage &amp; Freshness</h3>
@@ -371,6 +397,47 @@ export default function BarCacheAdminPage() {
           </table>
         </div>
       </Card>
+      )}
+
+      {tab === 'ws' && (
+      <Card>
+        <div style={{ padding: 16 }}>
+          <h3 style={{ margin: '0 0 4px', fontSize: 15 }}>WS Bars (live_bars) — engine-consumed freshness</h3>
+          <div style={{ color: 'var(--text-tertiary)', fontSize: 12, marginBottom: 10 }}>
+            What the live engine consumed (ws / ws_agg / rest_correction / rest_insert / warmup_seed) over
+            the last 24h — the WS-stream health view. Lag green ≤2 min = streaming; gray = quiet.
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: 'var(--text-tertiary)', fontSize: 12, borderBottom: '1px solid var(--border)' }}>
+                <th style={cell}>Symbol</th>
+                <th style={cell}>TF</th>
+                <th style={cell}>Last bar (UTC)</th>
+                <th style={cell}>Lag</th>
+                <th style={cell}>Bars (24h)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {wsRows.length === 0 && (
+                <tr><td style={{ ...cell, color: 'var(--text-tertiary)' }} colSpan={5}>No WS bars in the last 24h (stream quiet / off-hours).</td></tr>
+              )}
+              {wsRows.map((w) => {
+                const lag = ageSec(w.last_bar);
+                return (
+                  <tr key={`${w.symbol}/${w.tf_seconds}`} style={{ borderBottom: '1px solid var(--border)' }}>
+                    <td style={{ ...cell, fontWeight: 600 }}>{w.symbol}</td>
+                    <td style={cell}>{tfLabel(w.tf_seconds)}</td>
+                    <td style={{ ...cell, fontSize: 12, color: 'var(--text-tertiary)' }}>{fmtTs(w.last_bar)}</td>
+                    <td style={{ ...cell, fontWeight: 600, color: lagColor(lag) }}>{fmtAge(lag)}</td>
+                    <td style={cell}>{fmtNum(w.bars_1d)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+      )}
 
       {/* Verify-vs-Polygon — windowed, self-serve. Pulls just the chosen window
           from Polygon and diffs it against bar_cache. */}
