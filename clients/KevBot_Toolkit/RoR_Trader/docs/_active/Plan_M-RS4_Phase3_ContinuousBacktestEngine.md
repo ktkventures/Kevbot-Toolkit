@@ -80,10 +80,20 @@ SPY + 15Min, 44t). Confirms the resident design is faithful BY CONSTRUCTION acro
 coarse + multi secondary-TF gates, and multiple symbols. **Step B unlocked.** Run:
 `PYTHONPATH=. ../.venv/bin/python _resident_replay_harness.py 263,267,194,136 1`.
 
-### Step B — Scaffold the `shadow-worker` service (inert)
+### Step B — Scaffold the `shadow-worker` service (inert) — ✅ SCAFFOLDED 2026-06-30
 `Dockerfile.shadow-worker` + a resident loop gated by `RORT_BACKTEST_LANE_MODE` (∈ button/cron/**shadow**;
 default `button` = today). Heartbeat/liveness (batch-worker mold). Claims a symbol shard. Does NOTHING
 until the mode flag flips. Ship to dev inert.
+
+**DONE — `src/shadow_worker.py` + `Dockerfile.shadow-worker`** (batch-worker mold). SIGTERM/SIGINT
+graceful stop, `/tmp/shadow_worker_alive` health file on a daemon thread, `SHADOW_WORKER_DISABLED`
+kill-switch. `RORT_BACKTEST_LANE_MODE` read at startup (default `button`; **fails loud** on an invalid
+value — never silently picks a different lane source); `RORT_SHADOW_SHARD` for the symbol shard. Inert in
+every mode (idle heartbeat only) — in `shadow` it logs "engine manager not implemented (Step C)" and idles.
+Validated locally: button/shadow idle, invalid-mode fail-loud, disabled-exit, and the Polygon CI guard
+(`_check_no_direct_polygon.py`) stays green (shadow_worker calls no Polygon). **Railway service itself is
+created in the dashboard (points at `Dockerfile.shadow-worker`) — a deploy step, not in-repo.** NOT yet
+flipped: the flag stays `button` everywhere; Kevin/backend agent sequence the flip.
 
 ### Step C — The resident engine manager (the core)
 Per symbol shard: load + warm engines for that symbol's strategies; poll `bar_cache` for new settled bars
