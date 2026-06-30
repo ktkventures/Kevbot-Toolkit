@@ -126,12 +126,21 @@ new settled trades via `_serialize_trades`+`insert_trade_admin` (`provisional=fa
   strategies, dry-run "would-write 908 trades", wrote nothing. **Two safety gates**: lane-mode flag (default
   `button`) AND `RORT_SHADOW_DRY_RUN` (default `1` = compute-only; arm writes with `=0`).
 
-**REMAINING for Step C/follow-ups:**
-1. **Provisional tail** — feed the <LAG unsettled bars to an engine CLONE (so the resident engine stays
-   pinned to the settled boundary), emit those trades `provisional=true`, flip false on settle. Column ready.
-2. **Re-prepare perf** — each poll re-prepares a full warmup-sized window (~2-3× from-cold in validation);
+**Provisional tail — ✅ DONE 2026-06-30 (gated default-OFF):** instead of an engine clone (blocked by the
+user-pack pickle issue), `_provisional_tail` does a bounded from-cold recompute over `(settled_until-warmup,
+now]` (`last_bar_partial=True`, `include_open_position=True`) and emits trades partitioned **by EXIT**: the
+resident lane owns `exit <= settled_until`; provisional owns `exit > settled_until` + any open position
+(disjoint keys, no gap for trades open across the boundary). Re-true: per poll a **targeted** delete of
+provisional rows whose exit has settled runs BEFORE the settled write (dodges the `(sid,entry,exit)` unique
+collision); a **full** delete-all + recompute + insert runs on its own cadence (`RORT_SHADOW_PROVISIONAL_S`,
+default 60s) so rows persist between refreshes. `provisional` added to `db.TRADE_COLUMN_FIELDS` (else it'd
+land in the `data` JSONB, not the column). Gated `RORT_SHADOW_PROVISIONAL` (default 0). Offline dry-run
+validated (sid 267: 4 tail trades, partition correct, no writes). DB write/delete paths exercise live in F.
+
+**REMAINING follow-ups (optimization, not correctness):**
+1. **Re-prepare perf** — each poll re-prepares a full warmup-sized window (~2-3× from-cold in validation);
    the live loop should prepare only the incremental new window (small warmup buffer) or extend a cached frame.
-3. **Bootstrap anchor** — bootstrap currently re-emits from `now-BOOTSTRAP_DAYS`; wire it to the DB max-entry
+2. **Bootstrap anchor** — bootstrap currently re-emits from `now-BOOTSTRAP_DAYS`; wire it to the DB max-entry
    anchor (catch-up semantics) so it re-emits exactly the gap since the lane was last current.
 
 ### Step D — Cold bootstrap + crash recovery — ✅ CORRECTNESS PROVEN 2026-06-30 (snapshot = optional)

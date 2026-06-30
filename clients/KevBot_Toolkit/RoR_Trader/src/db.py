@@ -1044,7 +1044,7 @@ TRADE_COLUMN_FIELDS = {
     'entry_price', 'exit_price',
     'r_multiple', 'dollar_pnl', 'executed_quantity',
     'direction', 'exec_type', 'exit_reason', 'data_source',
-    'created_at',
+    'created_at', 'provisional',
 }
 
 

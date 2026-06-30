@@ -50,6 +50,14 @@ BOOTSTRAP_DAYS = float(os.getenv("RORT_SHADOW_BOOTSTRAP_DAYS", "1"))
 # data_worker_engine.REST_BACKTEST_MODELS; cache_locked/corrected come from live_bars.
 REST_BACKTEST_MODELS = {None, "", "rest_only", "rest_hifi"}
 
+# Provisional unsettled-tail emission (gated, default OFF). When on, each refresh shows
+# the trades in the still-forming window (exit > settled boundary, plus any open position)
+# marked provisional=true; they flip to settled=false rows when their bars settle. Its own
+# (slower) cadence — a from-cold tail recompute is more expensive than a settled poll.
+PROVISIONAL_ENABLED = os.getenv("RORT_SHADOW_PROVISIONAL", "0").strip().lower() in (
+    "1", "true", "yes", "on")
+PROVISIONAL_REFRESH_S = int(os.getenv("RORT_SHADOW_PROVISIONAL_S", "60"))
+
 
 def _warmup_days(timeframe: str, sec_tfs: tuple) -> int:
     """Warmup window sized off the LONGEST (binding) TF — mirrors
@@ -103,6 +111,7 @@ class EngineSlot:
         self.engine = None                      # ResidentStrategyEngine | None
         self.last_processed_ts = None           # tz-aware Timestamp (engine boundary)
         self.last_entry_written: Optional[str] = None
+        self.last_provisional_at = None         # monotonic stamp of last prov refresh
         self.classify()
 
     def classify(self) -> None:
@@ -259,27 +268,146 @@ class ResidentEngineManager:
         slot.last_entry_written = mx
         return inserted
 
+    def _provisional_tail(self, slot: EngineSlot, now: datetime,
+                          settled_until: datetime) -> List[dict]:
+        """Trades in the unsettled window: a from-cold tail recompute over
+        `(settled_until - warmup, now]` (last bar partial), returning closed trades whose
+        EXIT is past the settled boundary plus any OPEN position. Partition by exit (not
+        entry) so a trade open across the boundary is never dropped and never collides
+        with the settled lane (which owns exit <= settled_until). Engine-clone is avoided
+        (user-pack pickle issue) — the from-cold tail is byte-consistent with the resident
+        lane at the boundary."""
+        import pandas as pd
+        from unified_engine import run_unified_backtest
+        from services import get_secondary_tf_map
+        from data_worker_engine import _UserContext
+
+        with _UserContext(slot.uid):
+            df = prepare_window(slot.strat, slot.bt_model, settled_until, now,
+                                slot.timeframe, slot.sec_tfs)
+            if df is None or len(df) < 2:
+                return []
+            sec_tf_map = get_secondary_tf_map(df) or None
+            trades_df, _ = run_unified_backtest(
+                df, slot.strat, general_packs=self._gen_packs(),
+                secondary_tf_map=sec_tf_map, include_open_position=True,
+                last_bar_partial=True)
+        if trades_df is None or len(trades_df) == 0:
+            return []
+        su = pd.Timestamp(settled_until)
+        su = su.tz_localize('UTC') if su.tz is None else su
+        out = []
+        for t in trades_df.to_dict('records'):
+            ex = t.get('exit_fill_ts')
+            if ex is None or (not hasattr(ex, 'isoformat') and pd.isna(ex)) or \
+                    (hasattr(ex, 'isoformat') and pd.isna(ex)):
+                out.append(t)                       # open position
+                continue
+            exd = pd.to_datetime(ex, utc=True, errors='coerce')
+            if pd.notna(exd) and exd > su:
+                out.append(t)                       # closed in the unsettled window
+        return out
+
+    def _delete_provisional(self, slot: EngineSlot,
+                            settling_until: Optional[datetime] = None) -> None:
+        """Delete the slot's provisional rows. With `settling_until`, delete ONLY closed
+        provisional rows whose exit has now settled (`exit_fill_ts <= settling_until`) —
+        the targeted clear that frees a now-settled trade's key before the settled write
+        (open rows have NULL exit and are left). Without it, clear ALL provisional rows
+        for the slot (the full-refresh path)."""
+        from db import get_admin_client
+        q = get_admin_client().table('trades').delete() \
+            .eq('strategy_id', slot.sid).eq('data_source', slot.data_source) \
+            .eq('provisional', True)
+        if settling_until is not None:
+            su = settling_until.isoformat() if hasattr(settling_until, 'isoformat') \
+                else str(settling_until)
+            q = q.lte('exit_fill_ts', su)
+        q.execute()
+
+    def _write_provisional(self, slot: EngineSlot, tail: List[dict]) -> int:
+        """Insert the fresh provisional tail (provisional=true). No-op in dry_run."""
+        if not tail:
+            return 0
+        if self.dry_run:
+            return len(tail)
+        import pandas as pd
+        from api.services.forward_test_service import _serialize_trades
+        from db import insert_trade_admin
+        records = _serialize_trades(pd.DataFrame(tail))
+        n = 0
+        for rec in records:
+            rec = dict(rec)
+            rec['data_source'] = slot.data_source
+            rec['provisional'] = True
+            if insert_trade_admin(slot.sid, slot.uid, rec) is not None:
+                n += 1
+        return n
+
+    def refresh_provisional(self, slot: EngineSlot, now: datetime,
+                            settled_until: datetime, force: bool = False) -> int:
+        """On its own cadence (PROVISIONAL_REFRESH_S): clear ALL the slot's provisional
+        rows and re-emit the current unsettled tail (delete-all + recompute + insert as
+        one unit, so rows don't vanish between refreshes). Returns inserted count, or -1
+        if not due."""
+        import time as _time
+        if not PROVISIONAL_ENABLED:
+            return 0
+        nowm = _time.monotonic()
+        if (not force and slot.last_provisional_at is not None
+                and nowm - slot.last_provisional_at < PROVISIONAL_REFRESH_S):
+            return -1   # not due
+        slot.last_provisional_at = nowm
+        tail = self._provisional_tail(slot, now, settled_until)
+        if not self.dry_run:
+            try:
+                self._delete_provisional(slot)   # clear all, then re-insert fresh tail
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[shadow] sid=%s provisional delete-all failed: %s",
+                               slot.sid, e)
+        return self._write_provisional(slot, tail)
+
     def poll(self, slot: EngineSlot, now: Optional[datetime] = None) -> dict:
-        """One settled poll for a slot: advance to `now - LAG`, write new closed trades.
+        """One poll for a slot: (optionally clear provisional →) advance the resident
+        engine to `now - LAG` and write new settled trades → (optionally re-emit the
+        provisional tail).
 
         Cadence gate: when the engine is already warm and no NEW full settled bar has
-        formed since `last_processed_ts`, skip — re-preparing a warmup-sized window every
-        cycle for zero new bars is the bulk of the steady-state cost. Mirrors
-        data_worker_engine.tick_strategy's no_new_bar gate. (A cold engine always runs:
-        the first poll must bootstrap.)
+        formed since `last_processed_ts`, skip the settled advance — re-preparing a
+        warmup-sized window for zero new bars is the bulk of the steady-state cost
+        (mirrors data_worker_engine.tick_strategy). Provisional refresh runs on its own
+        (slower) cadence regardless, since the forming bar changes continuously.
         """
         if not slot.eligible:
             return {'status': 'ineligible', 'reason': slot.ineligible_reason}
         now = now or datetime.now(timezone.utc)
         settled_until = now - timedelta(minutes=LAG_MINUTES)
-        if slot.engine is not None and slot.last_processed_ts is not None:
-            import pandas as pd
+
+        import pandas as pd
+        new_settled_bar = slot.engine is None or slot.last_processed_ts is None
+        if not new_settled_bar:
             last_dt = pd.Timestamp(slot.last_processed_ts).to_pydatetime()
-            if settled_until <= last_dt + timedelta(seconds=slot.tf_seconds):
-                return {'status': 'no_new_bar', 'inserted': 0,
-                        'last_bar_ts': slot.last_processed_ts}
-        closed = self.advance(slot, settled_until)
-        new = self._filter_new(slot, closed)
-        inserted = self.commit(slot, new)
-        return {'status': 'ok', 'inserted': inserted,
-                'last_bar_ts': slot.last_processed_ts}
+            new_settled_bar = settled_until > last_dt + timedelta(seconds=slot.tf_seconds)
+
+        # Targeted clear BEFORE the settled write: drop provisional rows whose exit has
+        # now settled (exit <= settled_until) so the settled insert can't collide with a
+        # stale provisional row on the (sid, entry, exit) unique index. Runs only on a new
+        # settled bar; open rows (NULL exit) are untouched. Decoupled from the full
+        # refresh so provisional rows persist between refresh ticks.
+        if new_settled_bar and PROVISIONAL_ENABLED and not self.dry_run:
+            try:
+                self._delete_provisional(slot, settling_until=settled_until)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[shadow] sid=%s settling-provisional delete failed: %s",
+                               slot.sid, e)
+
+        inserted = 0
+        if new_settled_bar:
+            closed = self.advance(slot, settled_until)
+            new = self._filter_new(slot, closed)
+            inserted = self.commit(slot, new)
+
+        prov = self.refresh_provisional(slot, now, settled_until)
+        status = 'ok' if new_settled_bar else 'no_new_bar'
+        return {'status': status, 'inserted': inserted,
+                'provisional': max(prov, 0), 'last_bar_ts': slot.last_processed_ts}
