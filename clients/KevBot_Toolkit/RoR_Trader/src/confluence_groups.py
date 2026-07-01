@@ -677,6 +677,20 @@ def _serialize_group_list(groups: List[ConfluenceGroup]) -> list:
     } for g in groups]
 
 
+def _load_confluence_groups_from_db() -> List[ConfluenceGroup]:
+    """DB-backed load, factored out so config_cache can memoize it (Fix 1b)."""
+    from db import load_confluence_groups_db
+    raw = load_confluence_groups_db()
+    if not raw:
+        groups = create_default_groups()
+        try:
+            save_confluence_groups(groups)
+        except Exception:
+            pass  # Return in-memory defaults even if save fails (e.g. no JWT)
+        return groups
+    return _parse_group_list(raw)
+
+
 def load_confluence_groups() -> List[ConfluenceGroup]:
     """
     Load confluence groups from the config file or database.
@@ -685,16 +699,12 @@ def load_confluence_groups() -> List[ConfluenceGroup]:
     """
     from db import USE_DB
     if USE_DB:
-        from db import load_confluence_groups_db
-        raw = load_confluence_groups_db()
-        if not raw:
-            groups = create_default_groups()
-            try:
-                save_confluence_groups(groups)
-            except Exception:
-                pass  # Return in-memory defaults even if save fails (e.g. no JWT)
-            return groups
-        return _parse_group_list(raw)
+        # M-RS4 Fix 1b: memoize the per-user DB load for the shadow-worker's poll
+        # loop (default OFF → calls _load_confluence_groups_from_db directly →
+        # byte-identical). See config_cache.py.
+        import config_cache
+        return config_cache.cached(
+            "confluence_groups", _load_confluence_groups_from_db)
 
     config_path = get_config_path()
 
