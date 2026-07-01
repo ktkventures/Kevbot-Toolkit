@@ -7,6 +7,23 @@ a **scheduling bottleneck** that must be fixed before Step F (fleet rollout) and
 
 ---
 
+## 0-JUL01. STATUS UPDATE (2026-07-01) — Fix 1a + Fix 2 SHIPPED; engine PROVEN live; arm 0-writes OPEN
+- **Fix 1a (incremental Hi-Fi load): SHIPPED** to dev, PR #18, gated `RORT_HIFI_INCREMENTAL_LOAD` (off).
+  Byte-identical (SQL==PY, walked-set identical on 5 canaries; −49%/−88% load). `Scope_Fix1_Hifi_Incremental_Load.md`.
+- **Fix 2 (§3 fairness + bounded advance + async KPI): SHIPPED** to dev, PR #19, gated
+  `RORT_SHADOW_FAIR_ORDER` / `RORT_SHADOW_MAX_ADVANCE_S` / `RORT_SHADOW_KPI_ASYNC` (all default-today).
+  **Also merged the anchor-hydrate fix (b14657c) which was NEVER on dev** (without it a cold bootstrap
+  409-floods every existing trade → the real driver of the observed starvation). Byte-identical by
+  construction (PATH-D + Hi-Fi gate) + unit-tested; `poll()` proven to run clean (no hang).
+- **PROVEN LIVE:** armed shadow-worker on 8 SPY canaries (276–283) → wrote real backtest trades → **93–100%
+  combined on Health**. The continuous engine + the whole Step F canary path work. (Health = backtest↔ALERTS,
+  not the algo lane — memory `feedback_health_is_backtest_vs_alerts`.)
+- **OPEN — the Fix 2 re-arm wrote 0 trades in ~22 min** (flags on AND off; not the flags, not a poll() bug).
+  Likely the anchor now sits at ~16:26 from the earlier arm (little new to write) OR container bootstrap
+  slowness. **Shadow left INERT (button).** Next: check if 276–283 actually traded 16:26→now; then re-arm
+  (lane_mode=shadow + dry_run=0 + Fix2 flags), confirm 8/8 incl 276 (fairness + anchor-hydrate = no 409
+  flood), widen to the 34-shard, then Step F. Re-arm details: memory `project_mrs4_shadow_arming_2026-07-01`.
+
 ## 0. STATUS / NEXT-SESSION PICKUP (2026-06-30 EOD)
 **The two-phase loop (§3) was REVERTED (c0cc45d)** — it introduced a **per-second FIDELITY REGRESSION**:
 deferring Hi-Fi (§1b) made shadow-written stop-loss exits land on **primary-TF bar edges** (10s boundaries)
@@ -27,6 +44,21 @@ code); the fidelity Hi-Fi change + LIVE validation wait for a market-hours sessi
   fidelity impact). Do NOT touch `run_hifi_pass2`/KPI load paths tonight.
 - **MORNING (market hours):** implement Fix 1 against the ready gate → arm live → confirm intra-candle exits
   in real time + all strategies fresh + Health pairing → then F/G. Plus the emblem frontend + Health TBD gate.
+
+**✅ TONIGHT DONE (2026-06-30 night session) — all three safe-prep items:**
+1. **SCOPED** → `docs/_active/Scope_Fix1_Hifi_Incremental_Load.md`. Chosen design: push the existing
+   `last_hifi_pass_at` watermark into SQL via `load_trades_admin(created_at_gte=...)` — **byte-identical to
+   today's incremental filter** (equivalence argument in §2c), kills the reload-all. **Gotcha:** window by
+   `created_at`, NOT `entry_fill_ts` (backfills write old-entry/new-`created_at` trades → an entry-ts window
+   would strand them bar-aligned). KPI/equity reload-all stays a separate concern (in-memory `kpi_series`, §2).
+2. **GATE BUILT** → `_shadow_manager_validate.py` Hi-Fi section (`VALIDATE_HIFI=1`, default on). Refines BOTH
+   lanes with the real `_hifi_resolve_trades`, asserts post-Hi-Fi byte-identity + intra-candle L-type
+   stop/target exits (`_on_boundary` mirrors the refiner's `.second % tf_seconds == 0` test). AMBER when no
+   1-sec bars (off-hours) — never false-greens, never changes the Step C verdict. Smoke-ran sid 280: Step C
+   green (unchanged), Hi-Fi AMBER (0 eligible in the dead window). Green in the morning on live 1-sec data.
+3. **EMBLEM BACKEND — already satisfied, no code change.** Data source `/algo-trades` → `load_trades_admin`
+   → `_row_to_trade` already merges `provisional` (column) + `hifi_resolved` (`data` JSONB); `hifi_resolved`
+   already in the frontend `TradeDTO`. Remaining = frontend emblem column + Health TBD gate (morning, §0b).
 
 **Full Fix 1 detail (build the REAL fix in the morning, gate-first):**
 1. Make `run_hifi_pass2` + the KPI recompute load only the RECENT window (not load-all-then-filter) so Hi-Fi

@@ -15,6 +15,19 @@ the per-poll re-prepare + resident feed.
   REFERENCE  run_unified_backtest over [T0-warmup, T_end]   (from-cold), entry > T0
   MANAGER    advance(slot, until=T0, since=T0)  then  K polls advance(slot, until_k)
 
+HI-FI GATE (M-RS4 Phase 3 §0, 2026-06-30) — the two-phase-loop regression let the
+shadow WRITE stop-loss exits on the PRIMARY-TF bar boundary (e.g. 10s edges) because
+Hi-Fi (the per-second refinement) lagged. Bar-aligned exits don't match the live lane's
+per-second fills → Strategy-Health pairing broke (all TBD). To catch that class of
+regression OFFLINE, after the bar-resolution byte-identity check we run the REAL
+`_hifi_resolve_trades` (Hi-Fi Pass 2 — the same refinement the KPI/recompute path calls)
+over BOTH the manager and the from-cold trades and assert:
+  (1) still byte-identical AFTER Hi-Fi (refinement is deterministic across lanes), and
+  (2) every eligible L-type stop/target exit that Hi-Fi refined landed INTRA-CANDLE
+      (NOT on the primary-TF bar boundary).
+Gated by VALIDATE_HIFI (default 1). AMBER when Hi-Fi couldn't be exercised (no 1-sec
+bars for the window — re-run near market hours); does NOT change the Step C verdict.
+
 Usage:  PYTHONPATH=. ../.venv/bin/python _shadow_manager_validate.py [SIDS] [DAYS]
 """
 import os, sys, logging
@@ -47,6 +60,73 @@ from unified_engine import run_unified_backtest
 from shadow_manager import ResidentEngineManager, EngineSlot
 from services import prepare_strategy_window_df
 from trade_snapshot import KEY_FIELDS, VAL_FIELDS
+
+# HI-FI GATE (§0). Default ON; degrades to AMBER when no 1-sec bars are available.
+HIFI_GATE = os.environ.get("VALIDATE_HIFI", "1").strip().lower() in (
+    "1", "true", "yes", "on")
+from api.services.backtest_service import _hifi_resolve_trades, _tf_to_seconds
+HIFI_VERDICTS: dict = {}   # sid -> 'green'|'amber'|'red'|None
+
+
+def _on_boundary(ts_val, tf_seconds):
+    """True if `ts_val` sits exactly on a primary-TF bar boundary (bar-aligned),
+    False if intra-candle, None if unparseable. Mirrors the eligibility test in
+    `backtest_service._hifi_resolve_trades` (`.second % tf_seconds == 0 and
+    .microsecond == 0`) so 'intra-candle' means the same thing as the refiner's."""
+    if ts_val is None:
+        return None
+    try:
+        ts = pd.Timestamp(ts_val)
+    except Exception:  # noqa: BLE001
+        return None
+    if pd.isna(ts):
+        return None
+    return (int(ts.second) % tf_seconds == 0
+            and int(ts.microsecond) == 0
+            and int(getattr(ts, "nanosecond", 0)) == 0)
+
+
+def _refine(df_trades, df_bars, strat, symbol, tf):
+    """Apply the REAL Hi-Fi Pass 2 to a COPY of the trades — exactly as the
+    KPI/recompute path does (`_hifi_resolve_trades`). Ensures the columns the
+    refiner reads are present (`hifi_resolved` default False; `direction` from
+    the strategy config — the engine dict omits it and the refiner defaults LONG,
+    so inject it for a faithful per-second walk on SHORTs)."""
+    if df_trades is None or len(df_trades) == 0:
+        return df_trades
+    d = df_trades.copy()
+    if "hifi_resolved" not in d.columns:
+        d["hifi_resolved"] = False
+    if "direction" not in d.columns:
+        d["direction"] = strat.get("direction", "LONG")
+    return _hifi_resolve_trades(d, symbol, tf, bar_df=df_bars)
+
+
+def _intra_candle_stats(df_ref_trades, tf_seconds, after_iso):
+    """Among steady (entry > after_iso) L-type stop/target exits in a REFINED
+    trade frame, count: eligible, Hi-Fi-refined, and of those how many landed
+    intra-candle (off the bar boundary). Uses the same `str(entry) <= after`
+    steady filter as `keyed()` so the population matches the byte-identity set."""
+    elig = refined = offbound = 0
+    if df_ref_trades is None or len(df_ref_trades) == 0:
+        return {"elig": 0, "refined": 0, "offbound": 0}
+    for t in df_ref_trades.to_dict("records"):
+        ent = t.get("entry_fill_ts")
+        if ent is None or str(ent) <= after_iso:
+            continue
+        er = t.get("exit_reason")
+        stop_et = str(t.get("stop_exec_type", "L")).upper()
+        tgt_et = str(t.get("target_exec_type", "L")).upper()
+        is_stop = er in ("stop_loss", "stop") and stop_et == "L"
+        is_tgt = er == "target" and tgt_et == "L"
+        if not (is_stop or is_tgt):
+            continue
+        elig += 1
+        if t.get("hifi_resolved") is True:
+            refined += 1
+            if _on_boundary(t.get("exit_fill_ts"), tf_seconds) is False:
+                offbound += 1
+    return {"elig": elig, "refined": refined, "offbound": offbound}
 
 
 def keyed(df, after=None):
@@ -157,6 +237,62 @@ def run_sid(sid):
         for k in changed[:5]:
             diffs = {f: (A[k][f], M[k][f]) for f in VAL_FIELDS if A[k][f] != M[k][f]}
             print(f"        changed {k}: {diffs}", flush=True)
+
+    # ── HI-FI GATE (§0) — refine BOTH lanes with the real Pass 2, then assert
+    # post-Hi-Fi byte-identity + intra-candle stop/target exits. Additive: never
+    # changes the Step C (bar-resolution) verdict returned below.
+    if HIFI_GATE:
+        try:
+            tf_secs = _tf_to_seconds(tf)
+            sym = strat["symbol"]
+            rA = _refine(df_A, df_ref, strat, sym, tf)
+            rM = _refine(pd.DataFrame(acc) if acc else pd.DataFrame(),
+                         df_ref, strat, sym, tf)
+            Ahf, Mhf = keyed(rA, after=T0_iso), keyed(rM, after=T0_iso)
+            ka2, km2 = set(Ahf), set(Mhf)
+            hf_added, hf_removed = km2 - ka2, ka2 - km2
+            hf_changed = [k for k in (ka2 & km2) if Ahf[k] != Mhf[k]]
+            hf_ident = not hf_added and not hf_removed and not hf_changed
+            st = _intra_candle_stats(rM, tf_secs, T0_iso)
+            # Verdict keys on WHETHER eligible exits got Hi-Fi-walked, NOT on the
+            # refined timestamp's boundary alignment. A refined exit that lands on
+            # the bar boundary is legitimate — the gap-aware walker fills at the exit
+            # bar's OPEN (second :00) when the first 1-sec bar already breached the
+            # level (overnight gap / flash move). The REGRESSION signature is the
+            # opposite: eligible stop/target exits left UN-walked (refined < elig),
+            # which stay bar-aligned because Hi-Fi never resolved them.
+            on_bound = st["refined"] - st["offbound"]   # refined-but-boundary = gap fills
+            if not hf_ident:
+                verdict = "red"
+                note = (f"post-Hi-Fi DIVERGENCE added={len(hf_added)} "
+                        f"removed={len(hf_removed)} changed={len(hf_changed)}")
+            elif st["elig"] == 0:
+                verdict = "amber"
+                note = "no L-type stop/target exits in window — nothing to refine"
+            elif st["refined"] == 0:
+                verdict = "amber"
+                note = ("Hi-Fi not exercised (no 1-sec bars for window) — "
+                        "re-run near market hours")
+            elif st["refined"] < st["elig"]:
+                verdict = "amber"
+                note = (f"partial 1-sec coverage: {st['refined']}/{st['elig']} "
+                        f"eligible walked — re-run near market hours for full coverage")
+            else:  # refined == elig: every eligible stop/target exit was Hi-Fi-walked
+                verdict = "green"
+                note = (f"{st['refined']}/{st['elig']} eligible refined; "
+                        f"{st['offbound']} intra-candle"
+                        + (f", {on_bound} boundary/gap fill(s)" if on_bound else ""))
+            HIFI_VERDICTS[sid] = verdict
+            sym_e = {"green": "✅", "amber": "🟡", "red": "❌"}[verdict]
+            print(f"    HI-FI GATE {sym_e} {verdict.upper()}: post-hifi identical="
+                  f"{hf_ident} elig={st['elig']} refined={st['refined']} "
+                  f"intra_candle={st['offbound']} boundary/gap={on_bound} — {note}",
+                  flush=True)
+        except Exception as e:  # noqa: BLE001
+            import traceback
+            HIFI_VERDICTS[sid] = None
+            print(f"    HI-FI GATE: ERROR {e}", flush=True)
+            traceback.print_exc()
     return ok
 
 
@@ -185,3 +321,22 @@ elif green:
 else:
     print("  ⚠️  no canaries evaluated.")
 print("=" * 64)
+
+if HIFI_GATE:
+    hg = [s for s, v in HIFI_VERDICTS.items() if v == "green"]
+    ha = [s for s, v in HIFI_VERDICTS.items() if v == "amber"]
+    hr = [s for s, v in HIFI_VERDICTS.items() if v == "red"]
+    he = [s for s, v in HIFI_VERDICTS.items() if v is None]
+    print("HI-FI GATE — stop/target exits intra-candle + byte-identical post-Hi-Fi")
+    print(f"  green={hg}  amber={ha}  red={hr}  error={he}")
+    if hr:
+        print("  ❌ HI-FI RED — refined exits bar-aligned or lanes diverge post-Hi-Fi; "
+              "do NOT arm live.")
+    elif hg:
+        print(f"  ✅ HI-FI GREEN ({len(hg)}) — per-second exits validated"
+              + (f"; {len(ha)} amber (no 1-sec data — re-run at market hours)"
+                 if ha else "") + ".")
+    elif ha:
+        print("  🟡 HI-FI AMBER only — Hi-Fi not exercised offline (no 1-sec bars). "
+              "Re-run near market hours to turn green.")
+    print("=" * 64)
