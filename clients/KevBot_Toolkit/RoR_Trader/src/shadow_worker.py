@@ -108,6 +108,33 @@ def _dry_run_default() -> bool:
         "0", "false", "no", "off")
 
 
+def _kpi_drain_loop(mgr):
+    """Fix 2b: run the KPI + equity + Hi-Fi recompute OFF the hot poll path. Drains the
+    manager's KPI queue (sids that traded) and recomputes each on its own cadence
+    (`maybe_recompute_kpis` is debounced + resets the has-traded flag on success). Keeps
+    the poll loop O(new bars) so no single slot's reload-all recompute starves the tail."""
+    import time as _t
+    drain_s = int(os.environ.get("SHADOW_KPI_DRAIN_S", "10"))
+    while _running:
+        try:
+            for sid in mgr.drain_kpi():
+                if not _running:
+                    break
+                slot = mgr.slots.get(sid)
+                if slot is not None:
+                    try:
+                        mgr.maybe_recompute_kpis(slot)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("[shadow_worker] KPI recompute sid=%s failed: %s",
+                                       sid, e)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[shadow_worker] KPI drain loop error: %s", e)
+        for _ in range(drain_s):
+            if not _running:
+                break
+            _t.sleep(1)
+
+
 def _resident_loop(stop_evt: threading.Event):
     """The continuous-resident backtest lane (Step C). Per cycle: refresh the slot set,
     then poll each eligible slot (advance its resident engine to now-LAG, write new
@@ -129,6 +156,16 @@ def _resident_loop(stop_evt: threading.Event):
                    "packs=%d (dry_run writes NOTHING; arm with RORT_SHADOW_DRY_RUN=0)",
                    dry, symbols or "(all)", f"{len(sids)} ids" if sids else "(none)", npacks)
 
+    # Fix 2b: KPI/Hi-Fi recompute on a separate thread (off the poll path).
+    from shadow_manager import KPI_ASYNC
+    if KPI_ASYNC:
+        threading.Thread(target=_kpi_drain_loop, args=(mgr,), daemon=True,
+                         name="shadow-kpi").start()
+        logger.warning("[shadow_worker] Fix 2b: async KPI worker thread started")
+    # Fix 2a: process slots oldest-polled-first so no slot can starve (default on).
+    fair_order = os.environ.get("RORT_SHADOW_FAIR_ORDER", "1").strip().lower() in (
+        "1", "true", "yes", "on")
+
     reload_every = int(os.environ.get("RORT_SHADOW_RELOAD_S", "300"))
     last_discover = 0.0
     while _running:
@@ -144,7 +181,12 @@ def _resident_loop(stop_evt: threading.Event):
             last_discover = now
 
         wrote = 0
-        for slot in list(mgr.slots.values()):
+        slots_iter = list(mgr.slots.values())
+        if fair_order:
+            # oldest last_tick_at first (never-polled = -1 → front). No slot starves.
+            slots_iter.sort(
+                key=lambda s: s.last_tick_at if s.last_tick_at is not None else -1.0)
+        for slot in slots_iter:
             if not _running:
                 break
             if not slot.eligible:
