@@ -17,8 +17,18 @@ Phase 3 A-E + the 314 fix are on dev). The **anchor fix (b14657c) is KEPT** (goo
 **PARKED inert**. Reconciled the 20 polluted SPY lanes via parallel full_recompute (job b99ac3c6, batch-worker)
 to restore per-second exits + pairing.
 
-**NEXT SESSION — build Fix 1 (§2, incremental LOAD for KPI *and* Hi-Fi), the REAL fix, with an OFFLINE TEST
-BEFORE any deploy:**
+**SESSION SPLIT (Kevin 2026-06-30 EOD): a FRESH session tonight does the SAFE PREP (no fidelity-critical
+code); the fidelity Hi-Fi change + LIVE validation wait for a market-hours session.**
+- **TONIGHT (fresh session, safe prep):** (1) SCOPE the `run_hifi_pass2` incremental-load change — a scoped
+  `since`/trade-id load param, default = today's behavior (write the exact plan, don't ship the shared-fn
+  change yet). (2) BUILD THE OFFLINE GATE FIRST — a test asserting shadow stop-loss exits are intra-candle
+  (NOT on the primary-TF bar boundary) AND byte-identical to from-cold (extend `_shadow_manager_validate.py`).
+  (3) OPTIONAL: emblem BACKEND — surface `provisional` + `hifi_resolved` on the trade DTO (read-only, no
+  fidelity impact). Do NOT touch `run_hifi_pass2`/KPI load paths tonight.
+- **MORNING (market hours):** implement Fix 1 against the ready gate → arm live → confirm intra-candle exits
+  in real time + all strategies fresh + Health pairing → then F/G. Plus the emblem frontend + Health TBD gate.
+
+**Full Fix 1 detail (build the REAL fix in the morning, gate-first):**
 1. Make `run_hifi_pass2` + the KPI recompute load only the RECENT window (not load-all-then-filter) so Hi-Fi
    can run PROMPTLY every poll (cheap) → exits stay intra-candle in real time + no starvation.
 2. **Gate/test:** on a canary (e.g. sid 280/288), confirm shadow-written stop-loss exits are INTRA-candle
