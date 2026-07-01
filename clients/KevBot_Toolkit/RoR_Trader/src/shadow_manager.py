@@ -292,34 +292,50 @@ class ResidentEngineManager:
 
     def _filter_new(self, slot: EngineSlot, closed: List[dict]) -> List[dict]:
         """Closed trades whose entry is strictly newer than the DB anchor (idempotent
-        with the (strategy_id, entry_fill_ts, exit_fill_ts) unique index regardless)."""
+        with the (strategy_id, entry_fill_ts, exit_fill_ts) unique index regardless).
+
+        Compare as Timestamps, NOT raw strings: the DB-hydrated anchor is ISO
+        (`2026-07-01T00:00:00+00:00`, 'T' separator) while a trade's entry_fill_ts is a
+        pandas-Timestamp str (`2026-07-01 20:46:20+00:00`, space separator). Space (0x20)
+        < 'T' (0x54), so a naive string `>` filters out EVERY same-day trade → 0 writes
+        on every re-arm once the anchor is DB-hydrated (b14657c). See feedback_gengate_
+        live_string_ts for the same string-vs-datetime bug class."""
         if not closed:
             return []
         anchor = slot.last_entry_written
         if not anchor:
             return closed
-        return [t for t in closed if str(t.get('entry_fill_ts')) > str(anchor)]
+        import pandas as pd
+        anchor_ts = pd.Timestamp(anchor)
+        return [t for t in closed
+                if pd.Timestamp(t.get('entry_fill_ts')) > anchor_ts]
 
     def commit(self, slot: EngineSlot, closed: List[dict]) -> int:
         """Write settled closed trades. No-op in dry_run. Advances the entry anchor."""
         if not closed:
             return 0
+        import pandas as pd
+        # Advance the anchor by Timestamp comparison, not raw strings (mixed 'T'/space
+        # separators otherwise mis-order — see _filter_new).
         if self.dry_run:
             mx = slot.last_entry_written
+            mx_ts = pd.Timestamp(mx) if mx else None
             for t in closed:
                 ek = t.get('entry_fill_ts')
-                if ek and (mx is None or str(ek) > str(mx)):
-                    mx = str(ek)
+                if ek:
+                    ek_ts = pd.Timestamp(ek)
+                    if mx_ts is None or ek_ts > mx_ts:
+                        mx, mx_ts = str(ek), ek_ts
             slot.last_entry_written = mx
             return len(closed)
 
-        import pandas as pd
         from api.services.forward_test_service import _serialize_trades
         from db import insert_trade_admin
 
         records = _serialize_trades(pd.DataFrame(closed))
         inserted = 0
         mx = slot.last_entry_written
+        mx_ts = pd.Timestamp(mx) if mx else None
         for rec in records:
             rec = dict(rec)
             rec['data_source'] = slot.data_source
@@ -327,8 +343,10 @@ class ResidentEngineManager:
             if insert_trade_admin(slot.sid, slot.uid, rec) is not None:
                 inserted += 1
             ek = rec.get('entry_fill_ts')
-            if ek and (mx is None or str(ek) > str(mx)):
-                mx = str(ek)
+            if ek:
+                ek_ts = pd.Timestamp(ek)
+                if mx_ts is None or ek_ts > mx_ts:
+                    mx, mx_ts = str(ek), ek_ts
         slot.last_entry_written = mx
         return inserted
 
