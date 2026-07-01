@@ -7,6 +7,26 @@ a **scheduling bottleneck** that must be fixed before Step F (fleet rollout) and
 
 ---
 
+## 0. STATUS / NEXT-SESSION PICKUP (2026-06-30 EOD)
+**The two-phase loop (§3) was REVERTED (c0cc45d)** — it introduced a **per-second FIDELITY REGRESSION**:
+deferring Hi-Fi (§1b) made shadow-written stop-loss exits land on **primary-TF bar edges** (10s boundaries)
+instead of intra-candle, which also broke Strategy-Health pairing (everything TBD — bar-aligned exits don't
+match the live lane's per-second fills). Verified in DB on sid 280: trades created ≤21:45 UTC were ~2-5%
+bar-aligned (correct), ≥21:54 UTC were 100% bar-aligned. The two-phase change **never reached dev** (only
+Phase 3 A-E + the 314 fix are on dev). The **anchor fix (b14657c) is KEPT** (good, orthogonal). Shadow is
+**PARKED inert**. Reconciled the 20 polluted SPY lanes via parallel full_recompute (job b99ac3c6, batch-worker)
+to restore per-second exits + pairing.
+
+**NEXT SESSION — build Fix 1 (§2, incremental LOAD for KPI *and* Hi-Fi), the REAL fix, with an OFFLINE TEST
+BEFORE any deploy:**
+1. Make `run_hifi_pass2` + the KPI recompute load only the RECENT window (not load-all-then-filter) so Hi-Fi
+   can run PROMPTLY every poll (cheap) → exits stay intra-candle in real time + no starvation.
+2. **Gate/test:** on a canary (e.g. sid 280/288), confirm shadow-written stop-loss exits are INTRA-candle
+   (NOT on 10s boundaries) AND trades byte-identical to from-cold, BEFORE arming live or pushing to dev.
+3. Only then re-attempt a scheduling change (bounded/parallel), re-validate live during market hours (all
+   strategies fresh + intra-candle exits + pairing), then F/G.
+Do NOT re-ship a KPI/Hi-Fi decoupling that lets Hi-Fi lag — per-second exits are the fidelity contract.
+
 ## 1. The finding (what the live run showed)
 Armed the shadow on the 34 extended-hours strategies (SPY 30, TSLA 2, KO 1, DIA 1) for ~2.5h. Result:
 - ✅ **Correct + read-only.** SPY 422 ext-hours trades, sid 301 clean 5,076-trade backfill (no dups), 0
