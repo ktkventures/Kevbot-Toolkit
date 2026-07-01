@@ -27,6 +27,25 @@ BEFORE any deploy:**
    strategies fresh + intra-candle exits + pairing), then F/G.
 Do NOT re-ship a KPI/Hi-Fi decoupling that lets Hi-Fi lag — per-second exits are the fidelity contract.
 
+## 0b. REFRAME (Kevin 2026-06-30) — Hi-Fi may lag *a little* if it's VISIBLE + Health-aware
+Hi-Fi does NOT drive entries, so a SHORT lag is acceptable — the real problem was the lag being ~30min AND
+INVISIBLE (silently mis-classified Health as bar-aligned exits didn't pair). So the target is **reasonably
+prompt (minutes, via Fix 1 incremental-load) + VISIBLE per-trade status**, not "instant Hi-Fi". Two deliverables:
+
+**A. Per-trade status emblem** (Strategy Details → Charting Trades / trade list). Two flags per trade:
+`settled` = `provisional=false`; `hifi` = `data->>'hifi_resolved' = true`.
+- 🟠 ORANGE = neither (provisional AND not-hifi — raw bar-aligned, "we have something").
+- 🟡 YELLOW = exactly one met (settled-not-hifi, the common in-progress state).
+- 🟢 GREEN  = both (settled AND hifi = final per-second price).
+Backend: surface `provisional` + `hifi_resolved` on the trade DTO (both already stored). Frontend: emblem column.
+
+**B. Health-page TBD gate:** a trade stays TBD until BOTH `settled` AND `hifi`. Only then classify
+paired / phantom / missed. This fixes the mis-classification that un-Hi-Fi'd (bar-aligned) trades caused
+(everything went TBD/unpaired during the shadow runs). Find the Health pairing/classification code and add the
+`settled AND hifi_resolved` precondition before bucketing.
+
+This makes the Hi-Fi lag honest + non-breaking, and makes Fix 1 a "prompt enough" goal rather than "instant".
+
 ## 1. The finding (what the live run showed)
 Armed the shadow on the 34 extended-hours strategies (SPY 30, TSLA 2, KO 1, DIA 1) for ~2.5h. Result:
 - ✅ **Correct + read-only.** SPY 422 ext-hours trades, sid 301 clean 5,076-trade backfill (no dups), 0
