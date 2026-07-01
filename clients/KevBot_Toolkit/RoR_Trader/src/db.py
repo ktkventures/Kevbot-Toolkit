@@ -1945,8 +1945,7 @@ def load_user_settings_admin(user_id: str) -> dict:
     return {}
 
 
-def load_general_packs_admin(user_id: str) -> list:
-    """Load general packs for a specific user (admin client)."""
+def _load_general_packs_admin_uncached(user_id: str) -> list:
     client = get_admin_client()
     result = client.table('general_packs') \
         .select('packs') \
@@ -1959,8 +1958,20 @@ def load_general_packs_admin(user_id: str) -> list:
     return []
 
 
-def load_confluence_groups_admin(user_id: str) -> list:
-    """Load confluence groups for a specific user (admin client)."""
+def load_general_packs_admin(user_id: str) -> list:
+    """Load general packs for a specific user (admin client).
+
+    M-RS4 Fix 1b: memoized per user_id (worker-path fallback used when there is no
+    thread-local user context). Default OFF → uncached. Distinct namespace from the
+    context-scoped loader because this returns raw JSON, not parsed GeneralPack objs.
+    """
+    import config_cache
+    return config_cache.cached(
+        "general_packs_admin_raw",
+        lambda: _load_general_packs_admin_uncached(user_id), uid=user_id)
+
+
+def _load_confluence_groups_admin_uncached(user_id: str) -> list:
     client = get_admin_client()
     result = client.table('confluence_groups') \
         .select('groups') \
@@ -1971,6 +1982,19 @@ def load_confluence_groups_admin(user_id: str) -> list:
         val = result.data['groups']
         return json.loads(val) if isinstance(val, str) else val
     return []
+
+
+def load_confluence_groups_admin(user_id: str) -> list:
+    """Load confluence groups for a specific user (admin client).
+
+    M-RS4 Fix 1b: memoized per user_id (worker-path fallback used when there is no
+    thread-local user context). Default OFF → uncached. Distinct namespace from the
+    context-scoped loader because this returns raw JSON, not parsed ConfluenceGroups.
+    """
+    import config_cache
+    return config_cache.cached(
+        "confluence_groups_admin_raw",
+        lambda: _load_confluence_groups_admin_uncached(user_id), uid=user_id)
 
 
 def get_monitored_strategies_db(user_id: str) -> list:

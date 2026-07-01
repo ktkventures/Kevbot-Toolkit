@@ -33,13 +33,15 @@ def _ttl_seconds() -> float:
         return 0.0
 
 
-def cached(namespace: str, loader):
-    """Return `loader()` memoized per `(namespace, current user_id)` for TTL seconds.
+def cached(namespace: str, loader, uid=None):
+    """Return `loader()` memoized per `(namespace, user_id)` for TTL seconds.
 
     `namespace` distinguishes concurrent caches (e.g. 'confluence_groups' vs
-    'general_packs'). The key also includes the *current* user id (via
-    `db.get_current_user_id()`), matching how the wrapped loaders already scope
-    their DB query — so user A never receives user B's config.
+    'general_packs'). The key also includes the user id: `uid` when given (the
+    admin loaders scope by an explicit `user_id` arg), otherwise the *current*
+    context user via `db.get_current_user_id()` (the context-scoped loaders). Either
+    way user A never receives user B's config. Use a distinct `namespace` per
+    loader return-shape (parsed vs raw) so a cross-hit can't return the wrong type.
 
     TTL <= 0 -> bypass the cache and call `loader()` directly (byte-identical to
     the pre-Fix-1b path). The returned object is shared read-only, exactly like
@@ -49,8 +51,9 @@ def cached(namespace: str, loader):
     if ttl <= 0:
         return loader()
 
-    from db import get_current_user_id
-    uid = get_current_user_id()
+    if uid is None:
+        from db import get_current_user_id
+        uid = get_current_user_id()
     key = (namespace, uid)
     now = time.monotonic()
 
