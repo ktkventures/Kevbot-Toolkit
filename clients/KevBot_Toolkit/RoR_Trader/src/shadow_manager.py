@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -80,6 +81,22 @@ RECOMPUTE_KPIS = os.getenv("RORT_SHADOW_RECOMPUTE_KPIS", "1").strip().lower() in
     "1", "true", "yes", "on")
 KPI_DEBOUNCE_S = int(os.getenv("RORT_SHADOW_KPI_DEBOUNCE_S", "300"))
 
+# ── M-RS4 Fix 2 — anti-starvation (all default to today's behavior) ──────────────
+# Fix 2a: bounded per-poll advance. Cap how far the resident engine advances each
+# poll so a deep-gap strategy (e.g. a 9.8k-trade bootstrap) backfills in bounded
+# chunks across cycles instead of stalling the single-threaded loop on one giant
+# pass. Byte-identical to advancing to now-LAG in one shot (the engine is resident
+# and feeds bars in order — proven by _shadow_manager_validate PATH D). 0 = unbounded
+# (today's behavior). Steady-state (caught-up) strategies advance their small delta
+# in one poll regardless.
+MAX_ADVANCE_S = int(os.getenv("RORT_SHADOW_MAX_ADVANCE_S", "0"))
+# Fix 2b: run the KPI + equity + Hi-Fi recompute on a SEPARATE worker thread instead
+# of inline in poll() — the poll loop then only does advance + write (fast, O(new
+# bars)); KPIs/Health/Hi-Fi lag on their own cadence without starving trade freshness.
+# Default OFF = today's inline recompute.
+KPI_ASYNC = os.getenv("RORT_SHADOW_KPI_ASYNC", "0").strip().lower() in (
+    "1", "true", "yes", "on")
+
 
 def prepare_window(strat: dict, model, since_dt: datetime, until_dt: datetime,
                    timeframe: str, sec_tfs: tuple):
@@ -114,6 +131,7 @@ class EngineSlot:
         self.last_provisional_at = None         # monotonic stamp of last prov refresh
         self.has_traded_since_kpi = False       # set on a settled write; drives KPI recompute
         self.last_kpi_at = None                 # monotonic stamp of last KPI recompute
+        self.last_tick_at = None                # monotonic stamp of last poll (Fix 2a fairness)
         self.classify()
 
     def classify(self) -> None:
@@ -150,6 +168,27 @@ class ResidentEngineManager:
         self.dry_run = dry_run
         self.slots: dict[int, EngineSlot] = {}
         self._enabled_gen = None
+        # Fix 2b: sids that traded and need a (debounced) KPI/Hi-Fi recompute, drained
+        # by the shadow-worker's KPI thread. De-duped set under a lock.
+        self.kpi_queue: set[int] = set()
+        self._kpi_lock = threading.Lock()
+
+    def enqueue_kpi(self, sid: int) -> None:
+        """Mark a slot as needing a KPI/Hi-Fi recompute (Fix 2b async path)."""
+        with self._kpi_lock:
+            self.kpi_queue.add(sid)
+
+    def drain_kpi(self, max_n: int = 0) -> list:
+        """Pop up to `max_n` queued sids (0 = all). Called by the KPI worker thread."""
+        with self._kpi_lock:
+            if not self.kpi_queue:
+                return []
+            if max_n and len(self.kpi_queue) > max_n:
+                out = [self.kpi_queue.pop() for _ in range(max_n)]
+            else:
+                out = list(self.kpi_queue)
+                self.kpi_queue.clear()
+        return out
 
     def _gen_packs(self):
         if self._enabled_gen is None:
@@ -231,6 +270,21 @@ class ResidentEngineManager:
 
             if slot.engine is None:
                 slot.engine = ResidentStrategyEngine(slot.strat, self._gen_packs())
+                # Bootstrap anchor: hydrate last_entry_written from the DB so the engine's
+                # warm-window re-emissions (which re-derive the strategy's existing trades)
+                # are filtered out instead of re-attempted one-by-one → flooding 409
+                # conflicts and bogging the loop. The resident lane writes FORWARD (entry >
+                # anchor); deep/interspersed historical gaps are the nightly full_recompute
+                # backstop's job (per Plan §G). In-memory anchor resets on restart, so do
+                # this on every (re)bootstrap.
+                if slot.last_entry_written is None:
+                    try:
+                        from db import get_max_entry_ts_admin
+                        slot.last_entry_written = get_max_entry_ts_admin(
+                            slot.sid, slot.uid, data_source_filter='backtest_%')
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("[shadow] sid=%s anchor hydrate failed: %s",
+                                       slot.sid, e)
 
             new = slot.engine.feed(df, sec_tf_map)
         slot.last_processed_ts = slot.engine.last_bar_ts
@@ -439,14 +493,35 @@ class ResidentEngineManager:
 
         inserted = 0
         if new_settled_bar:
-            closed = self.advance(slot, settled_until)
+            # Fix 2a: bound how far a WARM engine advances per poll so a behind slot
+            # catches up in bounded chunks across cycles instead of stalling the loop.
+            # Byte-identical (resident engine feeds bars in order — PATH D). Cold
+            # bootstrap (last_processed None) is left unbounded — it needs its full warm
+            # window; the KPI decouple (2b) keeps that poll light. 0 = unbounded (today).
+            advance_until = settled_until
+            if MAX_ADVANCE_S > 0 and slot.last_processed_ts is not None:
+                last_dt = pd.Timestamp(slot.last_processed_ts).to_pydatetime()
+                capped = last_dt + timedelta(seconds=MAX_ADVANCE_S)
+                if capped < advance_until:
+                    advance_until = capped
+            closed = self.advance(slot, advance_until)
             new = self._filter_new(slot, closed)
             inserted = self.commit(slot, new)
             if inserted > 0:
                 slot.has_traded_since_kpi = True
 
         prov = self.refresh_provisional(slot, now, settled_until)
-        kpis = self.maybe_recompute_kpis(slot)   # debounced; refreshes derived metrics
+        # Fix 2b: KPI/Hi-Fi recompute inline (today) OR hand off to the KPI worker thread
+        # (async) so the poll loop only does advance + write and never stalls on the
+        # reload-all recompute. maybe_recompute_kpis stays the debounced recompute body.
+        if KPI_ASYNC:
+            if slot.has_traded_since_kpi:
+                self.enqueue_kpi(slot.sid)
+            kpis = False
+        else:
+            kpis = self.maybe_recompute_kpis(slot)   # debounced; refreshes derived metrics
+        import time as _time
+        slot.last_tick_at = _time.monotonic()
         status = 'ok' if new_settled_bar else 'no_new_bar'
         return {'status': status, 'inserted': inserted, 'provisional': max(prov, 0),
                 'kpis_recomputed': kpis, 'last_bar_ts': slot.last_processed_ts}
