@@ -3,6 +3,7 @@
 import copy
 import logging
 import math
+import os
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -789,12 +790,43 @@ def run_hifi_pass2(
 
     # Load existing trades from the trades table (the canonical store post-Phase 40).
     # Optional data_source_filter scopes the refinement to one lane.
+    #
+    # M-RS4 Fix 1a (2026-07-01, gated RORT_HIFI_INCREMENTAL_LOAD, default OFF):
+    # on an incremental pass, push the `last_hifi_pass_at` watermark INTO the SQL
+    # query so we load only trades created since the last pass instead of loading
+    # every trade then filtering in Python (the reload-all — 14k+ rows for a fat
+    # strategy — was the dominant per-poll cost and blocked Hi-Fi running promptly).
+    # Byte-identical to the Python incremental filter below (same watermark, same
+    # `>=` boundary, NULL-tolerant); the filter is kept as belt-and-suspenders.
+    scope_key = data_source_filter or 'all'
+    created_at_gte = None
+    if incremental and os.getenv(
+            "RORT_HIFI_INCREMENTAL_LOAD", "0").strip().lower() in (
+            "1", "true", "yes", "on"):
+        _lp = (strat.get('config') or {}).get('last_hifi_pass_at')
+        if isinstance(_lp, dict):
+            created_at_gte = _lp.get(scope_key) or None  # None on 1st pass → full load
+
     from db import load_trades_admin
     trades_list = load_trades_admin(
         strategy_id, str(user_id),
         data_source_filter=data_source_filter,
+        created_at_gte=created_at_gte,
     ) or []
     if not trades_list:
+        # A windowed incremental load that comes back empty means nothing was
+        # created since the last pass — bump the watermark (mirrors the empty
+        # Python-filter path below at 858-869) so `last_hifi_pass_at` stays fresh
+        # for monitoring instead of stalling at the old value.
+        if created_at_gte is not None:
+            _bump_last_hifi_pass_at(strategy_id, str(user_id), scope_key, client=None)
+            return {
+                "status": "ok",
+                "strategy_id": strategy_id,
+                "trades_count": 0,
+                "incremental_skipped": 0,
+                "message": "All trades already processed in prior pass (windowed load)",
+            }
         return {
             "status": "ok",
             "strategy_id": strategy_id,
@@ -807,8 +839,10 @@ def run_hifi_pass2(
     # (data hasn't changed). Big throughput win: cron passes only walk the
     # genuinely-new trades since the last completed pass for this scope.
     # `last_hifi_pass_at` is a dict keyed by data_source_filter; falls back
-    # to 'all' when no filter is provided.
-    scope_key = data_source_filter or 'all'
+    # to 'all' when no filter is provided (`scope_key`, computed at the load
+    # above). When RORT_HIFI_INCREMENTAL_LOAD is on this filter is a no-op —
+    # the SQL `created_at_gte` already windowed the load — but it's kept as
+    # belt-and-suspenders + handles the missing-`created_at` defensive case.
     skipped_by_incremental = 0
     if incremental:
         strat_cfg_raw = strat.get('config') or {}

@@ -1115,6 +1115,7 @@ def load_trades_admin(
     strategy_id: int,
     user_id: str | None = None,
     data_source_filter: str | None = None,
+    created_at_gte: str | None = None,
 ) -> list:
     """Load all trades for a strategy (admin client). Ordered by entry_fill_ts.
 
@@ -1127,6 +1128,16 @@ def load_trades_admin(
       - 'backtest_%' → only backtest trades
       - 'cache_%' → only cache-based algo trades
       - None → all rows (Phase 40 legacy behavior)
+
+    `created_at_gte` (M-RS4 Fix 1a, 2026-07-01): optional ISO timestamp lower
+    bound. When set, returns only rows with `created_at >= created_at_gte`
+    (OR a NULL `created_at`). Lets `run_hifi_pass2`'s incremental pass push
+    its `last_hifi_pass_at` watermark into SQL instead of loading every trade
+    then filtering in Python — the reload-all was the dominant per-poll cost
+    (14k+ rows for a fat strategy). The `is.null` clause mirrors the caller's
+    defensive "keep rows with missing created_at" so the loaded set is
+    byte-identical to the old load-all-then-filter path. Default None =
+    unchanged full-load behavior for every other caller.
 
     PostgREST/Supabase caps every response at 1000 rows regardless of
     `limit` / `Range` headers (confirmed 2026-04-24). Strategies in this
@@ -1149,6 +1160,8 @@ def load_trades_admin(
             q = q.eq('user_id', user_id)
         if data_source_filter:
             q = q.like('data_source', data_source_filter)
+        if created_at_gte:
+            q = q.or_(f"created_at.gte.{created_at_gte},created_at.is.null")
         result = q.execute()
         page = result.data or []
         all_rows.extend(page)
