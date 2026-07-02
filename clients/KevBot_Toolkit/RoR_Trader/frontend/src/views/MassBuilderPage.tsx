@@ -526,6 +526,10 @@ export default function MassBuilderPage() {
   const [tfConfDepth, setTfConfDepth] = useState(2);
   const [selectedGenConf, setSelectedGenConf] = useState<string[]>([]);
   const [genConfDepth, setGenConfDepth] = useState(1);
+  // ✱ requirements: confluences every combo must satisfy (AND baseline).
+  // Disjoint from the optional (✓) pools above — an id is in one or neither.
+  const [requiredTfConf, setRequiredTfConf] = useState<string[]>([]);
+  const [requiredGenConf, setRequiredGenConf] = useState<string[]>([]);
   const [session, setSession] = useState('RTH');
   const [lookbackDays, setLookbackDays] = useState(90);
   const [selectedStopPacks, setSelectedStopPacks] = useState<string[]>([]);
@@ -613,6 +617,8 @@ export default function MassBuilderPage() {
     if (Array.isArray(cfg.exit_triggers)) setSelectedExits(cfg.exit_triggers);
     if (Array.isArray(cfg.tf_confluences)) setSelectedTfConf(cfg.tf_confluences);
     if (Array.isArray(cfg.general_confluences)) setSelectedGenConf(cfg.general_confluences);
+    if (Array.isArray(cfg.required_tf_confluences)) setRequiredTfConf(cfg.required_tf_confluences);
+    if (Array.isArray(cfg.required_general_confluences)) setRequiredGenConf(cfg.required_general_confluences);
     if (typeof cfg.tf_confluence_depth === 'number') setTfConfDepth(cfg.tf_confluence_depth);
     if (typeof cfg.general_confluence_depth === 'number') setGenConfDepth(cfg.general_confluence_depth);
     if (Array.isArray(cfg.stop_packs)) setSelectedStopPacks(cfg.stop_packs);
@@ -896,6 +902,10 @@ export default function MassBuilderPage() {
       tf_confluence_depth: tfConfDepth,
       general_confluences: selectedGenConf,
       general_confluence_depth: genConfDepth,
+      // ✱ requirements: baseline gates under every combo; depth applies to
+      // the optional pools above only. Disjoint from them by construction.
+      required_tf_confluences: requiredTfConf,
+      required_general_confluences: requiredGenConf,
       stop_packs: selectedStopPacks.length > 0 ? selectedStopPacks : undefined,
       target_packs: selectedTargetPacks.length > 0 ? selectedTargetPacks : undefined,
       time_exit_packs: selectedTimeExitPacks.length > 0 ? selectedTimeExitPacks : undefined,
@@ -984,6 +994,39 @@ export default function MassBuilderPage() {
     } else {
       setter([...arr, item]);
     }
+  }
+
+  /** Tri-state confluence cycle: empty → ✓ optional → ✱ required → empty. */
+  function cycleTriState(
+    id: string,
+    selected: string[], setSelected: (v: string[]) => void,
+    required: string[], setRequired: (v: string[]) => void,
+  ) {
+    if (required.includes(id)) {
+      setRequired(required.filter((x) => x !== id));
+    } else if (selected.includes(id)) {
+      setSelected(selected.filter((x) => x !== id));
+      setRequired([...required, id]);
+    } else {
+      setSelected([...selected, id]);
+    }
+  }
+
+  /** Tri-state box: shows ✱ (required), ✓ (optional), or empty. */
+  function TriStateBox({ state, color }: { state: 'off' | 'optional' | 'required'; color: string }) {
+    const REQUIRED_COLOR = 'var(--orange)';
+    return (
+      <span
+        className="w-3.5 h-3.5 rounded flex-shrink-0 flex items-center justify-center text-[9px] font-bold leading-none"
+        style={{
+          border: '1px solid ' + (state === 'required' ? REQUIRED_COLOR : state === 'optional' ? color : 'var(--border)'),
+          background: state === 'required' ? REQUIRED_COLOR : state === 'optional' ? color : 'transparent',
+          color: '#fff',
+        }}
+      >
+        {state === 'required' ? '✱' : state === 'optional' ? '✓' : ''}
+      </span>
+    );
   }
 
   // Identify results by `_raw` reference (the original backend object), not
@@ -1132,6 +1175,16 @@ export default function MassBuilderPage() {
               {tab === 'Exit' && selectedExits.length > 0 && (
                 <span className="ml-1 text-[10px] px-1 py-0.5 rounded" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
                   {selectedExits.length}
+                </span>
+              )}
+              {tab === 'TF Confluence' && requiredTfConf.length > 0 && (
+                <span className="ml-1 text-[9px] px-1 rounded-full" style={{ background: 'var(--orange)', color: '#fff' }}>
+                  ✱{requiredTfConf.length}
+                </span>
+              )}
+              {tab === 'General' && requiredGenConf.length > 0 && (
+                <span className="ml-1 text-[9px] px-1 rounded-full" style={{ background: 'var(--orange)', color: '#fff' }}>
+                  ✱{requiredGenConf.length}
                 </span>
               )}
               {tab === 'TF Confluence' && selectedTfConf.length > 0 && (
@@ -1536,12 +1589,15 @@ export default function MassBuilderPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <button className="text-[10px] px-2 py-0.5 rounded" style={{ background: 'var(--accent-muted)', color: 'var(--accent)', cursor: 'pointer', border: 'none' }}
-                    onClick={() => setSelectedTfConf(TF_CONFLUENCES.map((c) => c.id))}>Select All</button>
-                  {selectedTfConf.length > 0 && (
+                    onClick={() => setSelectedTfConf(TF_CONFLUENCES.map((c) => c.id).filter((id) => !requiredTfConf.includes(id)))}>Select All</button>
+                  {(selectedTfConf.length > 0 || requiredTfConf.length > 0) && (
                     <button className="text-[10px] px-2 py-0.5 rounded" style={{ color: 'var(--text-muted)', cursor: 'pointer', border: 'none', background: 'transparent' }}
-                      onClick={() => setSelectedTfConf([])}>Clear</button>
+                      onClick={() => { setSelectedTfConf([]); setRequiredTfConf([]); }}>Clear</button>
                   )}
                   <span className="text-xs" style={{ color: 'var(--accent)' }}>{selectedTfConf.length} selected</span>
+                  {requiredTfConf.length > 0 && (
+                    <span className="text-xs" style={{ color: 'var(--orange)' }}>· {requiredTfConf.length} required ✱</span>
+                  )}
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-4" style={{ maxHeight: 500, overflowY: 'auto' }}>
@@ -1557,14 +1613,16 @@ export default function MassBuilderPage() {
                     BEAR: confs.filter((c) => c.direction === 'BEAR'),
                     NEUTRAL: confs.filter((c) => c.direction === 'NEUTRAL'),
                   };
-                  const selectedCount = confs.filter((c) => selectedTfConf.includes(c.id)).length;
+                  const selectedCount = confs.filter((c) => selectedTfConf.includes(c.id) || requiredTfConf.includes(c.id)).length;
                   const DIR_META: Record<'BULL' | 'BEAR' | 'NEUTRAL', { label: string; color: string; bg: string }> = {
                     BULL: { label: 'Bull', color: 'var(--green)', bg: 'var(--green-muted)' },
                     BEAR: { label: 'Bear', color: 'var(--red)', bg: 'var(--red-muted)' },
                     NEUTRAL: { label: 'Neutral', color: 'var(--text-muted)', bg: 'var(--bg-elevated)' },
                   };
+                  // Bulk buttons manage ✓ only; ✱ is always an individual
+                  // click and survives all/clear.
                   const toggleDirection = (dir: 'BULL' | 'BEAR' | 'NEUTRAL') => {
-                    const ids = byDirection[dir].map((c) => c.id);
+                    const ids = byDirection[dir].map((c) => c.id).filter((id) => !requiredTfConf.includes(id));
                     const allSelected = ids.every((id) => selectedTfConf.includes(id));
                     if (allSelected) {
                       setSelectedTfConf(selectedTfConf.filter((id) => !ids.includes(id)));
@@ -1587,23 +1645,27 @@ export default function MassBuilderPage() {
                       {(['BULL', 'BEAR', 'NEUTRAL'] as const).map((dir) => {
                         if (byDirection[dir].length === 0) return null;
                         const meta = DIR_META[dir];
-                        const dirSelected = byDirection[dir].filter((c) => selectedTfConf.includes(c.id)).length;
+                        const dirOptIds = byDirection[dir].map((c) => c.id).filter((id) => !requiredTfConf.includes(id));
+                        const dirAllSelected = dirOptIds.length > 0 && dirOptIds.every((id) => selectedTfConf.includes(id));
                         return (
                           <div key={dir} className="mb-2 last:mb-0">
                             <div className="flex items-center justify-between mb-1">
                               <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: meta.color }}>{meta.label}</span>
                               <button className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: meta.bg, color: meta.color, border: 'none', cursor: 'pointer' }}
                                 onClick={() => toggleDirection(dir)}>
-                                {dirSelected === byDirection[dir].length ? 'clear' : 'all'}
+                                {dirAllSelected ? 'clear' : 'all'}
                               </button>
                             </div>
                             <div className="space-y-0.5">
                               {byDirection[dir].map((c) => (
-                                <label key={c.id} title={c.description} className="flex items-center gap-1.5 cursor-pointer py-0.5 px-1 rounded hover:bg-black/10">
-                                  <input type="checkbox" checked={selectedTfConf.includes(c.id)} onChange={() => toggleItem(selectedTfConf, c.id, setSelectedTfConf)} className="w-3 h-3 rounded flex-shrink-0" style={{ accentColor: meta.color }} />
+                                <div key={c.id} title={`${c.description} — click cycles: ✓ optional → ✱ required → off`}
+                                  className="flex items-center gap-1.5 cursor-pointer py-0.5 px-1 rounded hover:bg-black/10"
+                                  onClick={() => cycleTriState(c.id, selectedTfConf, setSelectedTfConf, requiredTfConf, setRequiredTfConf)}>
+                                  <TriStateBox color={meta.color}
+                                    state={requiredTfConf.includes(c.id) ? 'required' : selectedTfConf.includes(c.id) ? 'optional' : 'off'} />
                                   <span className="text-[11px] font-mono flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>{c.state}</span>
                                   <span className="text-[9px] truncate" style={{ color: 'var(--text-muted)' }}>{c.description}</span>
-                                </label>
+                                </div>
                               ))}
                             </div>
                           </div>
@@ -1634,12 +1696,15 @@ export default function MassBuilderPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <button className="text-[10px] px-2 py-0.5 rounded" style={{ background: 'var(--accent-muted)', color: 'var(--accent)', cursor: 'pointer', border: 'none' }}
-                    onClick={() => setSelectedGenConf(GENERAL_CONFLUENCES.map((c) => c.id))}>Select All</button>
-                  {selectedGenConf.length > 0 && (
+                    onClick={() => setSelectedGenConf(GENERAL_CONFLUENCES.map((c) => c.id).filter((id) => !requiredGenConf.includes(id)))}>Select All</button>
+                  {(selectedGenConf.length > 0 || requiredGenConf.length > 0) && (
                     <button className="text-[10px] px-2 py-0.5 rounded" style={{ color: 'var(--text-muted)', cursor: 'pointer', border: 'none', background: 'transparent' }}
-                      onClick={() => setSelectedGenConf([])}>Clear</button>
+                      onClick={() => { setSelectedGenConf([]); setRequiredGenConf([]); }}>Clear</button>
                   )}
                   <span className="text-xs" style={{ color: 'var(--accent)' }}>{selectedGenConf.length} selected</span>
+                  {requiredGenConf.length > 0 && (
+                    <span className="text-xs" style={{ color: 'var(--orange)' }}>· {requiredGenConf.length} required ✱</span>
+                  )}
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-4" style={{ maxHeight: 500, overflowY: 'auto' }}>
@@ -1650,9 +1715,10 @@ export default function MassBuilderPage() {
                   }, {})
                 ).map(([packId, confs]) => {
                   const first = confs[0];
-                  const packIds = confs.map((c) => c.id);
-                  const packSelected = confs.filter((c) => selectedGenConf.includes(c.id)).length;
-                  const allSelected = packSelected === confs.length;
+                  // Bulk buttons manage ✓ only; ✱ survives all/clear.
+                  const packIds = confs.map((c) => c.id).filter((id) => !requiredGenConf.includes(id));
+                  const packSelected = confs.filter((c) => selectedGenConf.includes(c.id) || requiredGenConf.includes(c.id)).length;
+                  const allSelected = packIds.every((id) => selectedGenConf.includes(id));
                   const togglePack = () => {
                     if (allSelected) {
                       setSelectedGenConf(selectedGenConf.filter((id) => !packIds.includes(id)));
@@ -1676,11 +1742,14 @@ export default function MassBuilderPage() {
                       </div>
                       <div className="space-y-0.5">
                         {confs.map((c) => (
-                          <label key={c.id} title={c.description} className="flex items-center gap-1.5 cursor-pointer py-0.5 px-1 rounded hover:bg-black/10">
-                            <input type="checkbox" checked={selectedGenConf.includes(c.id)} onChange={() => toggleItem(selectedGenConf, c.id, setSelectedGenConf)} className="w-3 h-3 rounded flex-shrink-0" style={{ accentColor: 'var(--accent)' }} />
+                          <div key={c.id} title={`${c.description} — click cycles: ✓ optional → ✱ required → off`}
+                            className="flex items-center gap-1.5 cursor-pointer py-0.5 px-1 rounded hover:bg-black/10"
+                            onClick={() => cycleTriState(c.id, selectedGenConf, setSelectedGenConf, requiredGenConf, setRequiredGenConf)}>
+                            <TriStateBox color="var(--accent)"
+                              state={requiredGenConf.includes(c.id) ? 'required' : selectedGenConf.includes(c.id) ? 'optional' : 'off'} />
                             <span className="text-[11px] font-mono flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>{c.state}</span>
                             <span className="text-[9px] truncate" style={{ color: 'var(--text-muted)' }}>{c.description}</span>
-                          </label>
+                          </div>
                         ))}
                       </div>
                     </div>

@@ -1905,6 +1905,7 @@ def find_best_combinations(
     exclude_prefix: str = None,
     include_prefix: str = None,
     allowed_labels: set = None,
+    required_groups: list = None,
     progress_callback=None,
     oos_boundary=None,
     oos_required: dict = None,
@@ -1920,6 +1921,19 @@ def find_best_combinations(
         Matching is both by exact membership and by suffix (TF-agnostic for
         records like "{tf}-{INTERP}-{STATE}" — any TF prefix is accepted if
         "{INTERP}-{STATE}" is in the set).
+    required_groups: Mass Builder ✱ requirements. A list of alternative-sets:
+        each entry is ONE required selection, given as labels in exact or
+        TF-agnostic suffix form (same matching as allowed_labels). AND across
+        entries; OR within an entry (one selection may resolve to several
+        concrete records, e.g. the same state on two gate TFs). Every
+        concrete assignment becomes its own baseline: its mask is ANDed under
+        every candidate combo, a depth-0 (required-only) row is emitted, and
+        `max_depth` counts only the optional adds on top. Result rows carry
+        the concrete required records in `combination` (so downstream gating/
+        replay/save works unchanged) plus a `required` field naming them.
+        An entry that matches no trade records fails the search loudly
+        (returns []) rather than silently broadening it. None/empty →
+        behavior identical to before this parameter existed.
     progress_callback(idx, total): called during the combination loop.
 
     OOS gate (docs/Spec_OOS_Test_Periods.md §9): when `oos_boundary` (a
@@ -1944,51 +1958,103 @@ def find_best_combinations(
             return set(r)
         return set()
 
+    def _label_match(rec: str, labels) -> bool:
+        """Exact or TF-agnostic-suffix membership (see allowed_labels doc)."""
+        if rec in labels:
+            return True
+        parts = rec.split("-", 2)
+        return len(parts) == 3 and f"{parts[1]}-{parts[2]}" in labels
+
     # Get all unique records
     all_records = set()
     for records in trades_df['confluence_records']:
         all_records.update(_as_set(records))
+
+    # Resolve required selections to concrete records BEFORE the pool
+    # filters — a required record does not need to be in the optional pool.
+    required_alternatives: list[list[str]] = []
+    for grp in (required_groups or []):
+        grp_set = set(grp)
+        matches = sorted(r for r in all_records if _label_match(r, grp_set))
+        if not matches:
+            # No trade ever satisfied this requirement → no combo can pass.
+            # Fail loudly rather than silently dropping the requirement.
+            print(f"[MASS] required confluence {sorted(grp_set)} matched no "
+                  f"trade records — 0 combos for this base config", flush=True)
+            return []
+        required_alternatives.append(matches)
+
     if exclude_prefix:
         all_records = {r for r in all_records if not r.startswith(exclude_prefix)}
     if include_prefix:
         all_records = {r for r in all_records if r.startswith(include_prefix)}
-    if allowed_labels:
-        def _matches(rec: str) -> bool:
-            if rec in allowed_labels:
-                return True
-            parts = rec.split("-", 2)
-            if len(parts) == 3 and f"{parts[1]}-{parts[2]}" in allowed_labels:
-                return True
-            return False
-        all_records = {r for r in all_records if _matches(r)}
+    # `is not None` (not truthiness): an EMPTY set means "no optional pool"
+    # (required-only Mass Builder search), which must not fall through to
+    # explore-all. None keeps the historical unrestricted behavior.
+    if allowed_labels is not None:
+        all_records = {r for r in all_records if _label_match(r, allowed_labels)}
+
+    # Required records are baseline, never optional adds.
+    required_record_set = {r for alts in required_alternatives for r in alts}
+    all_records -= required_record_set
 
     # Pre-compute boolean mask per record (vectorized)
     n_trades = len(trades_df)
     record_masks = {}
     conf_list = trades_df['confluence_records'].tolist()
-    for r in all_records:
+    for r in all_records | required_record_set:
         mask = np.zeros(n_trades, dtype=bool)
         for i, recs in enumerate(conf_list):
             if r in _as_set(recs):
                 mask[i] = True
         record_masks[r] = mask
 
-    # Only test records that appear in >= min_trades
-    valid_records = sorted([r for r, m in record_masks.items() if m.sum() >= min_trades])
+    # One baseline per concrete assignment of the required alternatives
+    # (cartesian product — almost always 1×1×…). Baseline () = unrestricted.
+    if required_alternatives:
+        from itertools import product as _product
+        _MAX_BASELINES = 32
+        baselines = []
+        _seen = set()
+        for assign in _product(*required_alternatives):
+            key = tuple(sorted(set(assign)))
+            if key not in _seen:
+                _seen.add(key)
+                baselines.append(key)
+        if len(baselines) > _MAX_BASELINES:
+            print(f"[MASS] required confluences expand to {len(baselines)} "
+                  f"baselines; capping at {_MAX_BASELINES}", flush=True)
+            baselines = baselines[:_MAX_BASELINES]
+    else:
+        baselines = [()]
 
+    # Enumerate (baseline, optional-combo) pairs. Depth counts optional adds
+    # only; a non-empty baseline also gets a depth-0 (required-only) row.
+    # min_trades for the optional pool is evaluated WITHIN the baseline
+    # subset — a record plentiful overall may be too thin under the gates.
     all_combos = []
-    for depth in range(1, min(max_depth + 1, len(valid_records) + 1)):
-        for combo in combinations(valid_records, depth):
-            all_combos.append(combo)
+    for req in baselines:
+        req_mask = None
+        for r in req:
+            req_mask = record_masks[r] if req_mask is None else (req_mask & record_masks[r])
+        valid_records = sorted([
+            r for r in all_records
+            if (record_masks[r] if req_mask is None
+                else (record_masks[r] & req_mask)).sum() >= min_trades])
+        start_depth = 0 if req else 1
+        for depth in range(start_depth, min(max_depth + 1, len(valid_records) + 1)):
+            for combo in combinations(valid_records, depth):
+                all_combos.append((req, combo))
     total = len(all_combos)
 
     results = []
-    for idx, combo in enumerate(all_combos):
+    for idx, (req, combo) in enumerate(all_combos):
         if progress_callback and idx % 50 == 0:
             progress_callback(idx, total)
-        # AND the pre-computed masks
-        combined = record_masks[combo[0]]
-        for r in combo[1:]:
+        # AND the pre-computed masks (required baseline + optional adds)
+        full = tuple(req) + tuple(combo)
+        combined = record_masks[full[0]]
+        for r in full[1:]:
             combined = combined & record_masks[r]
 
         count = int(combined.sum())
@@ -2019,9 +2085,12 @@ def find_best_combinations(
                     risk_per_trade=risk_per_trade,
                     total_trading_days=total_trading_days)
             row = {
-                'combination': list(sorted(combo)),
-                'combo_str': ' + '.join(sorted(combo)),
-                'depth': len(combo),
+                'combination': list(sorted(full)),
+                'combo_str': ' + '.join(sorted(full)),
+                'depth': len(full),
+                # Concrete records that came from ✱ requirements ([] when
+                # none) — display marking; combination already includes them.
+                'required': list(req),
                 'total_trades': kpis['total_trades'],
                 'win_rate': round(_safe_float(kpis.get('win_rate', 0)), 1),
                 'profit_factor': round(_safe_float(kpis.get('profit_factor', 0)), 2),
