@@ -582,34 +582,76 @@ def fetch_1s_bars_for_window(
     return combined.loc[mask]
 
 
+# Circuit breaker for the REST Bars 1-second prime (2026-07-02 incident):
+# a 90-day whole-span read exceeded the DB statement timeout, and because
+# the prime is invoked per Hi-Fi candidate (up to ~1500 per mass search),
+# every candidate re-issued the same doomed multi-million-row query —
+# saturating shared Supabase Postgres (Cloudflare 522; live Worker alert
+# writes failed). After any read failure, the prime disables itself for
+# a cooldown and callers fall back to per-day Polygon (which never touches
+# the shared DB).
+_prime_1s_breaker_until: float = 0.0
+
+# Days a successful REST Bars read proved bar-less (weekends/holidays), keyed
+# "{poly_ticker}_{date}". They can never enter _1s_cache (no rows → no day
+# frame), so without this memo every prime call would re-query the windows
+# containing them. Deliberately NOT stored in _1s_cache: fetch_1s_bars_for_
+# window's per-day Polygon fallback must keep behaving exactly as before for
+# these days (e.g. symbol-not-stocked ambiguity). Only settled-past days are
+# memoized — a still-filling recent day may gain bars later.
+_prime_1s_empty_days: set = set()
+
+
 def prime_1s_cache_from_rest_bars(
     ticker: str,
     start_dt: datetime,
     end_dt: datetime,
     padding_seconds: int = 60,
 ) -> int:
-    """Load-once: pull the whole [start, end] 1-second window from REST Bars
-    (`bar_cache`) in ONE direct-Postgres read and populate the per-day
+    """Load-once: pull the [start, end] 1-second window from REST Bars
+    (`bar_cache`) via direct-Postgres reads and populate the per-day
     ``_1s_cache`` that ``fetch_1s_bars_for_window`` reads from.
 
-    This is the M-RS2 "pull big swaths once" speedup for Hi-Fi Pass 2: instead
-    of N per-day Polygon fetches (one per distinct trade date), do a single
-    direct-PG read over the full period (~5s for ~530k rows vs ~29s of per-day
-    Polygon fetches — ~5.7x). REST Bars 1-second is byte-identical to a fresh
-    Polygon REST pull for settled days (see Two_Bar_Caches_DEFINITIONS.md).
+    This is the M-RS2 "pull big swaths once" speedup for Hi-Fi Pass 2:
+    instead of N per-day Polygon fetches (one per distinct trade date), read
+    from REST Bars over the full period. REST Bars 1-second is byte-identical
+    to a fresh Polygon REST pull for settled days (Two_Bar_Caches_DEFINITIONS.md).
+
+    2026-07-02 hardening (post-incident):
+      - Days already warm in ``_1s_cache`` are skipped BEFORE any query, so
+        repeated calls over the same span (the per-candidate Hi-Fi loop) cost
+        zero queries after the first successful prime.
+      - Cold days are read in bounded chunks (``RORT_PRIME1S_CHUNK_DAYS``,
+        default 7) instead of one whole-span statement, so no single query
+        can approach the DB statement timeout.
+      - Any read failure trips a process-wide circuit breaker
+        (``RORT_PRIME1S_BREAKER_COOLDOWN_S``, default 600): remaining chunks
+        are abandoned and subsequent calls return 0 immediately until the
+        cooldown lapses — the DB is never hammered with retries.
+      - Kill-switch ``RORT_PRIME1S_CHUNKED=0`` restores the legacy
+        single-statement whole-span read (no breaker).
 
     Safe + transparent: gated on BAR_CACHE_ENABLED + a DSN. Returns the number
     of day-frames primed; returns 0 on any miss (cache off, no DSN, no rows,
-    error) so the caller's existing fetch_1s_bars_for_window calls fall straight
-    back to per-day Polygon. Never clobbers a day already in _1s_cache (a fresher
-    Polygon fetch wins). The most-recent day, if REST Bars lags the requested
-    end, is re-fetched from Polygon by fetch_1s_bars_for_window's staleness
-    eviction — so the live tip stays correct.
+    error, breaker open) so the caller's existing fetch_1s_bars_for_window
+    calls fall straight back to per-day Polygon. Never clobbers a day already
+    in _1s_cache (a fresher Polygon fetch wins). The most-recent day, if REST
+    Bars lags the requested end, is re-fetched from Polygon by
+    fetch_1s_bars_for_window's staleness eviction — so the live tip stays
+    correct.
     """
+    global _prime_1s_breaker_until
     # ALWAYS emit one [HIFI] load-once line summarizing the outcome, so we can
     # tell from the logs whether the REST Bars cache actually served the 1-second
     # (vs falling back to per-day Polygon, or finding days already warm in the
     # long-lived process's _1s_cache) WITHOUT having to log-dive. 2026-06-26.
+    import time as _time_mod
+    if _time_mod.monotonic() < _prime_1s_breaker_until:
+        logger.debug("[HIFI] load-once breaker OPEN for %.0fs more — per-day "
+                     "Polygon", _prime_1s_breaker_until - _time_mod.monotonic())
+        return 0
+    chunked = os.environ.get("RORT_PRIME1S_CHUNKED", "1").strip().lower() in (
+        "1", "true", "yes", "on")
     try:
         import bar_cache as _bc
         _enabled, _dsn = _bc.is_enabled(), _bc.direct_pg_available()
@@ -619,39 +661,135 @@ def prime_1s_cache_from_rest_bars(
             return 0
         padded_start = start_dt - timedelta(seconds=padding_seconds)
         padded_end = end_dt + timedelta(seconds=padding_seconds)
-        df = _bc.read_bars(ticker, "1Sec", padded_start, padded_end)
     except Exception as e:
         logger.warning("[HIFI] load-once prime FAILED for %s: %s → per-day Polygon",
                        ticker, e)
         return 0
-    if df is None or len(df) == 0:
-        logger.info("[HIFI] load-once: REST Bars returned 0 rows for %s [%s..%s] "
-                    "→ per-day Polygon", ticker,
-                    start_dt.isoformat()[:19], end_dt.isoformat()[:19])
-        return 0
 
     poly_ticker = _to_polygon_ticker(ticker)
+
+    if not chunked:
+        # Legacy path (kill-switch): one whole-span statement, no breaker.
+        try:
+            df = _bc.read_bars(ticker, "1Sec", padded_start, padded_end)
+        except Exception as e:
+            logger.warning("[HIFI] load-once prime FAILED for %s: %s → per-day "
+                           "Polygon", ticker, e)
+            return 0
+        if df is None or len(df) == 0:
+            logger.info("[HIFI] load-once: REST Bars returned 0 rows for %s "
+                        "[%s..%s] → per-day Polygon", ticker,
+                        start_dt.isoformat()[:19], end_dt.isoformat()[:19])
+            return 0
+        primed = 0
+        warm = 0
+        for d, day_df in df.groupby(df.index.date):
+            cache_key = f"{poly_ticker}_{d.isoformat()}"
+            if cache_key not in _1s_cache:  # don't clobber a fresher Polygon fetch
+                _1s_cache[cache_key] = day_df
+                primed += 1
+            else:
+                warm += 1
+        logger.info("[HIFI] load-once for %s: read %d rows from REST Bars "
+                    "(direct-PG); primed %d new day(s), %d already warm "
+                    "in-process", ticker, len(df), primed, warm)
+        return primed
+
+    # ── Chunked path (default) ──
+    # 1. Cold-day set: only days NOT already in _1s_cache get queried.
+    all_days: list = []
+    cursor = padded_start.date()
+    while cursor <= padded_end.date():
+        all_days.append(cursor)
+        cursor += timedelta(days=1)
+    cold_days = [d for d in all_days
+                 if f"{poly_ticker}_{d.isoformat()}" not in _1s_cache
+                 and f"{poly_ticker}_{d.isoformat()}" not in _prime_1s_empty_days]
+    warm = len(all_days) - len(cold_days)
+    if not cold_days:
+        logger.info("[HIFI] load-once for %s: all %d day(s) already warm "
+                    "in-process — 0 queries", ticker, warm)
+        return 0
+
+    # 2. Group consecutive cold days into runs, split runs into ≤CHUNK-day
+    #    windows so each statement stays far below the DB statement timeout.
+    try:
+        chunk_days = max(1, int(os.environ.get("RORT_PRIME1S_CHUNK_DAYS", "7")))
+    except ValueError:
+        chunk_days = 7
+    runs: list = []
+    run_start = cold_days[0]
+    prev = cold_days[0]
+    for d in cold_days[1:]:
+        if (d - prev).days > 1:
+            runs.append((run_start, prev))
+            run_start = d
+        prev = d
+    runs.append((run_start, prev))
+    windows: list = []
+    for r_start, r_end in runs:
+        w_start = r_start
+        while w_start <= r_end:
+            w_end = min(r_end, w_start + timedelta(days=chunk_days - 1))
+            windows.append((w_start, w_end))
+            w_start = w_end + timedelta(days=1)
+
+    # 3. Read each window; first failure trips the breaker and abandons the
+    #    rest — callers fall back to per-day Polygon for anything unprimed.
     primed = 0
-    warm = 0
-    # Group the single big read into per-day frames keyed exactly like
-    # fetch_1s_bars_for_window expects ({poly_ticker}_{UTC-date}).
-    for d, day_df in df.groupby(df.index.date):
-        cache_key = f"{poly_ticker}_{d.isoformat()}"
-        if cache_key not in _1s_cache:  # don't clobber a fresher Polygon fetch
-            _1s_cache[cache_key] = day_df
-            primed += 1
-        else:
-            warm += 1  # already in-process (prior fetch) — load-once is moot here
-    logger.info("[HIFI] load-once for %s: read %d rows from REST Bars (direct-PG); "
-                "primed %d new day(s), %d already warm in-process",
-                ticker, len(df), primed, warm)
+    rows_total = 0
+    for w_start, w_end in windows:
+        q_start = max(padded_start,
+                      datetime(w_start.year, w_start.month, w_start.day,
+                               tzinfo=timezone.utc))
+        q_end = min(padded_end,
+                    datetime(w_end.year, w_end.month, w_end.day,
+                             tzinfo=timezone.utc) + timedelta(days=1))
+        try:
+            df = _bc.read_bars(ticker, "1Sec", q_start, q_end)
+        except Exception as e:
+            try:
+                cooldown = float(os.environ.get(
+                    "RORT_PRIME1S_BREAKER_COOLDOWN_S", "600"))
+            except ValueError:
+                cooldown = 600.0
+            _prime_1s_breaker_until = _time_mod.monotonic() + cooldown
+            logger.warning(
+                "[HIFI] load-once chunk FAILED for %s [%s..%s]: %s — breaker "
+                "OPEN for %.0fs, abandoning %d remaining chunk(s) → per-day "
+                "Polygon", ticker, w_start.isoformat(), w_end.isoformat(), e,
+                cooldown, len(windows) - windows.index((w_start, w_end)) - 1)
+            break
+        got_days = set()
+        if df is not None and len(df) > 0:
+            rows_total += len(df)
+            for d, day_df in df.groupby(df.index.date):
+                got_days.add(d)
+                cache_key = f"{poly_ticker}_{d.isoformat()}"
+                if cache_key not in _1s_cache:  # don't clobber a fresher fetch
+                    _1s_cache[cache_key] = day_df
+                    primed += 1
+        # Memoize settled-past days this read proved bar-less so later calls
+        # skip them (see _prime_1s_empty_days). The still-settling edge is
+        # excluded — those days may gain bars.
+        _settled_cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).date()
+        w_cursor = w_start
+        while w_cursor <= w_end:
+            if w_cursor not in got_days and w_cursor < _settled_cutoff:
+                _prime_1s_empty_days.add(f"{poly_ticker}_{w_cursor.isoformat()}")
+            w_cursor += timedelta(days=1)
+    logger.info("[HIFI] load-once for %s: read %d rows from REST Bars "
+                "(direct-PG, %d chunk(s) of ≤%dd); primed %d new day(s), "
+                "%d already warm in-process",
+                ticker, rows_total, len(windows), chunk_days, primed, warm)
     return primed
 
 
 def clear_1s_cache():
-    """Clear the in-memory 1-second bar cache."""
+    """Clear the in-memory 1-second bar cache (and the empty-day memo)."""
     global _1s_cache
     _1s_cache = {}
+    _prime_1s_empty_days.clear()
 
 
 def load_from_polygon(
