@@ -90,6 +90,16 @@ KPI_DEBOUNCE_S = int(os.getenv("RORT_SHADOW_KPI_DEBOUNCE_S", "300"))
 # (today's behavior). Steady-state (caught-up) strategies advance their small delta
 # in one poll regardless.
 MAX_ADVANCE_S = int(os.getenv("RORT_SHADOW_MAX_ADVANCE_S", "0"))
+# Gap-skip: when a MAX_ADVANCE_S-capped advance finds NO new bars, move the cursor
+# to the capped bound anyway so the engine can walk across bar-free regions (the
+# overnight session gap is >1h wide, so a capped engine otherwise re-prepares the
+# same empty window forever and never reaches the next session — 2026-07-02 stall).
+# Safe: prepare_window delta-fetches the range from Polygon before reading, so an
+# empty capped window means Polygon has no (session-eligible) bars there — and a
+# capped cursor is already >MAX_ADVANCE_S behind now-LAG, far past REST finality.
+# A true ingest outage backfilled later is the nightly full_recompute's job (§G).
+GAP_SKIP = os.getenv("RORT_SHADOW_GAP_SKIP", "1").strip().lower() in (
+    "1", "true", "yes", "on")
 # Fix 2b: run the KPI + equity + Hi-Fi recompute on a SEPARATE worker thread instead
 # of inline in poll() — the poll loop then only does advance + write (fast, O(new
 # bars)); KPIs/Health/Hi-Fi lag on their own cadence without starving trade freshness.
@@ -287,7 +297,15 @@ class ResidentEngineManager:
                                        slot.sid, e)
 
             new = slot.engine.feed(df, sec_tf_map)
-        slot.last_processed_ts = slot.engine.last_bar_ts
+        # High-water mark: never move the cursor backwards. A window can be
+        # non-empty yet feed nothing new (warmup context only), leaving the
+        # engine's last_bar_ts at an older bar than a cursor a gap-skip already
+        # pushed past a bar-free region — clobbering it would oscillate forever.
+        eng_ts = slot.engine.last_bar_ts
+        cur = slot.last_processed_ts
+        if eng_ts is not None and (
+                cur is None or pd.Timestamp(eng_ts) > pd.Timestamp(cur)):
+            slot.last_processed_ts = eng_ts
         return [t for t in (new or []) if t.get('exit_fill_ts')]
 
     def _filter_new(self, slot: EngineSlot, closed: List[dict]) -> List[dict]:
@@ -517,12 +535,25 @@ class ResidentEngineManager:
             # bootstrap (last_processed None) is left unbounded — it needs its full warm
             # window; the KPI decouple (2b) keeps that poll light. 0 = unbounded (today).
             advance_until = settled_until
+            capped = False
             if MAX_ADVANCE_S > 0 and slot.last_processed_ts is not None:
-                last_dt = pd.Timestamp(slot.last_processed_ts).to_pydatetime()
-                capped = last_dt + timedelta(seconds=MAX_ADVANCE_S)
-                if capped < advance_until:
-                    advance_until = capped
+                bound = (pd.Timestamp(slot.last_processed_ts).to_pydatetime()
+                         + timedelta(seconds=MAX_ADVANCE_S))
+                if bound < advance_until:
+                    advance_until, capped = bound, True
+            prev_cursor = slot.last_processed_ts
             closed = self.advance(slot, advance_until)
+            if (GAP_SKIP and capped and prev_cursor is not None
+                    and slot.last_processed_ts == prev_cursor):
+                # Capped window had no new bars → bar-free (or session-filtered,
+                # which every compute path drops identically). Move the cursor to
+                # the bound so the next poll's window starts past the dead zone;
+                # the engine walks a gap in MAX_ADVANCE_S steps, one per poll.
+                # Uncapped no-new-bars keeps today's behavior (window grows with
+                # the clock; late REST bars inside LAG can still land).
+                slot.last_processed_ts = advance_until
+                logger.info("[shadow] sid=%s gap-skip: no bars in capped window, "
+                            "cursor %s -> %s", slot.sid, prev_cursor, advance_until)
             new = self._filter_new(slot, closed)
             inserted = self.commit(slot, new)
             if inserted > 0:
