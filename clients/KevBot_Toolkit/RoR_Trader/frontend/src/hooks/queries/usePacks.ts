@@ -172,6 +172,10 @@ export interface ConfluenceTemplateDTO {
   description: string;
   interpreters: string[];
   trigger_prefix: string;
+  /** True when the template was injected from the user-pack registry
+   *  (pack_registry._inject_into_templates). Absent on the built-in
+   *  templates hardcoded in confluence_groups.py. */
+  _user_pack?: boolean;
   parameters_schema: Record<string, {
     type: string;
     default: number | string;

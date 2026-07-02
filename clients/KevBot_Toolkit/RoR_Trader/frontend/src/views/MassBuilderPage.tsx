@@ -308,50 +308,6 @@ function ToggleChip({ label, active, onClick }: { label: string; active: boolean
   );
 }
 
-// algo_model split (2026-05-08): per-model dropdown for Mass Builder spec.
-function MassBuilderModelDropdown({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: Record<string, { label: string; available: boolean; description: string }>;
-  onChange: (v: string) => void;
-}) {
-  const entries = Object.entries(options);
-  const currentDesc = options[value]?.description;
-  return (
-    <div>
-      <label className="text-[10px] font-medium block mb-1" style={{ color: 'var(--text-muted)' }}>
-        {label}
-      </label>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full px-3 py-1.5 rounded-lg text-sm"
-        style={{
-          background: 'var(--bg-input)',
-          border: '1px solid var(--border)',
-          color: 'var(--text-primary)',
-        }}
-      >
-        {entries.map(([key, opt]) => (
-          <option key={key} value={key} disabled={!opt.available && key !== value}>
-            {opt.label}{opt.available ? '' : ' (coming soon)'}
-          </option>
-        ))}
-      </select>
-      {currentDesc && (
-        <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)', lineHeight: 1.4 }}>
-          {currentDesc.length > 120 ? currentDesc.slice(0, 117) + '…' : currentDesc}
-        </p>
-      )}
-    </div>
-  );
-}
-
 /* ========================================================================
    Main Component
    ======================================================================== */
@@ -379,10 +335,40 @@ export default function MassBuilderPage() {
     return primary.length > 0 ? primary : TIMEFRAMES_FALLBACK;
   }, [userSettings]);
 
+  // ---- User-pack scoping (Mass Builder only, 2026-07-02) ----
+  // MB builds NEW strategies, so it only offers Entry/Exit/TF-Confluence
+  // options backed by modular user packs (template `_user_pack` marker).
+  // Groups on built-in templates stay functional elsewhere (Strategy
+  // Builder, existing strategies) — they're just not offered here, so a
+  // new search can't be built on the legacy non-modular path.
+  const userPackGroupIds = useMemo(() => {
+    if (!apiConfluenceGroups || !apiConfluenceTemplates) return null;
+    const ids = new Set<string>();
+    for (const g of apiConfluenceGroups) {
+      if (apiConfluenceTemplates[g.base_template]?._user_pack) ids.add(g.id);
+    }
+    return ids;
+  }, [apiConfluenceGroups, apiConfluenceTemplates]);
+
+  // Trigger ids are `${groupId}_${base}` (ConfluenceGroup.get_trigger_id).
+  // Group ids can be prefixes of one another (e.g. `utbot` vs `utbot_v2`),
+  // so resolve ownership by the LONGEST matching group id, then check that
+  // group's user-pack status.
+  const isUserPackTrigger = useCallback((trigId: string): boolean => {
+    if (!userPackGroupIds || !apiConfluenceGroups) return false;
+    let owner: string | null = null;
+    for (const g of apiConfluenceGroups) {
+      if (trigId.startsWith(g.id + '_') && (!owner || g.id.length > owner.length)) {
+        owner = g.id;
+      }
+    }
+    return owner !== null && userPackGroupIds.has(owner);
+  }, [userPackGroupIds, apiConfluenceGroups]);
+
   // ---- Derive trigger/pack data from API ----
   const ENTRY_TRIGGER_DEFS: TriggerDef[] = useMemo(() => {
     if (!apiEntryTriggers) return [];
-    return Object.entries(apiEntryTriggers).map(([id, name]) => {
+    return Object.entries(apiEntryTriggers).filter(([id]) => isUserPackTrigger(id)).map(([id, name]) => {
       const parts = id.split('_');
       const pack = parts[0] || 'unknown';
       return {
@@ -393,11 +379,11 @@ export default function MassBuilderPage() {
         execTypes: ['[C]'], // Base exec type; full exec support comes from templates
       };
     });
-  }, [apiEntryTriggers]);
+  }, [apiEntryTriggers, isUserPackTrigger]);
 
   const EXIT_TRIGGER_DEFS: TriggerDef[] = useMemo(() => {
     if (!apiExitTriggers) return [];
-    return Object.entries(apiExitTriggers).map(([id, name]) => {
+    return Object.entries(apiExitTriggers).filter(([id]) => isUserPackTrigger(id)).map(([id, name]) => {
       const parts = id.split('_');
       const pack = parts[0] || 'unknown';
       return {
@@ -408,13 +394,15 @@ export default function MassBuilderPage() {
         execTypes: ['[C]'],
       };
     });
-  }, [apiExitTriggers]);
+  }, [apiExitTriggers, isUserPackTrigger]);
 
   const TF_CONFLUENCES: TfConfDef[] = useMemo(() => {
     if (!apiConfluenceGroups) return [];
     const confs: TfConfDef[] = [];
     for (const g of apiConfluenceGroups) {
       const tmpl = apiConfluenceTemplates?.[g.base_template] as any | undefined;
+      // User-pack scoping: skip groups backed by built-in templates.
+      if (!tmpl?._user_pack) continue;
       // `outputs` is an array of state codes; `output_descriptions` is state→text;
       // `output_directions` is state→"BULL"|"BEAR"|"NEUTRAL" (added by backend).
       const outputs: string[] = Array.isArray(tmpl?.outputs) ? tmpl.outputs : [];
@@ -527,8 +515,6 @@ export default function MassBuilderPage() {
 
   // Config state
   const [searchName, setSearchName] = useState(`Search ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`);
-  const [triggerHiFi, setTriggerHiFi] = useState(false);
-  const [confluenceHiFi, setConfluenceHiFi] = useState(false);
   const [selectedTickers, setSelectedTickers] = useState<string[]>([]);
   const [tickerInput, setTickerInput] = useState('');
   const [selectedTFs, setSelectedTFs] = useState<string[]>([]);
@@ -566,17 +552,21 @@ export default function MassBuilderPage() {
   const [oosSigmaN, setOosSigmaN] = useState(2);
   const [activeSearchId, setActiveSearchId] = useState<string | number | null>(null);
 
-  // Model selection (algo_model split — 2026-05-08). Spawned strategies
-  // inherit these values via mass_builder.py:build_strategy_config.
+  // Models are no longer user-selectable here (2026-07-02): spawned
+  // strategies are stamped with the registry defaults (Admin → Live Models
+  // / Backtest & Algo Models) resolved by /api/strategies/models. If the
+  // defaults haven't loaded yet, the fields are omitted from the payload
+  // and mass_builder.build_strategy_config leaves them unset — downstream
+  // readers then resolve the same registry defaults.
   const { data: modelsResp } = useStrategyModels();
-  const [backtestModel, setBacktestModel] = useState<string>('rest_hifi');
-  const [algoModel, setAlgoModel] = useState<string>('cache_locked');
-  const [liveModel, setLiveModel] = useState<string>('ws_agg_locked');
+  const backtestModel = modelsResp?.defaults?.backtest_model;
+  const algoModel = modelsResp?.defaults?.algo_model;
+  const liveModel = modelsResp?.defaults?.live_model;
 
-  // Search Mode (Mass Builder §8.5 fidelity fix).
-  // Default 'Rapid' until Kevin verifies HighFidelity parity vs Update
-  // All Data on real strategies (plan: piped-wondering-tower.md).
-  const [searchFidelity, setSearchFidelity] = useState<'Rapid' | 'HighFidelity'>('Rapid');
+  // Search Mode (Mass Builder §8.5). HighFidelity is the default —
+  // parity vs Update All Data verified (dough re-bake byte-identical,
+  // 2026-06-18g). Rapid stays available as a fast estimate.
+  const [searchFidelity, setSearchFidelity] = useState<'Rapid' | 'HighFidelity'>('HighFidelity');
   const [skipHifi, setSkipHifi] = useState<boolean>(false);
   const [hifiBufferMultiplier, setHifiBufferMultiplier] = useState<number>(3);
 
@@ -931,8 +921,9 @@ export default function MassBuilderPage() {
         sigma: { enabled: oosSigmaEnabled, n: oosSigmaN },
       } : undefined,
       max_results: maxResults,
-      // Model fields (algo_model split — 2026-05-08). Spawned strategies
-      // inherit these via mass_builder.py:build_strategy_config.
+      // Model fields: registry defaults from /api/strategies/models
+      // (undefined until loaded → omitted → downstream default resolution).
+      // Spawned strategies inherit via mass_builder.build_strategy_config.
       backtest_model: backtestModel,
       algo_model: algoModel,
       live_model: liveModel,
@@ -1092,39 +1083,6 @@ export default function MassBuilderPage() {
             className="w-full px-3 py-2 rounded-lg text-sm"
             style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
           />
-        </div>
-        {/* Fidelity toggles */}
-        <div className="flex items-center gap-4">
-          <label className="flex items-center gap-2 cursor-pointer select-none">
-            <div
-              className="relative w-9 h-5 rounded-full transition-colors"
-              style={{ background: triggerHiFi ? 'var(--accent)' : 'var(--bg-input)', border: '1px solid var(--border)' }}
-              onClick={() => setTriggerHiFi(!triggerHiFi)}
-            >
-              <div
-                className="absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all"
-                style={{ background: triggerHiFi ? '#fff' : 'var(--text-muted)', left: triggerHiFi ? '18px' : '2px' }}
-              />
-            </div>
-            <span className="text-xs font-medium whitespace-nowrap" style={{ color: triggerHiFi ? 'var(--accent)' : 'var(--text-muted)' }}>
-              Trigger HiFi
-            </span>
-          </label>
-          <label className="flex items-center gap-2 cursor-pointer select-none">
-            <div
-              className="relative w-9 h-5 rounded-full transition-colors"
-              style={{ background: confluenceHiFi ? 'var(--accent)' : 'var(--bg-input)', border: '1px solid var(--border)' }}
-              onClick={() => setConfluenceHiFi(!confluenceHiFi)}
-            >
-              <div
-                className="absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all"
-                style={{ background: confluenceHiFi ? '#fff' : 'var(--text-muted)', left: confluenceHiFi ? '18px' : '2px' }}
-              />
-            </div>
-            <span className="text-xs font-medium whitespace-nowrap" style={{ color: confluenceHiFi ? 'var(--accent)' : 'var(--text-muted)' }}>
-              Confluence HiFi
-            </span>
-          </label>
         </div>
         <button
           className="px-5 py-2 rounded-lg text-sm font-medium transition-opacity hover:opacity-80"
@@ -1365,37 +1323,9 @@ export default function MassBuilderPage() {
                 </div>
               </div>
 
-              {/* Models — algo_model split (2026-05-08) */}
+              {/* Search Mode — Mass Builder §8.5 fidelity toggle */}
               <div className="mt-4">
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Models</p>
-                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                    Backtest = KPI baseline · Algo = live accountability · Live = engine reality
-                  </span>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <MassBuilderModelDropdown
-                    label="Backtest Model"
-                    value={backtestModel}
-                    options={modelsResp?.backtest_models || {}}
-                    onChange={setBacktestModel}
-                  />
-                  <MassBuilderModelDropdown
-                    label="Algo Model"
-                    value={algoModel}
-                    options={(modelsResp as any)?.algo_models || modelsResp?.backtest_models || {}}
-                    onChange={setAlgoModel}
-                  />
-                  <MassBuilderModelDropdown
-                    label="Live Model"
-                    value={liveModel}
-                    options={modelsResp?.live_models || {}}
-                    onChange={setLiveModel}
-                  />
-                </div>
-
-                {/* Search Mode — Mass Builder §8.5 fidelity toggle */}
-                <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
+                <div>
                   <div className="flex items-center justify-between mb-2">
                     <p className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Search Mode</p>
                     <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
@@ -1422,8 +1352,8 @@ export default function MassBuilderPage() {
                         </div>
                         <div className="text-[10px] mt-0.5" style={{ opacity: 0.8 }}>
                           {mode === 'HighFidelity'
-                            ? 'Bit-matches Update All Data. 5–20× slower.'
-                            : 'Fast preview, KPIs may differ from saved (current).'}
+                            ? 'Bit-matches Update All Data. 5–20× slower. (default)'
+                            : 'Fast estimate — KPIs may differ from saved results.'}
                         </div>
                       </button>
                     ))}
