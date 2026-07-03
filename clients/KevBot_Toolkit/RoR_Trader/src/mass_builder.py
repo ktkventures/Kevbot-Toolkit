@@ -1660,7 +1660,18 @@ def run_mass_search(
         _hifi_entries_total = 0
         _hifi_exits_total = 0
         _hifi_signal_exits_total = 0
-        for r in results[:_buffer_n]:
+        for _hifi_i, r in enumerate(results[:_buffer_n]):
+            # Visible progress during the Hi-Fi pass — this phase runs AFTER
+            # the main backtest/confluence bars complete, and before this it
+            # reported nothing, so long refinements looked like a hung
+            # "Processing" (2026-07-02).
+            if progress_callback and _hifi_i % 5 == 0:
+                progress_callback(
+                    total_steps, total_steps, 'Hi-Fi Pass 2',
+                    phase='save',
+                    phase_detail=f'Hi-Fi refining top candidates '
+                                 f'({_hifi_i + 1}/{_buffer_n})',
+                    inner_step=_hifi_i + 1, inner_total=_buffer_n)
             _cfg = r.get('config') or {}
             _sym = _cfg.get('symbol')
             _tf = _cfg.get('timeframe')
