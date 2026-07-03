@@ -104,7 +104,8 @@ GAP_SKIP = os.getenv("RORT_SHADOW_GAP_SKIP", "1").strip().lower() in (
 # of inline in poll() — the poll loop then only does advance + write (fast, O(new
 # bars)); KPIs/Health/Hi-Fi lag on their own cadence without starving trade freshness.
 # Default OFF = today's inline recompute.
-KPI_ASYNC = os.getenv("RORT_SHADOW_KPI_ASYNC", "0").strip().lower() in (
+# graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
+KPI_ASYNC = os.getenv("RORT_SHADOW_KPI_ASYNC", "1").strip().lower() in (
     "1", "true", "yes", "on")
 
 

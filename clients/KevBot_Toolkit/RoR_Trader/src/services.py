@@ -270,7 +270,8 @@ def prepare_data_with_indicators(
     # stays full/unscoped on purpose (separate, later validation). Validated
     # byte-identical (trades + gate states) by the parity guard.
     import os
-    _scope_flag = os.getenv('RORT_SCOPE_CONFLUENCE_GROUPS', '0') == '1'
+    # graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
+    _scope_flag = os.getenv('RORT_SCOPE_CONFLUENCE_GROUPS', '1') == '1'
     if _scope_flag and required_confluence_ids is None and strat is not None:
         try:
             from unified_engine import resolve_required_confluence_groups
@@ -853,7 +854,8 @@ def _has_long_cycle_secondary_tf(strat: dict) -> bool:
 
 def _secondary_snapshot_enabled() -> bool:
     import os
-    return os.getenv('RORT_SECONDARY_TF_SNAPSHOT', '0') == '1'
+    # graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
+    return os.getenv('RORT_SECONDARY_TF_SNAPSHOT', '1') == '1'
 
 
 def _has_valid_secondary_snapshot(strat: dict, model_id: str | None = None) -> bool:

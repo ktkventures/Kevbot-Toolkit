@@ -229,7 +229,8 @@ def _do_recompute(
                            "failed (%s) — proceeding unfloored", strategy_id, _e)
 
     all_trades = None
-    if _os.getenv('RORT_USE_DOUGH_CACHE', '0') == '1' and not _floored:
+    # graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
+    if _os.getenv('RORT_USE_DOUGH_CACHE', '1') == '1' and not _floored:
         try:
             import bar_cache_store as _bcs
             from unified_engine import run_trades_from_cache as _rtfc
@@ -1949,8 +1950,9 @@ def append_new_backtest_trades_for_strategy(
                 # BACKTEST lane so trades spanning an append boundary aren't
                 # dropped (root cause of ~50% lane under-production). Backtest
                 # lane ONLY — live/algo keep always-flat (§8.2). Kill-switch.
+                # graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
                 inherit_position=(_os_bt.getenv(
-                    'RORT_RESUME_INHERIT_POSITION', '0') == '1'),
+                    'RORT_RESUME_INHERIT_POSITION', '1') == '1'),
             )
         except Exception as e:
             logger.warning(

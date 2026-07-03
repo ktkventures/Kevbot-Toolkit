@@ -66,7 +66,8 @@ _TRADING_TO_CALENDAR = 365.0 / 252.0
 def _rightsize_warmup_enabled() -> bool:
     """M-RS1 kill-switch. Default OFF — legacy `visible_days * 2` until
     byte-identical-proven, then flip ON. Instant rollback by unsetting."""
-    return os.getenv("RORT_RIGHTSIZE_WARMUP", "0") == "1"
+    # graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
+    return os.getenv("RORT_RIGHTSIZE_WARMUP", "1") == "1"
 
 
 # ── Coarse-secondary-from-1Min (the ~360× warmup blow-up fix) ──────────
@@ -85,7 +86,8 @@ def _coarse_secondary_from_1min_enabled() -> bool:
     resampled from the sub-minute primary — source matches LIVE
     `ralph_engine._load_warmup_df`, removing a latent backtest-vs-live
     divergence. Instant rollback by unsetting."""
-    return os.getenv("RORT_COARSE_SECONDARY_FROM_1MIN", "0") == "1"
+    # graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
+    return os.getenv("RORT_COARSE_SECONDARY_FROM_1MIN", "1") == "1"
 
 
 def _tf_seconds_safe(tf: str) -> int:
