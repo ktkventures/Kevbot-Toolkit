@@ -309,7 +309,8 @@ def _read_health() -> dict:
 
 def _bar_cache_read_enabled() -> bool:
     import os
-    return os.environ.get("BAR_CACHE_ENABLED", "").strip().lower() in (
+    # graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
+    return os.environ.get("BAR_CACHE_ENABLED", "1").strip().lower() in (
         "1", "true", "yes", "on")
 
 

@@ -68,9 +68,10 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 def is_enabled() -> bool:
-    """Cache is opt-in via env var. Default off so existing behaviour is
-    preserved unless explicitly enabled."""
-    val = os.environ.get("BAR_CACHE_ENABLED", "").strip().lower()
+    """Cache is on by default; env var remains the kill switch (set to
+    0/false/no/off to disable)."""
+    # graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
+    val = os.environ.get("BAR_CACHE_ENABLED", "1").strip().lower()
     return val in ("1", "true", "yes", "on")
 
 

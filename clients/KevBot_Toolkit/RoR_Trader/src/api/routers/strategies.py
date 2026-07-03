@@ -800,8 +800,9 @@ def run_hifi_pass2(
     # `>=` boundary, NULL-tolerant); the filter is kept as belt-and-suspenders.
     scope_key = data_source_filter or 'all'
     created_at_gte = None
+    # graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
     if incremental and os.getenv(
-            "RORT_HIFI_INCREMENTAL_LOAD", "0").strip().lower() in (
+            "RORT_HIFI_INCREMENTAL_LOAD", "1").strip().lower() in (
             "1", "true", "yes", "on"):
         _lp = (strat.get('config') or {}).get('last_hifi_pass_at')
         if isinstance(_lp, dict):

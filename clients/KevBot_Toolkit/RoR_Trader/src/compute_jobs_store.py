@@ -26,7 +26,8 @@ def remote_enabled() -> bool:
     """True when recompute jobs should be enqueued to the DB queue for the
     dedicated batch-worker instead of running in-process. Default OFF —
     today's in-API-thread behavior is unchanged until this is flipped on."""
-    return os.getenv("RORT_COMPUTE_REMOTE", "0").strip() == "1"
+    # graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
+    return os.getenv("RORT_COMPUTE_REMOTE", "1").strip() == "1"
 
 
 def _now() -> str:
