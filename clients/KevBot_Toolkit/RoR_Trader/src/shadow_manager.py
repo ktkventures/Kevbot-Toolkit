@@ -107,6 +107,31 @@ GAP_SKIP = os.getenv("RORT_SHADOW_GAP_SKIP", "1").strip().lower() in (
 # graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
 KPI_ASYNC = os.getenv("RORT_SHADOW_KPI_ASYNC", "1").strip().lower() in (
     "1", "true", "yes", "on")
+# Empty-window probe (2026-07-03): before the expensive warmup-window prep, ask the
+# source layer ONE indexed question — "does any bar exist in (cursor, bound]?" — and
+# skip the whole advance when the answer is no. Gap-walking (nights/weekends/holidays)
+# otherwise re-prepares the full warmup window per slot per tf-interval just to learn
+# "still no bars": measured 34k window reads / ~889M rows returned in one idle night
+# (pg_stat_statements, 07-03) — the top egress driver. Byte-identical: with zero
+# source bars in the window, advance() would return [] and leave the cursor unmoved;
+# the probe just reaches the same outcome without the read. Session-filtered windows
+# (source bars exist but all filtered) still take the full prep + gap-skip path.
+# Probe failures fall through to the normal advance (fail-open).
+EMPTY_PROBE = os.getenv("RORT_SHADOW_EMPTY_PROBE", "1").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
+def _source_bars_exist(symbol: str, tf_seconds: int, after_dt, until_dt) -> bool:
+    """ONE indexed row: does the symbol's SOURCE layer (1Sec for sub-minute
+    primaries, else 1Min) hold any bar in (after_dt, until_dt]? Raises on query
+    failure — the caller treats that as 'unknown' and runs the full advance."""
+    from db import get_admin_client
+    layer = "1Sec" if tf_seconds < 60 else "1Min"
+    r = (get_admin_client().table("bar_cache").select("ts")
+         .eq("symbol", symbol).eq("timeframe", layer)
+         .gt("ts", after_dt.isoformat()).lte("ts", until_dt.isoformat())
+         .limit(1).execute())
+    return bool(r.data)
 
 
 def prepare_window(strat: dict, model, since_dt: datetime, until_dt: datetime,
@@ -543,7 +568,19 @@ class ResidentEngineManager:
                 if bound < advance_until:
                     advance_until, capped = bound, True
             prev_cursor = slot.last_processed_ts
-            closed = self.advance(slot, advance_until)
+            # Empty-window probe: cheap indexed existence check before the full
+            # warmup-window prep. Only for WARM slots (cold bootstrap must prep).
+            skip_advance = False
+            if EMPTY_PROBE and slot.engine is not None and prev_cursor is not None:
+                try:
+                    cur_dt = pd.Timestamp(prev_cursor).to_pydatetime()
+                    if not _source_bars_exist(slot.symbol, slot.tf_seconds,
+                                              cur_dt, advance_until):
+                        skip_advance = True
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("[shadow] sid=%s empty-probe failed (%s) — "
+                                 "full advance", slot.sid, e)
+            closed = [] if skip_advance else self.advance(slot, advance_until)
             if (GAP_SKIP and capped and prev_cursor is not None
                     and slot.last_processed_ts == prev_cursor):
                 # Capped window had no new bars → bar-free (or session-filtered,
