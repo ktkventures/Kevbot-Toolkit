@@ -139,6 +139,22 @@ _poll_executor = None
 _poll_executor_workers = 0
 
 
+def _recycle_poll_executor():
+    """Abandon a poisoned executor (threads stuck on dead sockets after a DB
+    blip — 2026-07-06: two wedges in one day, writes froze while the loop
+    looked alive). shutdown(wait=False) detaches; the next _get_poll_executor
+    call builds a fresh pool. Leaked threads die with their sockets."""
+    global _poll_executor
+    if _poll_executor is not None:
+        try:
+            _poll_executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:  # py<3.9 signature
+            _poll_executor.shutdown(wait=False)
+        except Exception:  # noqa: BLE001
+            pass
+    _poll_executor = None
+
+
 def _get_poll_executor(workers: int):
     """Lazy, reused ThreadPoolExecutor for parallel slot polls (M-RS4 Fix 2c).
 
@@ -197,16 +213,17 @@ def _resident_loop(stop_evt: threading.Event):
                        poll_workers)
 
     def _poll_one(slot):
-        """Poll one slot, returning trades inserted. Exceptions are contained so one
-        bad slot never aborts the cycle (mirrors the serial path's try/except)."""
+        """Poll one slot, returning (inserted, status). Exceptions are contained so
+        one bad slot never aborts the cycle (mirrors the serial path's try/except)."""
         if not _running:
-            return 0
+            return 0, 'halted'
         try:
-            return mgr.poll(slot).get('inserted', 0) or 0
+            r = mgr.poll(slot)
+            return (r.get('inserted', 0) or 0), r.get('status', 'ok')
         except Exception as e:  # noqa: BLE001
             logger.warning("[shadow_worker] sid=%s poll failed: %s", slot.sid, e,
                            exc_info=True)
-            return 0
+            return 0, 'error'
 
     reload_every = int(os.environ.get("RORT_SHADOW_RELOAD_S", "300"))
     last_discover = 0.0
@@ -230,19 +247,44 @@ def _resident_loop(stop_evt: threading.Event):
                 key=lambda s: s.last_tick_at if s.last_tick_at is not None else -1.0)
         eligible = [s for s in slots_iter if s.eligible]
 
+        # Pass watchdog (2026-07-06): the old unbounded f.result() join let one
+        # thread stuck on a dead socket freeze the whole loop forever ("alive but
+        # writing nothing" — twice today). Bound the pass; abandon stragglers and
+        # recycle the executor so the next pass starts on healthy threads.
+        from collections import Counter
+        from concurrent.futures import wait as _fut_wait
+        pass_timeout = int(os.environ.get("RORT_SHADOW_PASS_TIMEOUT_S", "600"))
+        statuses = Counter()
+        t_pass = time.monotonic()
         if poll_workers > 1 and len(eligible) > 1:
-            # Submit in fair-order; barrier-join before the next pass so a slot is
-            # never polled by two workers at once and discover() never races with an
-            # in-flight poll (both run only between passes on this thread).
+            # Submit in fair-order; join before the next pass so a slot is never
+            # polled by two workers at once and discover() never races a poll.
             ex = _get_poll_executor(poll_workers)
-            futures = [ex.submit(_poll_one, s) for s in eligible]
-            for f in futures:
-                wrote += f.result()
+            fut_by_sid = {ex.submit(_poll_one, s): s.sid for s in eligible}
+            done, not_done = _fut_wait(fut_by_sid, timeout=pass_timeout)
+            for f in done:
+                ins, st = f.result()
+                wrote += ins
+                statuses[st] += 1
+            if not_done:
+                stuck = sorted(fut_by_sid[f] for f in not_done)
+                statuses['stuck'] += len(not_done)
+                logger.error(
+                    "[shadow_worker] PASS TIMEOUT %ss: abandoning %d stuck poll(s) "
+                    "sids=%s — recycling executor", pass_timeout, len(not_done), stuck)
+                _recycle_poll_executor()
         else:
             for slot in eligible:
                 if not _running:
                     break
-                wrote += _poll_one(slot)
+                ins, st = _poll_one(slot)
+                wrote += ins
+                statuses[st] += 1
+        # One line per pass, always — a silent-zero pass is now attributable
+        # (ok vs ok_empty vs probe_skip vs no_new_bar vs error vs stuck).
+        logger.info("[shadow_worker] pass done in %.0fs: eligible=%d wrote=%d %s",
+                    time.monotonic() - t_pass, len(eligible), wrote,
+                    dict(statuses))
         if wrote:
             logger.info("[shadow_worker] cycle %s %d trades",
                         "would-write" if dry else "wrote", wrote)

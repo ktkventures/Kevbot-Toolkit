@@ -609,6 +609,17 @@ class ResidentEngineManager:
             kpis = self.maybe_recompute_kpis(slot)   # debounced; refreshes derived metrics
         import time as _time
         slot.last_tick_at = _time.monotonic()
-        status = 'ok' if new_settled_bar else 'no_new_bar'
+        # Telemetry statuses (2026-07-06 watchdog): distinguish the silent paths so
+        # a pass full of zeros is attributable from one log line. 'probe_skip' =
+        # empty-window probe skipped the advance; 'ok_empty' = advance ran but fed
+        # nothing new (prep empty / all bars ≤ engine cursor).
+        if not new_settled_bar:
+            status = 'no_new_bar'
+        elif skip_advance:
+            status = 'probe_skip'
+        elif not closed and slot.last_processed_ts == prev_cursor:
+            status = 'ok_empty'
+        else:
+            status = 'ok'
         return {'status': status, 'inserted': inserted, 'provisional': max(prov, 0),
                 'kpis_recomputed': kpis, 'last_bar_ts': slot.last_processed_ts}
