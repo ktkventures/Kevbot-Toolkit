@@ -1866,6 +1866,62 @@ except ValueError:
     MTF_STATE_REFRESH_S = 0
 
 
+# Bug Hunt Wave 2 W2-2 — session-edge bar-set asymmetry (2026-07-06,
+# docs/_active/Bug_Hunt_Wave1_2026-07-06.md W2-2).
+#
+# Live gates bar-close dispatch by event-ARRIVAL time; the backtest lane
+# filters by bar LABEL (data_loader._filter_session). Bars complete on the
+# first event AFTER their window, so live consumes one out-of-session
+# bleed-in bar at every session open (its close event lands ~1-4s inside
+# the boundary — live absorbs overnight gaps one bar before bt) and drops
+# the session-final bar at every close (event >= boundary). Proven on
+# ungated sids 268/270/302/321: boundary indicator state diverges until the
+# first mutually-observed flip, ~1-3 unpairable trades per session edge.
+#
+# Flag ON: bar-close dispatch judges the completed bar's START label with
+# the same half-open [open, close) rule — the exact backtest bar set.
+# Intra-bar tick paths stay arrival-gated (unchanged). Default OFF = byte-
+# identical legacy behavior. Read once at module import — flip requires a
+# worker restart.
+SESSION_LABEL_GATE = os.getenv(
+    "RORT_SESSION_LABEL_GATE", "0").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
+def _bar_close_in_session(bar: dict, arrival_ts: datetime,
+                          monitor: 'StrategyMonitor') -> bool:
+    """W2-2: session membership for a completed bar at bar-close dispatch.
+
+    Flag OFF: legacy arrival-time rule. Flag ON: the completed bar's start
+    label decides (backtest-lane rule); every boundary disagreement between
+    the two rules logs a [SESSION-EDGE] line (expected exactly at session
+    open — "skip bleed-in" — and session close — "consume final").
+    """
+    arrival_ok = _is_in_session(arrival_ts, monitor.session)
+    if not SESSION_LABEL_GATE:
+        return arrival_ok
+    raw = bar.get('timestamp') if isinstance(bar, dict) else None
+    if raw is None:
+        return arrival_ok
+    try:
+        if isinstance(raw, str):
+            label = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+        else:
+            label = raw
+        if label.tzinfo is None:
+            label = label.replace(tzinfo=timezone.utc)
+    except Exception:  # noqa: BLE001
+        return arrival_ok
+    label_ok = _is_in_session(label, monitor.session)
+    if label_ok != arrival_ok:
+        logger.info(
+            "[SESSION-EDGE] %s: strat=%s session=%s bar_label=%s event=%s",
+            "consume final bar" if label_ok else "skip bleed-in bar",
+            monitor.strat_id, monitor.session, raw,
+            arrival_ts.isoformat())
+    return label_ok
+
+
 def _shadow_session_for(monitor: 'StrategyMonitor') -> str:
     """Session key a monitor's cross-TF gate lookups/stores use.
 
@@ -2815,7 +2871,10 @@ class SymbolHub:
                 for monitor in self.monitors.values():
                     if monitor.tf_seconds != tf_seconds:
                         continue
-                    if not _is_in_session(timestamp, monitor.session):
+                    # W2-2: completed-bar dispatch gates on the BAR LABEL
+                    # when SESSION_LABEL_GATE (matches backtest bar set).
+                    if not _bar_close_in_session(completed, timestamp,
+                                                 monitor):
                         if self.tick_count % 5000 == 0:
                             logger.debug("Session skip: strat=%s session=%s ts=%s",
                                          monitor.strat_id, monitor.session, timestamp)
@@ -3070,7 +3129,9 @@ class SymbolHub:
             for monitor in self.monitors.values():
                 if monitor.tf_seconds != tf_seconds:
                     continue
-                if not _is_in_session(now, monitor.session):
+                # W2-2: label-gated on flush too (flush fires the session-
+                # final bar's close AFTER the boundary — must still dispatch).
+                if not _bar_close_in_session(completed, now, monitor):
                     continue
 
                 signals, audit_data = monitor.on_bar_close(
@@ -3222,7 +3283,9 @@ class SymbolHub:
         for monitor in self.monitors.values():
             if monitor.tf_seconds != tf_seconds:
                 continue
-            if not _is_in_session(self.last_tick_time, monitor.session):
+            # W2-2: label-gated (per-second/AM close path).
+            if not _bar_close_in_session(bar_dict, self.last_tick_time,
+                                         monitor):
                 continue
             # Phase C (2026-05-05): live_model gate — symmetric skip sets
             # so each monitor only fires on its declared bar source.
