@@ -688,6 +688,9 @@ class DBRalphEngine:
         # without overwhelming the host.
         self._ft_throttle = _PerStrategyThrottle()
         self._ft_executor: Optional[ThreadPoolExecutor] = None
+        # Bug Hunt Wave 1 #2: MTF state-refresher daemon thread (None when
+        # RORT_MTF_STATE_REFRESH_S <= 0 — the default).
+        self._mtf_refresh_thread: Optional[threading.Thread] = None
 
     def start(self, strategies: list, config: dict):
         """Start the engine (blocking)."""
@@ -782,6 +785,16 @@ class DBRalphEngine:
             gap_healer.start_sweeper(interval_seconds=120)
         except Exception as e:
             logger.warning("gap_healer setup failed: %s", e)
+
+        # MTF state refresher (Bug Hunt Wave 1 #2, 2026-07-06): periodic
+        # self-healing refresh of secondary-shadow gate records — immunizes
+        # against the sub-hour close-feed FREEZE class (sid 272: SPY 10m
+        # stoch record fossilized at a boot-era value all day). No-op unless
+        # RORT_MTF_STATE_REFRESH_S > 0.
+        try:
+            self._start_mtf_state_refresh(engine)
+        except Exception as e:
+            logger.warning("MTF state refresher setup failed: %s", e)
 
         # Bar-close recompute hook is OFF. stored_trades is now appended
         # atomically by DBAlertDispatcher.dispatch on exit signals (see
@@ -1101,6 +1114,85 @@ class DBRalphEngine:
         if self._ft_executor is not None:
             self._ft_executor.shutdown(wait=False, cancel_futures=True)
             self._ft_executor = None
+
+    def _start_mtf_state_refresh(
+            self, engine) -> Optional[threading.Thread]:
+        """Launch the MTF gate-state refresher daemon thread (Bug Hunt
+        Wave 1 #2, docs/_active/Bug_Hunt_Wave1_2026-07-06.md).
+
+        Every RORT_MTF_STATE_REFRESH_S seconds, calls
+        `hub.refresh_mtf_states()` on every SymbolHub the engine holds —
+        re-deriving each secondary shadow's cross-TF gate records from a
+        fresh session-correct warmup. Immunizes ALL freeze modes of the
+        0609a close-feed-starvation family (sid 272: SPY 10m stoch record
+        fossilized at a boot-era value 13:53→17:00 while REST truth
+        disagreed all day) without touching the fan-out plumbing — the
+        state-layer analogue of the settle sweeper.
+
+        Gate: RORT_MTF_STATE_REFRESH_S (read once at ralph_engine import;
+        default 0). <= 0 → returns None, NO thread (zero behavior change).
+        Hubs are staggered by a few seconds inside each cycle to avoid a
+        thundering Polygon/warmup load. Runs regardless of market window —
+        off-hours reloads are cheap and keep pre-open state honest
+        (data_worker_ingest.is_market_window is data-worker-side; not
+        imported across services). Daemon thread, mirrors the
+        rest_verifier/gap_healer sweeper pattern above.
+
+        Returns the started Thread, or None when disabled.
+        """
+        from ralph_engine import MTF_STATE_REFRESH_S
+        if MTF_STATE_REFRESH_S <= 0:
+            logger.info(
+                "MTF state refresher disabled — set RORT_MTF_STATE_REFRESH_S"
+                ">0 (seconds) on the worker to enable")
+            return None
+        interval = MTF_STATE_REFRESH_S
+        uid = self.user_id[:8]
+
+        def loop():
+            logger.info("[MTF-REFRESH] refresher started (interval=%ss)",
+                        interval)
+            # Stagger first cycle so engine warmup completes first.
+            time.sleep(min(float(interval), 60.0))
+            while True:
+                try:
+                    hubs = 0
+                    totals = {'refreshed': 0, 'changed': 0, 'failed': 0}
+                    for sym, hub in list(engine.hubs.items()):
+                        try:
+                            summary = hub.refresh_mtf_states()
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning(
+                                "[MTF-REFRESH] hub %s refresh crashed: %s",
+                                sym, e)
+                            totals['failed'] += 1
+                            continue
+                        hubs += 1
+                        did_work = False
+                        for k in totals:
+                            n = int(summary.get(k, 0))
+                            totals[k] += n
+                            did_work = did_work or n > 0
+                        # Stagger only hubs that actually reloaded warmups
+                        # (shadow-less hubs are free) — avoids a thundering
+                        # load when many symbols carry coarse gates.
+                        if did_work:
+                            time.sleep(3.0)
+                    logger.info(
+                        "[MTF-REFRESH] cycle: hubs=%d refreshed=%d "
+                        "changed=%d failed=%d", hubs,
+                        totals['refreshed'], totals['changed'],
+                        totals['failed'])
+                except Exception as e:  # noqa: BLE001
+                    logger.error("[MTF-REFRESH] cycle crashed: %s", e,
+                                 exc_info=True)
+                time.sleep(float(interval))
+
+        t = threading.Thread(
+            target=loop, daemon=True, name=f"mtf-state-refresh-{uid}")
+        t.start()
+        self._mtf_refresh_thread = t
+        return t
 
     @property
     def is_running(self):

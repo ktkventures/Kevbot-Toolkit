@@ -1839,6 +1839,33 @@ MTF_SESSION_SHADOWS = os.getenv(
     "1", "true", "yes", "on")
 
 
+# Bug Hunt Wave 1 #2 — sub-hour secondary stoch-state FREEZE (2026-07-06,
+# docs/_active/Bug_Hunt_Wave1_2026-07-06.md #2).
+#
+# Proven on sid 272: the SPY hub's 10m secondary shadow served a boot-era
+# record (10M-STOCHASTIC_OSCILLATOR-BULLISH_MIDRANGE) unchanged 13:53→17:00
+# while REST truth was OVERBOUGHT_* all day — sub-hour secondary shadow
+# records can FREEZE when their close-feed doesn't reach them (0609a
+# duplicate-close-freeze family, still alive on this path). Rather than
+# rewiring the delicate fan-out/duplicate plumbing, this enables a periodic
+# self-healing refresh (SymbolHub.refresh_mtf_states, driven by a worker
+# daemon thread) that re-derives every secondary shadow's records from a
+# fresh session-correct warmup — the state-layer analogue of the settle
+# sweeper.
+#
+# Value = refresh interval in SECONDS (e.g. 600). Default "0" = OFF (no
+# thread, zero behavior change). Read once at module import (like
+# MTF_SESSION_SHADOWS above) — flip requires a worker restart.
+try:
+    MTF_STATE_REFRESH_S = int(
+        os.getenv("RORT_MTF_STATE_REFRESH_S", "0").strip() or "0")
+except ValueError:
+    logger.warning(
+        "RORT_MTF_STATE_REFRESH_S=%r is not an int — MTF state refresher "
+        "stays OFF", os.getenv("RORT_MTF_STATE_REFRESH_S"))
+    MTF_STATE_REFRESH_S = 0
+
+
 def _shadow_session_for(monitor: 'StrategyMonitor') -> str:
     """Session key a monitor's cross-TF gate lookups/stores use.
 
@@ -2683,6 +2710,70 @@ class SymbolHub:
                            "session=%s: %s",
                            self.symbol, tf_seconds, session, e)
             return False
+
+    def refresh_mtf_states(self) -> dict:
+        """Bug Hunt Wave 1 #2 — periodic self-healing refresh of every
+        secondary shadow's cross-TF gate records.
+
+        Sub-hour secondary shadow records can FREEZE when their close-feed
+        doesn't reach them (0609a duplicate-close-freeze family; proven on
+        sid 272 — SPY's 10m stoch record stuck at a boot-era value all day
+        while REST truth disagreed). Instead of rewiring the fan-out /
+        duplicate plumbing, this re-derives each shadow's records from a
+        fresh session-correct warmup (`_load_warmup_df` + trim the forming
+        bar + `recompute_confluence`) — the state-layer analogue of the
+        settle sweeper. Driven every RORT_MTF_STATE_REFRESH_S seconds by a
+        worker daemon thread (see worker.DBRalphEngine).
+
+        A CHANGED record set means the close-feed had gone stale (the bug
+        firing) → one WARNING line per changed shadow. Fresh records are
+        ALWAYS stored (even when unchanged) so the gate state converges to
+        REST truth regardless of freeze mode. Per-shadow failures keep the
+        old records and never propagate. Thread-safe by snapshot: iterates
+        a list() copy of the shadow dict; dict item assignment is atomic.
+
+        Returns {'refreshed': n, 'changed': n, 'failed': n}.
+        """
+        refreshed = changed = failed = 0
+        for key, shadow in list(self._shadow_engines.items()):
+            tf_seconds, session = key
+            try:
+                df = _load_warmup_df(
+                    self.symbol, tf_seconds,
+                    session if MTF_SESSION_SHADOWS else 'RTH')
+                df = _closed_bars_only(df, tf_seconds)
+                if df is None or len(df) == 0:
+                    logger.warning(
+                        "[MTF-REFRESH] %s tf=%s sess=%s: empty warmup "
+                        "reload — keeping previous records",
+                        self.symbol, tf_seconds, session)
+                    continue
+                recs = set(shadow.recompute_confluence(df))
+                prev = self._mtf_confluence.get(key)
+                if prev is not None and set(prev) != recs:
+                    changed += 1
+                    prev_s = set(prev)
+                    if len(prev_s | recs) <= 8:
+                        old_repr = sorted(prev_s)
+                        new_repr = sorted(recs)
+                    else:  # large sets: show only the changed subset
+                        old_repr = sorted(prev_s - recs)
+                        new_repr = sorted(recs - prev_s)
+                    logger.warning(
+                        "[MTF-REFRESH] %s tf=%s sess=%s: records changed "
+                        "%s -> %s",
+                        self.symbol, tf_seconds, session,
+                        old_repr, new_repr)
+                self._mtf_confluence[key] = recs
+                refreshed += 1
+            except Exception as e:  # noqa: BLE001
+                failed += 1
+                logger.warning(
+                    "[MTF-REFRESH] %s tf=%s sess=%s: refresh failed (%s) "
+                    "— keeping previous records",
+                    self.symbol, tf_seconds, session, e)
+        return {'refreshed': refreshed, 'changed': changed,
+                'failed': failed}
 
     def on_tick(self, price: float, volume: int, timestamp: datetime,
                 alert_callback: Callable = None, config: dict = None,
