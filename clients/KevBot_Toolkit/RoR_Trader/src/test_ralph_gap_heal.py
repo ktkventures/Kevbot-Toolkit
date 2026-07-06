@@ -340,11 +340,11 @@ def test_secondary_tf_cascade_refreshes_gate():
     shadow = _ShadowIndicatorEngine(
         tf_sec, set(REQUIRED), {'MACD_LINE'}, dict(PARAMS))
     shadow.indicators._snapshot_enabled = True
-    hub._shadow_engines[tf_sec] = shadow
+    hub._shadow_engines[(tf_sec, 'RTH')] = shadow
 
     for i in range(len(holey)):
         builder.accept_bar(bar_dict(holey, i))
-        hub._mtf_confluence[tf_sec] = shadow.on_bar_close({
+        hub._mtf_confluence[(tf_sec, 'RTH')] = shadow.on_bar_close({
             'open': float(holey['open'].iloc[i]),
             'high': float(holey['high'].iloc[i]),
             'low': float(holey['low'].iloc[i]),
@@ -361,7 +361,7 @@ def test_secondary_tf_cascade_refreshes_gate():
     assert_values_match(shadow.indicators.get_values(),
                         fresh_reference(full))
     fresh_records = shadow._derive_confluence_records()
-    assert hub._mtf_confluence[tf_sec] == fresh_records
+    assert hub._mtf_confluence[(tf_sec, 'RTH')] == fresh_records
     assert any(r.startswith('2M-MACD_LINE-') for r in fresh_records)
 
 
@@ -661,11 +661,11 @@ def test_gate_records_refresh_after_rest_correction():
     shadow = _ShadowIndicatorEngine(
         tf_sec, set(REQUIRED), {'MACD_LINE'}, dict(PARAMS))
     shadow.indicators._snapshot_enabled = True
-    hub._shadow_engines[tf_sec] = shadow
+    hub._shadow_engines[(tf_sec, 'RTH')] = shadow
 
     for i in range(len(full)):
         builder.accept_bar(bar_dict(full, i))
-        hub._mtf_confluence[tf_sec] = shadow.on_bar_close({
+        hub._mtf_confluence[(tf_sec, 'RTH')] = shadow.on_bar_close({
             'open': float(full['open'].iloc[i]),
             'high': float(full['high'].iloc[i]),
             'low': float(full['low'].iloc[i]),
@@ -685,7 +685,7 @@ def test_gate_records_refresh_after_rest_correction():
         'close': crash,
         'volume': float(full['volume'].iloc[-1]),
     }
-    pre_records = set(hub._mtf_confluence[tf_sec])
+    pre_records = set(hub._mtf_confluence[(tf_sec, 'RTH')])
     assert any('M>S' in r for r in pre_records), (
         "test setup: rising series should be MACD-bullish pre-correction")
     ok = hub.apply_rest_correction(tf_sec, corrected)
@@ -695,7 +695,7 @@ def test_gate_records_refresh_after_rest_correction():
     expected = shadow._derive_confluence_records()
     assert any('M<S' in r for r in expected), (
         "test setup: the crash bar should flip MACD bearish")
-    assert hub._mtf_confluence[tf_sec] == expected, (
+    assert hub._mtf_confluence[(tf_sec, 'RTH')] == expected, (
         "GATE RECORDS STALE after REST correction — _mtf_confluence was "
         "not re-derived; the live gate keeps trading on pre-correction "
         "state (the B5 gate-flood mechanism)")
@@ -774,7 +774,7 @@ def test_gate_telemetry_emits_on_change_and_warns_on_freeze(monkeypatch):
     now = datetime(2026, 6, 12, 20, 0, 0, tzinfo=timezone.utc)
 
     # 1. first snapshot emits
-    hub._mtf_confluence[120] = {'2M-UT_BOT_V4-BULL_TREND'}
+    hub._mtf_confluence[(120, 'RTH')] = {'2M-UT_BOT_V4-BULL_TREND'}
     hub.emit_gate_telemetry(now)
     assert len(written) == 1
     assert written[0]['source'] == 'live_gate'
@@ -785,7 +785,7 @@ def test_gate_telemetry_emits_on_change_and_warns_on_freeze(monkeypatch):
     assert len(written) == 1
 
     # 3. change -> emits
-    hub._mtf_confluence[120] = {'2M-UT_BOT_V4-BEAR_TREND'}
+    hub._mtf_confluence[(120, 'RTH')] = {'2M-UT_BOT_V4-BEAR_TREND'}
     hub.emit_gate_telemetry(now + timedelta(seconds=60))
     assert len(written) == 2
 

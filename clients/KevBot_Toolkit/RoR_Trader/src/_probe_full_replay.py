@@ -50,7 +50,8 @@ monitor.warmup(primary_df.iloc[:warmup])
 
 # Warmup shadows
 for sec_tf, sec_df in sec_dfs.items():
-    shadow = hub._shadow_engines.get(sec_tf)
+    shadow = next((sh for (_tf, _s), sh in hub._shadow_engines.items()
+                   if _tf == sec_tf), None)
     if shadow is None or sec_df is None or len(sec_df) < 5:
         continue
     sec_warmup = min(50, max(5, len(sec_df) // 4))
@@ -80,7 +81,8 @@ for i in range(warmup, len(primary_df)):
     ts = primary_df.index[i]
 
     for sec_tf, st in sec_state.items():
-        shadow = hub._shadow_engines.get(sec_tf)
+        shadow = next((sh for (_tf, _s), sh in hub._shadow_engines.items()
+                       if _tf == sec_tf), None)
         if shadow is None:
             continue
         s_idx = st['idx']
@@ -100,7 +102,7 @@ for i in range(warmup, len(primary_df)):
             }
             try:
                 records = shadow.on_bar_close(sec_bar)
-                hub._mtf_confluence[sec_tf] = records
+                hub._mtf_confluence[(sec_tf, shadow.session)] = records
             except Exception as e:
                 print(f"shadow bar_close fail {sec_tf}@{sec_ts}: {e}")
             s_idx += 1

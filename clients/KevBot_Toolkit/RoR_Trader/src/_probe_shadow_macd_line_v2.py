@@ -40,7 +40,8 @@ hub.finalize_shadow_engines()
 print(f"\nShadow engines on hub: {list(hub._shadow_engines.keys())}")
 
 # Pull the 1Day shadow
-shadow_1d = hub._shadow_engines.get(86400)
+shadow_1d = next((sh for (_tf, _s), sh in hub._shadow_engines.items()
+                  if _tf == 86400), None)
 if shadow_1d is None:
     print("ERROR: no 1Day shadow engine")
     raise SystemExit(1)

@@ -26,7 +26,7 @@ hub = SymbolHub('SPY')
 hub.add_monitor(mon)
 hub.finalize_shadow_engines()
 print('shadow engines:', list(hub._shadow_engines.keys()))
-sh = hub._shadow_engines.get(120)
+sh = hub._shadow_engines.get((120, 'RTH'))
 assert sh is not None, '120s shadow missing!'
 print('120s shadow req_interp:', sh.trigger_eval.req_interp if hasattr(sh.trigger_eval,'req_interp') else '(n/a)')
 
@@ -52,17 +52,17 @@ px = float(warm['close'].iloc[-1])
 hub._fanout_to_secondary_builders(minute_bar(m0, px, px+1, px-1, px+0.5), 'ws_agg')
 hub._fanout_to_secondary_builders(minute_bar(m1, px+0.5, px+2, px, px+1.5), 'ws_agg')
 hub._fanout_to_secondary_builders(minute_bar(m2, px+1.5, px+2, px+1, px+1.8), 'ws_agg')
-rec_after_close = set(hub._mtf_confluence.get(120, set()))
+rec_after_close = set(hub._mtf_confluence.get((120, 'RTH'), set()))
 print('\n_mtf_confluence[120] after normal closes:', rec_after_close)
 
 # Now a rebroadcast/correction of m0 (period_start aligns to closed bucket A)
 # with a DIFFERENT close — exercises the duplicate branch.
 hub._fanout_to_secondary_builders(minute_bar(m0, px, px+5, px-1, px+4.0), 'ws')
-rec_after_dup = set(hub._mtf_confluence.get(120, set()))
+rec_after_dup = set(hub._mtf_confluence.get((120, 'RTH'), set()))
 print('_mtf_confluence[120] after rebroadcast dup :', rec_after_dup)
 
 # Assertions
-assert 120 in hub._mtf_confluence, 'FAIL: _mtf_confluence[120] missing after dup'
+assert (120, 'RTH') in hub._mtf_confluence, 'FAIL: _mtf_confluence[120] missing after dup'
 assert rec_after_dup == set(sh._current_confluence), \
     'FAIL: buffer not synced to shadow current records'
 print('\nPASS: rebroadcast cascade refreshed _mtf_confluence[120] '

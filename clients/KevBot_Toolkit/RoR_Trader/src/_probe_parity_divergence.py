@@ -105,7 +105,8 @@ monitor.warmup(df.iloc[:WARMUP])
 # Warmup shadows
 for sec_tf, sec_df in sec_dfs.items():
     sw = min(200, max(5, len(sec_df) // 4))
-    shadow = hub._shadow_engines.get(sec_tf)
+    shadow = next((sh for (_tf, _s), sh in hub._shadow_engines.items()
+                   if _tf == sec_tf), None)
     if shadow is not None:
         try:
             shadow.warmup(sec_df.iloc[:sw])
@@ -120,7 +121,7 @@ for sec_tf, sec_df in sec_dfs.items():
     sec_state[sec_tf] = {'df': sec_df, 'idx': sw}
 
 print(f"  hub._shadow_engines keys: {list(hub._shadow_engines.keys())}")
-for sec_tf, sh in hub._shadow_engines.items():
+for (sec_tf, _sess), sh in hub._shadow_engines.items():
     print(f"    shadow {sec_tf}s: req_ind={sh.indicators.required} "
           f"req_interp={sh.trigger_eval.required_interpreters}")
 
@@ -135,7 +136,8 @@ for i in range(WARMUP, len(df)):
 
     # Advance secondary TFs (mirrors parity_service replay loop)
     for sec_tf, st in sec_state.items():
-        shadow = hub._shadow_engines.get(sec_tf)
+        shadow = next((sh for (_tf, _s), sh in hub._shadow_engines.items()
+                       if _tf == sec_tf), None)
         if shadow is None:
             continue
         sec_df = st['df']
@@ -154,7 +156,7 @@ for i in range(WARMUP, len(df)):
             }
             try:
                 records = shadow.on_bar_close(sec_bar)
-                hub._mtf_confluence[sec_tf] = records
+                hub._mtf_confluence[(sec_tf, shadow.session)] = records
                 sec_feed_count[sec_tf] += 1
                 if records:
                     sec_records_seen[sec_tf].update(records)

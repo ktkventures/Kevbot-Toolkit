@@ -11,7 +11,7 @@ c = get_admin_client()
 strat = _row_to_strategy(c.table('strategies').select('*').eq('id',277).execute().data[0])
 mon = StrategyMonitor(strat, None, general_packs=[])
 hub = SymbolHub('SPY'); hub.add_monitor(mon); hub.finalize_shadow_engines()
-sh = hub._shadow_engines[120]
+sh = hub._shadow_engines[(120, 'RTH')]
 
 df2 = resample_to_timeframe(load_market_data('SPY', days=3, timeframe='1Min'), '2Min').dropna(subset=['open'])
 warm, replay = df2.iloc[:60], df2.iloc[60:]
