@@ -119,6 +119,15 @@ KPI_ASYNC = os.getenv("RORT_SHADOW_KPI_ASYNC", "1").strip().lower() in (
 # Probe failures fall through to the normal advance (fail-open).
 EMPTY_PROBE = os.getenv("RORT_SHADOW_EMPTY_PROBE", "1").strip().lower() in (
     "1", "true", "yes", "on")
+# W2-0 shadow heartbeat (2026-07-06, Kevin's trust ask + Fleet_Divergence_Audit
+# W2-0): after each poll, publish the slot's TRUE settled coverage boundary
+# (last_processed_ts) to `shadow_heartbeats` so the Health page can distinguish
+# "engine current, model quiet" from "engine stalled" — Last BT ages on quiet
+# strategies and TBD is otherwise computed from stale recompute stamps, so
+# trust evaporates. Debounced (~4 min/slot); write failures are swallowed
+# (heartbeat must never break the poll). Default ON.
+HEARTBEAT = os.getenv("RORT_SHADOW_HEARTBEAT", "1").strip().lower() in (
+    "1", "true", "yes", "on")
 
 
 def _source_bars_exist(symbol: str, tf_seconds: int, after_dt, until_dt) -> bool:
@@ -168,6 +177,7 @@ class EngineSlot:
         self.has_traded_since_kpi = False       # set on a settled write; drives KPI recompute
         self.last_kpi_at = None                 # monotonic stamp of last KPI recompute
         self.last_tick_at = None                # monotonic stamp of last poll (Fix 2a fairness)
+        self.last_hb_at = None                  # monotonic stamp of last heartbeat (W2-0)
         self.classify()
 
     def classify(self) -> None:
@@ -621,5 +631,26 @@ class ResidentEngineManager:
             status = 'ok_empty'
         else:
             status = 'ok'
+        # W2-0 shadow heartbeat: publish the engine's settled coverage boundary
+        # so Health can tell "engine current, model quiet" from "engine stalled".
+        # Debounced per slot; NEVER allowed to break the poll.
+        if (HEARTBEAT and not self.dry_run and slot.last_processed_ts is not None
+                and (slot.last_hb_at is None
+                     or _time.monotonic() - slot.last_hb_at > 240)):
+            try:
+                from db import get_admin_client
+                ct = slot.last_processed_ts
+                # pd.Timestamp and datetime both expose isoformat(); anything
+                # else (already a string) passes through via str().
+                ct_iso = ct.isoformat() if hasattr(ct, 'isoformat') else str(ct)
+                get_admin_client().table('shadow_heartbeats').upsert({
+                    'strategy_id': slot.sid,
+                    'current_through': ct_iso,
+                    'updated_at': datetime.now(timezone.utc).isoformat(),
+                }, on_conflict='strategy_id').execute()
+                slot.last_hb_at = _time.monotonic()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[shadow] sid=%s heartbeat write failed: %s",
+                             slot.sid, e)
         return {'status': status, 'inserted': inserted, 'provisional': max(prov, 0),
                 'kpis_recomputed': kpis, 'last_bar_ts': slot.last_processed_ts}

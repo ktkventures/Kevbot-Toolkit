@@ -8,7 +8,7 @@
  * without tailing Railway logs.
  *
  * Columns:
- *   strategy | symbol | timeframe | snapshot age | KPI age |
+ *   strategy | symbol | timeframe | BT current (shadow heartbeat) | KPI age |
  *   last trade age | trades | paired | phantom | missed | flags
  *
  * Sort: default by red-flag count desc (most-broken first), click any
@@ -38,6 +38,19 @@ function fmtAge(seconds: number | null | undefined): string {
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
   return h === 0 ? `${d}d` : `${d}d ${h}h`;
+}
+
+/** Age in seconds of an ISO timestamp relative to the server's `now`
+ *  (falls back to client clock). Used for W2-0 bt_current_through, which
+ *  the API ships as a raw timestamp rather than a precomputed age. */
+function ageSecFrom(iso: string | null | undefined,
+                    nowIso: string | undefined): number | null {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (isNaN(t)) return null;
+  const n = nowIso ? Date.parse(nowIso) : Date.now();
+  if (isNaN(n)) return null;
+  return Math.max(0, Math.round((n - t) / 1000));
 }
 
 /** Color-coded age cell. Thresholds tuned for the data-worker cadence:
@@ -111,7 +124,7 @@ function flagChipStyle(tone: 'red' | 'amber' | 'gray'): React.CSSProperties {
 
 type SortKey =
   | 'flags' | 'name' | 'symbol' | 'timeframe'
-  | 'snapshot' | 'kpis' | 'lastTrade' | 'trades'
+  | 'btCurrent' | 'kpis' | 'lastTrade' | 'trades'
   | 'lastBt' | 'lastAlert'
   | 'combined' | 'paired' | 'phantom' | 'missed' | 'tbd';
 
@@ -124,7 +137,12 @@ function rowSortValue(
     case 'name':      return r.name ?? '';
     case 'symbol':    return r.symbol ?? '';
     case 'timeframe': return r.timeframe ?? '';
-    case 'snapshot':  return r.snapshot_age_sec ?? Number.POSITIVE_INFINITY;
+    // W2-0: BT Current sorts by heartbeat coverage recency — newest boundary
+    // first on asc (equivalent to smallest age first). Nulls sort last.
+    case 'btCurrent': {
+      const t = r.bt_current_through ? Date.parse(r.bt_current_through) : NaN;
+      return isNaN(t) ? Number.POSITIVE_INFINITY : -t;
+    }
     case 'kpis':      return r.kpis_age_sec ?? Number.POSITIVE_INFINITY;
     case 'lastTrade': return r.last_entry_age_sec ?? Number.POSITIVE_INFINITY;
     case 'lastBt':    return r.last_backtest_created_age_sec ?? Number.POSITIVE_INFINITY;
@@ -476,7 +494,7 @@ export default function StrategyHealthV1() {
                 <Th onClick={() => toggleSort('name')}      label={`Strategy${arrow('name')}`} />
                 <Th onClick={() => toggleSort('symbol')}    label={`Symbol${arrow('symbol')}`} />
                 <Th onClick={() => toggleSort('timeframe')} label={`TF${arrow('timeframe')}`} />
-                <Th onClick={() => toggleSort('snapshot')}  label={`Snapshot${arrow('snapshot')}`} />
+                <Th onClick={() => toggleSort('btCurrent')} label={`BT Current${arrow('btCurrent')}`} />
                 <Th onClick={() => toggleSort('kpis')}      label={`KPIs${arrow('kpis')}`} />
                 <Th onClick={() => toggleSort('lastTrade')} label={`Last trade${arrow('lastTrade')}`} />
                 <Th onClick={() => toggleSort('lastBt')}    label={`Last BT${arrow('lastBt')}`} />
@@ -511,9 +529,20 @@ export default function StrategyHealthV1() {
                     {r.symbol || '—'}
                   </td>
                   <td style={{ padding: '6px 8px' }}>{r.timeframe || '—'}</td>
-                  <td style={{ padding: '6px 8px' }}>
-                    <span style={ageStyle(r.snapshot_age_sec, { green: 600, yellow: 3600 })}>
-                      {fmtAge(r.snapshot_age_sec)}
+                  {/* W2-0 (2026-07-06): replaced the dead Snapshot column.
+                       BT Current = age of the shadow engine's settled coverage
+                       boundary (shadow_heartbeats.current_through) — honest
+                       "how current is the backtest lane" even when the model
+                       is quiet and Last BT ages. green ≤20m, amber ≤2h. */}
+                  <td style={{ padding: '6px 8px' }}
+                      title={r.bt_current_through
+                        ? `current through ${r.bt_current_through}`
+                          + ` · heartbeat ${r.bt_heartbeat_at ?? '—'}`
+                        : 'no shadow heartbeat on file'}>
+                    <span style={ageStyle(
+                        ageSecFrom(r.bt_current_through, data?.now),
+                        { green: 1200, yellow: 7200 })}>
+                      {fmtAge(ageSecFrom(r.bt_current_through, data?.now))}
                     </span>
                   </td>
                   <td style={{ padding: '6px 8px' }}>

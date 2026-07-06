@@ -60,6 +60,13 @@ _DIVERGENCE_TOLERANCE_SEC = 60.0            # ±60s
 # cutoff = last_recompute_until − this, i.e. the real BT data edge. Mirrors
 # forward_test_service._ALGO_HISTORY_LAG_MINUTES (15 min).
 _COVERAGE_LAG_SEC = 15 * 60
+# W2-0 shadow heartbeat (2026-07-06): the resident shadow engine publishes its
+# TRUE settled coverage boundary per strategy to `shadow_heartbeats`
+# (shadow_manager.HEARTBEAT). A heartbeat whose updated_at is within this
+# freshness window is authoritative coverage — its current_through IS the
+# settled data edge (no lag subtraction needed), honest even when the model is
+# quiet and Last BT ages. Stale/missing → legacy recompute-stamp fallback.
+_HEARTBEAT_FRESH_SEC = 30 * 60
 _WINDOW_HOURS_DEFAULT = 24
 _WINDOW_HOURS_MIN = 1
 _WINDOW_HOURS_MAX = 168                     # 7 days max
@@ -152,6 +159,8 @@ def get_strategy_health(
             "data_source": "backtest_rest_hifi",
             "snapshot_at": "...", "snapshot_age_sec": N,
             "last_recompute_until_ts": "...",
+            "bt_current_through": "..." | null,   # W2-0 shadow heartbeat
+            "bt_heartbeat_at": "..." | null,
             "kpis_computed_at": "...", "kpis_age_sec": N,
             "kpis_stale_since": "..." | null,
             "data_refreshed_at": "...", "data_refreshed_age_sec": N,
@@ -223,6 +232,24 @@ def get_strategy_health(
     except Exception as e:
         logger.warning(
             "[health] last-alert-per-sid load failed: %s — column will be null", e)
+
+    # W2-0 (2026-07-06): shadow-engine heartbeats — one fetch per request
+    # (~70 rows). sid → (current_through, updated_at) as datetimes. A FRESH
+    # heartbeat supersedes the recompute-stamp coverage derivation below;
+    # see _HEARTBEAT_FRESH_SEC.
+    heartbeats: Dict[int, tuple] = {}
+    try:
+        hb_resp = c.table("shadow_heartbeats").select("*").execute()
+        for hb in (hb_resp.data or []):
+            hb_sid = hb.get("strategy_id")
+            hb_ct = _parse_iso(hb.get("current_through"))
+            hb_ua = _parse_iso(hb.get("updated_at"))
+            if hb_sid is None or hb_ct is None:
+                continue
+            heartbeats[hb_sid] = (hb_ct, hb_ua)
+    except Exception as e:
+        logger.warning("[health] shadow_heartbeats load failed: %s — "
+                       "coverage falls back to recompute stamps", e)
 
     # Resolve the divergence window. Custom mode (both `start` and `end`
     # provided) overrides `window_hours` with an explicit fixed range
@@ -522,7 +549,21 @@ def get_strategy_health(
         # last ~15 min of alerts have no BT reference yet → they're TBD, not
         # phantoms. Subtract the lag so the trailing lag window classifies as
         # TBD (matches the append cutoff). Fallback to last_bt_processed.
-        if last_recompute_until is not None:
+        #
+        # W2-0 (2026-07-06): PRECEDENCE — a FRESH shadow-engine heartbeat wins.
+        # current_through is the engine's true settled boundary (already the
+        # data edge — no lag subtraction), so a quiet-but-current strategy
+        # reads as covered instead of stale. Stale/missing heartbeat → the
+        # legacy derivation above, unchanged.
+        hb_row = heartbeats.get(sid)
+        hb_current_through = hb_row[0] if hb_row else None
+        hb_updated_at = hb_row[1] if hb_row else None
+        hb_fresh = (
+            hb_updated_at is not None
+            and (now - hb_updated_at).total_seconds() <= _HEARTBEAT_FRESH_SEC)
+        if hb_fresh and hb_current_through is not None:
+            _cov_dt = hb_current_through
+        elif last_recompute_until is not None:
             _cov_dt = last_recompute_until - timedelta(
                 seconds=_COVERAGE_LAG_SEC)
             if last_bt_processed is not None and last_bt_processed > _cov_dt:
@@ -617,6 +658,13 @@ def get_strategy_health(
             "snapshot_age_sec": snapshot_age,
             "last_recompute_until_ts": (last_recompute_until.isoformat()
                                         if last_recompute_until else None),
+            # W2-0 (2026-07-06) — shadow-engine heartbeat: the engine's true
+            # settled coverage boundary + when it last reported. Null = no
+            # heartbeat on file (engine not resident for this strategy).
+            "bt_current_through": (hb_current_through.isoformat()
+                                   if hb_current_through else None),
+            "bt_heartbeat_at": (hb_updated_at.isoformat()
+                                if hb_updated_at else None),
             "kpis_computed_at": kpis_at.isoformat() if kpis_at else None,
             "kpis_age_sec": kpis_age,
             "kpis_stale_since": s.get("kpis_stale_since"),
@@ -1539,6 +1587,8 @@ def get_strategy_health_by_hour(
     # combined%, converts automatically on the next append (computed at
     # query time). Coverage = config.last_recompute_until_ts, fallback
     # to the newest in-window BT edge.
+    # TODO(W2-0): prefer a fresh shadow_heartbeats.current_through here, like
+    # the overview endpoint does (scope was overview-only on 2026-07-06).
     _cov_end: dict = {}
     try:
         _cfg_rows = (c.table("strategies").select("id,config")
@@ -2001,6 +2051,8 @@ def get_strategy_health_by_deploy(
     # NEWER than the strategy's backtest-lane coverage isn't a phantom —
     # the reference doesn't exist yet. Excluded from combined%; converts
     # on the next append (computed at query time).
+    # TODO(W2-0): prefer a fresh shadow_heartbeats.current_through here, like
+    # the overview endpoint does (scope was overview-only on 2026-07-06).
     _cov_end: dict = {}
     try:
         _cfg_rows = (c.table("strategies").select("id,config")
