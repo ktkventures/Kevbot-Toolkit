@@ -69,7 +69,8 @@ def load_context(sid: int) -> dict:
 
     mon = StrategyMonitor(strat, None, general_packs=[])
     hub = SymbolHub(strat['symbol']); hub.add_monitor(mon); hub.finalize_shadow_engines()
-    shadow = hub._shadow_engines.get(sec_tf)
+    shadow = next((sh for (_tf, _s), sh in hub._shadow_engines.items()
+                   if _tf == sec_tf), None)
     if shadow is None:
         raise SystemExit(f"sid {sid}: no shadow engine for {sec_tf}s — gate TF not resolved")
     return {

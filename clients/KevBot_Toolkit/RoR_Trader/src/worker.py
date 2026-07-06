@@ -944,16 +944,29 @@ class DBRalphEngine:
                         hub.seed_history(tf_seconds, df)
                         monitor.warmup(df)
 
-                        # Warmup shadow engines for secondary TFs
-                        for sec_tf, shadow in hub._shadow_engines.items():
+                        # Warmup shadow engines for secondary TFs.
+                        # Bug Hunt Wave 1 #1: keys are (tf, session); with
+                        # RORT_MTF_SESSION_SHADOWS off the session key is
+                        # always 'RTH' and the load below uses
+                        # monitor.session exactly as before. Flag ON:
+                        # non-RTH shadows load THEIR session's bars and
+                        # skip the builder seed (the builder holds the
+                        # RTH-flavored live feed).
+                        from ralph_engine import MTF_SESSION_SHADOWS
+                        for (sec_tf, sh_session), shadow in \
+                                hub._shadow_engines.items():
                             if not shadow.indicators._initialized:
                                 sec_tf_str = SECONDS_TO_TIMEFRAME.get(sec_tf, '1Min')
                                 try:
+                                    _sess = (sh_session if MTF_SESSION_SHADOWS
+                                             else monitor.session)
                                     sec_df = load_market_data(
                                         sym, days=7, timeframe=sec_tf_str,
                                         feed=self.alpaca_keys.get('data_feed', 'sip'),
-                                        session=monitor.session)
-                                    hub.seed_history(sec_tf, sec_df)
+                                        session=_sess)
+                                    if not MTF_SESSION_SHADOWS or \
+                                            sh_session == 'RTH':
+                                        hub.seed_history(sec_tf, sec_df)
                                     shadow.warmup(sec_df)
                                     # Publish warmed coarse-TF state into the
                                     # cross-TF gate dict (2026-06-26 fix — see
@@ -962,7 +975,7 @@ class DBRalphEngine:
                                     # starves a 1Day shadow (~5 bars) — startup
                                     # _warmup_all uses the Bug-5 TF-scaled load;
                                     # widening this is a follow-up.
-                                    hub.seed_mtf_from_shadow(sec_tf)
+                                    hub.seed_mtf_from_shadow(sec_tf, sh_session)
                                 except Exception as se:
                                     logger.warning("Shadow warmup failed for %s/%s: %s",
                                                    sym, sec_tf_str, se)
