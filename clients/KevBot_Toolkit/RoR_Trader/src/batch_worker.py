@@ -64,6 +64,159 @@ def _start_health_thread(stop_evt: threading.Event) -> threading.Thread:
     return t
 
 
+# ---------------------------------------------------------------------------
+# Nightly full_recompute backstop (W2-1). The M-RS4 Phase 3 contract says the
+# resident shadow lane writes FORWARD only and "deep/interspersed historical
+# gaps are the nightly full_recompute backstop's job" — but no producer ever
+# existed (holes from starved/wedged slots were permanent). This thread IS the
+# producer: at RORT_NIGHTLY_RECOMPUTE_AT (UTC, default 05:00) it enqueues one
+# full_recompute job per owning user covering the same strategy set the shadow
+# engine enrolls (mirrors shadow_manager.ResidentEngineManager.discover — keep
+# the two filters in sync). Default OFF: arm with RORT_NIGHTLY_RECOMPUTE=1.
+# ---------------------------------------------------------------------------
+
+def _nightly_enabled() -> bool:
+    return os.environ.get("RORT_NIGHTLY_RECOMPUTE", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _nightly_fire_at() -> "tuple[int, int]":
+    raw = os.environ.get("RORT_NIGHTLY_RECOMPUTE_AT", "05:00").strip()
+    try:
+        hh, mm = raw.split(":")
+        hh, mm = int(hh), int(mm)
+        assert 0 <= hh <= 23 and 0 <= mm <= 59
+        return hh, mm
+    except Exception:  # noqa: BLE001
+        logger.warning("[NIGHTLY] bad RORT_NIGHTLY_RECOMPUTE_AT=%r — using 05:00", raw)
+        return 5, 0
+
+
+def _nightly_targets() -> "dict[str, list[int]]":
+    """{user_id: [strategy_ids]} for the nightly re-true. Mirrors the shadow
+    engine's enrollment (shadow_manager.discover): monitored strategies with a
+    symbol + entry_trigger_confluence_id, excluding webhook_inbound and
+    snapshot-unsubscribed. RORT_NIGHTLY_SIDS (comma list) overrides for
+    targeted heals/testing."""
+    from db import get_admin_client, load_all_desired_states, \
+        load_strategies_monitoring_admin
+
+    raw_sids = os.environ.get("RORT_NIGHTLY_SIDS", "").strip()
+    if raw_sids:
+        sids = [int(s) for s in raw_sids.split(",") if s.strip().isdigit()]
+        out: dict[str, list[int]] = {}
+        if sids:
+            rows = (get_admin_client().table("strategies")
+                    .select("id,user_id").in_("id", sids).execute().data or [])
+            for r in rows:
+                out.setdefault(r["user_id"], []).append(r["id"])
+        return out
+
+    desired = load_all_desired_states() or []
+    uids = sorted({d.get("user_id") for d in desired if d.get("user_id")})
+    out = {}
+    for uid in uids:
+        try:
+            strategies = load_strategies_monitoring_admin(uid) or []
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[NIGHTLY] load strategies user=%s failed: %s", uid, e)
+            continue
+        for strat in strategies:
+            if not strat.get("symbol"):
+                continue
+            if "entry_trigger_confluence_id" not in strat:
+                continue
+            if strat.get("strategy_origin") == "webhook_inbound":
+                continue
+            cfg = strat.get("config") if isinstance(strat.get("config"), dict) else {}
+            if cfg.get("snapshot_subscribe_enabled", True) is False:
+                continue
+            if strat.get("id") is None:
+                continue
+            out.setdefault(uid, []).append(strat["id"])
+    return out
+
+
+def _nightly_already_enqueued(datestr: str) -> bool:
+    """Restart-safe dedup: any job already tagged payload.nightly == datestr."""
+    import compute_jobs_store
+    try:
+        rows = (compute_jobs_store._client().table("compute_jobs")
+                .select("id")
+                .filter("payload->>nightly", "eq", datestr)
+                .limit(1).execute().data or [])
+        return bool(rows)
+    except Exception as e:  # noqa: BLE001
+        # Fail CLOSED (assume enqueued) — a dedup blip must not double-run the fleet.
+        logger.warning("[NIGHTLY] dedup check failed (%s) — skipping this fire", e)
+        return True
+
+
+def _nightly_fire(datestr: str, dry_run: bool = False) -> "list[str]":
+    """Enqueue the nightly jobs (one per user). Returns job ids ([] on dry run)."""
+    import compute_jobs_store
+    targets = _nightly_targets()
+    total = sum(len(v) for v in targets.values())
+    if not total:
+        logger.warning("[NIGHTLY] no target strategies — nothing enqueued")
+        return []
+    if dry_run:
+        for uid, sids in targets.items():
+            logger.info("[NIGHTLY] DRY user=%s n=%d sids=%s", uid[:8], len(sids),
+                        sorted(sids))
+        return []
+    jids = []
+    for uid, sids in sorted(targets.items()):
+        jid = compute_jobs_store.enqueue(uid, sorted(sids), "full_recompute",
+                                         payload={"nightly": datestr})
+        jids.append(jid)
+        logger.info("[NIGHTLY] enqueued job=%s user=%s n=%d", jid[:8], uid[:8],
+                    len(sids))
+    logger.info("[NIGHTLY] fired for %s: %d job(s), %d strategies", datestr,
+                len(jids), total)
+    return jids
+
+
+def _start_nightly_thread(stop_evt: threading.Event) -> "threading.Thread | None":
+    if not _nightly_enabled():
+        logger.info("[NIGHTLY] disabled (RORT_NIGHTLY_RECOMPUTE unset) — the "
+                    "shadow lane has NO hole backstop")
+        return None
+
+    def loop():
+        from datetime import timedelta
+        hh, mm = _nightly_fire_at()
+        while not stop_evt.is_set():
+            now = datetime.now(timezone.utc)
+            fire = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if fire <= now:
+                fire += timedelta(days=1)
+            logger.info("[NIGHTLY] next fire %s (in %.0f min)",
+                        fire.isoformat(timespec="minutes"),
+                        (fire - now).total_seconds() / 60)
+            while not stop_evt.is_set():
+                now = datetime.now(timezone.utc)
+                if now >= fire:
+                    break
+                stop_evt.wait(min(60.0, (fire - now).total_seconds()))
+            if stop_evt.is_set():
+                return
+            datestr = fire.date().isoformat()
+            try:
+                if _nightly_already_enqueued(datestr):
+                    logger.info("[NIGHTLY] %s already enqueued — skip", datestr)
+                else:
+                    _nightly_fire(datestr)
+            except Exception as e:  # noqa: BLE001
+                logger.exception("[NIGHTLY] fire failed: %s", e)
+            # Roll past the fire minute so the outer loop schedules tomorrow.
+            stop_evt.wait(90)
+
+    t = threading.Thread(target=loop, name="batch-nightly", daemon=True)
+    t.start()
+    return t
+
+
 def main():
     global _running
 
@@ -149,6 +302,7 @@ def main():
 
     stop_evt = threading.Event()
     _start_health_thread(stop_evt)
+    _start_nightly_thread(stop_evt)
 
     import compute_jobs_store
     import recompute_jobs
