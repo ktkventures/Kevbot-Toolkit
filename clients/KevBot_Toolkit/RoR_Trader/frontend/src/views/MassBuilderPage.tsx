@@ -1055,6 +1055,16 @@ export default function MassBuilderPage() {
       stop_config: cfg.stop_config,
       target_config: cfg.target_config,
       time_exit_config: cfg.time_exit_config,
+      // Model fields (2026-07-06, bug-hunt wave 2): saveResult() hand-copies
+      // config fields and silently DROPPED all three models — manually-saved
+      // results (unlike search-spawned strategies) landed with algo_model
+      // unset, which pre-#26 wrote 'cache_None' lanes and post-#26 fails
+      // loud at every recompute (nightly tripwire, sids 339/340). Inherit
+      // from the candidate config; fall back to the form's current model
+      // selections (same values build_strategy_config would have applied).
+      backtest_model: cfg.backtest_model || backtestModel,
+      algo_model: cfg.algo_model || algoModel,
+      live_model: cfg.live_model || liveModel,
       // OOS: carry the in-sample window onto the saved strategy so its
       // chart bands + KPI split know where the held-out region begins.
       // Without this the saved strategy has no in_sample_end → no band.
