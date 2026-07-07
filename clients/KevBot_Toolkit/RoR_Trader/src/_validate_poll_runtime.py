@@ -16,22 +16,33 @@ both failure classes visible BEFORE a deploy:
      completes within a wall-time budget with the #39 warmup flag OFF. Baseline
      measured at 7386781 (2026-07-07, sids 174/268/296/325/330/336): worst
      bootstrap 12.4s, worst warm 3.7s. Default budget 40s ≈ 3× worst bootstrap.
+  3. FLAG-ON leg (2026-07-07 'Re-arm attempt FAILED' close-out): the #39 widen
+     was only ever timed on 1Min/10Sec archetypes; armed fleet-wide it starved
+     the pass on SUB-MINUTE TSLA Hi-Fi slots (multi-day 1Sec loads x doubling
+     rounds x ~20 slots vs the 600s watchdog — zero polls completed). The
+     default sid set now includes 325 (TSLA 30Sec rest_hifi = 1Sec-source
+     Hi-Fi; its 780 bars/day mean the widen fires on EVERY same-day bootstrap),
+     and every poll is re-timed with RORT_PREP_BAR_COUNT_WARMUP=1 under its own
+     HARD budget (default 45s) — a breach fails the gate, exactly the number
+     the #39 harness never measured.
 
 USAGE (from clients/KevBot_Toolkit/RoR_Trader):
     PYTHONPATH=src .venv/bin/python src/_validate_poll_runtime.py [SIDS] [BUDGET_S]
-      SIDS      comma-separated strategy ids, default "174,268,296"
+      SIDS      comma-separated strategy ids, default "174,268,296,325"
       BUDGET_S  per-poll wall budget in seconds, default RORT_POLL_BUDGET_S or 40
-    RORT_VALIDATE_WARMUP_FLAG=1  additionally re-times the polls with
-      RORT_PREP_BAR_COUNT_WARMUP=1 and reports (informational; the hard budget
-      applies to the flag-OFF legs, whose cost must stay a pure passthrough).
+    RORT_POLL_BUDGET_FLAGON_S   flag-ON per-poll budget, default 45
+    RORT_VALIDATE_WARMUP_FLAG=0 skips the flag-ON leg (default 1 = run + gate;
+      the flag-OFF budget still applies to the flag-OFF legs, whose cost must
+      stay a pure passthrough).
 
 READ-ONLY by construction: ResidentEngineManager(dry_run=True) (trade/KPI/heartbeat
 writes all no-op), RORT_SHADOW_PERSIST_SNAPSHOT forced 0 (prep never writes the
 secondary snapshot), RORT_SHADOW_READ_ONLY_BARS default 1 (no Polygon backfill).
 
-EXIT: 0 = fingerprint printed + every flag-OFF poll within budget.
+EXIT: 0 = fingerprint printed + every flag-OFF poll within budget + every
+          flag-ON poll within the flag-ON budget (unless the leg is skipped).
       1 = budget breach (or no eligible slots). A hard hang dumps all-thread
-          stacks at 3× budget via faulthandler and exits nonzero.
+          stacks at 3× the leg's budget via faulthandler and exits nonzero.
 """
 from __future__ import annotations
 
@@ -59,9 +70,10 @@ except Exception:  # noqa: BLE001
 
 def main() -> int:
     sids = [int(x) for x in
-            (sys.argv[1] if len(sys.argv) > 1 else "174,268,296").split(",")]
+            (sys.argv[1] if len(sys.argv) > 1 else "174,268,296,325").split(",")]
     budget = float(sys.argv[2]) if len(sys.argv) > 2 else float(
         os.environ.get("RORT_POLL_BUDGET_S", "40"))
+    budget_flag_on = float(os.environ.get("RORT_POLL_BUDGET_FLAGON_S", "45"))
 
     from shadow_worker import _code_fingerprint, _FINGERPRINT_FILES
     print(f"[gate] code fingerprint={_code_fingerprint()} "
@@ -86,11 +98,11 @@ def main() -> int:
 
     failures = []
 
-    def timed_poll(slot, leg: str) -> float:
+    def timed_poll(slot, leg: str, leg_budget: float) -> float:
         # Soft stack dump at budget (diagnose while continuing); hard exit at 3×
         # budget (a wedged poll must fail the gate WITH stacks, not hang CI).
-        faulthandler.dump_traceback_later(int(budget), exit=False)
-        faulthandler.dump_traceback_later(int(budget * 3), exit=True)
+        faulthandler.dump_traceback_later(int(leg_budget), exit=False)
+        faulthandler.dump_traceback_later(int(leg_budget * 3), exit=True)
         t0 = time.perf_counter()
         status = None
         try:
@@ -100,32 +112,41 @@ def main() -> int:
         finally:
             faulthandler.cancel_dump_traceback_later()
         wall = time.perf_counter() - t0
-        verdict = "PASS" if wall <= budget else "FAIL"
-        if wall > budget:
+        verdict = "PASS" if wall <= leg_budget else "FAIL"
+        if wall > leg_budget:
             failures.append((slot.sid, leg, wall))
         print(f"[gate] {verdict} sid={slot.sid} {leg} wall={wall:.2f}s "
-              f"status={status} ({slot.symbol} {slot.timeframe})")
+              f"budget={leg_budget:.0f}s status={status} "
+              f"({slot.symbol} {slot.timeframe})")
         return wall
 
     for slot in sorted(eligible, key=lambda s: s.sid):
-        timed_poll(slot, "poll1_bootstrap")   # cold: warm-window prep + engine build
-        timed_poll(slot, "poll2_warm")        # steady-state: probe/no_new_bar/incremental
+        timed_poll(slot, "poll1_bootstrap", budget)  # cold: warm prep + engine build
+        timed_poll(slot, "poll2_warm", budget)       # steady: probe/no_new_bar/incr
 
-    if os.environ.get("RORT_VALIDATE_WARMUP_FLAG", "0") == "1":
+    # Flag-ON leg (default ON, RORT_VALIDATE_WARMUP_FLAG=0 to skip): re-bootstrap
+    # every slot with the #39 widen armed, under its own HARD budget. This is the
+    # 2026-07-07 incident's missing archetype measurement — sub-minute Hi-Fi
+    # slots (325-class) MUST bootstrap within budget or arming the flag will
+    # starve the shadow pass again. Two polls per slot: cold (pays the widen)
+    # then warm (must ride the per-slot widen cache).
+    if os.environ.get("RORT_VALIDATE_WARMUP_FLAG", "1") == "1":
         os.environ["RORT_PREP_BAR_COUNT_WARMUP"] = "1"
-        print("[gate] informational flag-ON re-time (no budget applied):")
+        print(f"[gate] flag-ON leg (RORT_PREP_BAR_COUNT_WARMUP=1, "
+              f"budget={budget_flag_on:.0f}s/poll):")
         for slot in sorted(eligible, key=lambda s: s.sid):
             slot.engine = None                # force a fresh bootstrap prep
             slot.last_processed_ts = None
-            timed_poll(slot, "poll_flag_on")
+            timed_poll(slot, "poll1_flag_on_bootstrap", budget_flag_on)
+            timed_poll(slot, "poll2_flag_on_warm", budget_flag_on)
         os.environ["RORT_PREP_BAR_COUNT_WARMUP"] = "0"
-        failures[:] = [f for f in failures if f[1] != "poll_flag_on"]
 
     if failures:
-        print(f"[gate] FAIL: {len(failures)} poll(s) over {budget:.0f}s budget: "
+        print(f"[gate] FAIL: {len(failures)} poll(s) over budget: "
               f"{[(s, leg, round(w, 1)) for s, leg, w in failures]}")
         return 1
-    print(f"[gate] PASS: all flag-off polls within {budget:.0f}s")
+    print(f"[gate] PASS: all flag-off polls within {budget:.0f}s + all flag-on "
+          f"polls within {budget_flag_on:.0f}s")
     return 0
 
 
