@@ -942,6 +942,123 @@ def _secondary_snapshot_persist(strat, df, sec_tfs, model_id):
         _logger.warning("secondary-snapshot persist failed (%s) — non-fatal", _e)
 
 
+# ── Mechanism #1: bar-count warmup (RORT_PREP_BAR_COUNT_WARMUP) ───────────────
+# Bug_Hunt_Wave1_2026-07-06 §MECHANISM #1: the calendar-days warmup formula
+# (`ceil(warmup_bars/bpd × 365/252)`) yields 1 day for warmup_bars=300 on a
+# sub-minute strategy. After a weekend/holiday `since − 1 day` holds ZERO
+# trading bars, so the windowed re-prepare delivers a same-day-only window and
+# recursive user-pack columns (UT-Bot-v4 trailing stop, Wilder ATR — infinite-
+# memory recursions) RE-SEED at the session open (measured Δ up to 0.4858 on
+# sid 270 Mon 2026-07-06; 3 flip mismatches; day's first trade lost). The fix:
+# deliver warmup as bars ACTUALLY PRESENT — widen start_date back over closed
+# days until enough pre-`since` bars exist.
+
+PREP_WARMUP_MAX_LOOKBACK_DAYS = 30
+"""Cap (calendar days before `since`) for the bar-count warmup widen. Bounds
+the widen loop on symbols with sparse/no cached data, and leaves pathological
+coarse-gate windows (e.g. a 1Day gate whose legacy formula start is already
+~435d back) on their existing behavior — the widen only ever EXTENDS a window
+that is SHALLOWER than this cap; it never narrows one."""
+
+
+def _prep_bar_count_warmup_enabled() -> bool:
+    """Mechanism #1 kill-switch. Default OFF = byte-identical legacy behavior
+    (calendar-days formula). Instant rollback by unsetting."""
+    import os
+    return os.getenv('RORT_PREP_BAR_COUNT_WARMUP', '0') == '1'
+
+
+def _prep_warmup_counts(df, since_naive, count_sec_tfs):
+    """Count warmup bars ACTUALLY PRESENT before `since` in a prepared df.
+
+    primary  = raw pre-`since` row count of the prepared (session-filtered)
+               primary index.
+    each sec = the number of resampled buckets those pre-`since` primary rows
+               produce (distinct floor(period) values) — i.e. how many sec-TF
+               bars the in-prep resample derives from the warmup span. Only
+               meaningful on the FULL path where secondaries are resampled
+               from this very window (the snapshot fast path injects its own
+               fully-warmed series, left edge independent of this window)."""
+    if df is None or len(df) == 0:
+        return 0, {tf: 0 for tf in count_sec_tfs}
+    clip = pd.Timestamp(since_naive)
+    if df.index.tz is not None and clip.tz is None:
+        clip = clip.tz_localize('UTC')
+    elif df.index.tz is None and clip.tz is not None:
+        clip = clip.tz_localize(None)
+    pre = df.index[df.index < clip]
+    n_primary = int(len(pre))
+    n_sec = {}
+    if count_sec_tfs:
+        from unified_engine import TIMEFRAME_SECONDS
+        for tf in count_sec_tfs:
+            secs = int(TIMEFRAME_SECONDS.get(tf, 60))
+            n_sec[tf] = (int(pre.floor(f'{secs}s').nunique())
+                         if n_primary else 0)
+    return n_primary, n_sec
+
+
+def _widen_prep_for_bar_count_warmup(prep_fn, df, strat, since_naive,
+                                     start_date, warmup_days, warmup_bars,
+                                     timeframe, count_sec_tfs):
+    """Mechanism #1 fix core (flag ON only): re-prepare with a progressively
+    deeper start_date until the DELIVERED window holds
+
+      - >= max(warmup_bars, strategy_data.PRIMARY_WARMUP_BARS) pre-`since`
+        PRIMARY bars (1200 — M-RS1's convergence target; 0.9^1200 is float-
+        zero, so infinite-memory recursions match a full-history prep), and
+      - >= warmup_bars resampled bars for EACH secondary TF (full path only —
+        callers pass count_sec_tfs=() when the snapshot fast path injected
+        pre-warmed secondaries).
+
+    Doubles the lookback each round, capped at PREP_WARMUP_MAX_LOOKBACK_DAYS.
+    Counting the PREPARED df (not a raw probe) means "bars actually present"
+    holds for every backtest_model path, including cache-backed ones. The
+    widen only ever EXTENDS the legacy formula start — bars in (since, until]
+    are untouched (depth is added strictly LEFT of `since`), and the common
+    case (enough bars already present) costs zero extra work. Returns the
+    (possibly re-prepared) df."""
+    try:
+        from strategy_data import PRIMARY_WARMUP_BARS as _pwb
+    except Exception:
+        _pwb = 1200
+    primary_target = max(int(warmup_bars), int(_pwb))
+    sec_target = int(warmup_bars)
+
+    def _satisfied(n_p, n_s):
+        return (n_p >= primary_target
+                and all(n >= sec_target for n in n_s.values()))
+
+    n_primary, n_sec = _prep_warmup_counts(df, since_naive, count_sec_tfs)
+    if _satisfied(n_primary, n_sec):
+        return df
+
+    cap_start = since_naive - timedelta(days=PREP_WARMUP_MAX_LOOKBACK_DAYS)
+    lookback = max(1, int(warmup_days))
+    final_start = start_date
+    while final_start > cap_start:
+        lookback = min(PREP_WARMUP_MAX_LOOKBACK_DAYS, lookback * 2)
+        final_start = since_naive - timedelta(days=lookback)
+        df = prep_fn(final_start)
+        n_primary, n_sec = _prep_warmup_counts(df, since_naive, count_sec_tfs)
+        if _satisfied(n_primary, n_sec):
+            break
+    if final_start != start_date:
+        _logger.info(
+            "[PREP-WARMUP] %s %s: widened warmup start %s -> %s "
+            "(requested primary>=%d bars%s; delivered pre-since: primary=%d%s)%s",
+            strat.get('symbol'), timeframe, start_date.isoformat(),
+            final_start.isoformat(), primary_target,
+            (", sec>=%d bars each %s" % (sec_target, list(count_sec_tfs))
+             if count_sec_tfs else ""),
+            n_primary,
+            (", sec=%s" % n_sec) if n_sec else "",
+            ("" if _satisfied(n_primary, n_sec)
+             else " — CAPPED at %dd, still short"
+                  % PREP_WARMUP_MAX_LOOKBACK_DAYS))
+    return df
+
+
 def prepare_strategy_window_df(
     strat: dict, since_dt: datetime, until_dt: datetime,
     warmup_bars: int = 300, data_feed: str = "sip",
@@ -994,12 +1111,26 @@ def prepare_strategy_window_df(
     end_date = until_dt.replace(tzinfo=None) if until_dt.tzinfo else until_dt
     start_date = since_naive - timedelta(days=warmup_days)
 
-    df = prepare_data_with_indicators(
-        strat['symbol'], seed=strat.get('data_seed', 42),
-        start_date=start_date, end_date=end_date, timeframe=timeframe,
-        data_feed=data_feed, session=strat.get('trading_session', 'RTH'),
-        secondary_tfs=sec_tfs, secondary_tf_dfs=_sec_inject, strat=strat,
-        model_override=model_override, no_backfill=no_backfill)
+    def _prep(_start):
+        return prepare_data_with_indicators(
+            strat['symbol'], seed=strat.get('data_seed', 42),
+            start_date=_start, end_date=end_date, timeframe=timeframe,
+            data_feed=data_feed, session=strat.get('trading_session', 'RTH'),
+            secondary_tfs=sec_tfs, secondary_tf_dfs=_sec_inject, strat=strat,
+            model_override=model_override, no_backfill=no_backfill)
+
+    df = _prep(start_date)
+    # Mechanism #1 (RORT_PREP_BAR_COUNT_WARMUP, default OFF): the calendar-days
+    # formula above can land `start_date` entirely inside closed days (weekend/
+    # holiday) so the window carries ~0 pre-`since` bars and recursive user-pack
+    # columns re-seed at the session open. Flag ON: widen start_date until the
+    # delivered warmup is BARS ACTUALLY PRESENT (see helper). Flag OFF is
+    # byte-identical (single `_prep` call with the formula start above).
+    if _prep_bar_count_warmup_enabled():
+        df = _widen_prep_for_bar_count_warmup(
+            _prep, df, strat, since_naive, start_date, warmup_days,
+            warmup_bars, timeframe,
+            () if _used_sec_snapshot else sec_tfs)
     if df is None or len(df) == 0:
         return df
 
