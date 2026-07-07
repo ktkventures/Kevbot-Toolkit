@@ -1888,6 +1888,31 @@ SESSION_LABEL_GATE = os.getenv(
     "1", "true", "yes", "on")
 
 
+# Bug Hunt Wave 2 W2-5 — interpreter-blind shadow topology (2026-07-07,
+# docs/_active/Bug_Hunt_Wave1_2026-07-06.md W2-5).
+#
+# finalize_shadow_engines skips creating a secondary-TF shadow whenever ANY
+# real monitor exists on that (tf, session) — regardless of WHICH interpreter
+# records that monitor publishes. A real monitor only publishes its OWN
+# interpreter states, so gates needing other interpreters on that key are
+# permanently unsatisfiable: TSLA (300s,'RTH') is owned by the UT-Bot-only
+# 5Min canary (sid 266), so 5M-SWING_123-*/5M-RVOL_V2-*/5M-BOLLINGER_BANDS-*
+# records NEVER existed live — sids 327/328/329/310/340 have zero alerts
+# since creation while the backtest lane (which computes suffixed columns for
+# every gate) fires normally. The 1M key only works because the real 1Min
+# monitor (174) happens to include SWING_123 in its own interp set.
+#
+# Flag ON: a real monitor only suppresses the shadow when its OWN interpreter
+# set covers every interpreter the requesting gates need on that key;
+# otherwise the shadow is created (it computes the union of the gaters'
+# needs, and the existing publish path already defers to a shadow that owns
+# the key). Default OFF = byte-identical legacy topology. Read once at module
+# import — flip requires a worker restart.
+INTERP_AWARE_SHADOWS = os.getenv(
+    "RORT_INTERP_AWARE_SHADOWS", "0").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
 def _bar_close_in_session(bar: dict, arrival_ts: datetime,
                           monitor: 'StrategyMonitor') -> bool:
     """W2-2: session membership for a completed bar at bar-close dispatch.
@@ -2630,13 +2655,61 @@ class SymbolHub:
         for (sec_tf, sh_session), requesting_monitors in needed.items():
             if (sec_tf, sh_session) in self._shadow_engines:
                 continue  # already created
+            # W2-5: interpreter keys the requesting gates need on THIS key —
+            # used (flag ON) to decide whether a covering real monitor
+            # actually publishes the records those gates consume.
+            needed_interps: Set[str] = set()
+            if INTERP_AWARE_SHADOWS:
+                for monitor in requesting_monitors:
+                    _all_conf = (
+                        list(monitor.strategy.get('confluence', []))
+                        + list(monitor.strategy.get(
+                            'general_confluences', [])))
+                    for rec in _all_conf:
+                        if rec.startswith('GEN-'):
+                            continue
+                        parts = rec.split('-', 2)
+                        if len(parts) < 3:
+                            continue
+                        if _LABEL_TO_TF_SECONDS.get(parts[0], 0) != sec_tf:
+                            continue
+                        needed_interps.add(parts[1])
+
+            def _real_monitor_covers(m: 'StrategyMonitor') -> bool:
+                if m.tf_seconds != sec_tf:
+                    return False
+                if MTF_SESSION_SHADOWS and m.session != sh_session:
+                    return False
+                if not INTERP_AWARE_SHADOWS or not needed_interps:
+                    return True  # legacy: any real monitor suppresses
+                # W2-5: only suppress when the monitor's own interp set
+                # covers everything the gates need on this key.
+                try:
+                    _, m_interps, _, _ = resolve_strategy_requirements(
+                        m.strategy)
+                    covered = needed_interps <= set(m_interps)
+                except Exception as _e:  # noqa: BLE001
+                    # Fail toward CREATING the shadow: an extra shadow only
+                    # widens the published record union (publish path defers
+                    # to the shadow); a suppressed one recreates this bug.
+                    logger.warning(
+                        "[INTERP-SHADOW] requirements resolve failed for "
+                        "strat=%s: %s — creating shadow", m.strat_id, _e)
+                    return False
+                if not covered:
+                    logger.info(
+                        "[INTERP-SHADOW] real monitor strat=%s on (%ss,%s) "
+                        "publishes %s but gates need %s — creating shadow",
+                        m.strat_id, sec_tf, sh_session,
+                        sorted(set(m_interps) & needed_interps) or 'none-of-them',
+                        sorted(needed_interps))
+                return covered
+
             # A real monitor on that TF produces the records — but (flag
-            # ON) only for ITS OWN session key; a different-session gate
-            # still needs a shadow.
+            # ON) only for ITS OWN session key, and (W2-5 flag ON) only
+            # when its interpreter set covers the gates' needs.
             has_real = any(
-                m.tf_seconds == sec_tf
-                and (not MTF_SESSION_SHADOWS or m.session == sh_session)
-                for m in self.monitors.values())
+                _real_monitor_covers(m) for m in self.monitors.values())
             if has_real:
                 continue  # real monitor produces confluence records
 
