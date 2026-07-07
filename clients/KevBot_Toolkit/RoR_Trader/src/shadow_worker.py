@@ -47,6 +47,36 @@ VALID_MODES = ("button", "cron", "shadow")
 
 _running = True
 
+# Deploy-provenance fingerprint (2026-07-07 incident). A `railway up` from a stale
+# checkout shipped a shadow-worker image missing PRs #33/#34 (pass telemetry,
+# watchdog, heartbeats) while the fleet debugged it as a code regression pinned to
+# the *intended* SHA — Railway CLI uploads the WORKING TREE it is run from, and the
+# service's Railway `commitHash` metadata records repo HEAD, not tree content.
+# "Which code is this container actually running?" must be answerable from ONE boot
+# log line. The hash below is shell-reproducible against any ref:
+#   cat src/shadow_worker.py src/shadow_manager.py src/services.py | sha256sum
+#   git show <SHA>:clients/KevBot_Toolkit/RoR_Trader/src/shadow_worker.py \
+#       <SHA>:clients/KevBot_Toolkit/RoR_Trader/src/shadow_manager.py \
+#       <SHA>:clients/KevBot_Toolkit/RoR_Trader/src/services.py | sha256sum
+# `_validate_poll_runtime.py` (the pre-deploy runtime gate) prints the same value
+# for the tree under test — compare it to this boot line after every deploy.
+_FINGERPRINT_FILES = ("shadow_worker.py", "shadow_manager.py", "services.py")
+
+
+def _code_fingerprint() -> str:
+    """First 12 hex of sha256 over this service's key source files (in
+    _FINGERPRINT_FILES order). Never raises — a missing sibling hashes as a
+    marker string so the mismatch is still visible."""
+    import hashlib
+    h = hashlib.sha256()
+    base = Path(__file__).resolve().parent
+    for name in _FINGERPRINT_FILES:
+        try:
+            h.update((base / name).read_bytes())
+        except Exception:  # noqa: BLE001
+            h.update(f"missing:{name}".encode())
+    return h.hexdigest()[:12]
+
 
 def _handle_signal(signum, frame):
     global _running
@@ -315,6 +345,14 @@ def main():
     shard = os.environ.get("RORT_SHADOW_SHARD", "").strip() or "(all)"
     logger.info("[shadow_worker] up id=%s lane_mode=%s shard=%s poll=%ss",
                 WORKER_ID, mode, shard, POLL_INTERVAL_S)
+    # One-line deploy-provenance check (see _FINGERPRINT_FILES above): compare
+    # against the intended SHA's fingerprint after EVERY deploy. WARNING level so
+    # it survives any INFO filtering.
+    try:
+        logger.warning("[shadow_worker] code fingerprint=%s (sha256/12 over %s)",
+                       _code_fingerprint(), "+".join(_FINGERPRINT_FILES))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[shadow_worker] code fingerprint unavailable: %s", e)
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)
