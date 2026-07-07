@@ -137,7 +137,14 @@ def run_sid(sid):
             max_entry = max_entry.replace(tzinfo=timezone.utc)
         T_end = max_entry + timedelta(hours=1)
         T0 = T_end - timedelta(days=DAYS)
-    T0_iso = T0.isoformat()
+    # Steady-region cut ('entry > T0') is a STRING compare against str(entry_fill_ts),
+    # which stringifies pandas-style ('2026-07-06 13:30:00+00:00', SPACE separator).
+    # datetime.isoformat() uses 'T', and ' ' < 'T' — so with a T-separated cut every
+    # same-date entry compared lexicographically below it and was silently dropped
+    # (vacuous pass on same-day pinned windows; the legacy anchored mode dodged it
+    # only because T0 lands the prior evening). Use the pandas string form so the
+    # lexicographic compare is chronological.
+    T0_iso = str(pd.Timestamp(T0))
     print(f"\n--- sid={sid} tf={tf} model={model}  window {T0.date()}->{T_end.date()} "
           f"({DAYS}d, {POLLS} polls{', PINNED T0=' + T0_iso if PIN_T0 else ''}) ---",
           flush=True)
