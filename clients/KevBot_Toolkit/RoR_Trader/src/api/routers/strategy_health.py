@@ -2256,3 +2256,321 @@ def get_strategy_health_by_deploy(
         "strategy_metadata": [strategy_meta[sid] for sid in cohort
                               if sid in strategy_meta],
     }
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Bar Parity % Endpoint (W2-6a, 2026-07-07)
+# Per-(symbol, timeframe) field-level match rate between the LIVE BARS
+# cache (live_bars — what the WS-fed engine saw at decision time) and
+# REST truth (bar_cache 1Sec/1Min resampled to the strategy TF), over
+# a recent window. Surfaces messy-vs-clean live-data strategies at a
+# glance on the Strategy Health page.
+#
+# DEFINITION (documented for the V1 column tooltip + PR):
+#   - Window: anchored at the newest SETTLED live bar for the pair
+#     (bar closed ≥ _BP_SETTLE_MARGIN_SEC ago, so REST has had time to
+#     settle), extending back min(240 bars, 2 trading hours) — capped
+#     at 1 hour for sub-minute TFs so the 1Sec source pull stays ≤3600
+#     rows. Anchoring at the last live bar (not wall-clock now) keeps
+#     the column meaningful after hours / weekends: it grades the tail
+#     of the most recent session.
+#   - Sources: live side = live_bars rows with a WS-origin source
+#     ('ws', 'ws_agg'). REST-derived rows (rest_backfill / rest_insert /
+#     warmup_seed) are EXCLUDED from the comparison — they are REST
+#     bytes and would trivially match, masking WS messiness. Their
+#     count is reported as bars_backfilled. REST side = bar_cache
+#     '1Sec' (TF < 60s) or '1Min' (TF ≥ 60s, per CLAUDE.md's
+#     resample-from-1Min rule — native coarse Polygon bars have split
+#     issues), bucketed to the strategy TF in pure Python
+#     (epoch-aligned, first/max/min/last — same as pandas resample
+#     label='left').
+#   - Match: per field |live − rest| ≤ max($0.01, 0.02% · |rest|).
+#   - Reported % = MIN of the four per-field match rates (O/H/L/C)
+#     over bars present on BOTH sides. Worst-field is deliberately
+#     conservative: a strategy whose closes match but whose highs are
+#     WS-mangled is messy — stops/targets key off H/L. Per-field rates
+#     + coverage gaps (live-only / rest-only bar counts) ship in the
+#     payload for the tooltip but do NOT dilute the headline number.
+#
+# PERFORMANCE: computed per unique (symbol, timeframe) pair — many
+# strategies share a pair, so the fleet page maps ~70 rows onto ~15-25
+# computations. Each pair = 1 indexed live_bars query (LIMIT ≤ 240) +
+# 1 indexed bar_cache range query (≤ 3600 rows). The whole result is
+# cached module-level for _BP_CACHE_TTL_SEC (5 min) behind a lock, so
+# the 30s fleet-page poll never triggers recomputation storms; only
+# the first request after TTL pays the cost.
+# ─────────────────────────────────────────────────────────────────────
+
+import re as _bp_re
+import threading as _bp_threading
+
+_BP_CACHE_TTL_SEC = 300              # serve cached fleet result for 5 min
+_BP_MAX_BARS = 240                   # per-pair bar cap
+_BP_WINDOW_SEC = 2 * 3600            # ~2 trading hours (TF ≥ 60s)
+_BP_SUBMIN_WINDOW_SEC = 3600         # sub-minute TFs: cap 1Sec pull at 1h
+_BP_SETTLE_MARGIN_SEC = 300          # skip bars closed <5 min ago — REST
+                                     # (and the settle sweeper) still revising
+_BP_ABS_TOL = 0.01                   # $0.01 …
+_BP_REL_TOL = 0.0002                 # … or 0.02% of the REST value, whichever
+                                     # is larger, per field
+_BP_MAX_TF_SEC = 3600                # TFs coarser than 1h can't fit ≥2 bars
+                                     # in the window — reported unsupported
+_BP_WS_SOURCE_PREFIX = "ws"          # live_bars.source values counted as WS
+
+_bar_parity_cache: Dict[str, Any] = {}   # {"computed_at": dt, "payload": {..}}
+_bar_parity_lock = _bp_threading.Lock()
+
+
+def _bp_tf_seconds(timeframe: Any) -> Optional[int]:
+    """'30Sec'→30, '1Min'→60, '1Hour'→3600. None for unparseable — the
+    pair is then skipped VISIBLY (reason=bad_timeframe) instead of
+    silently defaulting (no-silent-defaults house rule)."""
+    m = _bp_re.match(r"^\s*(\d+)\s*(Sec|Min|Hour|Day|Week)",
+                     str(timeframe or ""), _bp_re.I)
+    if not m:
+        return None
+    return int(m.group(1)) * {"sec": 1, "min": 60, "hour": 3600,
+                              "day": 86400, "week": 604800}[m.group(2).lower()]
+
+
+def _bp_field_match(live_v: Any, rest_v: Any) -> bool:
+    try:
+        lv, rv = float(live_v), float(rest_v)
+    except (TypeError, ValueError):
+        return False
+    return abs(lv - rv) <= max(_BP_ABS_TOL, _BP_REL_TOL * abs(rv))
+
+
+def _bp_pair_stub(symbol: str, tf_str: str, tf_sec: Optional[int],
+                  reason: str) -> Dict[str, Any]:
+    return {
+        "symbol": symbol, "timeframe": tf_str, "timeframe_seconds": tf_sec,
+        "source_timeframe": None, "parity_pct": None, "field_pcts": None,
+        "bars_compared": 0, "bars_live_only": 0, "bars_rest_only": 0,
+        "bars_backfilled": 0, "window_start": None, "window_end": None,
+        "reason": reason,
+    }
+
+
+def _compute_pair_parity(c, symbol: str, tf_str: str,
+                         now: datetime) -> Dict[str, Any]:
+    """Compute Bar Parity for one (symbol, timeframe) pair. Small,
+    per-pair indexed queries only — see section header for definition."""
+    tf_sec = _bp_tf_seconds(tf_str)
+    if tf_sec is None:
+        return _bp_pair_stub(symbol, tf_str, None, "bad_timeframe")
+    if tf_sec > _BP_MAX_TF_SEC:
+        return _bp_pair_stub(symbol, tf_str, tf_sec, "timeframe_too_coarse")
+
+    # Newest bar eligible for comparison: closed ≥ settle-margin ago.
+    settle_cutoff = now - timedelta(seconds=_BP_SETTLE_MARGIN_SEC + tf_sec)
+
+    # 1 indexed query on the live_bars PK (symbol, tf, bar_start), LIMIT-
+    # bounded. Newest-first; the first row anchors the window.
+    live_rows = (c.table("live_bars")
+                 .select("bar_start,open,high,low,close,source")
+                 .eq("symbol", symbol)
+                 .eq("timeframe_seconds", tf_sec)
+                 .lte("bar_start", settle_cutoff.isoformat())
+                 .order("bar_start", desc=True)
+                 .limit(_BP_MAX_BARS)
+                 .execute().data or [])
+    if not live_rows:
+        return _bp_pair_stub(symbol, tf_str, tf_sec, "no_live_bars")
+
+    anchor = _parse_iso(live_rows[0].get("bar_start"))
+    if anchor is None:
+        return _bp_pair_stub(symbol, tf_str, tf_sec, "no_live_bars")
+    window_sec = min(_BP_MAX_BARS * tf_sec,
+                     _BP_SUBMIN_WINDOW_SEC if tf_sec < 60 else _BP_WINDOW_SEC)
+    # Inclusive lower bound such that the window holds window_sec/tf slots.
+    window_start = anchor - timedelta(seconds=window_sec - tf_sec)
+
+    ws_bars: Dict[int, Dict[str, Any]] = {}    # aligned epoch → row
+    backfilled_epochs: set = set()
+    for r in live_rows:
+        dt = _parse_iso(r.get("bar_start"))
+        if dt is None or dt < window_start:
+            continue
+        src = str(r.get("source") or "")
+        if not src.startswith(_BP_WS_SOURCE_PREFIX):
+            # REST-derived hole-fill — excluded from comparison (see hdr)
+            backfilled_epochs.add(int(dt.timestamp()))
+            continue
+        ws_bars[int(dt.timestamp())] = r
+    backfilled = len(backfilled_epochs)
+    if not ws_bars:
+        return {**_bp_pair_stub(symbol, tf_str, tf_sec, "no_ws_bars"),
+                "bars_backfilled": backfilled,
+                "window_start": window_start.isoformat(),
+                "window_end": anchor.isoformat()}
+
+    # REST truth: 1Sec for sub-minute TFs; 1Min for TF ≥ 60s (CLAUDE.md —
+    # never native coarse bars). Odd TFs not divisible by 60 fall back to
+    # 1Sec so buckets stay exact. Row count bounded by window_sec (≤3600
+    # for 1Sec) / window_sec/60 (≤120 for 1Min) — ≤1 page either way.
+    src_tf = "1Sec" if (tf_sec < 60 or tf_sec % 60 != 0) else "1Min"
+    src_sec = 1 if src_tf == "1Sec" else 60
+    rest_end = anchor + timedelta(seconds=tf_sec - src_sec)
+    rest_query = (c.table("bar_cache")
+                  .select("ts,open,high,low,close")
+                  .eq("symbol", symbol)
+                  .eq("timeframe", src_tf)
+                  .gte("ts", window_start.isoformat())
+                  .lte("ts", rest_end.isoformat())
+                  .order("ts"))
+    rest_rows = _paginated_fetch(rest_query)
+    if not rest_rows:
+        return {**_bp_pair_stub(symbol, tf_str, tf_sec, "no_rest_bars"),
+                "source_timeframe": src_tf, "bars_backfilled": backfilled,
+                "window_start": window_start.isoformat(),
+                "window_end": anchor.isoformat()}
+
+    # Bucket REST rows to the strategy TF: epoch-aligned buckets,
+    # open=first / high=max / low=min / close=last (rows arrive ts-asc).
+    rest_buckets: Dict[int, Dict[str, float]] = {}
+    for r in rest_rows:
+        dt = _parse_iso(r.get("ts"))
+        if dt is None:
+            continue
+        try:
+            o, h = float(r["open"]), float(r["high"])
+            lo, cl = float(r["low"]), float(r["close"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        epoch = int(dt.timestamp())
+        b = epoch - (epoch % tf_sec)
+        agg = rest_buckets.get(b)
+        if agg is None:
+            rest_buckets[b] = {"open": o, "high": h, "low": lo, "close": cl}
+        else:
+            agg["high"] = max(agg["high"], h)
+            agg["low"] = min(agg["low"], lo)
+            agg["close"] = cl
+
+    fields = ("open", "high", "low", "close")
+    matches = {f: 0 for f in fields}
+    compared = 0
+    for epoch, live in ws_bars.items():
+        rest = rest_buckets.get(epoch)
+        if rest is None:
+            continue
+        compared += 1
+        for f in fields:
+            if _bp_field_match(live.get(f), rest.get(f)):
+                matches[f] += 1
+    live_only = len(ws_bars) - compared
+    anchor_epoch = int(anchor.timestamp())
+    # Backfilled live rows count as "covered" for the rest_only gap stat —
+    # REST having a bar the WS lane only got via backfill is already
+    # surfaced by bars_backfilled.
+    rest_only = sum(1 for b in rest_buckets
+                    if b <= anchor_epoch and b not in ws_bars
+                    and b not in backfilled_epochs)
+
+    if compared == 0:
+        return {**_bp_pair_stub(symbol, tf_str, tf_sec, "no_overlap"),
+                "source_timeframe": src_tf, "bars_live_only": live_only,
+                "bars_rest_only": rest_only, "bars_backfilled": backfilled,
+                "window_start": window_start.isoformat(),
+                "window_end": anchor.isoformat()}
+
+    field_pcts = {f: round(100.0 * matches[f] / compared, 1) for f in fields}
+    return {
+        "symbol": symbol,
+        "timeframe": tf_str,
+        "timeframe_seconds": tf_sec,
+        "source_timeframe": src_tf,
+        # Headline = worst field (see definition in the section header).
+        "parity_pct": min(field_pcts.values()),
+        "field_pcts": field_pcts,
+        "bars_compared": compared,
+        "bars_live_only": live_only,
+        "bars_rest_only": rest_only,
+        "bars_backfilled": backfilled,
+        "window_start": window_start.isoformat(),
+        "window_end": anchor.isoformat(),
+        "reason": None,
+    }
+
+
+@router.get("/bar-parity")
+def get_bar_parity(
+    user=Depends(get_current_user),  # noqa: ARG001 — admin guard
+    refresh: bool = Query(
+        False,
+        description="Force recomputation, bypassing the 5-min server-side "
+                    "cache. Debug/manual use — the UI never sets this."),
+) -> dict:
+    """Per-(symbol, timeframe) Bar Parity % for the fleet.
+
+    Response:
+        {
+          "now": "...", "computed_at": "...", "cached": bool,
+          "cache_ttl_seconds": 300,
+          "tolerance": "max($0.01, 0.02%)",
+          "pairs": [{
+            "symbol": "TSLA", "timeframe": "30Sec", "timeframe_seconds": 30,
+            "source_timeframe": "1Sec",
+            "parity_pct": 96.7,                    # min of field_pcts
+            "field_pcts": {"open": .., "high": .., "low": .., "close": ..},
+            "bars_compared": N, "bars_live_only": N, "bars_rest_only": N,
+            "bars_backfilled": N,
+            "window_start": "...", "window_end": "...",
+            "reason": null | "no_live_bars" | "no_rest_bars" | "no_ws_bars"
+                    | "no_overlap" | "timeframe_too_coarse"
+                    | "bad_timeframe" | "compute_error"
+          }, ...]
+        }
+
+    The frontend joins rows to pairs by (symbol, timeframe) — one
+    computation serves every strategy sharing the pair.
+    """
+    from db import get_admin_client
+    now = datetime.now(timezone.utc)
+
+    # Lock covers both the freshness check and the recompute so concurrent
+    # stale hits can't stampede — the second caller blocks briefly, then
+    # serves the freshly cached payload.
+    with _bar_parity_lock:
+        cached_payload = _bar_parity_cache.get("payload")
+        computed_at = _bar_parity_cache.get("computed_at")
+        if (not refresh and cached_payload is not None
+                and computed_at is not None
+                and (now - computed_at).total_seconds() < _BP_CACHE_TTL_SEC):
+            return {**cached_payload, "now": now.isoformat(), "cached": True}
+
+        c = get_admin_client()
+
+        # Unique (symbol, timeframe) pairs across the fleet — the dedupe
+        # that keeps this endpoint cheap (~70 strategies → ~15-25 pairs).
+        pairs: set = set()
+        try:
+            srows = (c.table("strategies").select("symbol,timeframe")
+                     .execute().data or [])
+            for s in srows:
+                sym, tf = s.get("symbol"), s.get("timeframe")
+                if sym and tf:
+                    pairs.add((sym, tf))
+        except Exception as e:
+            logger.warning("[bar-parity] strategies load failed: %s", e)
+
+        pairs_out: List[Dict[str, Any]] = []
+        for sym, tf in sorted(pairs):
+            try:
+                pairs_out.append(_compute_pair_parity(c, sym, tf, now))
+            except Exception as e:
+                logger.warning("[bar-parity] compute failed for %s/%s: %s",
+                               sym, tf, e)
+                pairs_out.append(_bp_pair_stub(
+                    sym, tf, _bp_tf_seconds(tf), "compute_error"))
+
+        payload = {
+            "computed_at": now.isoformat(),
+            "cache_ttl_seconds": _BP_CACHE_TTL_SEC,
+            "tolerance": "max($0.01, 0.02%)",
+            "pairs": pairs_out,
+        }
+        _bar_parity_cache["payload"] = payload
+        _bar_parity_cache["computed_at"] = now
+        return {**payload, "now": now.isoformat(), "cached": False}
