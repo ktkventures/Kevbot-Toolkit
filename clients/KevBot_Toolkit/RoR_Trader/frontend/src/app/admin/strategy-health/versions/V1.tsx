@@ -212,9 +212,12 @@ function barParityStyle(v: number | null | undefined): React.CSSProperties {
 // Tooltip for the Bar Parity cell: definition + per-field breakdown +
 // coverage stats, or the not-computable reason.
 function barParityTitle(p: BarParityPair | undefined): string {
-  const def = 'Bar Parity = worst-of-OHLC field match rate, live bars (WS) '
+  const def = 'Bar Parity (data) = DATA-LAYER check, OHLC-only, recent window: '
+    + 'worst-of-OHLC field match rate, live bars (WS) '
     + 'vs REST truth (bar_cache resampled to TF), tolerance max($0.01, 0.02%), '
-    + 'recent window anchored at the newest settled live bar.';
+    + 'recent window anchored at the newest settled live bar. '
+    + 'No indicators or engine lens — for full per-indicator parity per '
+    + 'strategy see the Model Parity tab.';
   if (!p) return `${def} No computation for this (symbol, TF) pair yet.`;
   if (p.parity_pct == null) {
     return `${def} Not computable: ${p.reason ?? 'unknown'}.`;
@@ -568,7 +571,7 @@ export default function StrategyHealthV1() {
                 <Th onClick={() => toggleSort('name')}      label={`Strategy${arrow('name')}`} />
                 <Th onClick={() => toggleSort('symbol')}    label={`Symbol${arrow('symbol')}`} />
                 <Th onClick={() => toggleSort('timeframe')} label={`TF${arrow('timeframe')}`} />
-                <Th onClick={() => toggleSort('barParity')} label={`Bar parity${arrow('barParity')}`} align="right" />
+                <Th onClick={() => toggleSort('barParity')} label={`Bar Parity (data)${arrow('barParity')}`} align="right" />
                 <Th onClick={() => toggleSort('btCurrent')} label={`BT Current${arrow('btCurrent')}`} />
                 <Th onClick={() => toggleSort('kpis')}      label={`KPIs${arrow('kpis')}`} />
                 <Th onClick={() => toggleSort('lastTrade')} label={`Last trade${arrow('lastTrade')}`} />
