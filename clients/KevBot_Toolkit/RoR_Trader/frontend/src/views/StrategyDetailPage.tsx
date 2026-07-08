@@ -1947,6 +1947,37 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const { data: labChartDataCacheFirst } = useStrategyChartDataCache(
     strategyId, 'first', labDataSource === 'ws-first' || gateParityActive
   );
+  // Per-Bar Parity Drift — dedicated LANE-ALIGNED fetches. When the user picks
+  // an explicit window (gpDriftStart/gpDriftEnd), both lanes are refetched for
+  // the SAME [start,end] range (unix-sec strings; the backend loads a warmup-
+  // extended window and trims). This guarantees the ribbon compares bars both
+  // lanes actually have for that window — instead of the old behavior of
+  // filtering the two independently-windowed main-chart responses client-side
+  // (which showed "0 common" whenever the custom range fell outside, or one
+  // lane was staler than, the default now-back fetch). No custom window → the
+  // ribbon reuses the shared main-chart responses below (already now-back
+  // aligned) and these stay disabled to avoid extra load.
+  const gpDriftWindow = useMemo(
+    () => (gpDriftStart != null && gpDriftEnd != null && gpDriftStart < gpDriftEnd
+      ? { start: String(gpDriftStart), end: String(gpDriftEnd) }
+      : undefined),
+    [gpDriftStart, gpDriftEnd]
+  );
+  const gpDriftCustomActive = !!gpDriftWindow;
+  const { data: gpDriftBacktest } = useStrategyChartData(
+    gateParityActive && gpDriftCustomActive ? strategyId : null, gpDriftWindow
+  );
+  const { data: gpDriftCacheLatest } = useStrategyChartDataCache(
+    strategyId, 'latest', gateParityActive && gpDriftCustomActive, gpDriftWindow
+  );
+  const { data: gpDriftCacheFirst } = useStrategyChartDataCache(
+    strategyId, 'first', gateParityActive && gpDriftCustomActive, gpDriftWindow
+  );
+  // Source the ribbons from the aligned fetches when a custom window is active,
+  // else from the shared main-chart responses.
+  const ribbonBacktest: any = gpDriftCustomActive ? gpDriftBacktest : chartDataResp;
+  const ribbonCacheLatest: any = gpDriftCustomActive ? gpDriftCacheLatest : labChartDataCacheLatest;
+  const ribbonCacheFirst: any = gpDriftCustomActive ? gpDriftCacheFirst : labChartDataCacheFirst;
   const confluenceGroups = triggerAnalysis?.confluence_groups ?? EMPTY_CONFLUENCE_GROUPS;
   const confluenceTimeline = EMPTY_CONFLUENCE_TIMELINE; // State timeline requires backtest instrumentation
   const confluenceTriggerEvents = EMPTY_CONFLUENCE_TRIGGER_EVENTS; // Trigger events require backtest instrumentation
@@ -4905,11 +4936,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     </div>
                   </div>
                   <ParityDriftRibbon
-                    backtestBars={chartDataResp?.chart_data || []}
-                    alertBars={(labChartDataCacheLatest as any)?.chart_data || labCacheLatest?.chart_data || []}
-                    overlayNames={(chartDataResp as any)?.overlay_indicators || []}
-                    oscNames={(chartDataResp as any)?.oscillator_indicators || []}
-                    heatmapConds={((chartDataResp as any)?.heatmap_conditions || []).filter((c: any) => c.has_data)}
+                    backtestBars={ribbonBacktest?.chart_data || []}
+                    alertBars={ribbonCacheLatest?.chart_data || (gpDriftCustomActive ? [] : labCacheLatest?.chart_data) || []}
+                    overlayNames={ribbonBacktest?.overlay_indicators || []}
+                    oscNames={ribbonBacktest?.oscillator_indicators || []}
+                    heatmapConds={(ribbonBacktest?.heatmap_conditions || []).filter((c: any) => c.has_data)}
                     timezone={chartPrefs.timezone}
                     startUtc={gpDriftStart}
                     endUtc={gpDriftEnd}
@@ -4927,12 +4958,12 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     </h4>
                   </div>
                   <ParityDriftRibbonV2
-                    backtestBars={chartDataResp?.chart_data || []}
-                    alertFirstBars={(labChartDataCacheFirst as any)?.chart_data || []}
-                    alertLatestBars={(labChartDataCacheLatest as any)?.chart_data || []}
-                    overlayNames={(chartDataResp as any)?.overlay_indicators || []}
-                    oscNames={(chartDataResp as any)?.oscillator_indicators || []}
-                    heatmapConds={((chartDataResp as any)?.heatmap_conditions || []).filter((c: any) => c.has_data)}
+                    backtestBars={ribbonBacktest?.chart_data || []}
+                    alertFirstBars={ribbonCacheFirst?.chart_data || []}
+                    alertLatestBars={ribbonCacheLatest?.chart_data || []}
+                    overlayNames={ribbonBacktest?.overlay_indicators || []}
+                    oscNames={ribbonBacktest?.oscillator_indicators || []}
+                    heatmapConds={(ribbonBacktest?.heatmap_conditions || []).filter((c: any) => c.has_data)}
                     timezone={chartPrefs.timezone}
                     defaultSource="first"
                     startUtc={gpDriftStart}
