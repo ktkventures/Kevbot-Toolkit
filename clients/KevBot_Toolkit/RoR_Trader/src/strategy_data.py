@@ -258,6 +258,65 @@ def compute_warmup_days(strat: dict, visible_days: float) -> float:
     return max(1.0, float(days))
 
 
+def plan_windowed_load(
+    strat: dict,
+    secondary_tfs: tuple,
+    visible_start: pd.Timestamp,
+    visible_end: pd.Timestamp,
+    data_feed: str,
+    base_warmup_days: float,
+    *,
+    allow_coarse_injection: bool = True,
+) -> Tuple[float, Optional[dict]]:
+    """Per-TF windowed-load planner (M-RS1 + coarse-secondary-from-1Min).
+
+    Given the already-right-sized MAX `base_warmup_days` (from
+    `compute_warmup_days`) and the strategy's secondary TFs, decide how to
+    load so the sub-minute PRIMARY is NEVER fetched across a coarse (>=1Hour)
+    secondary's long calendar span. Returns ``(warmup_days, sec_inject)``:
+
+      - ``sec_inject``: ``{canonical_tf: DataFrame[OHLCV]}`` for the coarse
+        (>=1Hour) secondaries, pre-built from a single cheap 1Min load over
+        each's own ``SECONDARY_WARMUP_BARS`` span (or ``None`` when there is
+        no coarse secondary / the flag is off). Inject via
+        ``prepare_data_with_indicators(secondary_tf_dfs=...)``.
+      - ``warmup_days``: RE-SIZED to the PRIMARY + any NON-coarse secondaries
+        only when a coarse injection is produced (the coarse ones are already
+        pre-warmed), so the primary load window stays short. Otherwise it is
+        returned unchanged (== ``base_warmup_days``).
+
+    Inert — returns ``(base_warmup_days, None)`` — when the
+    coarse-secondary-from-1Min flag is off, there is no coarse secondary, or
+    ``allow_coarse_injection`` is False (e.g. Mass Builder's own MTF load).
+    This is the SAME machinery `load_strategy_data` uses; the parity-ribbon
+    backtest endpoint calls it so its warmup matches the engine bar-for-bar
+    without loading the display primary across the ~363d daily-gate span.
+    """
+    warmup_days = base_warmup_days
+    sec_inject = None
+    coarse_tfs = tuple(t for t in secondary_tfs
+                       if _tf_seconds_safe(t) >= COARSE_SECONDARY_SECONDS)
+    if _coarse_secondary_from_1min_enabled() and coarse_tfs and allow_coarse_injection:
+        sec_warmup_days = max(_tf_warmup_days(t, SECONDARY_WARMUP_BARS)
+                              for t in coarse_tfs)
+        sec_start = visible_start - pd.Timedelta(days=sec_warmup_days)
+        sec_inject = _build_coarse_secondary_from_1min(
+            strat["symbol"], coarse_tfs, sec_start.to_pydatetime(),
+            visible_end.to_pydatetime(),
+            strat.get("trading_session", "RTH"), data_feed)
+        # Re-size the PRIMARY warmup off primary + NON-coarse secondaries only
+        # (the coarse ones now come pre-built). Only when right-sizing is on —
+        # the legacy `visible_days * 2` window is already short, so leave it.
+        if sec_inject and _rightsize_warmup_enabled():
+            primary_tf = strat.get("timeframe", "1Min")
+            wd = _tf_warmup_days(primary_tf, PRIMARY_WARMUP_BARS)
+            for t in secondary_tfs:
+                if _tf_seconds_safe(t) < COARSE_SECONDARY_SECONDS:
+                    wd = max(wd, _tf_warmup_days(t, SECONDARY_WARMUP_BARS))
+            warmup_days = max(1.0, float(wd))
+    return warmup_days, sec_inject
+
+
 # ── Loader ────────────────────────────────────────────────────────────
 
 def load_strategy_data(
@@ -315,31 +374,12 @@ def load_strategy_data(
     # across the coarse span (~363d for a 1Day gate → the ~360× blow-up that
     # hung sid 338's UAD). Source = 1Min → matches LIVE _load_warmup_df, closing
     # a latent backtest-vs-live divergence. Inert when OFF / no coarse secondary.
-    sec_inject = None
-    coarse_tfs = tuple(t for t in secondary_tfs
-                       if _tf_seconds_safe(t) >= COARSE_SECONDARY_SECONDS)
     # Scope to the normal strategy path — Mass Builder (secondary_tfs_override)
     # has its own MTF-load expectations and is out of scope for this fix.
-    if (_coarse_secondary_from_1min_enabled() and coarse_tfs
-            and secondary_tfs_override is None):
-        sec_warmup_days = max(_tf_warmup_days(t, SECONDARY_WARMUP_BARS)
-                              for t in coarse_tfs)
-        sec_start = visible_start - pd.Timedelta(days=sec_warmup_days)
-        sec_inject = _build_coarse_secondary_from_1min(
-            strat["symbol"], coarse_tfs, sec_start.to_pydatetime(),
-            visible_end.to_pydatetime(),
-            strat.get("trading_session", "RTH"), data_feed)
-        # Re-size the PRIMARY warmup off primary + NON-coarse secondaries only
-        # (the coarse ones now come pre-built). Only when right-sizing is on —
-        # the legacy `visible_days * 2` window is already short, so leave it.
-        if sec_inject and _rightsize_warmup_enabled():
-            primary_tf = strat.get("timeframe", "1Min")
-            wd = _tf_warmup_days(primary_tf, PRIMARY_WARMUP_BARS)
-            for t in secondary_tfs:
-                if _tf_seconds_safe(t) < COARSE_SECONDARY_SECONDS:
-                    wd = max(wd, _tf_warmup_days(t, SECONDARY_WARMUP_BARS))
-            warmup_days = max(1.0, float(wd))
-            warmup_start = visible_start - pd.Timedelta(days=warmup_days)
+    warmup_days, sec_inject = plan_windowed_load(
+        strat, secondary_tfs, visible_start, visible_end, data_feed,
+        warmup_days, allow_coarse_injection=(secondary_tfs_override is None))
+    warmup_start = visible_start - pd.Timedelta(days=warmup_days)
 
     logger.info(
         "[StrategyData] sid=%s symbol=%s tf=%s anchor=%s "

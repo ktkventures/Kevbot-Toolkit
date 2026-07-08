@@ -2816,16 +2816,30 @@ def get_strategy_chart_data(
             # Pass config-aware confluence so the standard sees exactly the
             # sec_tfs this endpoint resolved (compute_warmup_days reads a bare
             # strat['confluence']; _strategy_confluence_records is config-first).
-            from strategy_data import compute_warmup_days
+            from strategy_data import compute_warmup_days, plan_windowed_load
             _visible_days = max(
                 1.0, (disp_end - disp_start).total_seconds() / 86400.0)
             _strat_for_warmup = {**strat,
                                  'confluence': _strategy_confluence_records(strat)}
-            warmup_days = compute_warmup_days(_strat_for_warmup, _visible_days)
+            _base_warmup_days = compute_warmup_days(_strat_for_warmup, _visible_days)
+            # PER-TF windowed load — reuse the engine's own load_strategy_data
+            # machinery (plan_windowed_load). compute_warmup_days returns the MAX
+            # calendar span across all TFs (~363d for a 1Day gate). Applying that
+            # single span to the sub-minute PRIMARY (as before this fix) loaded
+            # ~139k 15Sec bars over ~32s → browser timeout → ribbon showed
+            # "backtest bars: 0". plan_windowed_load instead pre-builds each
+            # coarse (>=1Hour) secondary from a cheap 1Min load (injected via
+            # secondary_tf_dfs) and RE-SIZES the primary warmup off the primary +
+            # sub-1Hour secondaries only, so the display primary loads over its
+            # OWN short warmup (~2d) while the daily/4h secondary still converges.
+            warmup_days, _sec_inject = plan_windowed_load(
+                strat, sec_tfs, _pd.Timestamp(disp_start), _pd.Timestamp(disp_end),
+                'sip', _base_warmup_days)
             load_start = disp_start - timedelta(days=warmup_days)
-            logger.warning("[CHART-DATA:%s] explicit window %s..%s (load from %s, warmup=%.0fd standard, sec_tfs=%s, clamped=%s)",
+            logger.warning("[CHART-DATA:%s] explicit window %s..%s (load from %s, warmup=%.0fd standard, base=%.0fd, sec_tfs=%s, coarse_inject=%s, clamped=%s)",
                            strategy_id, disp_start.isoformat(), disp_end.isoformat(),
-                           load_start.isoformat(), warmup_days, sec_tfs, bool(_clamp_note))
+                           load_start.isoformat(), warmup_days, _base_warmup_days, sec_tfs,
+                           (sorted(_sec_inject) if _sec_inject else None), bool(_clamp_note))
             _t = _time.time()
             df = svc.prepare_data_with_indicators(
                 strat['symbol'],
@@ -2834,6 +2848,7 @@ def get_strategy_chart_data(
                 timeframe=strat.get('timeframe', '1Min'),
                 session=strat.get('trading_session', 'RTH'),
                 secondary_tfs=sec_tfs,
+                secondary_tf_dfs=_sec_inject,
                 strat=strat,
             )
             _phases["prepare"] = _time.time() - _t
@@ -3125,11 +3140,16 @@ def get_confluence_chart(
 # CACHE BARS (M8.7 — live_bars-backed OHLCV for "Live WS" chart view)
 # =============================================================================
 
-TF_TO_SECONDS = {
-    '10Sec': 10, '30Sec': 30, '1Min': 60, '5Min': 300,
-    '10Min': 600, '15Min': 900, '30Min': 1800,
-    '1Hour': 3600, '1Day': 86400,
-}
+# Canonical TF→seconds map. SINGLE SOURCE OF TRUTH lives in data_loader; the
+# copy that used to live here had drifted INCOMPLETE — missing every sub-minute
+# TF (5Sec/15Sec/2Min/3Min) and the coarse 2Hour/4Hour/1Week — so the live-cache
+# lane returned "Unknown primary timeframe '15Sec'" (313 rendered nothing) and
+# silently `continue`-skipped 4Hour/1Day secondaries (325's 4Hour heatmap row
+# vanished on the live lane while the backtest lane still computed it → a false
+# ribbon divergence). Importing the complete map fixes both and prevents future
+# drift. Values for the shared keys are identical, so already-mapped TFs are
+# byte-identical; previously-unmapped TFs simply start resolving correctly.
+from data_loader import TF_TO_SECONDS  # noqa: E402,F811
 
 
 @router.get("/{strategy_id}/chart-data-cache")
@@ -3214,23 +3234,39 @@ def get_strategy_chart_data_from_cache(
             # the already-clamped visible window; clamp governs span, warmup the
             # pre-roll. See the backtest lane for the config-aware confluence.
             from strategy_data import (compute_warmup_days, _tf_warmup_days,
-                                       SECONDARY_WARMUP_BARS)
+                                       PRIMARY_WARMUP_BARS, SECONDARY_WARMUP_BARS)
             _visible_days = max(
                 1.0, (disp_end - disp_start).total_seconds() / 86400.0)
             _strat_for_warmup = {**strat,
                                  'confluence': _strategy_confluence_records(strat)}
+            # DEEPEST (MAX) warmup across all TFs — used ONLY for the honest
+            # under-warm note below, NOT for the primary fetch. Applying this
+            # ~363d max to the sub-minute PRIMARY (as before this fix) fetched
+            # ~139k 15Sec cache rows over ~32s → browser timeout → ribbon showed
+            # "live cache bars: 0".
             warmup_days = compute_warmup_days(_strat_for_warmup, _visible_days)
             end_dt = disp_end
-            _desired_start = disp_start - timedelta(days=warmup_days)
-            # HONEST cache-floor clamp: live_bars only exists from
+            # PER-TF fetch windows: the primary fetches over ITS OWN warmup
+            # (~2d for 15Sec), each secondary over ITS OWN warmup (large for a
+            # daily gate, but CHEAP because daily bars are sparse). Every start
+            # is still clamped to _LIVE_BARS_CACHE_FLOOR.
+            def _floor_clamp(_dt):
+                return _LIVE_BARS_CACHE_FLOOR if _dt < _LIVE_BARS_CACHE_FLOOR else _dt
+            primary_start = _floor_clamp(
+                disp_start - timedelta(days=_tf_warmup_days(primary_tf, PRIMARY_WARMUP_BARS)))
+            _sec_starts = {
+                stf: _floor_clamp(
+                    disp_start - timedelta(days=_tf_warmup_days(stf, SECONDARY_WARMUP_BARS)))
+                for stf in sec_tfs}
+            # HONEST cache-floor note: live_bars only exists from
             # _LIVE_BARS_CACHE_FLOOR. A coarse secondary (e.g. a 1Day gate)
             # legitimately wants ~363d of warmup — older than the cache. Rather
-            # than hang or silently under-warm, clamp the fetch start to the
-            # floor and surface a structured note. The backtest lane reaches the
-            # full depth, so for daily gates the two lanes differ in warmup
-            # DEPTH by design — the note says so instead of faking alignment.
+            # than hang or silently under-warm, we clamp (above) and surface a
+            # structured note. The backtest lane reaches the full depth, so for
+            # daily gates the two lanes differ in warmup DEPTH by design — the
+            # note says so instead of faking alignment.
+            _desired_start = disp_start - timedelta(days=warmup_days)
             if _desired_start < _LIVE_BARS_CACHE_FLOOR:
-                start_dt = _LIVE_BARS_CACHE_FLOOR
                 _avail_days = max(
                     0.0,
                     (disp_start - _LIVE_BARS_CACHE_FLOOR).total_seconds() / 86400.0)
@@ -3251,12 +3287,11 @@ def get_strategy_chart_data_from_cache(
                     "[CHART-CACHE:%s] warmup floor-clamped: wanted %s (%.0fd) "
                     "-> %s; under=%s",
                     strategy_id, _desired_start.isoformat(), warmup_days,
-                    start_dt.isoformat(), _under)
-            else:
-                start_dt = _desired_start
+                    primary_start.isoformat(), _under)
         else:
             end_dt = datetime.now(timezone.utc)
-            start_dt = end_dt - timedelta(days=base_days)
+            primary_start = end_dt - timedelta(days=base_days)
+            _sec_starts = None  # non-explicit: secondaries share the primary window
 
         set_admin_user_context(user.get('id') or strat.get('user_id'))
 
@@ -3271,7 +3306,7 @@ def get_strategy_chart_data_from_cache(
         # ['ws','ws_agg'] filter silently dropped every corrected bar).
         _t = _time.time()
         primary_df = fetch_cache_as_df(
-            symbol, primary_tf_seconds, start_dt, end_dt, value_type,
+            symbol, primary_tf_seconds, primary_start, end_dt, value_type,
             sources=ENGINE_CONSUMED_SOURCES)
         _phases["fetch_primary"] = _time.time() - _t
 
@@ -3292,8 +3327,12 @@ def get_strategy_chart_data_from_cache(
             sec_tf_seconds = TF_TO_SECONDS.get(sec_tf)
             if sec_tf_seconds is None:
                 continue
+            # Each secondary fetches over ITS OWN warmup window (explicit path)
+            # so a daily gate warms to full depth without dragging the primary
+            # fetch back with it. Non-explicit path shares the primary window.
+            _sec_start = _sec_starts.get(sec_tf, primary_start) if _sec_starts else primary_start
             sec_df = fetch_cache_as_df(
-                symbol, sec_tf_seconds, start_dt, end_dt, value_type,
+                symbol, sec_tf_seconds, _sec_start, end_dt, value_type,
                 sources=ENGINE_CONSUMED_SOURCES)
             if len(sec_df) > 0:
                 sec_tf_dfs[sec_tf] = sec_df
@@ -3333,7 +3372,7 @@ def get_strategy_chart_data_from_cache(
         # Build response via shared helper
         result = _build_chart_response_from_df(df, strat, strategy_id, _phases)
         result["data_source"] = f"cache_{value_type}"
-        result["window_start"] = (disp_start if explicit_window else start_dt).isoformat()
+        result["window_start"] = (disp_start if explicit_window else primary_start).isoformat()
         result["window_end"] = (disp_end if explicit_window else end_dt).isoformat()
         result["primary_cache_rows"] = len(primary_df)
         result["secondary_cache_rows"] = {tf: len(d) for tf, d in sec_tf_dfs.items()}
