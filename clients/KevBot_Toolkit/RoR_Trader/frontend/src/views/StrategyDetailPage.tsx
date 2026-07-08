@@ -2025,6 +2025,13 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const gpDriftClampNote: string | null =
     (ribbonCacheLatest?.clamped_note as string | undefined) ||
     (ribbonBacktest?.clamped_note as string | undefined) || null;
+  // Honest warmup-depth advisory from the LIVE lane: its standard per-TF
+  // warmup (e.g. a 1Day gate's ~363d) reaches before the live_bars cache
+  // floor, so it clamps and may under-warm that secondary while the backtest
+  // lane reaches full depth. Surface it so daily-gate drift here is expected.
+  const gpDriftWarmupNote: string | null =
+    (ribbonCacheLatest?.warmup_note as string | undefined) ||
+    (ribbonCacheFirst?.warmup_note as string | undefined) || null;
   // Flicker guard (#5): only treat a lane response as data when it has rows, so
   // an empty/late response can't blank a populated ribbon.
   const _driftRows = (r: any): any[] | null =>
@@ -5059,6 +5066,11 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     <div className="text-[11px] mb-2 px-2 py-1 rounded"
                       style={{ background: 'rgba(234,179,8,0.12)', border: '1px solid rgba(234,179,8,0.4)', color: 'var(--text-primary)' }}>
                       ⚠ {gpDriftClampNote}
+                    </div>
+                  )}
+                  {gpDriftWarmupNote && (
+                    <div className="text-[11px] mb-2" style={{ color: 'var(--text-secondary)' }}>
+                      ⓘ Warmup note: {gpDriftWarmupNote}
                     </div>
                   )}
                   <ParityDriftRibbon
