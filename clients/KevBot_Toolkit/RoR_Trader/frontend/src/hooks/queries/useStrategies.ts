@@ -212,10 +212,34 @@ export interface ChartDataResponse {
   indicators: string[];
 }
 
-export function useStrategyChartData(id: number | null) {
+/** Optional explicit, lane-aligned window (ISO or unix-sec strings). When both
+ *  start+end are set, the endpoint loads a warmup-extended range and trims to
+ *  [start,end] so the backtest lane covers the SAME bars as /chart-data-cache
+ *  for the parity ribbon. Omit for the default now-back-data_days window. */
+export interface ChartWindow {
+  start?: string | null;
+  end?: string | null;
+}
+
+function _windowQuery(window?: ChartWindow): { start: string | null; end: string | null; suffix: string } {
+  const start = window?.start ?? null;
+  const end = window?.end ?? null;
+  const params = new URLSearchParams();
+  if (start && end) {
+    params.set('start', start);
+    params.set('end', end);
+  }
+  const q = params.toString();
+  return { start, end, suffix: q ? `&${q}` : '' };
+}
+
+export function useStrategyChartData(id: number | null, window?: ChartWindow) {
+  const { start, end, suffix } = _windowQuery(window);
+  // `?_=` keeps the suffix builder uniform (both endpoints append `&…`).
+  const url = `/api/strategies/${id}/chart-data${suffix ? `?${suffix.slice(1)}` : ''}`;
   return useQuery({
-    queryKey: ['strategy-chart-data', id],
-    queryFn: () => apiFetch<ChartDataResponse>(`/api/strategies/${id}/chart-data`),
+    queryKey: ['strategy-chart-data', id, start, end],
+    queryFn: () => apiFetch<ChartDataResponse>(url),
     enabled: id !== null,
     staleTime: 300000, // 5 min cache — this is a slow endpoint
     retry: 1,
@@ -293,11 +317,13 @@ export function useStrategyChartDataCache(
   id: number | null,
   valueType: 'latest' | 'first',
   enabled: boolean = true,
+  window?: ChartWindow,
 ) {
+  const { start, end, suffix } = _windowQuery(window);
   return useQuery({
-    queryKey: ['strategy-chart-data-cache', id, valueType],
+    queryKey: ['strategy-chart-data-cache', id, valueType, start, end],
     queryFn: () => apiFetch<ChartDataResponse>(
-      `/api/strategies/${id}/chart-data-cache?value_type=${valueType}`
+      `/api/strategies/${id}/chart-data-cache?value_type=${valueType}${suffix}`
     ),
     enabled: enabled && id !== null,
     staleTime: 30000,
