@@ -57,6 +57,43 @@ function _localInputToUnixSec(s: string, tz: string): number | null {
   }
 }
 
+/** Inverse of `_localInputToUnixSec`: Unix seconds → a datetime-local input
+ *  string ("YYYY-MM-DDTHH:MM:SS") rendered as wall-clock time in `tz`, so the
+ *  parity-window pickers show the currently-active range. */
+function _unixSecToLocalInput(sec: number | null, tz: string): string {
+  if (sec == null || !isFinite(sec)) return '';
+  try {
+    const dtf = new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz, hour12: false, year: 'numeric', month: '2-digit',
+      day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    const p = dtf.formatToParts(new Date(sec * 1000));
+    const g = (t: string) => p.find((x) => x.type === t)?.value || '00';
+    // en-CA yields YYYY-MM-DD for the date parts; hour may come back as '24'.
+    const hh = g('hour') === '24' ? '00' : g('hour');
+    return `${g('year')}-${g('month')}-${g('day')}T${hh}:${g('minute')}:${g('second')}`;
+  } catch {
+    return '';
+  }
+}
+
+/** Per-Bar Parity Drift default window: last 4h. The ribbon opens on this small
+ *  recent range (fast + populated) instead of the strategy's full data_days
+ *  span — a sub-minute strategy over ~62d makes the live-cache lane resample
+ *  ~1.5M 1Sec rows (~17s) and time out, so the ribbon came back empty. */
+const RIBBON_DEFAULT_WINDOW_SEC = 4 * 3600;
+
+/** One-click ranges for the parity ribbon (mirrors the Lab Replay presets).
+ *  seconds > 0 = last-N-seconds from now; 0 = Today (RTH open); -1 = All
+ *  (expensive → confirm + server clamp); -2 = Custom (datetime pickers). */
+const RIBBON_PRESETS = [
+  { label: 'Last 1h', seconds: 3600 },
+  { label: 'Last 4h', seconds: 4 * 3600 },
+  { label: 'Today', seconds: 0 },
+  { label: 'All', seconds: -1 },
+  { label: 'Custom', seconds: -2 },
+] as const;
+
 type PaneConfig = import('@/charts/SyncedChartPane').PaneConfig;
 type SeriesConfig = import('@/charts/SyncedChartPane').SeriesConfig;
 
@@ -1922,9 +1959,17 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const [gpShowLabels, setGpShowLabels] = useState<boolean>(true);
   // Gate Parity (2026-06-10): alert-lens WS-tip source (first = decision-time).
   const [gpTipSource, setGpTipSource] = useState<'first' | 'latest'>('first');
-  // Per-Bar Parity Drift custom window (Unix sec; null = default recent view).
-  const [gpDriftStart, setGpDriftStart] = useState<number | null>(null);
-  const [gpDriftEnd, setGpDriftEnd] = useState<number | null>(null);
+  // Per-Bar Parity Drift window (Unix sec). Defaults to the last 4h (a small,
+  // fast, populated range) rather than the full data_days span — see
+  // RIBBON_DEFAULT_WINDOW_SEC. Lazily initialised at mount; preset buttons /
+  // Apply re-anchor it. Both start+end are always set so the ribbon always
+  // uses the dedicated lane-aligned fetches below (never the full-range
+  // main-chart responses).
+  const [gpDriftEnd, setGpDriftEnd] = useState<number | null>(
+    () => Math.floor(Date.now() / 1000));
+  const [gpDriftStart, setGpDriftStart] = useState<number | null>(
+    () => Math.floor(Date.now() / 1000) - RIBBON_DEFAULT_WINDOW_SEC);
+  const [gpDriftPreset, setGpDriftPreset] = useState<string>('Last 4h');
   const [gpDriftStartIn, setGpDriftStartIn] = useState<string>('');
   const [gpDriftEndIn, setGpDriftEndIn] = useState<string>('');
   // M8.7 M5 (2026-05-04): Replay scrub state moved into LabReplayPanel —
@@ -1947,37 +1992,87 @@ export default function StrategyDetailPage({ strategyId }: Props) {
   const { data: labChartDataCacheFirst } = useStrategyChartDataCache(
     strategyId, 'first', labDataSource === 'ws-first' || gateParityActive
   );
-  // Per-Bar Parity Drift — dedicated LANE-ALIGNED fetches. When the user picks
-  // an explicit window (gpDriftStart/gpDriftEnd), both lanes are refetched for
-  // the SAME [start,end] range (unix-sec strings; the backend loads a warmup-
-  // extended window and trims). This guarantees the ribbon compares bars both
-  // lanes actually have for that window — instead of the old behavior of
-  // filtering the two independently-windowed main-chart responses client-side
-  // (which showed "0 common" whenever the custom range fell outside, or one
-  // lane was staler than, the default now-back fetch). No custom window → the
-  // ribbon reuses the shared main-chart responses below (already now-back
-  // aligned) and these stay disabled to avoid extra load.
+  // Per-Bar Parity Drift — dedicated LANE-ALIGNED fetches. Both lanes are
+  // fetched for the SAME [start,end] window (unix-sec strings; the backend
+  // loads a warmup-extended range, TF-caps/clamps it, and trims). This
+  // guarantees the ribbon compares bars both lanes actually have for the
+  // window. The window ALWAYS has a value (default = last 4h), so the ribbon
+  // never falls back to the full-range main-chart responses — which is what
+  // made it slow/empty ("0 common / all red") on wide-data_days strategies.
   const gpDriftWindow = useMemo(
     () => (gpDriftStart != null && gpDriftEnd != null && gpDriftStart < gpDriftEnd
       ? { start: String(gpDriftStart), end: String(gpDriftEnd) }
       : undefined),
     [gpDriftStart, gpDriftEnd]
   );
-  const gpDriftCustomActive = !!gpDriftWindow;
-  const { data: gpDriftBacktest } = useStrategyChartData(
-    gateParityActive && gpDriftCustomActive ? strategyId : null, gpDriftWindow
+  const gpDriftEnabled = gateParityActive && !!gpDriftWindow;
+  const { data: gpDriftBacktest, isFetching: gpDriftBtFetching } = useStrategyChartData(
+    gpDriftEnabled ? strategyId : null, gpDriftWindow
   );
-  const { data: gpDriftCacheLatest } = useStrategyChartDataCache(
-    strategyId, 'latest', gateParityActive && gpDriftCustomActive, gpDriftWindow
+  const { data: gpDriftCacheLatest, isFetching: gpDriftLatestFetching } = useStrategyChartDataCache(
+    strategyId, 'latest', gpDriftEnabled, gpDriftWindow
   );
-  const { data: gpDriftCacheFirst } = useStrategyChartDataCache(
-    strategyId, 'first', gateParityActive && gpDriftCustomActive, gpDriftWindow
+  const { data: gpDriftCacheFirst, isFetching: gpDriftFirstFetching } = useStrategyChartDataCache(
+    strategyId, 'first', gpDriftEnabled, gpDriftWindow
   );
-  // Source the ribbons from the aligned fetches when a custom window is active,
-  // else from the shared main-chart responses.
-  const ribbonBacktest: any = gpDriftCustomActive ? gpDriftBacktest : chartDataResp;
-  const ribbonCacheLatest: any = gpDriftCustomActive ? gpDriftCacheLatest : labChartDataCacheLatest;
-  const ribbonCacheFirst: any = gpDriftCustomActive ? gpDriftCacheFirst : labChartDataCacheFirst;
+  // Ribbons always source from the aligned windowed fetches.
+  const ribbonBacktest: any = gpDriftBacktest;
+  const ribbonCacheLatest: any = gpDriftCacheLatest;
+  const ribbonCacheFirst: any = gpDriftCacheFirst;
+  const gpDriftLoading = gpDriftBtFetching || gpDriftLatestFetching || gpDriftFirstFetching;
+  // Clamp advisory surfaced by the backend when the requested span exceeded the
+  // TF-aware cap (e.g. "All" on a 30Sec strategy). Either lane may carry it.
+  const gpDriftClampNote: string | null =
+    (ribbonCacheLatest?.clamped_note as string | undefined) ||
+    (ribbonBacktest?.clamped_note as string | undefined) || null;
+  // Flicker guard (#5): only treat a lane response as data when it has rows, so
+  // an empty/late response can't blank a populated ribbon.
+  const _driftRows = (r: any): any[] | null =>
+    (r && Array.isArray(r.chart_data) && r.chart_data.length > 0) ? r.chart_data : null;
+  // Apply a parity-ribbon preset: compute a frozen [start,end] (anchored to
+  // now) and commit it + sync the datetime inputs. "All" is the expensive path
+  // (server clamps it) so confirm first; "Custom" just reveals the pickers.
+  const applyDriftPreset = (label: string) => {
+    const tz = chartPrefs.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const preset = RIBBON_PRESETS.find((p) => p.label === label);
+    if (!preset) return;
+    if (label === 'Custom') { setGpDriftPreset(label); return; }
+    if (label === 'All') {
+      const dd = apiStrategy?.data_days || 62;
+      if (!window.confirm(
+        `"All" loads ~${dd} days on both lanes. For sub-minute strategies this ` +
+        `resamples millions of 1Sec rows and will be clamped to the timeframe ` +
+        `cap by the server. Continue?`)) return;
+    }
+    const now = Math.floor(Date.now() / 1000);
+    let s = now - RIBBON_DEFAULT_WINDOW_SEC;
+    let e = now;
+    if (preset.seconds > 0) { s = now - preset.seconds; e = now; }
+    else if (preset.seconds === 0) {
+      // Today ≈ RTH open (09:30 ET ≈ 13:30 UTC during EDT).
+      const d = new Date(now * 1000); d.setUTCHours(13, 30, 0, 0);
+      s = Math.min(now, Math.floor(d.getTime() / 1000)); e = now;
+    } else if (preset.seconds === -1) {
+      const dd = apiStrategy?.data_days || 62;
+      s = now - dd * 86400; e = now;
+    }
+    setGpDriftStart(s);
+    setGpDriftEnd(e);
+    setGpDriftStartIn(_unixSecToLocalInput(s, tz));
+    setGpDriftEndIn(_unixSecToLocalInput(e, tz));
+    setGpDriftPreset(label);
+  };
+  // Seed the datetime inputs from the (lazily-initialised) default window once
+  // the timezone is known, so the pickers show the active range from the start.
+  const _gpInputsSeeded = useRef(false);
+  useEffect(() => {
+    if (_gpInputsSeeded.current) return;
+    if (gpDriftStart == null || gpDriftEnd == null) return;
+    const tz = chartPrefs.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    setGpDriftStartIn(_unixSecToLocalInput(gpDriftStart, tz));
+    setGpDriftEndIn(_unixSecToLocalInput(gpDriftEnd, tz));
+    _gpInputsSeeded.current = true;
+  }, [gpDriftStart, gpDriftEnd, chartPrefs.timezone]);
   const confluenceGroups = triggerAnalysis?.confluence_groups ?? EMPTY_CONFLUENCE_GROUPS;
   const confluenceTimeline = EMPTY_CONFLUENCE_TIMELINE; // State timeline requires backtest instrumentation
   const confluenceTriggerEvents = EMPTY_CONFLUENCE_TRIGGER_EVENTS; // Trigger events require backtest instrumentation
@@ -4903,15 +4998,39 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                 {/* Per-bar parity drift microscope (backtest REST vs live cache) */}
                 <Card className="mb-4">
                   <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-                    <h4 className="text-sm font-medium">
+                    <h4 className="text-sm font-medium flex items-center gap-2">
                       Per-Bar Parity Drift
-                      <span className="text-xs font-normal ml-2" style={{ color: 'var(--text-muted)' }}>
-                        (Backtest REST vs Live cache · field-by-field ·{' '}
-                        {gpDriftStart && gpDriftEnd ? 'custom window' : 'recent window'})
+                      <span className="text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+                        (Backtest REST vs Live cache · field-by-field · {gpDriftPreset} window)
                       </span>
+                      {gpDriftLoading && (
+                        <span className="text-[11px] font-normal inline-flex items-center gap-1"
+                          style={{ color: 'var(--accent)' }}>
+                          <span className="inline-block w-2.5 h-2.5 rounded-full animate-pulse"
+                            style={{ background: 'var(--accent)' }} />
+                          loading lanes…
+                        </span>
+                      )}
                     </h4>
-                    {/* Shared custom-window picker — drives both v1 and v2 ribbons. */}
+                    {/* Shared window controls — presets + custom picker drive both ribbons. */}
                     <div className="flex items-center gap-1 text-[11px] flex-wrap" style={{ color: 'var(--text-muted)' }}>
+                      {RIBBON_PRESETS.map((p) => (
+                        <button
+                          key={p.label}
+                          onClick={() => applyDriftPreset(p.label)}
+                          className="px-2 py-0.5 rounded transition-colors"
+                          style={{
+                            background: gpDriftPreset === p.label ? 'var(--accent)' : 'var(--bg-input)',
+                            color: gpDriftPreset === p.label ? 'white' : 'var(--text-muted)',
+                            border: gpDriftPreset === p.label ? 'none' : '1px solid var(--border)',
+                            cursor: 'pointer',
+                          }}
+                        >{p.label}</button>
+                      ))}
+                    </div>
+                  </div>
+                  {gpDriftPreset === 'Custom' && (
+                    <div className="flex items-center gap-1 text-[11px] flex-wrap mb-3" style={{ color: 'var(--text-muted)' }}>
                       <span>Window:</span>
                       <input type="datetime-local" step="1" value={gpDriftStartIn}
                         onChange={(e) => setGpDriftStartIn(e.target.value)}
@@ -4923,21 +5042,28 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                       <button
                         onClick={() => {
                           const tz = chartPrefs.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
-                          setGpDriftStart(_localInputToUnixSec(gpDriftStartIn, tz));
-                          setGpDriftEnd(_localInputToUnixSec(gpDriftEndIn, tz));
+                          const s = _localInputToUnixSec(gpDriftStartIn, tz);
+                          const e = _localInputToUnixSec(gpDriftEndIn, tz);
+                          if (s == null || e == null || s >= e) {
+                            window.alert('Enter a valid start and end (start before end).');
+                            return;
+                          }
+                          setGpDriftStart(s);
+                          setGpDriftEnd(e);
                         }}
                         className="px-2 py-0.5 rounded" style={{ background: 'var(--accent)', color: 'white', cursor: 'pointer' }}>Apply</button>
-                      {(gpDriftStart || gpDriftEnd) && (
-                        <button
-                          onClick={() => { setGpDriftStart(null); setGpDriftEnd(null); setGpDriftStartIn(''); setGpDriftEndIn(''); }}
-                          className="px-2 py-0.5 rounded" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-muted)', cursor: 'pointer' }}>Clear</button>
-                      )}
                       <span className="ml-1">({chartPrefs.timezone || 'local'})</span>
                     </div>
-                  </div>
+                  )}
+                  {gpDriftClampNote && (
+                    <div className="text-[11px] mb-2 px-2 py-1 rounded"
+                      style={{ background: 'rgba(234,179,8,0.12)', border: '1px solid rgba(234,179,8,0.4)', color: 'var(--text-primary)' }}>
+                      ⚠ {gpDriftClampNote}
+                    </div>
+                  )}
                   <ParityDriftRibbon
-                    backtestBars={ribbonBacktest?.chart_data || []}
-                    alertBars={ribbonCacheLatest?.chart_data || (gpDriftCustomActive ? [] : labCacheLatest?.chart_data) || []}
+                    backtestBars={_driftRows(ribbonBacktest) || []}
+                    alertBars={_driftRows(ribbonCacheLatest) || []}
                     overlayNames={ribbonBacktest?.overlay_indicators || []}
                     oscNames={ribbonBacktest?.oscillator_indicators || []}
                     heatmapConds={(ribbonBacktest?.heatmap_conditions || []).filter((c: any) => c.has_data)}
@@ -4958,9 +5084,9 @@ export default function StrategyDetailPage({ strategyId }: Props) {
                     </h4>
                   </div>
                   <ParityDriftRibbonV2
-                    backtestBars={ribbonBacktest?.chart_data || []}
-                    alertFirstBars={ribbonCacheFirst?.chart_data || []}
-                    alertLatestBars={ribbonCacheLatest?.chart_data || []}
+                    backtestBars={_driftRows(ribbonBacktest) || []}
+                    alertFirstBars={_driftRows(ribbonCacheFirst) || []}
+                    alertLatestBars={_driftRows(ribbonCacheLatest) || []}
                     overlayNames={ribbonBacktest?.overlay_indicators || []}
                     oscNames={ribbonBacktest?.oscillator_indicators || []}
                     heatmapConds={(ribbonBacktest?.heatmap_conditions || []).filter((c: any) => c.has_data)}
