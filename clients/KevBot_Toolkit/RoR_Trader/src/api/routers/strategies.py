@@ -2498,6 +2498,58 @@ _CHART_WINDOW_WARMUP_DAYS = 15
 _CHART_WINDOW_WARMUP_DAYS_DAILY = 365
 
 
+# Guard for the explicit-window (parity-ribbon) path. The live-cache lane
+# resamples 1Sec→primary over the requested window; a sub-minute strategy over
+# its full data_days (e.g. 30Sec × 62d ≈ 1.5M 1Sec rows → 82k primary bars)
+# fetches for 17s+ and blows the browser/edge timeout, so the ribbon comes back
+# empty ("0 common / all red"). Cap the *explicit* window span to a TF-aware
+# maximum and clamp the start forward, returning a note the UI surfaces. Narrow
+# windows (span ≤ cap) are untouched, so PR #44's lane-aligned behavior stays
+# byte-identical there. The default now-back path (main Lab chart) is NOT
+# clamped — only the explicit start+end path the ribbon uses.
+_CHART_WINDOW_MAX_DAYS_SUBMINUTE = 3    # < 60s bars: the 1Sec resample dominates
+_CHART_WINDOW_MAX_DAYS_MINUTE = 14      # 1–4 Min
+_CHART_WINDOW_MAX_DAYS_5MIN = 60        # 5Min–<1H
+_CHART_WINDOW_MAX_DAYS_HOURLY = 180     # 1H–<1D
+_CHART_WINDOW_MAX_DAYS_DAILY = 3650     # 1Day+: effectively uncapped
+
+
+def _max_window_days_for_tf(tf_seconds) -> int:
+    """TF-aware cap (calendar days) for an explicit parity-ribbon window."""
+    if not tf_seconds or tf_seconds < 60:
+        return _CHART_WINDOW_MAX_DAYS_SUBMINUTE
+    if tf_seconds < 300:
+        return _CHART_WINDOW_MAX_DAYS_MINUTE
+    if tf_seconds < 3600:
+        return _CHART_WINDOW_MAX_DAYS_5MIN
+    if tf_seconds < 86400:
+        return _CHART_WINDOW_MAX_DAYS_HOURLY
+    return _CHART_WINDOW_MAX_DAYS_DAILY
+
+
+def _clamp_chart_window(disp_start, disp_end, tf_seconds):
+    """Clamp an explicit [disp_start, disp_end] to a TF-aware max span.
+
+    Both parity lanes call this with the SAME (start, end, tf) so they clamp
+    identically and stay bar-for-bar aligned. Returns
+    (clamped_start, note_or_None, max_days). When the span already fits the cap
+    the start is returned unchanged and note is None (byte-identical path).
+    """
+    from datetime import timedelta
+    max_days = _max_window_days_for_tf(tf_seconds)
+    span_days = (disp_end - disp_start).total_seconds() / 86400.0
+    if span_days > max_days:
+        new_start = disp_end - timedelta(days=max_days)
+        note = (
+            f"Window {span_days:.1f}d exceeds the {max_days}d cap for this "
+            f"timeframe — clamped to the most recent {max_days}d "
+            f"({new_start.date()} → {disp_end.date()}). Narrow the window to "
+            f"inspect an older range."
+        )
+        return new_start, note, max_days
+    return disp_start, None, max_days
+
+
 def _build_chart_response_from_df(df, strat, strategy_id, phases=None):
     """M8.7 (2026-05-02) — factored from get_strategy_chart_data.
 
@@ -2737,14 +2789,21 @@ def get_strategy_chart_data(
         # naive narrow load would show false drift at the window start.
         disp_start, disp_end = _parse_chart_window(start, end)
         explicit_window = disp_start is not None and disp_end is not None and disp_start < disp_end
+        _clamp_note = None
+        _cap_days = None
 
         if explicit_window:
+            # TF-aware span guard (same cap both lanes use — see #4). Keeps the
+            # ribbon fast + aligned; narrow windows are unchanged.
+            _pri_tf_seconds = TF_TO_SECONDS.get(strat.get('timeframe', '1Min'))
+            disp_start, _clamp_note, _cap_days = _clamp_chart_window(
+                disp_start, disp_end, _pri_tf_seconds)
             warmup_days = (_CHART_WINDOW_WARMUP_DAYS_DAILY if _has_daily_sec
                            else _CHART_WINDOW_WARMUP_DAYS)
             load_start = disp_start - timedelta(days=warmup_days)
-            logger.warning("[CHART-DATA:%s] explicit window %s..%s (load from %s, sec_tfs=%s)",
+            logger.warning("[CHART-DATA:%s] explicit window %s..%s (load from %s, sec_tfs=%s, clamped=%s)",
                            strategy_id, disp_start.isoformat(), disp_end.isoformat(),
-                           load_start.isoformat(), sec_tfs)
+                           load_start.isoformat(), sec_tfs, bool(_clamp_note))
             _t = _time.time()
             df = svc.prepare_data_with_indicators(
                 strat['symbol'],
@@ -2806,6 +2865,17 @@ def get_strategy_chart_data(
         # M8.7 (2026-05-02): factored indicator classification + serialization
         # into _build_chart_response_from_df, shared with /chart-data-cache.
         result = _build_chart_response_from_df(df, strat, strategy_id, _phases)
+
+        # Surface the (possibly clamped) explicit window + clamp note so the
+        # parity ribbon can show the active range and the "window too large"
+        # advisory. Default now-back path leaves these unset (unchanged).
+        if explicit_window:
+            result["window_start"] = disp_start.isoformat()
+            result["window_end"] = disp_end.isoformat()
+            if _clamp_note:
+                result["clamped"] = True
+                result["clamped_to_days"] = _cap_days
+                result["clamped_note"] = _clamp_note
 
         total = _time.time() - _t_start
         logger.warning(
@@ -3106,7 +3176,14 @@ def get_strategy_chart_data_from_cache(
         explicit_window = (disp_start is not None and disp_end is not None
                            and disp_start < disp_end)
         base_days = days or strat.get('data_days', 30)
+        _clamp_note = None
+        _cap_days = None
         if explicit_window:
+            # TF-aware span guard — same cap the backtest lane applies, so both
+            # lanes clamp to the SAME [start,end] and stay bar-for-bar aligned.
+            # This is the expensive live-cache path (1Sec→primary resample).
+            disp_start, _clamp_note, _cap_days = _clamp_chart_window(
+                disp_start, disp_end, primary_tf_seconds)
             _has_daily_sec = any(tf == '1Day' for tf in sec_tfs)
             warmup_days = (_CHART_WINDOW_WARMUP_DAYS_DAILY if _has_daily_sec
                            else _CHART_WINDOW_WARMUP_DAYS)
@@ -3195,6 +3272,10 @@ def get_strategy_chart_data_from_cache(
         result["window_end"] = (disp_end if explicit_window else end_dt).isoformat()
         result["primary_cache_rows"] = len(primary_df)
         result["secondary_cache_rows"] = {tf: len(d) for tf, d in sec_tf_dfs.items()}
+        if explicit_window and _clamp_note:
+            result["clamped"] = True
+            result["clamped_to_days"] = _cap_days
+            result["clamped_note"] = _clamp_note
 
         total = _time.time() - _t_start
         logger.warning(
