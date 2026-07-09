@@ -9,13 +9,42 @@
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api/client';
 
+/** Per-gate PB/CB state for a single live entry (keyed by gate string). */
+export interface GateParityGateState {
+  pb: string | null;
+  cb: string | null;
+  pb_pass: boolean;
+  cb_pass: boolean;
+}
+
 export interface GateParityLiveRow {
   ts: string;
+  // Top-level fields describe the FIRST gate (backward compatible).
   pb: string | null;
   cb: string | null;
   pb_pass: boolean;
   cb_pass: boolean;
   paired_bt: boolean;
+  // Per-gate breakdown across ALL confluence gates (added).
+  gates?: Record<string, GateParityGateState>;
+}
+
+/** Per-confluence-gate parity summary. */
+export interface GateParityPerGate {
+  gate: string;
+  tf: string;
+  interp: string;
+  want_state: string;
+  resolved: boolean;        // false = ribbon not computable in the backtest lens
+  pb_dist: Record<string, number>;
+  cb_dist: Record<string, number>;
+  pb_open_pct: number;      // NOTE: coarse-gate PB is NaN-shallow over short windows
+  cb_open_pct: number;
+  live_n: number;
+  live_pb_pass: number;
+  live_cb_pass: number;
+  phantom_pb_fail: number;  // phantoms this gate blocks under PB (backtest lens)
+  phantom_cb_fail: number;  // phantoms this gate blocks under CB (reliable signal)
 }
 
 export interface GateParityResponse {
@@ -23,9 +52,13 @@ export interface GateParityResponse {
     sid: number;
     symbol: string;
     primary_tf: string;
-    gate: string;
-    want_state: string;
-    entry_trigger: string;
+    gate: string | null;              // first gate (null when ungated)
+    want_state: string | null;
+    entry_trigger: string | null;     // base trigger id (matches alerts.trigger_id)
+    entry_trigger_confluence_id?: string | null;
+    gates?: string[];                 // every confluence gate
+    ungated?: boolean;
+    divergent_gate?: string | null;   // gate that most explains the phantoms
     live_model: string;
     backtest_model: string;
     session: string;
@@ -36,6 +69,7 @@ export interface GateParityResponse {
     pb_dist: Record<string, number>;
     cb_dist: Record<string, number>;
   };
+  per_gate?: GateParityPerGate[];
   entries: { theoretical_bt: number; live_actual: number };
   live_rows: GateParityLiveRow[];
 }
