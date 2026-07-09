@@ -43,6 +43,10 @@ from unified_engine import (
     _GP_SESSION_WINDOWS, _eval_gp_scalar,
     _load_enabled_general_packs, _evaluate_general_packs,
 )
+# Coarse-secondary threshold (>=1Hour). Single source of truth in
+# strategy_data (backtest lane) — reused here so the live coarse-RTH reload
+# fix (RORT_MTF_COARSE_RTH_RELOAD) shares the exact same boundary.
+from strategy_data import COARSE_SECONDARY_SECONDS
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -1913,6 +1917,35 @@ INTERP_AWARE_SHADOWS = os.getenv(
     "1", "true", "yes", "on")
 
 
+# CLASS 1a — coarse-gate SESSION CONTAMINATION (2026-07-08).
+#
+# COARSE secondary-TF gate shadows (tf_seconds >= COARSE_SECONDARY_SECONDS,
+# i.e. 4Hour/1Day) are fed a SESSION-UNFILTERED bar stream (the >=60s AM
+# fan-out / builder history), so on an RTH shadow they EAT after-hours coarse
+# buckets that a clean RTH resample never forms — carrying a stale gate state
+# across the overnight/session boundary. Proven on sid 313 (TSLA 15Sec, RTH,
+# gate 4h-STRAT_ASSISTANT-INSIDE): the live 4H shadow held INSIDE (from the
+# 20:00-UTC after-hours 4H bucket) while the backtest's RTH-resampled 4H read
+# TWO_DOWN — live fired 51 phantom entries on 07-08 (ceasing exactly at the
+# 16:00-UTC 4H close), backtest correctly 0.
+#
+# Flag ON: coarse (>=COARSE_SECONDARY_SECONDS) RTH shadows take the same
+# session-correct RELOAD branch the non-RTH shadows already use
+# (_load_warmup_df('RTH') resamples RTH-filtered 1Min UP to the coarse TF =
+# the backtest's RTH-resampled last-closed coarse bar), instead of consuming
+# the raw completed fan-out bar. Applied at every coarse-RTH injection point
+# (close chokepoint _close_shadow_with_bar + the rebroadcast-cascade /
+# rest-correction / gap-heal recompute paths that also feed builder.history
+# into the RTH shadow). Fine-grained TFs (<COARSE_SECONDARY_SECONDS: 1M/2m/5m
+# sub-hour shadows + real-monitor own_records) are UNCHANGED. Default OFF =
+# byte-identical legacy behavior (RTH coarse shadow eats the session-
+# unfiltered completed bar). Read once at module import (like
+# MTF_SESSION_SHADOWS / MTF_STATE_REFRESH_S) — flip requires a worker restart.
+MTF_COARSE_RTH_RELOAD = os.getenv(
+    "RORT_MTF_COARSE_RTH_RELOAD", "0").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
 def _bar_close_in_session(bar: dict, arrival_ts: datetime,
                           monitor: 'StrategyMonitor') -> bool:
     """W2-2: session membership for a completed bar at bar-close dispatch.
@@ -2605,6 +2638,61 @@ class SymbolHub:
         """Distinct TFs that have at least one shadow engine."""
         return {k[0] for k in self._shadow_engines}
 
+    def _coarse_rth_reload_active(self, tf_seconds: int) -> bool:
+        """CLASS 1a: does this (RTH) coarse-TF shadow take the session-correct
+        reload instead of eating the session-unfiltered fan-out/builder bar?
+
+        True only when RORT_MTF_COARSE_RTH_RELOAD is armed AND the TF is coarse
+        (>= COARSE_SECONDARY_SECONDS: 4Hour/1Day). Flag OFF → always False →
+        every coarse-RTH injection point keeps its exact legacy behavior."""
+        return MTF_COARSE_RTH_RELOAD and tf_seconds >= COARSE_SECONDARY_SECONDS
+
+    def _reload_coarse_rth_shadow(
+            self, tf_seconds: int,
+            shadow: '_ShadowIndicatorEngine') -> None:
+        """CLASS 1a: pin a coarse RTH shadow's gate records to the RTH-resampled
+        last-closed coarse bar (== backtest) via a session-correct reload,
+        instead of consuming the session-UNFILTERED fan-out / builder history
+        (which forms after-hours coarse buckets and carries a stale
+        cross-session gate state). This is the RTH analogue of the non-RTH
+        reload branch in _close_shadow_with_bar; shared by every coarse-RTH
+        injection point (close chokepoint + rebroadcast-cascade / rest-
+        correction / gap-heal recompute paths) so the live coarse gate can
+        never re-contaminate. Keeps previous records on empty/failed reload;
+        never crashes the caller. Only reached when RORT_MTF_COARSE_RTH_RELOAD
+        is armed (see _coarse_rth_reload_active)."""
+        key = (tf_seconds, 'RTH')
+        try:
+            df = _load_warmup_df(self.symbol, tf_seconds, 'RTH')
+            df = _closed_bars_only(df, tf_seconds)
+            if df is not None and len(df) > 0:
+                self._mtf_confluence[key] = shadow.recompute_confluence(df)
+                try:
+                    _last = df.iloc[-1]
+                    logger.info(
+                        "[COARSE-RTH-RELOAD] %s tf=%ss session=RTH bar=%s "
+                        "OHLC=%.4f/%.4f/%.4f/%.4f -> %s",
+                        self.symbol, tf_seconds,
+                        getattr(df.index[-1], 'isoformat', lambda: df.index[-1])(),
+                        float(_last['open']), float(_last['high']),
+                        float(_last['low']), float(_last['close']),
+                        sorted(self._mtf_confluence[key]))
+                except Exception:  # noqa: BLE001 — logging must never crash
+                    logger.info(
+                        "[COARSE-RTH-RELOAD] %s tf=%ss session=RTH -> %s",
+                        self.symbol, tf_seconds,
+                        sorted(self._mtf_confluence[key]))
+            else:
+                logger.warning(
+                    "[COARSE-RTH-RELOAD] %s tf=%ss session=RTH: empty session "
+                    "reload — keeping previous gate records",
+                    self.symbol, tf_seconds)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[COARSE-RTH-RELOAD] %s tf=%ss session=RTH: reload failed "
+                "(%s) — keeping previous gate records",
+                self.symbol, tf_seconds, e)
+
     def _close_shadow_with_bar(self, tf_seconds: int, session: str,
                                shadow: '_ShadowIndicatorEngine',
                                completed: dict) -> None:
@@ -2617,9 +2705,18 @@ class SymbolHub:
         session-correct history via _load_warmup_df and recompute. That
         reload runs once per coarse-TF close (a few times/day for the
         1H/4H/1D gates this exists for). On any failure the previous
-        records are kept — never crash the close path."""
+        records are kept — never crash the close path.
+
+        CLASS 1a (RORT_MTF_COARSE_RTH_RELOAD): coarse RTH shadows also take
+        the session-correct reload — the raw completed fan-out bar for a
+        coarse TF can be an after-hours bucket, so eating it contaminates the
+        RTH gate (sid 313). Flag OFF → RTH still eats the bar (byte-identical
+        legacy)."""
         key = (tf_seconds, session)
         if session == 'RTH':
+            if self._coarse_rth_reload_active(tf_seconds):
+                self._reload_coarse_rth_shadow(tf_seconds, shadow)
+                return
             self._mtf_confluence[key] = shadow.on_bar_close(completed)
             return
         try:
@@ -3605,6 +3702,13 @@ class SymbolHub:
                 for _sh_sess, shadow in shadow_items:
                     if _sh_sess != 'RTH':
                         continue
+                    # CLASS 1a: a coarse RTH shadow must NOT recompute from the
+                    # session-unfiltered sec_builder.history on a revision (it
+                    # would re-inject the after-hours coarse bucket) — reload
+                    # RTH-resampled truth instead (see _reload_coarse_rth_shadow).
+                    if self._coarse_rth_reload_active(sec_tf):
+                        self._reload_coarse_rth_shadow(sec_tf, shadow)
+                        continue
                     try:
                         self._mtf_confluence[(sec_tf, 'RTH')] = \
                             shadow.recompute_confluence(sec_builder.history)
@@ -4156,7 +4260,14 @@ class SymbolHub:
         # is the RTH-flavored feed; non-RTH shadows never consume it (their
         # records refresh via session reloads on closes).
         shadow_self = self._shadow_engines.get((tf_seconds, 'RTH'))
-        if shadow_self is not None:
+        if shadow_self is not None and self._coarse_rth_reload_active(
+                tf_seconds):
+            # CLASS 1a: coarse RTH shadow — the corrected builder.history is
+            # session-UNFILTERED (forms after-hours coarse buckets), so
+            # applying its correction re-contaminates the RTH gate. Reload
+            # RTH-resampled truth instead (see _reload_coarse_rth_shadow).
+            self._reload_coarse_rth_shadow(tf_seconds, shadow_self)
+        elif shadow_self is not None:
             try:
                 if offset_from_latest == 0:
                     ok = shadow_self.indicators.apply_last_bar_correction(
@@ -4363,7 +4474,14 @@ class SymbolHub:
         # Bug Hunt Wave 1 #1: RTH key only — the healed builder.history is
         # the RTH-flavored feed; non-RTH shadows never consume it.
         shadow_self = self._shadow_engines.get((tf_seconds, 'RTH'))
-        if shadow_self is not None:
+        if shadow_self is not None and self._coarse_rth_reload_active(
+                tf_seconds):
+            # CLASS 1a: coarse RTH shadow — the healed builder.history is
+            # session-UNFILTERED (forms after-hours coarse buckets), so
+            # replaying the insert into it re-contaminates the RTH gate.
+            # Reload RTH-resampled truth instead (see _reload_coarse_rth_shadow).
+            self._reload_coarse_rth_shadow(tf_seconds, shadow_self)
+        elif shadow_self is not None:
             try:
                 ok = shadow_self.indicators.apply_inserted_bar_replay(
                     rest_ts, builder.history)
