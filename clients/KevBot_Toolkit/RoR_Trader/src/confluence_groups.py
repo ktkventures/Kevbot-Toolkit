@@ -1329,8 +1329,17 @@ def get_all_conditions(groups: Optional[List[ConfluenceGroup]] = None) -> Dict[s
         if not outputs or not interpreters:
             continue
         interp_key = interpreters[0]
-        # Generate conditions for common timeframes
-        for tf_label in ('1M', '5M', '15M', '1H', '1D'):
+        # Generate conditions for common timeframes.
+        # '1m' (lowercase) for the 1-MINUTE TF — consistent with the canonical
+        # get_tf_label('1Min')=='1m' and the lowercase secondary labels every
+        # other TF uses in stored configs ('2m'/'5m'/'15m'). The uppercase '1M'
+        # is UNIQUELY BROKEN here: it collides with the PRIMARY-TF record
+        # sentinel (interpreters.get_mtf_confluence_records / _get_tf_label
+        # default), so get_required_tfs_from_confluence blanket-drops it and a
+        # 1-minute gate is silently ignored offline (sid 329). The remaining
+        # 5M/15M/1H/1D do NOT collide with any sentinel (only '1M' does), so they
+        # are left as-is to avoid changing existing condition IDs.
+        for tf_label in ('1m', '5M', '15M', '1H', '1D'):
             for state in outputs:
                 cond_id = f"{tf_label}-{interp_key}-{state}"
                 label = f"{group.base_template} ({group.version}) — {tf_label} {state}"
