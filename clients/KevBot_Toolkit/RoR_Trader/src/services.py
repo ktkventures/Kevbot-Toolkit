@@ -1342,8 +1342,18 @@ def prepare_strategy_window_df(
     import math
     from data_loader import (
         BARS_PER_DAY, get_required_tfs_from_confluence, get_tf_from_label,
+        normalize_1min_secondary_gate, enforce_1min_gate_enabled,
     )
     timeframe = strat.get('timeframe', '1Min')
+    # 1-minute-secondary gate (RORT_ENFORCE_1MIN_GATE): primary-aware relabel of
+    # an overloaded '1M-' gate → lowercase '1m-' (a genuine 1-minute secondary)
+    # on a non-1Min primary, so the standard lowercase-secondary machinery loads,
+    # builds, and matches it — the shadow-worker's resident lane analog of
+    # load_strategy_data's normalize. Flag OFF / 1Min-primary → unchanged
+    # (byte-identical). Shallow copy — never mutate the caller's dict.
+    _norm_conf = normalize_1min_secondary_gate(strat.get('confluence'), timeframe)
+    if _norm_conf is not strat.get('confluence'):
+        strat = {**strat, 'confluence': _norm_conf}
     req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
     sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
 
@@ -1367,6 +1377,22 @@ def prepare_strategy_window_df(
     since_naive = since_dt.replace(tzinfo=None) if since_dt.tzinfo else since_dt
     end_date = until_dt.replace(tzinfo=None) if until_dt.tzinfo else until_dt
     start_date = since_naive - timedelta(days=warmup_days)
+
+    # 1-minute SECONDARY gate (RORT_ENFORCE_1MIN_GATE): when the primary is NOT
+    # 1Min and a reclassified '1m' gate resolved to a 1Min secondary, build it
+    # from the NATIVE 1Min bar (matches LIVE; no resample-from-primary drift) and
+    # inject via secondary_tf_dfs — the resident-lane analog of load_strategy_data.
+    # Reads cache read-only (no_backfill) so the shadow-worker never writes.
+    # Inert when the flag is OFF (a 1Min secondary never appears in sec_tfs then).
+    if (enforce_1min_gate_enabled() and "1Min" in sec_tfs and timeframe != "1Min"
+            and (_sec_inject is None or "1Min" not in _sec_inject)):
+        from strategy_data import _build_native_1min_secondary
+        _native1 = _build_native_1min_secondary(
+            strat['symbol'], start_date, end_date,
+            strat.get('trading_session', 'RTH'), data_feed,
+            no_backfill=no_backfill)
+        if _native1:
+            _sec_inject = {**(_sec_inject or {}), **_native1}
 
     def _prep(_start):
         return prepare_data_with_indicators(

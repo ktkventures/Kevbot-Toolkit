@@ -262,7 +262,10 @@ def classify_strategy(state: StrategyEngineState) -> None:
       - a secondary TF >= 1Hour — needs more warmup history than the
         90-min store window holds (services.py:556-561).
     """
-    from data_loader import get_required_tfs_from_confluence, get_tf_from_label
+    from data_loader import (
+        get_required_tfs_from_confluence, get_tf_from_label,
+        normalize_1min_secondary_gate,
+    )
     from unified_engine import compute_backtest_fingerprint, TIMEFRAME_SECONDS
 
     strat = state.strat
@@ -278,8 +281,21 @@ def classify_strategy(state: StrategyEngineState) -> None:
                       or strat.get('backtest_model')
                       or 'rest_hifi')
     state.data_source = f"backtest_{state.bt_model}"
+    # Fingerprint stays on the ORIGINAL confluence (computed above) so the
+    # snapshot's resume-fingerprint matches the catch-up path (which does not
+    # normalize) — a divergent fingerprint would snapshot_invalidate forever.
     state.fingerprint = compute_backtest_fingerprint(strat)
-    req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
+    # 1-minute-secondary gate (RORT_ENFORCE_1MIN_GATE): primary-aware relabel of
+    # an overloaded '1M-' gate → lowercase '1m-' so a 1-minute SECONDARY gate on
+    # a sub-minute (e.g. 30Sec) primary resolves to a real 1Min secondary TF
+    # instead of being blanket-dropped by get_required_tfs_from_confluence.
+    # Flag OFF / 1Min-primary → unchanged (byte-identical sec_tfs). Mirrors the
+    # recompute read path (services.get_strategy_trades_for_window). The engine's
+    # confluence_set is normalized separately at the run site (run_store_fed_window)
+    # so the gate matches the '1m-' records the native 1Min secondary produces.
+    _norm_conf = normalize_1min_secondary_gate(
+        strat.get('confluence', []), state.timeframe)
+    req_labels = get_required_tfs_from_confluence(_norm_conf)
     state.sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
 
     # Reset eligibility — a reload may flip a strategy back to eligible.
@@ -311,6 +327,7 @@ def build_injected_frames(store, timeframe: str, sec_tfs: tuple, until_dt: datet
     is None when the store has nothing in range.
     """
     import pandas as pd
+    from data_loader import enforce_1min_gate_enabled
     until_ts = pd.Timestamp(until_dt)
     if until_ts.tz is None:
         until_ts = until_ts.tz_localize('UTC')
@@ -324,7 +341,18 @@ def build_injected_frames(store, timeframe: str, sec_tfs: tuple, until_dt: datet
 
     sec_dfs: dict = {}
     for stf in sec_tfs:
-        s = store.get_timeframe(stf)
+        # 1-minute SECONDARY gate (RORT_ENFORCE_1MIN_GATE): when the primary is
+        # NOT 1Min and a '1M-' gate reclassified to a 1Min secondary, source it
+        # from the NATIVE 1Min Tier-2 store (150-day warmup, matches LIVE) rather
+        # than the facade's default 1Min routing (Tier-1's 90-min 1s-resample,
+        # structurally too short to warm a secondary indicator). Inert when the
+        # flag is OFF — the facade routing is byte-identical to today then.
+        if (stf == '1Min' and timeframe != '1Min'
+                and enforce_1min_gate_enabled()
+                and getattr(store, 'tier2', None) is not None):
+            s = store.tier2.get_timeframe('1Min')
+        else:
+            s = store.get_timeframe(stf)
         if s is not None and len(s) > 0:
             s = s[s.index <= until_ts]
             if len(s) > 0:
@@ -345,7 +373,22 @@ def run_store_fed_window(state: StrategyEngineState, store, until_dt: datetime):
     import pandas as pd
     from unified_engine import deserialize_backtest_snapshot, run_unified_backtest
     from services import prepare_data_with_indicators, get_secondary_tf_map
+    from data_loader import normalize_1min_secondary_gate
     import general_packs as gp_module
+
+    # 1-minute-secondary gate (RORT_ENFORCE_1MIN_GATE): primary-aware relabel of
+    # an overloaded '1M-' gate → lowercase '1m-' on the strat the ENGINE sees, so
+    # its confluence_set matches the '1m-' records the injected native 1Min
+    # secondary produces (instead of the sub-minute primary's own '1M-' record,
+    # which over-counts — sid 329 backtest 17 vs live 3). MUST mirror the sec_tfs
+    # relabel classify_strategy applied. Flag OFF / 1Min-primary → unchanged
+    # (byte-identical). Shallow copy — never mutate state.strat (its confluence
+    # backs the resume fingerprint).
+    _eng_strat = state.strat
+    _norm_conf = normalize_1min_secondary_gate(
+        state.strat.get('confluence'), state.timeframe)
+    if _norm_conf is not state.strat.get('confluence'):
+        _eng_strat = {**state.strat, 'confluence': _norm_conf}
 
     envelope = deserialize_backtest_snapshot(
         state.snapshot_b64,
@@ -411,7 +454,7 @@ def run_store_fed_window(state: StrategyEngineState, store, until_dt: datetime):
         gp_module.load_general_packs())
     sec_tf_map = get_secondary_tf_map(df_run)
     trades, _enriched, captured_b64 = run_unified_backtest(
-        df_run, state.strat,
+        df_run, _eng_strat,
         general_packs=enabled_gen,
         secondary_tf_map=sec_tf_map if sec_tf_map else None,
         include_open_position=False,

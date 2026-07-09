@@ -134,7 +134,8 @@ def _build_coarse_secondary_from_1min(symbol, coarse_tfs, start, end,
         return None
 
 
-def _build_native_1min_secondary(symbol, start, end, session, data_feed):
+def _build_native_1min_secondary(symbol, start, end, session, data_feed,
+                                 no_backfill=False):
     """Build a 1-MINUTE SECONDARY gate's OHLCV from the NATIVE 1Min bar.
 
     For the 1-minute-secondary gate class (RORT_ENFORCE_1MIN_GATE): a '1M'/'1m'
@@ -145,12 +146,18 @@ def _build_native_1min_secondary(symbol, start, end, session, data_feed):
     parallels how a 1Min PRIMARY is loaded. Returns {'1Min': DataFrame[OHLCV]}
     (full series, cache-accelerated when BAR_CACHE_ENABLED) or None on any miss
     (caller falls back to the resample rule so the gate is never silently
-    skipped)."""
+    skipped).
+
+    `no_backfill` (M-RS4 Phase 3 shadow lane): read-only cache access — never
+    fetch Polygon / write the cache. The read-only resident shadow-worker passes
+    True so this native build honors the same no-write contract as the rest of
+    its prep. Default False keeps the recompute callers byte-identical."""
     try:
         from data_loader import load_market_data
         cols = ["open", "high", "low", "close", "volume"]
         df1 = load_market_data(symbol, start_date=start, end_date=end,
-                               timeframe="1Min", feed=data_feed, session=session)
+                               timeframe="1Min", feed=data_feed, session=session,
+                               no_backfill=no_backfill)
         if df1 is None or len(df1) == 0:
             return None
         return {"1Min": df1[cols].copy()}
