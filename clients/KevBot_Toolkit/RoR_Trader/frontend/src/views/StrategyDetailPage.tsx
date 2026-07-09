@@ -942,12 +942,14 @@ function GateParityTabContent({ strategyId }: { strategyId: number }) {
   }
 
   const { meta, ribbon, entries, live_rows } = data;
-  const want = meta.want_state;
+  const perGate = data.per_gate ?? [];
+  const want = meta.want_state ?? '';
+  const ungated = meta.ungated ?? perGate.length === 0;
   const phantoms = live_rows.filter((r) => !r.paired_bt);
   const pbTotal = Object.values(ribbon.pb_dist).reduce((a, b) => a + b, 0) || 1;
-  const pbOpen = ribbon.pb_dist[want] || 0;
+  const pbOpen = want ? ribbon.pb_dist[want] || 0 : 0;
   const cbTotal = Object.values(ribbon.cb_dist).reduce((a, b) => a + b, 0) || 1;
-  const cbOpen = ribbon.cb_dist[want] || 0;
+  const cbOpen = want ? ribbon.cb_dist[want] || 0 : 0;
 
   const Stat = ({ label, value, sub }: { label: string; value: React.ReactNode; sub?: string }) => (
     <div className="rounded-lg p-3" style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}>
@@ -970,7 +972,19 @@ function GateParityTabContent({ strategyId }: { strategyId: number }) {
       </div>
 
       <div className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
-        Gate <code style={{ color: 'var(--text)' }}>{meta.gate}</code> · trigger <code>{meta.entry_trigger}</code> ·
+        {ungated ? (
+          <>Ungated <span style={{ color: 'var(--text)' }}>(no confluence gates)</span></>
+        ) : (
+          <>Gates{' '}
+            {(meta.gates ?? [meta.gate!]).map((g, i) => (
+              <span key={g}>
+                {i > 0 ? ' · ' : ''}
+                <code style={{ color: g === meta.divergent_gate ? 'var(--red)' : 'var(--text)' }}>{g}</code>
+              </span>
+            ))}
+          </>
+        )}
+        {' '}· trigger <code>{meta.entry_trigger ?? '—'}</code> ·
         {' '}live <code>{meta.live_model}</code> / bt <code>{meta.backtest_model}</code> · session {meta.session} ·
         {' '}{meta.bars} bars
       </div>
@@ -979,8 +993,57 @@ function GateParityTabContent({ strategyId }: { strategyId: number }) {
         <Stat label="Theoretical BT entries" value={entries.theoretical_bt} sub="engine, fresh logic" />
         <Stat label="Live entries (actual)" value={entries.live_actual} sub="historical alerts" />
         <Stat label="Phantom (live, unpaired)" value={phantoms.length} sub={`of ${live_rows.length} live`} />
-        <Stat label={`Gate open (${want})`} value={`PB ${Math.round((100 * pbOpen) / pbTotal)}% · CB ${Math.round((100 * cbOpen) / cbTotal)}%`} sub="share of bars" />
+        {ungated ? (
+          <Stat label="Gates" value="none" sub="ungated strategy" />
+        ) : (
+          <Stat label={`Gate open (${want})`} value={`PB ${Math.round((100 * pbOpen) / pbTotal)}% · CB ${Math.round((100 * cbOpen) / cbTotal)}%`} sub="first gate · share of bars" />
+        )}
       </div>
+
+      {perGate.length > 0 && (
+        <div className="mb-4">
+          <div className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
+            Per-gate breakdown — every confluence gate (backtest requires ALL open under PB). The
+            {' '}<span style={{ color: 'var(--red)' }}>divergent gate</span> is the one most live entries fired against while it was closed.
+          </div>
+          <div className="overflow-auto">
+            <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ color: 'var(--text-muted)', textAlign: 'left' }}>
+                  <th className="py-1 pr-2">Gate</th>
+                  <th className="py-1 pr-2">Want</th>
+                  <th className="py-1 pr-2">PB open</th>
+                  <th className="py-1 pr-2">CB open</th>
+                  <th className="py-1 pr-2">Live pass (PB / CB)</th>
+                  <th className="py-1 pr-2">Blocks phantoms</th>
+                </tr>
+              </thead>
+              <tbody>
+                {perGate.map((g) => {
+                  const isDiv = g.gate === meta.divergent_gate;
+                  return (
+                    <tr key={g.gate} style={{ background: isDiv ? 'rgba(239,68,68,0.08)' : 'transparent' }}>
+                      <td className="py-1 pr-2">
+                        <code style={{ color: isDiv ? 'var(--red)' : 'var(--text)' }}>{g.gate}</code>
+                        {isDiv && <span className="ml-1" style={{ color: 'var(--red)' }}>divergent</span>}
+                        {!g.resolved && <span className="ml-1" style={{ color: 'var(--yellow, #eab308)' }} title="Ribbon not computable in the backtest lens (e.g. 1Min secondary from a sub-minute primary)">unresolved</span>}
+                      </td>
+                      <td className="py-1 pr-2">{g.want_state}</td>
+                      <td className="py-1 pr-2">{g.resolved ? `${g.pb_open_pct}%` : '—'}</td>
+                      <td className="py-1 pr-2">{g.resolved ? `${g.cb_open_pct}%` : '—'}</td>
+                      <td className="py-1 pr-2">{g.live_pb_pass} / {g.live_cb_pass} <span style={{ color: 'var(--text-muted)' }}>of {g.live_n}</span></td>
+                      <td className="py-1 pr-2" style={{ color: g.phantom_cb_fail > 0 ? 'var(--red)' : 'var(--text-muted)' }}>{g.phantom_cb_fail}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="text-[10px] mt-1" style={{ color: 'var(--text-muted)' }}>
+            Coarse-gate (1Day/4Hour) PB open% can under-report over short windows (secondary-load depth); the CB column and CB-based phantom counts are the reliable signal.
+          </div>
+        </div>
+      )}
 
       <div className="text-xs mb-2" style={{ color: 'var(--text-muted)' }}>
         Live entries — gate state at each (PB = what backtest gates on; CB = current bar). Phantoms (no paired BT) highlighted.
@@ -1030,7 +1093,7 @@ function GateParityTabContent({ strategyId }: { strategyId: number }) {
               strategyId={strategyId}
               start={meta.window[0]}
               end={meta.window[1]}
-              gate={meta.gate}
+              gate={meta.gate ?? ''}
             />
           </div>
         )}

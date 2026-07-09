@@ -34,7 +34,7 @@ pack_registry.scan_and_load_all()
 
 from db import get_admin_client, _row_to_strategy
 from ralph_engine import StrategyMonitor, SymbolHub, _LABEL_TO_TF_SECONDS
-from data_loader import load_market_data, resample_to_timeframe
+from data_loader import load_market_data, resample_to_timeframe, get_tf_label
 
 TF_LABEL = {60: '1Min', 120: '2Min', 300: '5Min', 900: '15Min',
             3600: '1Hour', 14400: '4Hour', 86400: '1Day'}
@@ -73,10 +73,13 @@ def load_context(sid: int) -> dict:
                    if _tf == sec_tf), None)
     if shadow is None:
         raise SystemExit(f"sid {sid}: no shadow engine for {sec_tf}s — gate TF not resolved")
+    # Resolve the BASE trigger id (matches alerts.trigger_id). Modern strategies
+    # store only entry_trigger_confluence_id; see _resolve_entry_trigger_base.
+    entry_trigger, _cid = _resolve_entry_trigger_base(strat, row)
     return {
         'sid': sid, 'symbol': strat['symbol'], 'user_id': row['user_id'],
         'gate': gate, 'sec_tf': sec_tf, 'interp': interp, 'state': state,
-        'entry_trigger': strat.get('entry_trigger'),
+        'entry_trigger': entry_trigger,
         'live_model': strat.get('live_model'), 'backtest_model': strat.get('backtest_model'),
         'shadow': shadow,
     }
@@ -221,6 +224,67 @@ def demo_splice(sid: int):
                   f"  (ws={b['ws_close']} rest={b['rest_close']})")
 
 
+def _resolve_entry_trigger_base(strat: dict, row: Optional[dict] = None) -> tuple:
+    """Resolve the BASE trigger id that the live `alerts.trigger_id` column and
+    the enriched df's ``trig_<id>`` column actually use.
+
+    Modern strategies leave the top-level ``entry_trigger`` unset and carry the
+    confluence id in ``entry_trigger_confluence_id`` (e.g.
+    ``swing_123_default_bull_c2``), while ``alerts.trigger_id`` stores the base
+    id (``sw123_bull_c2``). Legacy strategies already store the base id in
+    ``entry_trigger``. We therefore prefer deriving the base id from the
+    confluence id (canonical — same path strategy_factory uses to set
+    ``entry_trigger``) and fall back to the stored ``entry_trigger``.
+
+    Returns ``(base_trigger_id, entry_trigger_confluence_id)``.
+    """
+    cfg = (row.get('config') if row else None) or {}
+    entry_cid = (strat.get('entry_trigger_confluence_id')
+                 or cfg.get('entry_trigger_confluence_id'))
+    base = strat.get('entry_trigger') or cfg.get('entry_trigger')
+    if entry_cid:
+        try:
+            from alerts import _get_base_trigger_id
+            resolved = _get_base_trigger_id(entry_cid)
+            if resolved:
+                base = resolved
+        except Exception:
+            pass
+    return base, entry_cid
+
+
+def _parse_gate(gate: str) -> Optional[dict]:
+    """Parse a confluence gate string like '4h-STRAT_ASSISTANT-INSIDE' into its
+    parts plus the enriched-df ribbon column names.
+
+    The ribbon column suffix is derived the SAME way the engine's
+    `prepare_data_with_indicators` derives it — ``get_tf_label(canonical_tf)``
+    (e.g. '1Min' -> '1m') — NOT from the raw confluence TF token, whose case can
+    differ ('1M' gate token vs '1m' column). This is what previously made
+    modern gates raise 'expected ribbon column ... not in enriched df'.
+    """
+    parts = gate.split('-', 2)
+    if len(parts) < 3:
+        return None
+    tf_part, interp, want = parts[0], parts[1], parts[2]
+    sec_tf = _LABEL_TO_TF_SECONDS.get(tf_part, 0)
+    sec_label = TF_LABEL.get(sec_tf)               # canonical, e.g. '1Min'
+    df_tf = get_tf_label(sec_label) if sec_label else tf_part.lower()
+    return {'gate': gate, 'tf': tf_part, 'interp': interp, 'want': want,
+            'sec_tf': sec_tf, 'sec_label': sec_label,
+            'pb_col': f'{interp}__{df_tf}', 'cb_col': f'_spec_{interp}__{df_tf}'}
+
+
+def _state_str(v):
+    """JSON-safe gate state: NaN/None -> None, else str."""
+    try:
+        if v is None or pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return str(v)
+
+
 def build_gate_parity_view(sid: int, hours: float = 4.0,
                            session: Optional[str] = None) -> dict:
     """Theoretical, truth-reliable Gate Parity data for the detail-page tab.
@@ -228,11 +292,17 @@ def build_gate_parity_view(sid: int, hours: float = 4.0,
     Runs the REAL engine pipeline once (`prepare_data_with_indicators` +
     `unified_trades`) for the backtest lens, extracting the engine's own
     PB ribbon (`<interp>__<tf>`) and CB ribbon (`_spec_<interp>__<tf>`) for
-    the gate, the primary trigger fires, theoretical BT entries, and the
-    actual live entries. Per live entry it reports the gate state under PB/CB
-    (from the engine columns at that bar) and whether it pairs with a
-    theoretical BT entry. JSON-serializable; the FastAPI route is a thin
-    pass-through and the frontend only renders.
+    EVERY confluence gate, the theoretical BT entries, and the actual live
+    entries. Per live entry it reports each gate's state under PB/CB (from the
+    engine columns at that bar) and whether it pairs with a theoretical BT
+    entry. JSON-serializable; the FastAPI route is a thin pass-through and the
+    frontend only renders.
+
+    Backward-compatible: the top-level ``meta.gate`` / ``ribbon`` /
+    ``live_rows[].{pb,cb,pb_pass,cb_pass}`` fields still describe the FIRST gate
+    (conf[0]); the full multi-gate breakdown is added under ``per_gate`` and
+    ``live_rows[].gates``. Ungated strategies are handled gracefully (no gate
+    ribbon, still reports trigger + entries) instead of raising.
     """
     import services as svc
     from db import set_admin_user_context
@@ -241,15 +311,19 @@ def build_gate_parity_view(sid: int, hours: float = 4.0,
     set_admin_user_context(row['user_id'])
     strat = _row_to_strategy(row)
     conf = list(strat.get('confluence') or [])
-    if not conf:
-        raise ValueError(f'sid {sid} has no confluence gate')
-    gate = conf[0]
-    tf_part = gate.split('-', 1)[0]      # '2m'
-    interp = gate.split('-', 2)[1]       # 'UT_BOT_V4'
-    want = gate.split('-', 2)[2]         # 'BULL_TREND'
-    sec_tf = _LABEL_TO_TF_SECONDS.get(tf_part, 0)
-    entry_trigger = strat.get('entry_trigger')
     primary_tf = strat.get('timeframe')
+
+    # Resolve the base trigger id that live alerts + the df trig_ column use.
+    entry_trigger, entry_cid = _resolve_entry_trigger_base(strat, row)
+
+    # Parse every gate up-front (skips malformed records).
+    gates = [g for g in (_parse_gate(x) for x in conf) if g]
+
+    # Enrich against the UNION of every gate's secondary TF (canonical labels).
+    sec_labels = []
+    for gd in gates:
+        if gd['sec_label'] and gd['sec_label'] not in sec_labels:
+            sec_labels.append(gd['sec_label'])
 
     # Use the strategy's ACTUAL session — not a hardcoded guess — so the
     # theoretical backtest fires in the same window the live engine does.
@@ -257,7 +331,7 @@ def build_gate_parity_view(sid: int, hours: float = 4.0,
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=hours)
     df = svc.prepare_data_with_indicators(
-        strat['symbol'], timeframe=primary_tf, secondary_tfs=(TF_LABEL[sec_tf],),
+        strat['symbol'], timeframe=primary_tf, secondary_tfs=tuple(sec_labels),
         start_date=start, end_date=end, session=session, strat=strat)
     # The cache-backed path can return the full cached range regardless of
     # start/end — clip to the requested window so counts are window-accurate.
@@ -265,14 +339,13 @@ def build_gate_parity_view(sid: int, hours: float = 4.0,
         _idx = df.index.tz_convert('UTC') if df.index.tz is not None else df.index.tz_localize('UTC')
         df = df[(_idx >= pd.Timestamp(start)) & (_idx <= pd.Timestamp(end))]
 
-    pb_col = f'{interp}__{tf_part}'
-    cb_col = f'_spec_{interp}__{tf_part}'
-    trig_col = f'trig_{entry_trigger}'
-    for col in (pb_col, cb_col):
-        if col not in df.columns:
-            raise ValueError(f'expected ribbon column {col!r} not in enriched df')
+    # Mark which gates actually resolved to df columns (defensive — a missing
+    # ribbon column now degrades gracefully instead of raising).
+    for gd in gates:
+        gd['resolved'] = gd['pb_col'] in df.columns and gd['cb_col'] in df.columns
 
     # Theoretical BT entries (fresh, current logic) — the engine's own trades.
+    # unified_trades enforces ALL gates jointly, so this count is strategy-level.
     trades_bt = svc.unified_trades(df, strat)
     bt_entry_ts = sorted(_parse_iso(t) for t in
                          (trades_bt['entry_time'] if 'entry_time' in trades_bt.columns
@@ -280,15 +353,17 @@ def build_gate_parity_view(sid: int, hours: float = 4.0,
         if trades_bt is not None and len(trades_bt) else []
 
     # Actual live entries (carry historical logic — labeled as such).
-    al = c.table('alerts').select('timestamp,fill_ts').eq('strategy_id', sid)\
-        .eq('trigger_id', entry_trigger).gte('timestamp', start.isoformat())\
-        .limit(5000).execute().data
-    live_ts = sorted(_parse_iso(a.get('fill_ts') or a.get('timestamp')) for a in al
-                     if _parse_iso(a.get('fill_ts') or a.get('timestamp')))
+    live_ts = []
+    if entry_trigger:
+        al = c.table('alerts').select('timestamp,fill_ts').eq('strategy_id', sid)\
+            .eq('trigger_id', entry_trigger).gte('timestamp', start.isoformat())\
+            .limit(5000).execute().data
+        live_ts = sorted(_parse_iso(a.get('fill_ts') or a.get('timestamp')) for a in al
+                         if _parse_iso(a.get('fill_ts') or a.get('timestamp')))
 
-    # Gate state at a timestamp from the engine's PB/CB columns (asof).
+    # Gate state at a timestamp from a gate's PB/CB columns (asof).
     idx = df.index
-    def gate_at(ts):
+    def gate_at(ts, pb_col, cb_col):
         pos = idx.searchsorted(pd.Timestamp(ts), side='right') - 1
         if pos < 0:
             return None, None
@@ -299,21 +374,94 @@ def build_gate_parity_view(sid: int, hours: float = 4.0,
         t = ts.timestamp()
         return any(abs(p.timestamp() - t) <= tol for p in pool)
 
+    # Per-live-entry breakdown across ALL gates.
     rows = []
     for ts in live_ts:
-        pb, cb = gate_at(ts)
-        rows.append({'ts': ts.isoformat(), 'pb': pb, 'cb': cb,
-                     'pb_pass': pb == want, 'cb_pass': cb == want,
-                     'paired_bt': paired(ts, bt_entry_ts)})
+        gate_states = {}
+        for gd in gates:
+            pb_raw, cb_raw = gate_at(ts, gd['pb_col'], gd['cb_col'])
+            gate_states[gd['gate']] = {
+                'pb': _state_str(pb_raw), 'cb': _state_str(cb_raw),
+                'pb_pass': pb_raw == gd['want'], 'cb_pass': cb_raw == gd['want']}
+        pbt = paired(ts, bt_entry_ts)
+        # Top-level fields describe the first gate (backward compat).
+        first = gate_states.get(gates[0]['gate']) if gates else None
+        rows.append({
+            'ts': ts.isoformat(),
+            'pb': first['pb'] if first else None,
+            'cb': first['cb'] if first else None,
+            'pb_pass': bool(first['pb_pass']) if first else False,
+            'cb_pass': bool(first['cb_pass']) if first else False,
+            'paired_bt': pbt,
+            'gates': gate_states,
+        })
+
+    # Per-gate summary. open% denominator = non-null states (mirrors frontend).
+    per_gate = []
+    for gd in gates:
+        want = gd['want']
+        if gd['resolved']:
+            pb_dist = {str(k): int(v) for k, v in df[gd['pb_col']].value_counts().items()}
+            cb_dist = {str(k): int(v) for k, v in df[gd['cb_col']].value_counts().items()}
+        else:
+            pb_dist, cb_dist = {}, {}
+        pb_total = sum(pb_dist.values()) or 1
+        cb_total = sum(cb_dist.values()) or 1
+        live_pb_pass = sum(1 for r in rows if r['gates'].get(gd['gate'], {}).get('pb_pass'))
+        live_cb_pass = sum(1 for r in rows if r['gates'].get(gd['gate'], {}).get('cb_pass'))
+        # Phantom live entries (no paired theoretical-BT entry) this gate would
+        # have BLOCKED — the fingerprint of the divergent gate. Two lenses:
+        #   phantom_pb_fail: gate CLOSED under PB (what backtest gates on). NOTE
+        #     coarse-gate PB (1Day/4Hour) is NaN-shallow over short windows —
+        #     see the secondary-load follow-up — so PB counts under-report.
+        #   phantom_cb_fail: gate CLOSED under CB (current bar). CB is reliably
+        #     loaded, so this is the trustworthy "gate was actually closed at
+        #     the live entry" signal used to pick the divergent gate.
+        phantom_pb_fail = sum(1 for r in rows if not r['paired_bt']
+                              and not r['gates'].get(gd['gate'], {}).get('pb_pass'))
+        phantom_cb_fail = sum(1 for r in rows if not r['paired_bt']
+                              and not r['gates'].get(gd['gate'], {}).get('cb_pass'))
+        per_gate.append({
+            'gate': gd['gate'], 'tf': gd['tf'], 'interp': gd['interp'],
+            'want_state': want, 'resolved': gd['resolved'],
+            'pb_dist': pb_dist, 'cb_dist': cb_dist,
+            'pb_open_pct': round(100.0 * pb_dist.get(want, 0) / pb_total, 1),
+            'cb_open_pct': round(100.0 * cb_dist.get(want, 0) / cb_total, 1),
+            'live_n': len(rows), 'live_pb_pass': live_pb_pass, 'live_cb_pass': live_cb_pass,
+            'phantom_pb_fail': phantom_pb_fail, 'phantom_cb_fail': phantom_cb_fail,
+        })
+
+    # Which gate most explains the phantoms (the divergent one), for the UI.
+    # Use the CB signal — reliably loaded, unlike coarse-gate PB — and only
+    # count RESOLVED gates so an unresolvable ribbon can't masquerade as closed.
+    divergent_gate = None
+    if per_gate:
+        top = max(per_gate, key=lambda g: (g['phantom_cb_fail'] if g['resolved'] else -1))
+        if top['resolved'] and top['phantom_cb_fail'] > 0:
+            divergent_gate = top['gate']
+
+    # Top-level ribbon = first gate (backward compat).
+    g0 = gates[0] if gates else None
+    if g0 and g0['resolved']:
+        top_ribbon = {'pb_dist': {str(k): int(v) for k, v in df[g0['pb_col']].value_counts().items()},
+                      'cb_dist': {str(k): int(v) for k, v in df[g0['cb_col']].value_counts().items()}}
+    else:
+        top_ribbon = {'pb_dist': {}, 'cb_dist': {}}
 
     return {
         'meta': {'sid': sid, 'symbol': strat['symbol'], 'primary_tf': primary_tf,
-                 'gate': gate, 'want_state': want, 'entry_trigger': entry_trigger,
+                 'gate': g0['gate'] if g0 else None,
+                 'want_state': g0['want'] if g0 else None,
+                 'entry_trigger': entry_trigger,
+                 'entry_trigger_confluence_id': entry_cid,
+                 'gates': [gd['gate'] for gd in gates],
+                 'ungated': len(gates) == 0,
+                 'divergent_gate': divergent_gate,
                  'live_model': strat.get('live_model'), 'backtest_model': strat.get('backtest_model'),
                  'session': session,
                  'window': [start.isoformat(), end.isoformat()], 'bars': len(df)},
-        'ribbon': {'pb_dist': {str(k): int(v) for k, v in df[pb_col].value_counts().items()},
-                   'cb_dist': {str(k): int(v) for k, v in df[cb_col].value_counts().items()}},
+        'ribbon': top_ribbon,
+        'per_gate': per_gate,
         'entries': {'theoretical_bt': len(bt_entry_ts), 'live_actual': len(live_ts)},
         'live_rows': rows,
     }
@@ -322,22 +470,25 @@ def build_gate_parity_view(sid: int, hours: float = 4.0,
 def print_view(sid: int, hours: float):
     v = build_gate_parity_view(sid, hours)
     m = v['meta']
-    print(f"sid {m['sid']} {m['symbol']} {m['primary_tf']} | gate={m['gate']} "
+    print(f"sid {m['sid']} {m['symbol']} {m['primary_tf']} | gates={m['gates']} "
+          f"| trigger={m['entry_trigger']} (cid={m['entry_trigger_confluence_id']}) "
           f"| live={m['live_model']} bt={m['backtest_model']}")
-    print(f"window {m['window'][0][11:19]}–{m['window'][1][11:19]} | {m['bars']} bars")
-    print(f"\nGate ribbon (engine columns):")
-    print(f"  PB ({m['gate'].split('-',1)[1]}): {v['ribbon']['pb_dist']}")
-    print(f"  CB: {v['ribbon']['cb_dist']}")
+    print(f"window {m['window'][0][11:19]}–{m['window'][1][11:19]} | {m['bars']} bars "
+          f"| ungated={m['ungated']} divergent_gate={m['divergent_gate']}")
     print(f"\nEntries: theoretical-BT={v['entries']['theoretical_bt']}  "
           f"live-actual={v['entries']['live_actual']}")
     rows = v['live_rows']
     ph = [r for r in rows if not r['paired_bt']]
-    print(f"\nLive entries vs theoretical BT: paired={len(rows)-len(ph)} phantom={len(ph)}")
-    print(f"  of {len(rows)} live entries: PB-pass={sum(r['pb_pass'] for r in rows)} "
-          f"CB-pass={sum(r['cb_pass'] for r in rows)}")
-    print(f"  of {len(ph)} phantoms:      PB-pass={sum(r['pb_pass'] for r in ph)} "
-          f"CB-pass={sum(r['cb_pass'] for r in ph)} "
-          f"CBpass&PBfail={sum(1 for r in ph if r['cb_pass'] and not r['pb_pass'])}")
+    print(f"Live entries vs theoretical BT: paired={len(rows)-len(ph)} phantom={len(ph)}")
+    if not v['per_gate']:
+        print("  (ungated — no confluence gates to break down)")
+    for gd in v['per_gate']:
+        print(f"\n  [gate] {gd['gate']}  want={gd['want_state']}  resolved={gd['resolved']}")
+        print(f"         PB open {gd['pb_open_pct']}% {gd['pb_dist']}")
+        print(f"         CB open {gd['cb_open_pct']}% {gd['cb_dist']}")
+        print(f"         of {gd['live_n']} live entries: PB-pass={gd['live_pb_pass']} "
+              f"CB-pass={gd['live_cb_pass']} | phantoms this gate blocks: "
+              f"CB-fail={gd['phantom_cb_fail']} (PB-fail={gd['phantom_pb_fail']})")
 
 
 def main():
