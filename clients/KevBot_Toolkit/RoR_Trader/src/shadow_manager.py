@@ -296,6 +296,7 @@ class ResidentEngineManager:
         import pandas as pd
         from services import get_secondary_tf_map
         from shadow_engine import ResidentStrategyEngine
+        from data_loader import normalize_1min_secondary_gate
 
         from data_worker_engine import _UserContext
 
@@ -305,17 +306,31 @@ class ResidentEngineManager:
         if isinstance(since, pd.Timestamp):
             since = since.to_pydatetime()
 
+        # 1-minute-secondary gate (RORT_ENFORCE_1MIN_GATE): relabel an overloaded
+        # '1M-' gate → lowercase '1m-' on the strat the resident ENGINE sees, so
+        # its confluence_set matches the '1m-' records the native 1Min secondary
+        # (built by prepare_strategy_window_df) produces — not the sub-minute
+        # primary's own '1M-' record, which over-counts. prepare_window normalizes
+        # the DATA side independently; this normalizes the GATE side. Flag OFF /
+        # 1Min-primary → unchanged (byte-identical). Shallow copy — the slot's
+        # strat (backing the fingerprint) is never mutated.
+        _eng_strat = slot.strat
+        _norm_conf = normalize_1min_secondary_gate(
+            slot.strat.get('confluence'), slot.timeframe)
+        if _norm_conf is not slot.strat.get('confluence'):
+            _eng_strat = {**slot.strat, 'confluence': _norm_conf}
+
         # The prep path loads PER-USER config (confluence groups, general packs); without
         # the slot's user context it queries user_id=None and silently drops them.
         with _UserContext(slot.uid):
-            df = prepare_window(slot.strat, slot.bt_model, since, until_dt,
+            df = prepare_window(_eng_strat, slot.bt_model, since, until_dt,
                                 slot.timeframe, slot.sec_tfs)
             if df is None or len(df) == 0:
                 return []
             sec_tf_map = get_secondary_tf_map(df) or None
 
             if slot.engine is None:
-                slot.engine = ResidentStrategyEngine(slot.strat, self._gen_packs())
+                slot.engine = ResidentStrategyEngine(_eng_strat, self._gen_packs())
                 # Bootstrap anchor: hydrate last_entry_written from the DB so the engine's
                 # warm-window re-emissions (which re-derive the strategy's existing trades)
                 # are filtered out instead of re-attempted one-by-one → flooding 409
@@ -417,15 +432,27 @@ class ResidentEngineManager:
         from unified_engine import run_unified_backtest
         from services import get_secondary_tf_map
         from data_worker_engine import _UserContext
+        from data_loader import normalize_1min_secondary_gate
+
+        # 1-minute-secondary gate (RORT_ENFORCE_1MIN_GATE): normalize the gate on
+        # the strat the provisional-tail engine sees so the unsettled window
+        # enforces the 1Min gate identically to the settled resident lane (no
+        # over-count at the settled/unsettled boundary). Flag OFF / 1Min-primary →
+        # unchanged (byte-identical). Shallow copy — slot.strat is never mutated.
+        _eng_strat = slot.strat
+        _norm_conf = normalize_1min_secondary_gate(
+            slot.strat.get('confluence'), slot.timeframe)
+        if _norm_conf is not slot.strat.get('confluence'):
+            _eng_strat = {**slot.strat, 'confluence': _norm_conf}
 
         with _UserContext(slot.uid):
-            df = prepare_window(slot.strat, slot.bt_model, settled_until, now,
+            df = prepare_window(_eng_strat, slot.bt_model, settled_until, now,
                                 slot.timeframe, slot.sec_tfs)
             if df is None or len(df) < 2:
                 return []
             sec_tf_map = get_secondary_tf_map(df) or None
             trades_df, _ = run_unified_backtest(
-                df, slot.strat, general_packs=self._gen_packs(),
+                df, _eng_strat, general_packs=self._gen_packs(),
                 secondary_tf_map=sec_tf_map, include_open_position=True,
                 last_bar_partial=True)
         if trades_df is None or len(trades_df) == 0:
