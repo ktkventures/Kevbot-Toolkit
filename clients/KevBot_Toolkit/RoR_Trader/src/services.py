@@ -437,6 +437,19 @@ def unified_trades(
     Returns:
         trades_df matching generate_trades() schema.
     """
+    # 1-minute-secondary gate (RORT_ENFORCE_1MIN_GATE): primary-aware relabel of
+    # an overloaded '1M-' gate → lowercase '1m-' so the engine's confluence_set
+    # matches the 1-minute SECONDARY records built from the df (which use the
+    # lowercase '1m' suffix). MUST mirror the same relabel `load_strategy_data`
+    # applied when it built `df`, so the gate points at the '1m-' record (the
+    # true 1-minute state) instead of the mislabeled '1M-' PRIMARY record. Flag
+    # OFF / 1Min-primary → unchanged (byte-identical). Shallow copy — never
+    # mutate the caller's dict.
+    from data_loader import normalize_1min_secondary_gate as _norm_1m
+    _nc = _norm_1m(strategy.get('confluence'), strategy.get('timeframe', '1Min'))
+    if _nc is not strategy.get('confluence'):
+        strategy = {**strategy, 'confluence': _nc}
+
     # Fast path: replay from cache
     if bar_cache is not None and cache_metadata is not None:
         try:
@@ -624,7 +637,19 @@ def get_strategy_trades_for_window(
     import math
     from data_loader import (
         BARS_PER_DAY, get_required_tfs_from_confluence, get_tf_from_label,
+        normalize_1min_secondary_gate, enforce_1min_gate_enabled,
     )
+
+    # 1-minute-secondary gate (RORT_ENFORCE_1MIN_GATE): primary-aware relabel of
+    # an overloaded '1M-' gate → lowercase '1m-' so the windowed path resolves it
+    # as a 1-minute SECONDARY (loaded/built/matched) instead of dropping it. Flag
+    # OFF / 1Min-primary → unchanged (byte-identical). Shallow copy — the caller's
+    # dict is never mutated. Covers both the run_unified_backtest (return_snapshot)
+    # and unified_trades branches below.
+    _nc = normalize_1min_secondary_gate(
+        strat.get('confluence'), strat.get('timeframe', '1Min'))
+    if _nc is not strat.get('confluence'):
+        strat = {**strat, 'confluence': _nc}
 
     def _result(trades_df, new_b64=None):
         """Shape the return per the caller's request mode."""
@@ -702,6 +727,23 @@ def get_strategy_trades_for_window(
     else:
         start_date = since_naive - timedelta(days=warmup_days)
     end_date = until_dt.replace(tzinfo=None) if until_dt.tzinfo else until_dt
+
+    # 1-minute SECONDARY gate (RORT_ENFORCE_1MIN_GATE): build the 1Min secondary
+    # from the NATIVE 1Min bar (matches LIVE; no resample-from-primary drift) and
+    # inject it. Inert when flag OFF (1Min never appears in sec_tfs) or 1Min
+    # primary. Mirrors load_strategy_data's native-1Min injection.
+    if (enforce_1min_gate_enabled() and "1Min" in sec_tfs
+            and timeframe != "1Min"
+            and (_sec_inject is None or "1Min" not in _sec_inject)):
+        try:
+            from strategy_data import _build_native_1min_secondary
+            _n1 = _build_native_1min_secondary(
+                strat['symbol'], start_date, end_date,
+                strat.get('trading_session', 'RTH'), data_feed)
+            if _n1:
+                _sec_inject = {**(_sec_inject or {}), **_n1}
+        except Exception as _e1m:  # noqa: BLE001
+            _logger.warning("[1MinSecondary] window native build failed: %s", _e1m)
 
     df = prepare_data_with_indicators(
         strat['symbol'],

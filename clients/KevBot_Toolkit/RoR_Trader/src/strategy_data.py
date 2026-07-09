@@ -133,6 +133,32 @@ def _build_coarse_secondary_from_1min(symbol, coarse_tfs, start, end,
                        symbol, coarse_tfs, e)
         return None
 
+
+def _build_native_1min_secondary(symbol, start, end, session, data_feed):
+    """Build a 1-MINUTE SECONDARY gate's OHLCV from the NATIVE 1Min bar.
+
+    For the 1-minute-secondary gate class (RORT_ENFORCE_1MIN_GATE): a '1M'/'1m'
+    gate on a sub-minute (e.g. 30Sec) primary is a genuine 1-minute secondary.
+    Source it from the SAME native 1Min bar LIVE consumes
+    (`ralph_engine._load_warmup_df` / a native 1Min BarBuilder) rather than
+    resampling UP from the sub-minute primary — no aggregation drift, and it
+    parallels how a 1Min PRIMARY is loaded. Returns {'1Min': DataFrame[OHLCV]}
+    (full series, cache-accelerated when BAR_CACHE_ENABLED) or None on any miss
+    (caller falls back to the resample rule so the gate is never silently
+    skipped)."""
+    try:
+        from data_loader import load_market_data
+        cols = ["open", "high", "low", "close", "volume"]
+        df1 = load_market_data(symbol, start_date=start, end_date=end,
+                               timeframe="1Min", feed=data_feed, session=session)
+        if df1 is None or len(df1) == 0:
+            return None
+        return {"1Min": df1[cols].copy()}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[1MinSecondary] native build failed %s: %s", symbol, e)
+        return None
+
+
 LEGACY_FALLBACK_DAYS = 90
 """Visible-window length for strategies that don't have
 `backtest_start_date` set (e.g. created via the API endpoint before
@@ -348,7 +374,19 @@ def load_strategy_data(
     from services import prepare_data_with_indicators, get_secondary_tf_map
     from data_loader import (
         get_required_tfs_from_confluence, get_tf_from_label,
+        normalize_1min_secondary_gate, enforce_1min_gate_enabled,
     )
+
+    # 1-minute-secondary gate (RORT_ENFORCE_1MIN_GATE): primary-aware relabel of
+    # any overloaded '1M-' gate → lowercase '1m-' (a genuine 1-minute secondary)
+    # on a non-1Min primary, so the standard lowercase-secondary machinery loads,
+    # builds, and matches it. Flag OFF / 1Min-primary → unchanged (byte-identical).
+    # Also fires the silent-drop tripwire. Work on a shallow copy so the caller's
+    # dict is never mutated.
+    _norm_conf = normalize_1min_secondary_gate(
+        strat.get("confluence"), strat.get("timeframe", "1Min"))
+    if _norm_conf is not strat.get("confluence"):
+        strat = {**strat, "confluence": _norm_conf}
 
     visible_start, visible_end, anchor_source = resolve_visible_window(strat)
     visible_days = max(
@@ -380,6 +418,21 @@ def load_strategy_data(
         strat, secondary_tfs, visible_start, visible_end, data_feed,
         warmup_days, allow_coarse_injection=(secondary_tfs_override is None))
     warmup_start = visible_start - pd.Timedelta(days=warmup_days)
+
+    # 1-minute SECONDARY gate (RORT_ENFORCE_1MIN_GATE): when the primary is NOT
+    # 1Min and a reclassified '1m' gate resolved to a 1Min secondary, build it
+    # from the NATIVE 1Min bar (matches LIVE; no resample-from-primary drift)
+    # and inject via secondary_tf_dfs. Inert when the flag is OFF (a 1Min
+    # secondary never appears in secondary_tfs then).
+    if (enforce_1min_gate_enabled() and "1Min" in secondary_tfs
+            and _tf_seconds_safe(strat.get("timeframe", "1Min")) != 60
+            and (sec_inject is None or "1Min" not in sec_inject)):
+        _native1 = _build_native_1min_secondary(
+            strat["symbol"], warmup_start.to_pydatetime(),
+            visible_end.to_pydatetime(),
+            strat.get("trading_session", "RTH"), data_feed)
+        if _native1:
+            sec_inject = {**(sec_inject or {}), **_native1}
 
     logger.info(
         "[StrategyData] sid=%s symbol=%s tf=%s anchor=%s "

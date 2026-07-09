@@ -1027,6 +1027,17 @@ def get_required_tfs_from_confluence(confluence_records) -> set:
 
     Records like '5m-EMA_STACK_DEFAULT-SML' → {'5m'}.
     Ignores 'GEN-' prefixed records and '1M' (primary TF).
+
+    NOTE on the '1M' overload: the uppercase '1M-' prefix is BOTH the
+    PRIMARY-TF record sentinel (interpreters.get_mtf_confluence_records) AND
+    what the Mass Builder historically emits for a 1-MINUTE gate. This blanket
+    drop of '1M' therefore silently ignores a genuine 1-minute SECONDARY gate
+    on a sub-minute (e.g. 30Sec) primary — while the LIVE engine enforces it
+    (see `normalize_1min_secondary_gate` + RORT_ENFORCE_1MIN_GATE). Callers on
+    the backtest read path normalize the '1M-' label to lowercase '1m-' BEFORE
+    calling this (primary-aware, flag-gated), so a reclassified 1-minute gate
+    arrives here as '1m' and is correctly returned as a secondary TF. This
+    function itself is intentionally left label-literal (byte-identical).
     """
     tfs = set()
     for record in (confluence_records or []):
@@ -1038,6 +1049,73 @@ def get_required_tfs_from_confluence(confluence_records) -> set:
     return tfs
 
 
+def enforce_1min_gate_enabled() -> bool:
+    """Kill-switch RORT_ENFORCE_1MIN_GATE (default OFF).
+
+    OFF (today): a '1M-' confluence leg (the uppercase PRIMARY sentinel) is
+    blanket-dropped from the required secondary TFs by
+    `get_required_tfs_from_confluence` — byte-identical to historic behavior.
+
+    ON: a '1M-' leg on a strategy whose PRIMARY timeframe is NOT 1Min is
+    treated as a genuine 1-MINUTE SECONDARY gate (loaded, built from the NATIVE
+    1Min bar, and enforced) — matching the LIVE engine
+    (`ralph_engine._LABEL_TO_TF_SECONDS['1M']==60`). For a 1Min-primary
+    strategy a '1M-' leg is the primary bar's own record (self-reference) and
+    stays primary — never a secondary. Instant rollback by unsetting."""
+    return os.getenv("RORT_ENFORCE_1MIN_GATE", "0") == "1"
+
+
+def normalize_1min_secondary_gate(confluence, primary_tf):
+    """Primary-aware '1M-'→'1m-' relabel for the 1-minute-secondary gate class.
+
+    The uppercase '1M-' prefix is OVERLOADED (primary sentinel vs. Mass-Builder
+    1-minute gate). On a strategy whose primary TF is NOT 1Min, a '1M-' leg is a
+    real 1-minute SECONDARY gate that the offline path silently drops while LIVE
+    enforces it (sid 329: backtest 17 vs live 3 — byte-identical to sid 328 which
+    has no '1M' gate, proving the offline no-op).
+
+    Behavior:
+      - primary_tf IS 1Min (60s): a '1M-' leg is the primary bar's own record
+        (self-reference) → returned UNCHANGED (matches live: 60 == 60, not a
+        secondary).
+      - primary_tf is NOT 1Min + flag ON: each '1M-<...>' leg → '1m-<...>' so the
+        already-correct lowercase-secondary machinery loads/builds/matches it.
+      - flag OFF (default): returned UNCHANGED — byte-identical to today.
+
+    TRIPWIRE (no-silent-fails): when a '1M-' leg exists on a non-1Min primary
+    but the flag is OFF, log a WARNING — this is precisely a tagged gate that
+    resolves to ZERO secondary TFs yet is not a GEN-/primary-self-reference, so
+    it is being silently ignored offline. Surfaces the class fleet-wide even
+    before the fix is armed.
+
+    Returns the (possibly new) confluence list. Idempotent.
+    """
+    if not confluence:
+        return confluence
+    primary_seconds = TF_TO_SECONDS.get(primary_tf)
+    # A 1Min-primary '1M-' leg is a genuine self-reference — leave it primary.
+    if primary_seconds == 60:
+        return confluence
+    one_min_legs = [r for r in confluence
+                    if isinstance(r, str) and r.startswith("1M-")]
+    if not one_min_legs:
+        return confluence
+    if not enforce_1min_gate_enabled():
+        # Flag OFF — behavior unchanged, but the silent drop must not hide.
+        logger.warning(
+            "[1MinGate] primary_tf=%s has '1M-' confluence leg(s) %s that "
+            "resolve to a 1-minute SECONDARY but are SILENTLY DROPPED offline "
+            "(RORT_ENFORCE_1MIN_GATE off); LIVE enforces them.",
+            primary_tf, one_min_legs)
+        return confluence
+    out = ["1m-" + r[len("1M-"):] if (isinstance(r, str) and r.startswith("1M-"))
+           else r for r in confluence]
+    logger.info(
+        "[1MinGate] ENFORCE ON: reclassified 1-minute secondary gate(s) for "
+        "primary_tf=%s: %s", primary_tf, one_min_legs)
+    return out
+
+
 # =============================================================================
 # RESAMPLING (Multi-Timeframe)
 # =============================================================================
@@ -1045,6 +1123,15 @@ def get_required_tfs_from_confluence(confluence_records) -> set:
 # Mapping from canonical timeframe strings to pandas resample rules
 _RESAMPLE_RULES = {
     "5Sec": "5s", "10Sec": "10s", "15Sec": "15s", "30Sec": "30s",
+    # 1Min is normally a NATIVE/base bar (never a resample target). This entry
+    # is a non-crashing fallback for the 1-minute-SECONDARY gate class
+    # (RORT_ENFORCE_1MIN_GATE): if a caller ever asks to resample a sub-minute
+    # primary → 1Min (e.g. the windowed path when native 1Min injection is
+    # unavailable), aggregate rather than raise + silently skip the gate. The
+    # PREFERRED source is the native 1Min bar (see strategy_data.
+    # _build_native_1min_secondary), which matches LIVE with no aggregation
+    # drift. Inert when the flag is OFF (1Min is never a secondary then).
+    "1Min": "1min",
     "2Min": "2min", "3Min": "3min", "5Min": "5min",
     "10Min": "10min", "15Min": "15min", "30Min": "30min",
     "1Hour": "1h", "2Hour": "2h", "4Hour": "4h",
