@@ -614,12 +614,37 @@ def confluence_enabled_coarse_tfs() -> list:
     return sorted((tf for tf, on in enabled.items() if on), key=tf_seconds)
 
 
+def _capture_symbols() -> list:
+    """Symbols from the bar-cache CAPTURE-TARGET authority (the same source the
+    settle sweeper uses) — i.e. the symbols whose 1Min base layer is actively
+    maintained, which is exactly the store's base-layer requirement. Store
+    targets follow it so enabling a new capture symbol auto-joins it to
+    seed/maintain/shadow/coverage (the symbol analogue of the Timeframes-page
+    TF derivation). Empty list on discovery failure → caller falls back to
+    SEED_SYMBOLS (never silently zero targets)."""
+    try:
+        from bar_cache import get_capture_targets
+        seen: list = []
+        for t in get_capture_targets(enabled_only=True):
+            s = t.get("symbol")
+            if s and s not in seen:
+                seen.append(s)
+        return sorted(seen)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("resampled_bar_store: capture-symbol discovery failed "
+                       "(%s) — falling back to %s", e, SEED_SYMBOLS)
+        return []
+
+
 def default_coarse_targets() -> list:
-    """Seed/maintenance target set = SEED_SYMBOLS × confluence_enabled_coarse_tfs() ×
-    SEED_SESSIONS. CONFIG-DERIVED (the TF list follows the Timeframes page). Symbols
-    bounded to TSLA this phase (guardrail); extend deliberately."""
+    """Seed/maintenance target set = capture symbols × confluence_enabled_coarse_tfs()
+    × SEED_SESSIONS. FULLY CONFIG-DERIVED both axes (2026-07-10 extension): TFs follow
+    the Timeframes page; symbols follow the Bar Cache capture authority (was TSLA-only
+    guardrail — extended deliberately after consumer #3's live verify surfaced SPY
+    'store uncovered' on real fleet gates)."""
     tfs = confluence_enabled_coarse_tfs()
-    return [(s, tf, sess) for s in SEED_SYMBOLS for tf in tfs for sess in SEED_SESSIONS]
+    syms = _capture_symbols() or list(SEED_SYMBOLS)
+    return [(s, tf, sess) for s in syms for tf in tfs for sess in SEED_SESSIONS]
 
 
 def seed_days_for_tf(tf: str, *, warmup_bars: int = 250, floor_days: int = 90,
