@@ -114,16 +114,24 @@ def _maintain_resampled_store() -> None:
     try:
         import resampled_bar_store as rbs
         if not rbs.writethrough_enabled():
+            logger.info("[settle_sweeper] resampled-store maintain: skip "
+                        "(RORT_RESAMPLED_STORE_WRITE off)")
             return
         every = max(300, int(os.environ.get(
             "RORT_RESAMPLED_STORE_MAINTAIN_S", "900")))
         now = _time.time()
-        if now - _STORE_MAINT_LAST["ts"] < every:
+        remaining = every - (now - _STORE_MAINT_LAST["ts"])
+        if remaining > 0:
+            logger.info("[settle_sweeper] resampled-store maintain: throttled "
+                        "(%ds left)", int(remaining))
             return
         _STORE_MAINT_LAST["ts"] = now
+        t0 = _time.time()
         r = rbs.maintain_all_coarse()
-        if r.get("rows") or r.get("errors"):
-            logger.info("[settle_sweeper] resampled-store maintain: %s", r)
+        # ALWAYS log the outcome — a silent pass is indistinguishable from a
+        # never-ran hook (the exact diagnosis gap this line closes, 2026-07-10).
+        logger.info("[settle_sweeper] resampled-store maintain RAN in %.0fs: %s",
+                    _time.time() - t0, r)
     except Exception as e:  # noqa: BLE001
         logger.warning("[settle_sweeper] resampled-store maintain failed: %s", e)
 
