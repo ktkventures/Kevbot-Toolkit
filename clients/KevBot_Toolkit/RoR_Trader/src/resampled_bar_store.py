@@ -141,16 +141,39 @@ def is_store_tf(tf: str) -> bool:
     return tf in _RESAMPLE_RULES and tf_seconds(tf) >= 120
 
 
+def base_layer_for_tf(tf: str) -> str:
+    """The native bar_cache layer a store TF resamples FROM — the canonical BASE.
+    THE SEAM for the future sub-minute phase:
+      - COARSE (tf_seconds >= 120): resample from **1Min** (this phase).
+      - SUB-MINUTE (tf_seconds < 60): resample from **1Second** (Phase 2b — a
+        DIFFERENT base layer: ~20x the volume + the prime1s-incident risk zone; NOT
+        seeded this phase). Only sid 339 has a sub-minute secondary gate (['30m','10s'])
+        and it's inactive — no rush, but the seam is here so Phase 2b drops in by
+        extending this mapping + widening the target filter, with no other rework.
+    1Min itself is the base (served from bar_cache directly, never from this store)."""
+    s = tf_seconds(tf)
+    if s < 60:
+        return "1Sec"   # Phase 2b (sub-minute-from-1Second) — reserved seam
+    return "1Min"       # coarse (>=120s) — this phase
+
+
 # =============================================================================
 # The canonical oracle — the single definition the store must reproduce
 # =============================================================================
 
+def _load_base_readonly(symbol: str, tf: str, start, end) -> Optional[pd.DataFrame]:
+    """Read the BASE layer for `tf` (base_layer_for_tf — coarse→1Min, sub-minute→1Sec)
+    for [start, end] READ-ONLY (bar_cache.read_bars = a plain direct-PG SELECT). NEVER
+    fetches Polygon and NEVER writes the cache — the store is a read-only consumer of
+    the base layer (the data-worker owns keeping it fresh). Returns RAW all-hours base
+    bars (session filter applied by the caller), or None."""
+    import bar_cache
+    return bar_cache.read_bars(symbol, base_layer_for_tf(tf), start, end)
+
+
 def _load_1min_readonly(symbol: str, start, end) -> Optional[pd.DataFrame]:
-    """Read cached 1Min for [start, end] READ-ONLY (bar_cache.read_bars = a plain
-    direct-PG SELECT). NEVER fetches Polygon and NEVER writes the cache — the store
-    is a read-only consumer of the 1Min layer (the data-worker owns keeping it
-    fresh). Returns RAW all-hours 1Min (session filter applied by the caller), or
-    None if the DSN is absent / nothing is cached."""
+    """Back-compat convenience — the 1Min base read (coarse TFs). Prefer
+    `_load_base_readonly(symbol, tf, ...)` so the base layer follows the TF."""
     import bar_cache
     return bar_cache.read_bars(symbol, "1Min", start, end)
 
@@ -168,7 +191,7 @@ def canonical_resampled(symbol: str, tf: str, session: str, start, end,
     read-only. Returns an OHLCV DataFrame (UTC DatetimeIndex) or None."""
     from data_loader import _filter_session, resample_to_timeframe
     if one_min_df is None:
-        one_min_df = _load_1min_readonly(symbol, start, end)
+        one_min_df = _load_base_readonly(symbol, tf, start, end)
     if one_min_df is None or len(one_min_df) == 0:
         return None
     df = one_min_df[OHLCV].copy()
@@ -219,7 +242,7 @@ def build_window(symbol: str, tf: str, session: str, start, end,
         raise ValueError(f"resampled_bar_store: '{tf}' is not a resamplable coarse "
                          f"TF. Store TFs: {COARSE_TFS}")
     if one_min_df is None:
-        one_min_df = _load_1min_readonly(symbol, start, end)
+        one_min_df = _load_base_readonly(symbol, tf, start, end)
     if one_min_df is None or len(one_min_df) == 0:
         return _empty_built()
     df = one_min_df[OHLCV].copy()
@@ -324,7 +347,7 @@ def build_and_compare(symbol: str, tf: str, session: str, start, end,
     """Convenience: build the store bars AND the canonical from the SAME 1Min input,
     then byte-compare. The offline byte-identity harness's per-cell unit."""
     if one_min_df is None:
-        one_min_df = _load_1min_readonly(symbol, start, end)
+        one_min_df = _load_base_readonly(symbol, tf, start, end)
     built = build_window(symbol, tf, session, start, end, one_min_df=one_min_df)
     canon = canonical_resampled(symbol, tf, session, start, end,
                                 one_min_df=one_min_df)
@@ -529,14 +552,60 @@ _BREAKER_MAX_FAIL = 3          # consecutive chunk/target failures → open brea
 _CHUNK_PAUSE_S = 0.5           # conservative cadence between chunks (Supabase-kind)
 
 
+SEED_SYMBOLS = ["TSLA"]                       # this phase (guardrail; extend deliberately)
+SEED_SESSIONS = ["RTH", "Extended Hours"]
+
+
+def _load_timeframes_config() -> dict:
+    """Read the persisted Timeframes-page config: settings.enabled_timeframes
+    (Record<tfId, {confluenceEnabled, ...}>) from src/settings.json — the same source
+    the /confluence-packs/timeframes page saves to. {} when unset (defaults apply)."""
+    import json
+    path = os.path.join(os.path.dirname(__file__), "settings.json")
+    try:
+        with open(path) as f:
+            return (json.load(f) or {}).get("enabled_timeframes", {}) or {}
+    except Exception:
+        return {}
+
+
+def confluence_enabled_coarse_tfs() -> list:
+    """The gate-eligible COARSE TF catalog, CONFIG-DERIVED from the Timeframes page:
+    every resample target with tf_seconds >= 120 that is CONFLUENCE-ENABLED. Enabling
+    a TF on /confluence-packs/timeframes auto-adds it to seed + maintenance (no code
+    change — Kevin's 'mechanism to add new timeframes'); disabling drops it. Excludes
+    1Min (the base, served from bar_cache), sub-minute (<120s → Phase 2b from
+    1Second), and 1Week/1Month (chart-display-only — no resample rule / not
+    confluence-enabled). Default (config unset): all resamplable coarse TFs (2Min..1Day)."""
+    from data_loader import _RESAMPLE_RULES
+    cfg = _load_timeframes_config()
+    enabled = {tf: True for tf in _RESAMPLE_RULES if tf_seconds(tf) >= 120}
+    for tf, flags in cfg.items():
+        if (isinstance(flags, dict) and "confluenceEnabled" in flags
+                and tf in _RESAMPLE_RULES and tf_seconds(tf) >= 120):
+            enabled[tf] = bool(flags["confluenceEnabled"])
+    return sorted((tf for tf, on in enabled.items() if on), key=tf_seconds)
+
+
 def default_coarse_targets() -> list:
-    """The BOUNDED seed set (main-session guardrail: NOT the whole fleet). The
-    worked-on TSLA strategies' coarse gate TFs × sessions — the 313/325/330/331/338
-    class. Explicit + small so the first seed is controlled; extend deliberately."""
-    syms = ["TSLA"]
-    tfs = ["4Hour", "1Day"]
-    sessions = ["RTH", "Extended Hours"]
-    return [(s, tf, sess) for s in syms for tf in tfs for sess in sessions]
+    """Seed/maintenance target set = SEED_SYMBOLS × confluence_enabled_coarse_tfs() ×
+    SEED_SESSIONS. CONFIG-DERIVED (the TF list follows the Timeframes page). Symbols
+    bounded to TSLA this phase (guardrail); extend deliberately."""
+    tfs = confluence_enabled_coarse_tfs()
+    return [(s, tf, sess) for s in SEED_SYMBOLS for tf in tfs for sess in SEED_SESSIONS]
+
+
+def seed_days_for_tf(tf: str, *, warmup_bars: int = 250, floor_days: int = 90,
+                     cap_days: int = 400) -> int:
+    """TF-adaptive seed depth: enough calendar days for ~warmup_bars of `tf`, floored
+    so FINE TFs still cover a ribbon window and capped for the coarsest. Coarse
+    (1Day)≈362, 4Hour≈181, fine (2m/5m)→floor. Fine TFs dominate row count — the floor
+    bounds it (a uniform deep window would over-seed them)."""
+    import math
+    from data_loader import BARS_PER_DAY
+    bpd = BARS_PER_DAY.get(tf, 390) or 390
+    days = math.ceil(warmup_bars / bpd * 365 / 252)
+    return max(floor_days, min(cap_days, days))
 
 
 class _Breaker:

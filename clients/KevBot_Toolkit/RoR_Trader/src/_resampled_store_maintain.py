@@ -56,15 +56,17 @@ def _targets(args) -> list:
     return rbs.default_coarse_targets()
 
 
-def _warm_1min(symbol, start, end, session):
-    """Warm the 1Min cache for the window so the store is built from the same 1Min
-    the consumers' canonical read sees (read-only-ish: bar_cache delta-fetch)."""
+def _warm_base(symbol, tf, start, end, session):
+    """Warm the BASE-layer cache (base_layer_for_tf — coarse→1Min) for the window so
+    the store is built from the same base bars the consumers' canonical read sees
+    (read-only-ish: bar_cache delta-fetch)."""
     try:
         from data_loader import load_market_data
-        load_market_data(symbol, start_date=start, end_date=end, timeframe="1Min",
+        base = rbs.base_layer_for_tf(tf)
+        load_market_data(symbol, start_date=start, end_date=end, timeframe=base,
                          session=session)
     except Exception as e:  # noqa: BLE001
-        print(f"  warn: 1Min warm failed {symbol} [{start.date()}..{end.date()}]: {e}")
+        print(f"  warn: {tf} base warm failed {symbol} [{start.date()}..{end.date()}]: {e}")
 
 
 def cmd_shadow(args):
@@ -112,7 +114,7 @@ def cmd_maintain(args):
     print(f"MAINTAIN (WRITE) — recent {args.recent_days}d, {len(targets)} targets")
     for (s, tf, sess) in targets:
         now = datetime.now(timezone.utc)
-        _warm_1min(s, now - timedelta(days=args.recent_days + 1), now, sess)
+        _warm_base(s, tf, now - timedelta(days=args.recent_days + 1), now, sess)
     r = rbs.maintain_all_coarse(targets, recent_days=args.recent_days)
     print(f"  result: {r}")
     return 1 if r.get("aborted") else 0
@@ -130,17 +132,19 @@ def cmd_seed(args):
     targets = _write_targets(args, is_seed=True)
     if targets is None:
         return 0
-    print(f"SEED (WRITE, chunked+breaker) — {args.days}d back, chunk={args.chunk_days}d, "
+    depth_mode = f"{args.days}d (uniform)" if args.days else "TF-adaptive (seed_days_for_tf)"
+    print(f"SEED (WRITE, chunked+breaker) — depth={depth_mode}, chunk={args.chunk_days}d, "
           f"compare={not args.no_compare}, {len(targets)} targets")
     end = now_utc
     total = {"chunks": 0, "rows": 0, "diff_chunks": 0, "aborted": 0}
     for (s, tf, sess) in targets:
-        start = end - timedelta(days=args.days)
-        # warm the 1Min for the whole span first (chunked delta-fetch by bar_cache)
-        _warm_1min(s, start, end, sess)
+        depth = args.days or rbs.seed_days_for_tf(tf)
+        start = end - timedelta(days=depth)
+        # warm the base layer for the whole span first (chunked delta-fetch by bar_cache)
+        _warm_base(s, tf, start, end, sess)
         r = rbs.backfill_coarse(s, tf, sess, start, end, chunk_days=args.chunk_days,
                                 compare=not args.no_compare)
-        print(f"  {s}/{tf}/{sess}: {r}")
+        print(f"  {s}/{tf}/{sess}: depth={depth}d {r}")
         for k in ("chunks", "rows", "diff_chunks"):
             total[k] += r.get(k, 0)
         total["aborted"] += 1 if r.get("aborted") else 0
@@ -173,7 +177,8 @@ def main() -> int:
         if name == "maintain":
             p.add_argument("--recent-days", type=int, default=3)
         if name == "seed":
-            p.add_argument("--days", type=int, default=400)
+            p.add_argument("--days", type=int, default=0,
+                           help="uniform depth override; 0 = TF-adaptive per seed_days_for_tf")
             p.add_argument("--chunk-days", type=int, default=30)
             p.add_argument("--no-compare", action="store_true")
             p.add_argument("--force-peak", action="store_true",
