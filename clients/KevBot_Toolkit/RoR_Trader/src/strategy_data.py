@@ -154,10 +154,12 @@ def _coarse_secondary_from_store(symbol, coarse_tfs, start, end, session):
     return None
 
 
-def _verify_coarse_secondary_store(symbol, out, session, end):
-    """CONSUMER #1 verification (log-only, never affects output): compare the store
+def _verify_coarse_secondary_store(symbol, out, session, end, tag="#1"):
+    """Store VERIFICATION (log-only, never affects output): compare the store
     against the engine's own freshly-resampled coarse secondaries on the comparable
-    zone, and log GREEN/DRIFT per tf. The zone excludes:
+    zone, and log GREEN/DRIFT per tf. Shared by consumer #1 (offline backtest
+    secondary build, tag '#1') and consumer #3 (LIVE warmup/reload path via
+    `ralph_engine._load_warmup_df`, tag '#3-live'). The zone excludes:
       - the HEAD bucket (its content depends on the caller's window-start loader
         semantics — partial vs full first bucket is a window artifact, not drift);
       - the UNSETTLED tail (the forming/just-closed WS-tip bucket legitimately
@@ -183,8 +185,9 @@ def _verify_coarse_secondary_store(symbol, out, session, end):
                     continue
                 store_df = rbs.read_store(symbol, tf, session, sec_z.index[0], end)
                 if store_df is None or len(store_df) == 0:
-                    logger.info("[ResampledStore#1] %s %s %s: VERIFY skipped — "
-                                "store uncovered for window", symbol, tf, session)
+                    logger.info("[ResampledStore%s] %s %s %s: VERIFY skipped — "
+                                "store uncovered for window", tag, symbol, tf,
+                                session)
                     continue
                 store_z = store_df[(store_df.index > head)
                                    & (store_df.index <= zone_hi)]
@@ -197,21 +200,21 @@ def _verify_coarse_secondary_store(symbol, out, session, end):
                 cmp = rbs.compare_store_vs_canonical(
                     store_z, sec_z[cols], symbol=symbol, tf=tf, session=session)
                 if cmp["match"]:
-                    logger.info("[ResampledStore#1] %s %s %s: VERIFY GREEN — %d "
-                                "settled bars byte-identical%s", symbol, tf, session,
-                                len(store_z),
+                    logger.info("[ResampledStore%s] %s %s %s: VERIFY GREEN — %d "
+                                "settled bars byte-identical%s", tag, symbol, tf,
+                                session, len(store_z),
                                 f" (head coverage gap {head_gap} bars)" if head_gap
                                 else "")
                 else:
                     detail = cmp.get("note") or f"{len(cmp['cell_diffs'])} cell diffs"
-                    logger.warning("[ResampledStore#1] %s %s %s: VERIFY DRIFT — %s "
+                    logger.warning("[ResampledStore%s] %s %s %s: VERIFY DRIFT — %s "
                                    "(log-only; output is the engine's own resample)",
-                                   symbol, tf, session, detail)
+                                   tag, symbol, tf, session, detail)
             except Exception as ve:  # noqa: BLE001 — verify must never break trades
-                logger.warning("[ResampledStore#1] verify failed %s %s: %s",
-                               symbol, tf, ve)
+                logger.warning("[ResampledStore%s] verify failed %s %s: %s",
+                               tag, symbol, tf, ve)
     except Exception as e:  # noqa: BLE001
-        logger.warning("[ResampledStore#1] verify unavailable %s: %s", symbol, e)
+        logger.warning("[ResampledStore%s] verify unavailable %s: %s", tag, symbol, e)
 
 
 def _build_coarse_secondary_from_1min(symbol, coarse_tfs, start, end,

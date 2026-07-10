@@ -1809,6 +1809,27 @@ def _load_warmup_df(sym: str, tf_seconds: int, session: str) -> pd.DataFrame:
         df1[['open', 'high', 'low', 'close', 'volume']].copy(), tf_str)
     logger.info("[Bug5] warmup %s tf=%s: 1min_days=%d -> %d resampled bars "
                 "(was flat days=7)", sym, tf_str, wd, len(out))
+    # CONSUMER #3 (M-RS2 Phase 2), verify-first: when RORT_RESAMPLED_STORE_READ
+    # is armed, VERIFY the canonical resampled store against the warmup df just
+    # built — log-only ([ResampledStore#3-live] GREEN/DRIFT), NEVER changes the
+    # returned bars. This chokepoint feeds every live secondary construction
+    # (startup warmup, close reloads incl. the 313-class coarse-RTH reload,
+    # session shadows, the periodic self-heal), so an armed verify accumulates
+    # promotion evidence on the exact (tf, session) windows the LIVE engine
+    # gates on — coarse (4h/1d) AND fine (2m-30m) alike. The compute-skip
+    # cutover (serve settled bars FROM the store — the structural 313 fix,
+    # subsuming RORT_MTF_COARSE_RTH_RELOAD) flips only after N green days.
+    try:
+        import resampled_bar_store as _rbs
+        if (out is not None and len(out) > 0 and _rbs.read_enabled()
+                and _rbs.is_store_tf(tf_str)):
+            from strategy_data import _verify_coarse_secondary_store
+            _verify_coarse_secondary_store(
+                sym, {tf_str: out}, session,
+                datetime.now(timezone.utc), tag="#3-live")
+    except Exception as _ve:  # noqa: BLE001 — verify must never break warmup
+        logger.warning("[ResampledStore#3-live] verify skipped %s %s: %s",
+                       sym, tf_str, _ve)
     return out
 
 
