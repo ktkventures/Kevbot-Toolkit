@@ -511,3 +511,225 @@ def shadow_check(symbol: str, tf: str, session: str, start, end,
         logger.warning("[RESAMPLED-STORE-SHADOW] DIFF %s/%s/%s: %s",
                        symbol, tf, session, detail)
     return res
+
+
+# =============================================================================
+# MAINTENANCE / BACKFILL LOOP (§5) + SHADOW COMPARATOR (§7) + COVERAGE (§8)
+# Hardened per the prime1s DOS incident (chunk + circuit breaker + conservative
+# cadence — the shared Supabase 522s under mass single-shot load). All WRITES gated
+# RORT_RESAMPLED_STORE_WRITE (default OFF; the store is truncatable/reversible). NOT
+# wired into any cron/worker — driven by _resampled_store_maintain.py. The heavy
+# historical seed runs OFF-PEAK (after the 20:00Z close) so it never contends with
+# the trading path. The §7 comparator must be green for N trading days BEFORE any
+# consumer READ flag is flipped on in prod.
+# =============================================================================
+
+_BACKFILL_CHUNK_DAYS = 30      # day-chunk the seed — bounded write per call
+_BREAKER_MAX_FAIL = 3          # consecutive chunk/target failures → open breaker
+_CHUNK_PAUSE_S = 0.5           # conservative cadence between chunks (Supabase-kind)
+
+
+def default_coarse_targets() -> list:
+    """The BOUNDED seed set (main-session guardrail: NOT the whole fleet). The
+    worked-on TSLA strategies' coarse gate TFs × sessions — the 313/325/330/331/338
+    class. Explicit + small so the first seed is controlled; extend deliberately."""
+    syms = ["TSLA"]
+    tfs = ["4Hour", "1Day"]
+    sessions = ["RTH", "Extended Hours"]
+    return [(s, tf, sess) for s in syms for tf in tfs for sess in sessions]
+
+
+class _Breaker:
+    """Trip after `max_fail` consecutive failures — the prime1s circuit breaker."""
+    def __init__(self, max_fail: int = _BREAKER_MAX_FAIL):
+        self.max_fail = max_fail
+        self.fails = 0
+        self.open = False
+
+    def ok(self):
+        self.fails = 0
+
+    def fail(self) -> bool:
+        self.fails += 1
+        if self.fails >= self.max_fail:
+            self.open = True
+        return self.open
+
+
+def backfill_coarse(symbol: str, tf: str, session: str, start, end, *,
+                    chunk_days: Optional[int] = None, compare: bool = True,
+                    breaker: Optional["_Breaker"] = None,
+                    pause_s: Optional[float] = None) -> dict:
+    """Day-chunked historical SEED for (symbol, tf, session) over [start, end].
+    WINDOW-REPLACE per chunk (idempotent, re-runnable). CIRCUIT BREAKER aborts after
+    consecutive chunk failures (Supabase 522 protection). Conservative pause between
+    chunks. When `compare`, runs the §7 shadow comparator per chunk and tallies
+    diffs. Gated RORT_RESAMPLED_STORE_WRITE. Returns
+    {chunks, rows, diff_chunks, aborted}."""
+    if not writethrough_enabled():
+        return {"skipped": "RORT_RESAMPLED_STORE_WRITE off", "chunks": 0, "rows": 0}
+    import time
+    step = int(chunk_days or _BACKFILL_CHUNK_DAYS)
+    pause = _CHUNK_PAUSE_S if pause_s is None else pause_s
+    br = breaker or _Breaker(_BREAKER_MAX_FAIL)
+    cur = pd.Timestamp(start)
+    endts = pd.Timestamp(end)
+    if cur.tzinfo is None:
+        cur = cur.tz_localize("UTC")
+    if endts.tzinfo is None:
+        endts = endts.tz_localize("UTC")
+    # CRITICAL: chunk boundaries MUST be UTC-day-aligned. The write unit is
+    # WINDOW-REPLACE per UTC-day, so a day split across two chunks would be REPLACED
+    # by the 2nd chunk's PARTIAL view of that day (it only loads that day's later
+    # 1Min) — silently dropping the day's earlier bars. Flooring `cur` to midnight
+    # makes every whole day belong to exactly one chunk (only the final chunk ends
+    # mid-day, at `end`=now, and no earlier chunk touches that day). Proven: without
+    # this, a 3-day-chunk seed lost 07-08 12:00 (store 9 vs canonical 10).
+    cur = cur.normalize()
+    chunks = rows = diff_chunks = 0
+    aborted = False
+    while cur < endts:
+        ce = min(cur + pd.Timedelta(days=step), endts)
+        try:
+            w = store_window(symbol, tf, session, cur.to_pydatetime(),
+                             ce.to_pydatetime())
+            rows += w.get("rows", 0)
+            chunks += 1
+            br.ok()
+            if compare:
+                res = shadow_check(symbol, tf, session, cur.to_pydatetime(),
+                                   ce.to_pydatetime())
+                if not res["match"]:
+                    diff_chunks += 1
+                    logger.warning("[RESAMPLED-STORE-SEED] DIFF %s/%s/%s [%s..%s]: %s",
+                                   symbol, tf, session, cur.date(), ce.date(),
+                                   res.get("note") or f"{len(res['cell_diffs'])} diffs")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[RESAMPLED-STORE-SEED] chunk fail %s/%s/%s [%s..%s]: %s",
+                           symbol, tf, session, cur.date(), ce.date(), e)
+            if br.fail():
+                aborted = True
+                logger.error("[RESAMPLED-STORE-SEED] BREAKER OPEN — aborting "
+                             "%s/%s/%s after %d fails", symbol, tf, session, br.fails)
+                break
+        cur = ce
+        if pause and cur < endts:
+            time.sleep(pause)
+    return {"chunks": chunks, "rows": rows, "diff_chunks": diff_chunks,
+            "aborted": aborted}
+
+
+def maintain_coarse(symbol: str, tf: str, session: str, *,
+                    recent_days: int = 3) -> dict:
+    """Incremental maintenance: re-resample + WINDOW-REPLACE the recent `recent_days`
+    window (where the underlying 1Min may have settled / been revised since the store
+    was built — the T+2 revision / settle-sweeper class). Bounded + cheap; runs
+    alongside the settle-sweeper cadence. Gated. Returns store_window's result."""
+    if not writethrough_enabled():
+        return {"skipped": "RORT_RESAMPLED_STORE_WRITE off"}
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    return store_window(symbol, tf, session, now - timedelta(days=recent_days), now)
+
+
+def maintain_all_coarse(targets: Optional[list] = None, *,
+                        recent_days: int = 3) -> dict:
+    """Cron entrypoint: incrementally maintain every target's recent window. Breaker
+    across targets. Gated. Returns {targets, rows, errors, aborted}."""
+    if not writethrough_enabled():
+        return {"skipped": "RORT_RESAMPLED_STORE_WRITE off"}
+    targets = targets or default_coarse_targets()
+    br = _Breaker(_BREAKER_MAX_FAIL)
+    rows = 0
+    errors = 0
+    aborted = False
+    for (s, tf, sess) in targets:
+        try:
+            w = maintain_coarse(s, tf, sess, recent_days=recent_days)
+            rows += w.get("rows", 0)
+            br.ok()
+        except Exception as e:  # noqa: BLE001
+            errors += 1
+            logger.warning("maintain_all_coarse %s/%s/%s: %s", s, tf, sess, e)
+            if br.fail():
+                aborted = True
+                logger.error("maintain_all_coarse BREAKER OPEN after %d fails", br.fails)
+                break
+    return {"targets": len(targets), "rows": rows, "errors": errors,
+            "aborted": aborted}
+
+
+def shadow_compare_targets(targets: Optional[list] = None, *,
+                           days: int = 5) -> list:
+    """§7 shadow comparator over targets — READ-ONLY (no writes). For each target,
+    reads the store vs the on-the-fly canonical over the last `days` and byte-compares.
+    This is the gate that must be GREEN for N trading days before any consumer READ
+    flag is flipped on in prod. Returns a list of comparator dicts."""
+    from datetime import datetime, timedelta, timezone
+    targets = targets or default_coarse_targets()
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=days)
+    out = []
+    for (s, tf, sess) in targets:
+        stored = read_store(s, tf, sess, start, now)
+        canon = canonical_resampled(s, tf, sess, start, now)
+        out.append(compare_store_vs_canonical(stored, canon, symbol=s, tf=tf,
+                                               session=sess))
+    return out
+
+
+def resampled_supply_coverage(targets: Optional[list] = None, *,
+                              sample_days: int = 5) -> list:
+    """§8 admin observability. Per (symbol, tf, session): coverage span (min/max ts),
+    freshness (revised_at of the edge bar), row count, and — the MONEY COLUMN — a live
+    comparator sample (store vs canonical over the last `sample_days`) so drift is
+    visible BEFORE it bites. READ-ONLY. Drives the Resampled Bar Store admin page."""
+    from datetime import datetime, timedelta, timezone
+    targets = targets or default_coarse_targets()
+    dsn = _dsn()
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=sample_days)
+    out = []
+    for (s, tf, sess) in targets:
+        tf_s = tf_seconds(tf)
+        cov = {"min_ts": None, "max_ts": None, "rows": 0, "last_revised": None}
+        if dsn:
+            try:
+                import psycopg
+                with psycopg.connect(dsn, connect_timeout=15, prepare_threshold=None,
+                                     autocommit=True) as c:
+                    with c.cursor() as cur:
+                        cur.execute(
+                            "select min(ts), max(ts), count(*), max(revised_at) "
+                            "from resampled_bar_cache where symbol=%s and "
+                            "timeframe_seconds=%s and session=%s", (s, tf_s, sess))
+                        mn, mx, cnt, rev = cur.fetchone()
+                cov = {"min_ts": mn.isoformat() if mn else None,
+                       "max_ts": mx.isoformat() if mx else None,
+                       "rows": int(cnt or 0),
+                       "last_revised": rev.isoformat() if rev else None}
+            except Exception as e:  # noqa: BLE001
+                logger.warning("resampled_supply_coverage cov %s/%s/%s: %s",
+                               s, tf, sess, e)
+        # live comparator sample (the drift signal)
+        try:
+            stored = read_store(s, tf, sess, start, now)
+            canon = canonical_resampled(s, tf, sess, start, now)
+            cmp = compare_store_vs_canonical(stored, canon, symbol=s, tf=tf,
+                                             session=sess)
+            n = cmp.get("n_canonical") or cmp.get("n_built") or 0
+            diff_cells = len(cmp.get("cell_diffs") or [])
+            idx_mm = bool(cmp.get("index_mismatch"))
+            diff_rate = (diff_cells / (n * 5)) if n else None
+        except Exception as e:  # noqa: BLE001
+            cmp = {"match": None}
+            diff_cells = idx_mm = diff_rate = None
+            logger.warning("resampled_supply_coverage cmp %s/%s/%s: %s",
+                           s, tf, sess, e)
+        out.append({"symbol": s, "tf": tf, "session": sess, **cov,
+                    "comparator_match": cmp.get("match"),
+                    "comparator_diff_cells": diff_cells,
+                    "comparator_index_mismatch": idx_mm,
+                    "comparator_diff_rate": diff_rate,
+                    "comparator_sample_days": sample_days})
+    return out
