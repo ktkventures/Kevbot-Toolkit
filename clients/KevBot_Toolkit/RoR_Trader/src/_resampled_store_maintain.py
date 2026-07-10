@@ -70,8 +70,10 @@ def _warm_base(symbol, tf, start, end, session):
 
 
 def cmd_shadow(args):
-    print(f"§7 SHADOW COMPARATOR (read-only) — last {args.days}d")
-    res = rbs.shadow_compare_targets(_targets(args), days=args.days)
+    mode = "SETTLED-only" if args.settled else "ALL bars (incl forming tip)"
+    print(f"§7 SHADOW COMPARATOR (read-only) — last {args.days}d — {mode}")
+    res = rbs.shadow_compare_targets(_targets(args), days=args.days,
+                                     settled_only=args.settled)
     allgreen = True
     for r in res:
         note = r.get("note") or (f"{len(r['cell_diffs'])} cell diffs" if r.get("cell_diffs") else "")
@@ -143,8 +145,11 @@ def cmd_seed(args):
         # warm the base layer for the whole span first (chunked delta-fetch by bar_cache)
         _warm_base(s, tf, start, end, sess)
         r = rbs.backfill_coarse(s, tf, sess, start, end, chunk_days=args.chunk_days,
-                                compare=not args.no_compare)
+                                compare=not args.no_compare, pause_s=args.pause_s)
         print(f"  {s}/{tf}/{sess}: depth={depth}d {r}")
+        if r.get("aborted") or r.get("last_error"):
+            print(f"  ⚠️  ABORT SIGNAL on {s}/{tf}/{sess}: aborted={r.get('aborted')} "
+                  f"last_error={r.get('last_error')}")
         for k in ("chunks", "rows", "diff_chunks"):
             total[k] += r.get(k, 0)
         total["aborted"] += 1 if r.get("aborted") else 0
@@ -170,6 +175,8 @@ def main() -> int:
         p.add_argument("--sessions", default="")
         if name == "shadow":
             p.add_argument("--days", type=int, default=5)
+            p.add_argument("--settled", action="store_true",
+                           help="compare SETTLED bars only (exclude forming WS tip)")
         if name == "coverage":
             p.add_argument("--sample-days", type=int, default=5)
         if name in ("maintain", "seed"):
@@ -180,6 +187,8 @@ def main() -> int:
             p.add_argument("--days", type=int, default=0,
                            help="uniform depth override; 0 = TF-adaptive per seed_days_for_tf")
             p.add_argument("--chunk-days", type=int, default=30)
+            p.add_argument("--pause-s", type=float, default=None,
+                           help="per-chunk pause seconds (RTH: use larger, e.g. 3)")
             p.add_argument("--no-compare", action="store_true")
             p.add_argument("--force-peak", action="store_true",
                            help="override the RTH refusal (not recommended)")

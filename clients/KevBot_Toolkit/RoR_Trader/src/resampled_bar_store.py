@@ -455,6 +455,26 @@ def _settle_min() -> int:
     return _sm()
 
 
+def _settled_cutoff_ts(tf: str, *, now=None):
+    """The newest bar-start ts that is fully SETTLED for `tf`: a bar labeled T covers
+    [T, T+tf), so it's closed at now>=T+tf and settled at now>=T+tf+settle_min →
+    T <= now - settle_min - tf. Bars at/before this are permanent truth; anything
+    after is the still-forming / just-closed WS tip (expected to differ)."""
+    from datetime import datetime, timedelta, timezone
+    if now is None:
+        now = datetime.now(timezone.utc)
+    return now - timedelta(minutes=_settle_min()) - timedelta(seconds=tf_seconds(tf))
+
+
+def _trim_settled(df, tf: str, *, now=None):
+    """Trim a bar series to the SETTLED bars only (drop the forming/just-closed tip).
+    Used to exclude the WS-tip bucket from byte-identity 'green' — the forming bar
+    legitimately differs (store snapshot vs fresher canonical) and must not count."""
+    if df is None or len(df) == 0:
+        return df
+    return df[df.index <= _settled_cutoff_ts(tf, now=now)]
+
+
 def read_store(symbol: str, tf: str, session: str, start, end
                ) -> Optional[pd.DataFrame]:
     """Read persisted coarse bars for (symbol, tf, session) in [start, end] over a
@@ -516,17 +536,24 @@ def read_store(symbol: str, tf: str, session: str, start, end
 
 def shadow_check(symbol: str, tf: str, session: str, start, end,
                  *, one_min_df: Optional[pd.DataFrame] = None,
-                 persist: bool = False) -> dict:
+                 persist: bool = False, settled_only: bool = False) -> dict:
     """The read-time comparator SHADOW: (optionally persist, gated), then read the
     STORE back and byte-compare it to the canonical resample. This is stronger than
     the M1a offline check because it validates the PERSISTENCE ROUND-TRIP (Postgres
     tz/float) — the store the consumer would actually read must equal canonical.
-    Alarms (logs) on any diff. Returns the comparator dict."""
+    Alarms (logs) on any diff. Returns the comparator dict.
+
+    settled_only: trim BOTH sides to settled bars before comparing (exclude the
+    forming/just-closed WS-tip bucket, which legitimately differs). The right 'green'
+    criterion during RTH."""
     if persist and writethrough_enabled():
         store_window(symbol, tf, session, start, end, one_min_df=one_min_df)
     stored = read_store(symbol, tf, session, start, end)
     canon = canonical_resampled(symbol, tf, session, start, end,
                                 one_min_df=one_min_df)
+    if settled_only:
+        stored = _trim_settled(stored, tf)
+        canon = _trim_settled(canon, tf)
     res = compare_store_vs_canonical(stored, canon, symbol=symbol, tf=tf,
                                      session=session)
     if not res["match"]:
@@ -657,6 +684,7 @@ def backfill_coarse(symbol: str, tf: str, session: str, start, end, *,
     cur = cur.normalize()
     chunks = rows = diff_chunks = 0
     aborted = False
+    last_error = None
     while cur < endts:
         ce = min(cur + pd.Timedelta(days=step), endts)
         try:
@@ -667,13 +695,14 @@ def backfill_coarse(symbol: str, tf: str, session: str, start, end, *,
             br.ok()
             if compare:
                 res = shadow_check(symbol, tf, session, cur.to_pydatetime(),
-                                   ce.to_pydatetime())
+                                   ce.to_pydatetime(), settled_only=True)
                 if not res["match"]:
                     diff_chunks += 1
-                    logger.warning("[RESAMPLED-STORE-SEED] DIFF %s/%s/%s [%s..%s]: %s",
+                    logger.warning("[RESAMPLED-STORE-SEED] SETTLED DIFF %s/%s/%s [%s..%s]: %s",
                                    symbol, tf, session, cur.date(), ce.date(),
                                    res.get("note") or f"{len(res['cell_diffs'])} diffs")
         except Exception as e:  # noqa: BLE001
+            last_error = str(e)[:200]
             logger.warning("[RESAMPLED-STORE-SEED] chunk fail %s/%s/%s [%s..%s]: %s",
                            symbol, tf, session, cur.date(), ce.date(), e)
             if br.fail():
@@ -685,7 +714,7 @@ def backfill_coarse(symbol: str, tf: str, session: str, start, end, *,
         if pause and cur < endts:
             time.sleep(pause)
     return {"chunks": chunks, "rows": rows, "diff_chunks": diff_chunks,
-            "aborted": aborted}
+            "aborted": aborted, "last_error": last_error}
 
 
 def maintain_coarse(symbol: str, tf: str, session: str, *,
@@ -698,7 +727,16 @@ def maintain_coarse(symbol: str, tf: str, session: str, *,
         return {"skipped": "RORT_RESAMPLED_STORE_WRITE off"}
     from datetime import datetime, timedelta, timezone
     now = datetime.now(timezone.utc)
-    return store_window(symbol, tf, session, now - timedelta(days=recent_days), now)
+    # Floor start to UTC midnight so window-REPLACE rebuilds WHOLE days. A mid-day
+    # start would partial-replace the start-day — delete the whole UTC-day, then
+    # rebuild it from only that day's LATER 1Min → drop its morning bars (the
+    # corruption seen 2026-07-10). Whole-day rebuild also refreshes the settled edge.
+    # (store_window is deliberately NOT floored globally: a mid-day-window consumer
+    # read floors the low bound too, so the store holds complete days but a partial
+    # first bar still round-trips — 1Day consumer #1 relies on that.)
+    start = (now - timedelta(days=recent_days)).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    return store_window(symbol, tf, session, start, now)
 
 
 def maintain_all_coarse(targets: Optional[list] = None, *,
@@ -729,11 +767,12 @@ def maintain_all_coarse(targets: Optional[list] = None, *,
 
 
 def shadow_compare_targets(targets: Optional[list] = None, *,
-                           days: int = 5) -> list:
+                           days: int = 5, settled_only: bool = False) -> list:
     """§7 shadow comparator over targets — READ-ONLY (no writes). For each target,
     reads the store vs the on-the-fly canonical over the last `days` and byte-compares.
     This is the gate that must be GREEN for N trading days before any consumer READ
-    flag is flipped on in prod. Returns a list of comparator dicts."""
+    flag is flipped on in prod. `settled_only` trims the forming/just-closed WS-tip
+    bucket (the right 'green' criterion during RTH). Returns comparator dicts."""
     from datetime import datetime, timedelta, timezone
     targets = targets or default_coarse_targets()
     now = datetime.now(timezone.utc)
@@ -742,6 +781,9 @@ def shadow_compare_targets(targets: Optional[list] = None, *,
     for (s, tf, sess) in targets:
         stored = read_store(s, tf, sess, start, now)
         canon = canonical_resampled(s, tf, sess, start, now)
+        if settled_only:
+            stored = _trim_settled(stored, tf, now=now)
+            canon = _trim_settled(canon, tf, now=now)
         out.append(compare_store_vs_canonical(stored, canon, symbol=s, tf=tf,
                                                session=sess))
     return out
