@@ -192,19 +192,31 @@ def _verify_coarse_secondary_store(symbol, out, session, end, tag="#1"):
                 store_z = store_df[(store_df.index > head)
                                    & (store_df.index <= zone_hi)]
                 head_gap = 0
+                tail_lag = 0
                 if len(store_z):
                     head_gap = int((sec_z.index < store_z.index[0]).sum())
                     if head_gap:
                         sec_z = sec_z[sec_z.index >= store_z.index[0]]
+                    # EDGE LAG ≠ drift: bars newer than the store's last write
+                    # (maintain hasn't caught up — settled bars keep accruing
+                    # between passes) are an operational freshness signal, not
+                    # byte-divergence. Trim them from the compare and report
+                    # separately so DRIFT stays "values differ" only.
+                    tail_lag = int((sec_z.index > store_z.index[-1]).sum())
+                    if tail_lag:
+                        sec_z = sec_z[sec_z.index <= store_z.index[-1]]
                 cols = ["open", "high", "low", "close", "volume"]
                 cmp = rbs.compare_store_vs_canonical(
                     store_z, sec_z[cols], symbol=symbol, tf=tf, session=session)
                 if cmp["match"]:
+                    notes = ""
+                    if head_gap:
+                        notes += f" (head coverage gap {head_gap} bars)"
+                    if tail_lag:
+                        notes += f" (edge lag {tail_lag} bars — maintain behind)"
                     logger.info("[ResampledStore%s] %s %s %s: VERIFY GREEN — %d "
                                 "settled bars byte-identical%s", tag, symbol, tf,
-                                session, len(store_z),
-                                f" (head coverage gap {head_gap} bars)" if head_gap
-                                else "")
+                                session, len(store_z), notes)
                 else:
                     detail = cmp.get("note") or f"{len(cmp['cell_diffs'])} cell diffs"
                     if cmp.get("cell_diffs"):
