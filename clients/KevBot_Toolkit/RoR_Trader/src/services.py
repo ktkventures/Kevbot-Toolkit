@@ -187,6 +187,55 @@ def _resolve_primary_df_for_backtest_model(
     return primary_df, sec_dfs
 
 
+def _coarse_secondary_store_swap(strat, sec_tf, df, session):
+    """CONSUMER #2 (M-RS2 Phase 2): serve a COARSE (>=1Hour) secondary's OHLCV from
+    the canonical resampled store instead of resampling the primary `df` here.
+
+    BYTE-IDENTITY-SAFE BY CONSTRUCTION: reads the store AND computes the resample
+    it would replace, and returns the store ONLY when the two are byte-identical
+    (always-compare-and-fallback); returns None on any miss/mismatch → the caller
+    resamples exactly as before. So the ribbon is unchanged bar-for-bar. NOTE the
+    source subtlety: the store is resample(1Min-session-filtered) while this path
+    resamples the PRIMARY `df` — identical for a 1Min primary or a price-only coarse
+    gate, but a SUB-MINUTE primary's summed volume diverges (documented
+    1Min != Σsub-minute), which the comparator catches → fallback (no change).
+
+    Serves whatever window `df` spans, so a deep-warmed caller gets a deep coarse
+    read from the store (the primitive the correct-warmup ribbon builds on). Gated
+    RORT_RESAMPLED_STORE_READ; a no-op returning None when off (byte-identical)."""
+    try:
+        import resampled_bar_store as rbs
+        from data_loader import resample_to_timeframe
+    except Exception:
+        return None
+    if not strat or df is None or len(df) == 0:
+        return None
+    try:
+        if not rbs.read_enabled() or rbs.tf_seconds(sec_tf) < 3600:
+            return None
+        symbol = strat.get('symbol')
+        store_df = rbs.read_store(symbol, sec_tf, session, df.index.min(),
+                                  df.index.max())
+        if store_df is None or len(store_df) == 0:
+            return None
+        resampled = resample_to_timeframe(
+            df[['open', 'high', 'low', 'close', 'volume']].copy(), sec_tf)
+        cmp = rbs.compare_store_vs_canonical(store_df, resampled, symbol=symbol,
+                                             tf=sec_tf, session=session)
+        if not cmp['match']:
+            detail = cmp.get('note') or f"{len(cmp['cell_diffs'])} cell diffs"
+            logger.info("[ResampledStore#2] %s %s %s: store!=resample(primary) (%s) "
+                        "→ resample fallback", symbol, sec_tf, session, detail)
+            return None
+        logger.info("[ResampledStore#2] %s %s %s: served from store (byte-identical) "
+                    "[%d bars]", symbol, sec_tf, session, len(store_df))
+        return store_df[['open', 'high', 'low', 'close', 'volume']].copy()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[ResampledStore#2] swap failed %s %s: %s → resample",
+                       strat.get('symbol') if strat else '?', sec_tf, e)
+        return None
+
+
 def prepare_data_with_indicators(
     symbol: str, days: int = 30, seed: int = 42,
     start_date=None, end_date=None,
@@ -362,9 +411,19 @@ def prepare_data_with_indicators(
                 if secondary_tf_dfs is not None and sec_tf in secondary_tf_dfs:
                     sec_df = secondary_tf_dfs[sec_tf].copy()
                 else:
-                    sec_df = resample_to_timeframe(
-                        df[['open', 'high', 'low', 'close', 'volume']].copy(),
-                        sec_tf)
+                    # CONSUMER #2 (M-RS2 Phase 2): serve the coarse (>=1Hour)
+                    # secondary from the canonical store instead of resampling the
+                    # primary here — but ONLY when byte-identical to this resample
+                    # (always-compare-and-fallback). No display change; the store can
+                    # only replace an identical value. Serves whatever window `df`
+                    # spans (deep when the caller warmed deep — the synergy that
+                    # later powers the correct-warmup ribbon). Inert/byte-identical
+                    # when RORT_RESAMPLED_STORE_READ is off.
+                    sec_df = _coarse_secondary_store_swap(strat, sec_tf, df, session)
+                    if sec_df is None:
+                        sec_df = resample_to_timeframe(
+                            df[['open', 'high', 'low', 'close', 'volume']].copy(),
+                            sec_tf)
                 if len(sec_df) == 0:
                     continue
                 sec_df = run_all_indicators(sec_df)
