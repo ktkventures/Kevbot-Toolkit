@@ -443,7 +443,19 @@ def read_store(symbol: str, tf: str, session: str, start, end
         return None
     import psycopg
     tf_s = tf_seconds(tf)
-    s = start.isoformat() if hasattr(start, "isoformat") else start
+    # Coarse bars are LABELED at their bin START, which PRECEDES their data (a 1Day
+    # bar is labeled 00:00 but aggregates the whole day; a window starting mid-day
+    # still wants that bar because it contains in-window 1Min — exactly as the
+    # on-the-fly resample produces it). So floor the low bound to the bin boundary,
+    # else the first bar is wrongly excluded when `start` falls mid-bin (a bar-set
+    # mismatch vs canonical). Store TFs divide the day and anchor at UTC midnight, so
+    # epoch-flooring (Timestamp.floor) matches the resample bins. No-op for
+    # midnight-aligned windows.
+    lo = pd.Timestamp(start)
+    if lo.tzinfo is None:
+        lo = lo.tz_localize("UTC")
+    lo = lo.floor(f"{tf_s}s")
+    s = lo.isoformat()
     e = end.isoformat() if hasattr(end, "isoformat") else end
     sql = ("select ts, open, high, low, close, volume from resampled_bar_cache "
            "where symbol=%s and timeframe_seconds=%s and session=%s "

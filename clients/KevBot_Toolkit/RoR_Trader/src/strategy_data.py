@@ -104,6 +104,66 @@ def _tf_warmup_days(tf: str, bars: float) -> float:
     return math.ceil(bars / bpd * _TRADING_TO_CALENDAR)
 
 
+def _resampled_store_read_enabled() -> bool:
+    """Kill-switch (default OFF) for CONSUMER #1 of the M-RS2 Phase-2 resampled bar
+    store: read the coarse (>=1Hour) secondary from the canonical store instead of
+    resampling 1Min here. Byte-identity-safe by construction (see
+    `_coarse_secondary_from_store`). Instant rollback by unsetting."""
+    try:
+        import resampled_bar_store as rbs
+        return rbs.read_enabled()
+    except Exception:
+        return False
+
+
+def _coarse_secondary_from_store(symbol, coarse_tfs, start, end, session):
+    """CONSUMER #1 (M-RS2 Phase 2): serve the coarse (>=1Hour) secondaries from the
+    canonical resampled store instead of resampling here.
+
+    BYTE-IDENTITY-SAFE BY CONSTRUCTION: for each coarse tf it reads the store AND
+    computes the canonical resample, and uses the store ONLY when the two are
+    byte-identical; on ANY miss/mismatch it returns None → the caller runs the
+    existing 1Min-resample path (== flag-OFF). So flag ON == flag OFF for trades,
+    always — the store can only ever REPLACE an identical value, never change one.
+    (This is the "ship with the comparator ON before any consumer trusts the store"
+    first cutover — correctness over speed; the compute-skipping promotion comes
+    later once the comparator is green for N days.)
+
+    Returns {canonical_tf: DataFrame[OHLCV]} or None. No-op (None) when the read
+    flag is off, so it's inert and byte-identical when disabled."""
+    if not _resampled_store_read_enabled():
+        return None
+    try:
+        import resampled_bar_store as rbs
+        cols = ["open", "high", "low", "close", "volume"]
+        out = {}
+        for tf in coarse_tfs:
+            store_df = rbs.read_store(symbol, tf, session, start, end)
+            if store_df is None or len(store_df) == 0:
+                logger.info("[ResampledStore#1] %s %s %s: store empty/uncovered "
+                            "→ fallback to resample", symbol, tf, session)
+                return None
+            # Gate on byte-identity vs the canonical resample (same source the
+            # resample path uses). Use the store ONLY if it exactly reproduces it.
+            canon = rbs.canonical_resampled(symbol, tf, session, start, end)
+            cmp = rbs.compare_store_vs_canonical(store_df, canon, symbol=symbol,
+                                                 tf=tf, session=session)
+            if not cmp["match"]:
+                detail = cmp.get("note") or f"{len(cmp['cell_diffs'])} cell diffs"
+                logger.warning("[ResampledStore#1] %s %s %s: store!=canonical (%s) "
+                               "→ fallback to resample", symbol, tf, session, detail)
+                return None
+            out[tf] = store_df[cols].copy()
+        if out:
+            logger.info("[ResampledStore#1] %s served %s from store (byte-identical "
+                        "to canonical) [%s]", symbol, sorted(out.keys()), session)
+        return out or None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[ResampledStore#1] store read failed %s %s: %s → fallback",
+                       symbol, coarse_tfs, e)
+        return None
+
+
 def _build_coarse_secondary_from_1min(symbol, coarse_tfs, start, end,
                                       session, data_feed):
     """Build coarse (>=1Hour) secondary OHLCV from a single 1Min load + resample
@@ -113,6 +173,12 @@ def _build_coarse_secondary_from_1min(symbol, coarse_tfs, start, end,
     (full series, last bar kept — matches prepare_data's internal resample at
     services.py:360) or None on any miss → caller falls back to the resample
     path. The 1Min load is bar_cache-accelerated when BAR_CACHE_ENABLED."""
+    # CONSUMER #1 cutover: serve from the canonical store when armed + byte-identical
+    # (else falls through to the resample below). Inert/byte-identical when the flag
+    # is off.
+    store_out = _coarse_secondary_from_store(symbol, coarse_tfs, start, end, session)
+    if store_out is not None:
+        return store_out
     try:
         from data_loader import load_market_data, resample_to_timeframe
         cols = ["open", "high", "low", "close", "volume"]
