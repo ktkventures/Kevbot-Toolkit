@@ -1,14 +1,97 @@
 # RoR Trader — STATUS (read me first)
 
-**Updated: 2026-06-25.** This is the single doc to open for "what are we doing and why."
+**Updated: 2026-06-27.** This is the single doc to open for "what are we doing and why."
 It's the live priority list + current state. Deeper detail lives in the linked docs (kept
 in their current locations for now — see Doc Map). New observations get logged here (and in
 `Roadmap_Divergence_Hunting.md` for divergence specifics). Work board = the **dev_tasks
-admin page** (`/admin/tasks`); today's items are #33–#40.
+admin page** (`/admin/tasks`); next-batch items are **#45–#53** (phase 3).
 
 ## North star
 Backtest and live produce the **same trades within ~5s**, so we can **trade reliably**.
-Current focus: the first real-money strategies (308–314, TSLA 15Sec).
+Current focus: **M-RS3 parallelization (#46)** so a full trustworthy fleet recompute is fast/routine.
+
+## 🟢 2026-07-01 — M-RS4 continuous engine PROVEN LIVE; Fix 1a + Fix 2 shipped (gated) (READ FIRST)
+Big session. **The M-RS4 Phase 3 continuous backtest engine works in production** — armed the `shadow-worker`
+on 8 SPY canaries (276–283); it wrote real `backtest_%` trades that paired with live alerts → **93–100%
+combined on the Strategy Health page**. The architecture is validated. Details + Railway flags + re-arm
+procedure: memory `project_mrs4_shadow_arming_2026-07-01`.
+
+**Shipped to dev (all gated OFF by default):**
+- **Fix 1a — incremental Hi-Fi load** (PR #18): `db.load_trades_admin(created_at_gte=...)` +
+  `run_hifi_pass2` pushes the `last_hifi_pass_at` watermark into SQL under `RORT_HIFI_INCREMENTAL_LOAD`.
+  Byte-identical (SQL==PY, walked-set identical on 5 canaries; load −49% median/−88% p90).
+  `docs/_active/Scope_Fix1_Hifi_Incremental_Load.md`.
+- **Fix 2 — shadow anti-starvation** (PR #19): `RORT_SHADOW_FAIR_ORDER` (oldest-polled first),
+  `RORT_SHADOW_MAX_ADVANCE_S` (bounded warm advance), `RORT_SHADOW_KPI_ASYNC` (KPI/Hi-Fi off the poll
+  thread). **Also brought the anchor-hydrate fix (b14657c) to dev — it was never merged** (without it a
+  cold bootstrap 409-floods on every existing trade). Byte-identical by construction + unit-tested.
+- Offline **Hi-Fi gate** in `_shadow_manager_validate.py` (`VALIDATE_HIFI`) — refined stop/target exits
+  intra-candle + byte-identical (green on 280/288).
+
+**KEY correction — Strategy Health = backtest ↔ ALERTS, NOT the algo lane.** The morning's all-TBD wasn't a
+crash: `data_worker_streaming_enabled` has been **FALSE since 06-05**, so nothing produces intraday backtest
+trades (only the overnight recompute, last ~01:41 UTC) → intraday Health goes TBD. The shadow is the
+continuous replacement. TBD literally = the backtest lane hasn't reached the alert's time yet.
+
+**OPEN (next session):** the Fix 2 re-arm wrote 0 trades in ~22 min (with flags on AND off) — NOT the flags,
+NOT a `poll()` bug (local repro: runs clean, no hang). Likely the anchor now sits at ~16:26 from the earlier
+successful arm (little new to write) OR container bootstrap slowness. **Shadow left INERT (button)**; the 8
+lanes are fresh to ~16:50. First check next time: did 276–283 actually produce alerts/trades 16:26→now?
+Then re-arm (lane_mode=shadow + dry_run=0 + Fix2 flags), confirm 8/8 incl 276, widen to 34, Step F.
+
+**CI note:** the "Fidelity Gate (synthetic parity)" check is chronically RED on every dev merge (missing
+`pytest` in the runner, #52) — not a real failure; the 31 fidelity assertions pass. Safe to merge past.
+
+## 🟢 2026-06-30 night — M-RS4 Phase 3 SAFE PREP done (gate + scope, no fidelity code) (READ FIRST)
+Session split per `Plan_M-RS4_Phase3_Scheduling_Fixes.md` §0: tonight = safe prep, no fidelity-critical
+code; the Hi-Fi change + live validation are a **morning market-hours** job. Shipped tonight (nothing
+touches `run_hifi_pass2`/KPI load paths):
+- **Offline Hi-Fi gate BUILT** — extended `src/_shadow_manager_validate.py` (`VALIDATE_HIFI=1`, default
+  on). After the existing bar-resolution byte-identity check it refines BOTH lanes with the real
+  `_hifi_resolve_trades` and asserts (1) still byte-identical post-Hi-Fi, (2) every eligible L-type
+  stop/target exit landed **intra-candle** (off the primary-TF bar boundary). Degrades to **AMBER** when
+  no 1-sec bars (off-hours) — never false-greens, never changes the Step C verdict. Smoke-run sid 280:
+  Step C green (unchanged), Hi-Fi AMBER (0 eligible in the dead off-hours window). Turns green in the
+  morning on live 1-sec data. **This is the gate the morning Fix 1 builds against.**
+- **Fix 1 (Hi-Fi half) SCOPED** — `docs/_active/Scope_Fix1_Hifi_Incremental_Load.md`. Recommendation:
+  push the existing `last_hifi_pass_at` watermark into SQL (`load_trades_admin(created_at_gte=...)`),
+  which is **byte-identical to today's incremental filter** and kills the reload-all. Explicit gotcha:
+  do NOT window by `entry_fill_ts` (backfills write old-entry/new-created trades → would strand them
+  bar-aligned). KPI/equity reload-all is a separate mechanism (in-memory `kpi_series`, parent §2).
+- **Emblem BACKEND — already satisfied, no edit.** The emblem's data source is `/algo-trades` →
+  `load_trades_admin` → `_row_to_trade`, which already merges `provisional` (column) + `hifi_resolved`
+  (`data` JSONB). Both flow today; `hifi_resolved` is already in the frontend `TradeDTO`. Remaining work
+  = frontend emblem column + Health TBD gate (morning, §0b).
+
+**MORNING pickup:** implement Fix 1 against the ready gate (turn Hi-Fi gate green on ≥3 canaries with
+live 1-sec data) → arm live → confirm intra-candle exits + Health pairing → F/G. Plus emblem frontend +
+Health TBD gate.
+
+## 🟢 2026-06-27 — coarse + truncation fixes shipped, full fleet recompute, divergence honest (READ FIRST)
+**Shipped + deployed to dev (all validated, fidelity suite 18/18):**
+- **Coarse-secondary-from-1Min fix** (`RORT_COARSE_SECONDARY_FROM_1MIN=1` on api) — a sub-min-primary +
+  coarse(≥1H) gate strategy no longer loads ~363d of the primary to build the secondary; builds it from
+  1Min (cache-accelerated). Fixed the UAD **hang** (sid 338: hang→76s). Byte-identical for price gates;
+  daily-volume shifts only volume-daily gates (e.g. sid 311 VWAP +5). `strategy_data.load_strategy_data`.
+- **Truncation preserve-range fix** (`RORT_UAD_PRESERVE_RANGE`, default ON) — full recompute no longer
+  truncates backtest history to `data_days` when a strategy lacks `backtest_start_date`. `forward_test_service._do_recompute`.
+- **TV export** (TV agent, PRs #2+#3 merged): emitter coverage 14→64/68, readiness badge, + EOD
+  entry-suppression in `unified_engine.py` **gated OFF** (`RORT_SUPPRESS_EOD_REENTRY`, inert until flipped — task #53).
+- **Full-fleet UAD pass (overnight):** 67/67 in **215 min SEQUENTIAL** (~193s/strat) — clean, zero data loss,
+  backtest now trustworthy fleet-wide. This is the **M-RS3 baseline** (parallelize → ~7-8×).
+
+**Divergence note (don't panic):** Strategy-Health combined % dropped <90% on many strategies AFTER the
+recompute. NOT a regression — the old append lane under-produced (~50% recent), inflating the score; the
+full recompute revealed the true ~20-40% backtest-vs-live gap (the divergence-hunting target). Backtest is
+correct (suite 18/18, coarse byte-identical). A day-specific spike on 06-26 (clean canaries ~4%→13%) ties
+to our heavy deploy-churn that day (RTH Worker restarts), not code — **WATCH #45: confirm it returns to
+~4% on a clean Monday RTH.** By-Deploy health tab is blank because `deploy_history.json` is stale since
+06-12 (#50).
+
+**THIS WEEKEND = M-RS3 (#46)** parallel recompute + dedicated update service (+ `compute_parity=False`
+bulk lever #47, folds in algo-lane #43). Logic/divergence-sensitive changes deferred to Monday (deploy+monitor).
+Next-batch board: #45 (watch), #46/#47 (M-RS3), #48 chart-coarse, #49 health-window scope, #50 deploy_history,
+#51 gap-healer, #52 CI pytest, #53 EOD flip.
 
 ## 🟢 2026-06-25 — M-RS2 Phase 2 read path COMPLETE + Hi-Fi load-once (READ FIRST)
 - **Two bar caches now have canonical names** (Kevin): **"Live Bars"** (`live_bars`, WS,

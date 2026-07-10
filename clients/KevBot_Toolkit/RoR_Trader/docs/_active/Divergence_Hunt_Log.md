@@ -1,0 +1,254 @@
+# Divergence Hunt Log (bug-hunt aggressive, started 2026-07-09)
+
+Standing record. Metric = Strategy Health `combined_pct` @5s (screen-faithful via
+`api.routers.strategy_health.get_strategy_health` offline). Goal: 21 W2-6 strategies each
+≥95% @5s (or ≥95%@10s w/ note), OR root-caused + replay-validated fix. Ledger cross-ref:
+`Bug_Hunt_Wave1_2026-07-06.md`.
+
+## SCAN 2026-07-09 ~13:20Z (post-nightly 69/69 clean) — @5s, 24h window
+THE STRUCTURAL FINDING: the 21 split by **backtest coverage cutoff** (`fair_cutoff_ts`), not by
+strategy quality. Nightly recompute RAN for all (last_recompute=07-09 01:1x) but coverage frozen
+for a subset → their backtest lane produces no recent trades.
+
+### GROUP A — coverage current (07-08/09), REAL divergence to work (ranked worst):
+| sid | tf | comb% | paired/phan/miss (fair) | theory |
+|----|----|-------|--------------------------|--------|
+| 329 | 30Sec | 17.6 | 6/0/28 (fair 6/0/18) | under-fires live; backtest MISSES (28) — live gate too tight vs backtest |
+| 266 | 5Min | 29.4 | 5/5/7 | two-sided; 5Min-primary class + AH thin |
+| 333 | 30Sec | 52.9 | 18/12/4 | 12 phantom — live over-fires vs backtest |
+| 327 | 30Sec | 71.4 | 20/2/6 | healing post-#38; missed=6 |
+| 328 | 30Sec | 77.8 | 28/2/6 | healing post-#38 |
+| 308 | 15Sec | 87.9 | 225/15/16 | close; 15 phantom/16 miss |
+| 336 | 15Sec | 89.7 | 52/0/6 | miss=6 only |
+| 321/334 | 15Sec | 94.7 | 180/2/8 | ~there |
+| 335 | 15Sec | 97.3 | PASS | ✓ |
+| 311 | 15Sec | 100 | PASS | ✓ |
+
+### GROUP B — backtest coverage FROZEN despite nightly running:
+- **313** (cov 07-02, maxBT 07-02T15:53) — but **51 live alerts since 07-08**. LIVE-vs-BACKTEST
+  GATE DISAGREEMENT: gates=1d-UT_BOT_V4-BULL_TREND + 4h-STRAT_ASSISTANT. Hypothesis: live warms
+  the 1Day gate from ~70d cache (floor-clamped) → BULL_TREND → fires; backtest warms from full
+  history → different state → gate closed → 0 trades. THE daily-gate divergence class. [P1]
+- **309** (cov 07-07, maxBT 07-07T13:32) — live near-silent now (1 alert). gates=2m-BB + 3m-VWAP.
+  Regressed 96%→0. Backtest stopped 07-07. [P2]
+- **310/312/314/325/330/331/339/340** — QUIET both lanes (0 live since 07-08, backtest frozen
+  June–07-06), comb%=None. Restrictive gates (1d-SUPERTREND-BEAR, 5m-RVOL-HIGH, dual-daily).
+  Likely legitimately inactive (no divergence signal). VERIFY 1-2 aren't silently broken; else
+  NOTE as inactive-not-divergent.
+
+## Work order: 313 → 309 → 329 → 266 → 333 → 327/328 sweep. Quiet-8 = verify+note.
+
+## Trade-by-trade findings (13:35Z)
+- **309 → FALSE ALARM / NOTE**: over 07-06..09 LIVE(25)≈BT(26) trade-for-trade identical; pairs
+  fine. Went inactive after 07-06 (gate closed both lanes); 24h window caught 1 stray → fake 0%.
+  NOT a regression. Drop from active list.
+- **329 → 1M-SWING live gate UNDER-fires**: BT fires 17 (07-08 RTH), LIVE only 3. gates=
+  1M-SWING_123-BULL_C2 + 5m-SWING_123-BULL_C2. 5m works (327/328 post-#38); culprit = 1M gate
+  live-vs-backtest disagreement (1M key served "by luck" by 174's monitor per W2-5). Live 1M-SWING
+  state ≠ backtest → live gate closed when backtest open.
+- **333 → mild two-way jitter** (52.9%): several exact pairs + a few disagreements each direction.
+  Lower priority; likely timing + occasional gate flip.
+
+## ⭐ EMERGING SYSTEMIC CLASS: live secondary-TF gate state ≠ backtest secondary-TF gate state
+- 313: 1Day gate too OPEN live → over-fire 51/0.  329: 1M gate too CLOSED live → under-fire 3/17.
+- Same root (live vs backtest compute a secondary-TF gate state differently — warmup depth /
+  computation path). Direction varies. 313 agent diagnosing the 1Day instance = keystone; fix
+  likely generalizes to 329 (1M) and others. This is THE class to crack for the batch.
+
+## Second class identified — 266 (primary utv4-flip timing, NOT a gate issue)
+266 = TSLA 5Min, UNGATED (no confluence), trigger ut_bot_v4_bull_flip. 07-08 LIVE
+[13:45,15:35,16:40,17:30,18:40] vs BT [14:25,15:55,16:45,17:30,18:40,19:10] — 2 exact pairs,
+rest off 5-40min. Pure PRIMARY-TF utv4 recursive-trailing-stop epsilon → flip fires on adjacent
+5Min bars live vs backtest. Same utv4-epsilon family as the resident-vs-canonical jitter work.
+Harder (recursive state convergence); 5Min amplifies (1-bar = 5min). Class 2.
+
+## TWO CLASSES for the batch:
+- **CLASS 1 (secondary-TF gate state divergence)** — 313 (1Day), 329 (1M), likely quiet-8 w/
+  coarse gates. Live vs backtest compute a secondary gate state differently. BIGGEST lever.
+  313 agent diagnosing the keystone mechanism now.
+- **CLASS 2 (primary utv4-flip epsilon)** — 266 (5Min ungated), contributes to 308/321/333 jitter.
+  Recursive trailing-stop convergence; harder; likely "accept + document" or a warmup-convergence
+  fix behind fidelity gate.
+
+## 313 KEYSTONE VERDICT (agent, 13:55Z) — hypothesis REFUTED, real cause found
+NOT the daily gate / warmup (deep=shallow=ultra identical; daily+trigger align 51/51). REAL cause:
+**4h-STRAT_ASSISTANT gate — live OVER-FIRES on a non-canonical 4H bar.** Live holds 4H=INSIDE
+(fires 51x) while backtest correctly = TWO_DOWN (0 trades). Live's INSIDE reproduced by NO clean
+resample of bar_cache OR live_bars (both TWO_DOWN); INSIDE appears at 07-06 20:00 AH → live carries
+a stale/forming 4H bar across the overnight/session boundary (coarse-gate session-mismatch class,
+cf 325/338). BACKTEST IS CORRECT; live is the bug. Recompute genuinely emits 0 (reproduced).
+Replay-predict: pin 4H to completed bar → 313 0%->~100% (single-variable). Sub-mechanism
+(forming CB vs stale-carry) = MEDIUM confidence — needs one more probe.
+BONUS (Kevin's blank Gate Parity panel EXPLAINED): gate_parity_harness.build_gate_parity_view
+reads strat.get('entry_trigger') but modern strategies store entry_trigger_confluence_id ->
+trigger=None -> 0/0 blank. ALSO only analyzes conf[0]. CLEAN reversible observability fix.
+## REFRAME CLASS 1: "live gates on a NON-CANONICAL coarse bar" (forming/stale carried across
+session boundary). Session-shadow #31/#32 has a gap for 313's 4H STRAT_ASSISTANT. 329's 1M likely
+a different sub-case (174-monitor-served). Diagnosing both.
+
+## 313 SUB-MECHANISM PINNED (agent B, high conf, 3 confirmations) — 14:10Z
+CLASS 1a = COARSE-GATE SESSION CONTAMINATION. Live coarse (>=3600s) shadow close-feed is
+session-UNFILTERED → ingests AH 4H buckets (16:00-20:00 ET / 20:00 UTC) that RTH resample never
+forms; carries stale INSIDE across overnight into RTH. Signature: 51 over-fires 13:36-16:03Z then
+STOP at the 16:00Z 4H boundary (live closes RTH bucket→TWO_DOWN, gate shuts). NOT forming-bar.
+Set at ralph_engine `_close_shadow_with_bar` RTH branch (eats raw session-unfiltered fan-out bar).
+#31 fixed the OPPOSITE archetype (338 non-RTH on RTH shadow); 313 = RTH-on-contaminated-shadow,
+untouched by #31. #32 refresher would heal but not effectively running/covering coarse key.
+FIX (option 1, surgical): for coarse TFs take the session-correct reload branch for ALL sessions
+incl RTH (drop `if session=='RTH': eat completed` for tf>=3600) → _load_warmup_df + _closed_bars_only
++ recompute_confluence = RTH last-closed 4H = backtest. Flag RORT_MTF_COARSE_RTH_RELOAD default OFF,
+byte-identical-off. Replay: 313 0%->~100%. Generalizes to any coarse-gated strategy (4H/1Day).
+329 = SEPARATE (fine-grain 1M/5m real-monitor own_records, W2-5 topology gap) — NOT batched.
+
+## Option 2 RULED OUT: RORT_MTF_STATE_REFRESH_S=600 IS armed on Worker but 4H gate still
+INSIDE at 07-09T12:07 → #32 refresher does NOT cover coarse shadows. Option 1 (close-path
+reload) is REQUIRED. Building it.
+
+## SHIPPED — PR #48 gate-parity harness (merged 14:21:44Z, deployed) [reversible/observability]
+Fixed: trigger read (entry_trigger→base id via alerts._get_base_trigger_id) + all-gates iteration +
+ungated/1M-unresolvable graceful. 313 now shows live_actual:38 + divergent_gate=4h-STRAT_ASSISTANT
+(CB 0% blocks all phantoms); 329/266 no crash; 291 17/17 regression-clean. = Kevin's panel + fleet
+divergence tool. Deferred (noted in PR): coarse PB ribbon NaN-shallow (uses CB), 1M-from-sub-minute
+resample gap (329) — need engine per-TF windowed load.
+
+## Quiet-8 coarse-gate map (for post-coarse-fix re-scan):
+- COARSE-gated (4h/1Day, could be affected by RORT_MTF_COARSE_RTH_RELOAD): 310(1d), 312(1d×2),
+  314(4h), 325(4h), 330(4h), 331(4h). All 0 live AND 0 backtest → backtest gate genuinely closed →
+  likely LEGIT-INACTIVE (not divergence). Re-scan after coarse fix arms to confirm no surprise.
+- NON-coarse: 339(30m/10s), 340(5m/3m) — unaffected by coarse fix; inactive.
+
+## SEPARATE DATA ISSUE (noted, not blocking): SPY 10Sec bar_cache drift for 07-06
+Parity suite FAILs 2 checks: cache-parity SPY/10Sec/24-7 (12 OHLCVdiffs) + RTH (4 diffs).
+CONFIRMED PRE-EXISTING on clean origin/dev (identical fails, canary 267 passes). NOT caused by
+#49 (which only touches ralph_engine.py). = bar_cache revision drift for SPY 10Sec on 07-06
+(settle-sweeper/T+2 class). DATA-REPAIR task: re-true SPY 10Sec 07-06 via settle sweeper. Queued.
+
+## SHIPPED — PR #49 coarse-gate RTH session reload (merged 14:48:36Z; Worker deployed; ARMED 14:49:52Z)
+Flag RORT_MTF_COARSE_RTH_RELOAD=1. For coarse TFs (>=3600s) live shadow takes session-correct
+reload for ALL sessions incl RTH → live coarse gate = backtest RTH-resampled last-closed bar.
+Fixes the close chokepoint + 3 correction/revision paths (rebroadcast cascade, apply_rest_correction,
+apply_rest_insert) that also re-contaminated = CLASS FIX. Validated: flag-on 4H=TWO_DOWN (was stale
+INSIDE); flag-off byte-identical (golden-fixture 308/309/313 + routing test); parity suite IDENTICAL
+to baseline (2 SPY fails pre-existing/orthogonal, isolated on clean dev). Replay: 313 0%->~100%.
+Verifying live: [COARSE-RTH-RELOAD] log + 313 4H flips TWO_DOWN + over-fire stops.
+Backup: backup/dev-pre-coarserth-2026-07-09.
+
+## 313 fix ARMED+DEPLOYED confirmed (Worker c071ebb7 @14:49:53Z, 1s post-arm, flag=1).
+313 firing 0 entries today post-arm (no over-fire). Reload log fires at next coarse close 16:00Z
+(and overnight-crossing test tomorrow) = full live confirmation. Newest 4H telemetry already shows
+STRAT_ASSISTANT=TWO_DOWN (correct). Proceeding to 329 in aggressive mode; 16:05Z check queued.
+
+## 329 VERDICT (agent, high conf) — #38 coverage gap (own_records < shadow fidelity)
+1M-SWING gate served by 174's OWN_RECORDS (174 incidentally computes SWING_123 from its 2m conf →
+#38 _real_monitor_covers counts it as covered → suppresses the 1M shadow). own_records matches
+offline only ~60-78% → misses BULL_C2 transients → 329 under-fires 3/17. CLINCHER: 329 offline/algo
+lane = backtest (16/17); only LIVE path collapses; sole diff vs 327/328 (85-88%) = shadow-served vs
+own_records-served. NOT absent (W2-5), NOT frozen (#2). New sub-class: interp-coverage ≠ fidelity.
+FIX: _real_monitor_covers (ralph_engine.py:2775) — incidental interp (resolved via DIFFERENT-TF
+confluence, not the monitor's own gate/trigger at THIS tf) must NOT suppress the shadow → 1M gets a
+faithful shadow (like its 5m already). Flag RORT_OWNRECORDS_INCIDENTAL_NO_COVER default OFF.
+Replay: 329 18%->~85-100% (15-17 live vs 17 bt). GENERALIZES: fleet sweep for sub-coarse gates
+whose interp is neighbor-own_records-served (signature = key carries neighbor's full own interp set).
+BUILDING; hold merge for batch after 313 16:00Z confirm.
+
+## 313 fix WORKING LIVE (16:01Z gate diag): 4H-STRAT_ASSISTANT=TWO_UP (canonical RTH), NOT phantom
+INSIDE. Gate closed → 313 silent (0 over-fire). Definitive overnight-crossing proof tomorrow.
+
+## 329 fix STOP — diagnosis DISPROVEN by build-agent validation (discipline win, NO ship)
+Shadow-coverage fix is INERT: sid 340 (1Min monitor) has sw123_bull_c2 as its PRIMARY trigger →
+GENUINELY computes 1M-SWING_123 → TF-aware coverage still credits it → 0 shadows added → cannot
+change 329. REAL mechanism (proven): cross-TF gate ALIGNMENT/HOLD timing — SWING C2 is a
+sub-telemetry transient; live gate holds last-closed secondary bar, backtest uses shifted/aligned
+bar (secondary_tf_shift semantics). Proof: 329's 5m leg is ALREADY a shadow, still 3/17 — topology
+isn't it. Real fix = live secondary gate alignment/hold vs backtest shift — DELICATE (high fidelity
+risk, touches secondary_tf_shift). DEFER; not a quick win. See feedback_parity_secondary_tf_shift.
+RECLASSIFY 329 → cross-TF-alignment class (with 266? — 266 is primary utv4, different). 
+NEXT: easier wins first (333 jitter, 308 88%, 327/328 healing tail); 329 alignment fix needs its
+own careful diagnosis + parity gate.
+
+## ⭐ COARSE-GATE FIX (#49) = MAJOR WIN — heals BOTH directions (regression check → improvement)
+POST-arm (14:50-16:20) vs PRE-arm (13:30-14:49):
+- 325: 0%(0live/7bt) -> 100% (8/8)   | 330: 0%(0/7) -> 100% (9/9)   | 331: 4pair -> 100% (7/7)
+- 313: over-fire -> silent (gate correctly closed)
+Same contamination caused 313 OVER-fire (4h wrongly INSIDE/open) AND 325/330/331 UNDER-fire (4h-SWING
+wrongly closed). Pinning live 4h to RTH-canonical fixed BOTH. 24h scan hid it (averages pre-fix).
+1 flag, 4 strategies corrected, 3 to ~100%. NO regression. This is the class-fix leverage.
+
+## 308 drill → PRIMARY-TRIGGER WS-vs-REST TIMING FLOOR (irreducible, accept+document)
+308 ungated 15Sec swing_123. [15:30-16:00Z] LIVE 9 / BT 8: 6 EXACT pairs, 1 off-by-one-15Sec-bar
+(15:36:15 vs :30), 2 phantom, 1 missed. NOT a logic bug — swing_123 C2 is a 2-bar candle pattern;
+live fires on real-time WS decision bar, backtest on settled REST bar → occasional 1-bar early/flip.
+~85-88%@5s, higher at wider tolerance. INHERENT real-time-vs-fidelity cost; not fixable without
+changing the real-time firing model (wait-for-settle defeats sub-second latency). Bar-store
+unification (Kevin idea#1) does NOT fix this (it fixes GATE construction, not the real-time trigger
+decision). CLASS: primary-trigger timing floor = 308, 321, 334 (swing_123), 266 (utv4). ACCEPT+DOC.
+
+## CONSOLIDATED STATUS (2026-07-09 bug-hunt, ~16:30Z)
+FIXABLE GATE CLASSES — SHIPPED/HEALED:
+- Coarse-gate session contamination (#49): 313 over-fire→silent, 325 0%→~90-100%, 330 →~90-100%,
+  331 →~100% (post-arm). ONE flag, 4 strategies, both directions. + gate-parity panel (#48).
+DEFERRED-FIXABLE (delicate, own diagnosis + parity gate):
+- Cross-TF transient alignment (327/328/329): 5m/1M-SWING C2 hold vs backtest shift (secondary_tf_shift).
+IRREDUCIBLE FLOOR (accept+document, NOT bugs): 308/321/334 (swing_123), 266 (utv4) primary timing.
+INACTIVE (legit, gates rarely open): 310/312/314/339.
+PASS: 311, 335. AH/small-N: 337, 340, 309.
+
+## CORRECTION (Kevin): "308 floor" was UNVALIDATED — 308 has NO stored algo lane (only
+backtest_rest_hifi); the floor claim needs the ALGO-LANE cross-check (compute offline).
+Three-lane test: algo≈live (both fire off-by-one) → WS-vs-REST floor CONFIRMED; algo≈backtest
+(live diverges) → LIVE-PATH BUG (fixable), NOT a floor. Do NOT throw hands up without it.
+NOTE: 329's algo check WAS done (agent): algo≈backtest 16/17, live 3/17 → 329 is a LIVE-PATH bug
+(cross-TF alignment), NOT a data floor. Same test now required for 308/321/334/266 before calling floor.
+
+## 329 ROOT CAUSE (agent, PROVEN) — '1M' TF-LABEL NAMESPACE COLLISION → BACKTEST OVER-COUNTS
+329 gate 1M-SWING_123-BULL_C2 uses '1M' (UPPERCASE) for 1-MINUTE. LIVE (_LABEL_TO_TF_SECONDS):
+'1M'=60s → enforces a real 1-min gate → live=3. OFFLINE (backtest+algo): '1M'=RESERVED PRIMARY
+SENTINEL → data_loader.get_required_tfs_from_confluence:891 DROPS it → no-op → backtest=17.
+PROOF: 328(5m) & 329(5m+1M) backtests BYTE-IDENTICAL (17≡17). Only LIVE reacts. ARBITRATION FLIPS:
+BACKTEST+ALGO OVER-COUNT; LIVE CORRECT. 329 stored bt KPIs INVALID. Algo shares unified_engine →
+can't arbitrate (algo≈backtest = shared bug). = Kevin's "don't assume backtest right" strongest form.
+The earlier "make live fire more" fix would've made LIVE WRONG to match a broken backtest.
+308/266 FLOOR CONFIRMED via algo (algo≈live≠bt on live data; algo≡bt settled). 327/328 minor floor.
+329 FIX NEEDS KEVIN INTENT: (A) enforce 1M offline (fixes over-count, HIGH namespace risk+parity gate);
+(B) drop 1M live (isolated/kill-switch, 329→328-dup, discards intent); (C) config hygiene regardless.
+
+## 329 '1M' FIX — Kevin-aligned plan (build): treat gate as a gate, primary-AWARE, native 1Min
+Root: '1M' overloaded — interpreters.py:863 uses '1M' as PRIMARY-TF sentinel; MB (confluence_groups
+:1323) emits '1M' meaning 1-minute → offline get_required_tfs_from_confluence:891 blanket-drops '1M'
+→ gate silently ignored. Only 2 sids: 329 (30Sec primary, 1min=SECONDARY→enforce) + 136 (1Min
+primary, 1min=primary MACD condition). Lowercase '1m' IS enforced offline; resample rules have NO
+1Min (it's native). FIX (Kevin's principle): exclusion should skip a gate only when its TF == the
+strategy's PRIMARY TF (self-ref), not blanket-drop '1M'. Build 1-min secondary from NATIVE 1Min bars
+(consistent w/ 1Min-primary; no resample drift; Kevin's steer). Flag-gated default-OFF byte-identical
++ parity suite 18/18 + 329 bt 17→~3 matching live proof. + MB emits '1m' lowercase (source fix) +
+silent-drop TRIPWIRE (no silent fails). Replay: 329 →~100% paired, KPIs become valid.
+
+## ✅ 329 FIX VERIFIED LIVE (PR #50, armed 18:24Z): backtest 07-08 17→3 = live 3 (recompute
+completed 0-fail, +121 rows). Backtest over-count ELIMINATED; 329 KPIs now valid; pairs ~100%.
+shadow-worker fingerprint c202b6b210c8 OK (verified tree). Flag RORT_ENFORCE_1MIN_GATE=1 on
+api+batch-worker+shadow-worker. Primary-aware class fix + MB '1m' source fix + silent-drop tripwire.
+
+## SESSION CLOSE 2026-07-09 — bug-hunt aggressive, 3 fixes shipped+verified, 2 correctly NOT shipped
+SHIPPED+VERIFIED: #48 gate panel · #49 coarse-gate (313 silent + 325/330/331 ~0→90-100% BOTH dirs)
+· #50 1-min-gate (329 bt 17→3=live; backtest was the bug). DISCIPLINE: 2 inert 329 fixes caught
+pre-ship; 308/266 floor CONFIRMED via algo lane (not hand-wave); backtest-is-the-bug inversion
+exposed by Kevin's algo-lane insistence. ARCH captured: Design_Gate_Fidelity_Hardening.md.
+TOMORROW: 313 overnight-crossing proof; clean-day rescan (325/330/331/329); SPY 10Sec re-true;
+own_records fleet sweep; data_worker/app.py 1Min wiring + frontend '1M' canonicalization follow-ups.
+
+## PROACTIVE AUDITS (follow-up hours, 18:45Z) — fleet is CLEAN of the class
+- SILENT-DROP AUDIT (all 70 configs): ONLY 329 (fixed #50) + 136 (primary-self-ref, handled #50).
+  ZERO other silent-drops. '1M' class fully contained; tripwire guards future. ✓
+- COARSE-GATE FLEET: 9 coarse-gated (310/311/312/313/314/325/330/331/338). #49 covers all; 4 healed
+  (313/325/330/331), 311 pass, 338 (#31 archetype), 310/312/314 inactive. Generalizes, no regression. ✓
+- SPY 10Sec re-true: sweeper is on dev (not this checkout) → bundle w/ tomorrow dev tooling.
+- #50 resident-path gap: LOW severity (329 07-09 resident bt=1 vs live=2, NOT over-count; nightly
+  masks). Building completeness PR now, DEPLOY TOMORROW (no end-of-day Worker deploy).
+
+## PR #51 READY (resident-path 1-min-gate completeness) — DEPLOY TOMORROW, not today
+Gap DEEPER: 3 unwired sites (services.prepare_strategy_window_df + ResidentStrategyEngine +
+data_worker_engine). KEY: normalize engine confluence_set '1M-'→'1m-' too (sub-minute primary
+own-records are '1M-' → raw '1M-' gate matches primary's own state). Validated: 329 resident OFF
+11==11 / ON 2==2; 136 self-ref byte-identical; flag-off byte-identical; canary 267 symdiff=0.
+TOMORROW: arm on Worker+shadow-worker (fingerprint SOP); _shadow_manager_validate RED under flag-ON
+= HARNESS LIMITATION not regression (recompute is oracle). Held unmerged (avoid orphaning 20:20Z recompute).
