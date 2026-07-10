@@ -207,6 +207,10 @@ def _verify_coarse_secondary_store(symbol, out, session, end, tag="#1"):
                                 else "")
                 else:
                     detail = cmp.get("note") or f"{len(cmp['cell_diffs'])} cell diffs"
+                    if cmp.get("cell_diffs"):
+                        d0 = cmp["cell_diffs"][0]
+                        detail += (f" [first: {d0.get('ts')} {d0.get('col')} "
+                                   f"store={d0.get('built')} canon={d0.get('canonical')}]")
                     logger.warning("[ResampledStore%s] %s %s %s: VERIFY DRIFT — %s "
                                    "(log-only; output is the engine's own resample)",
                                    tag, symbol, tf, session, detail)
