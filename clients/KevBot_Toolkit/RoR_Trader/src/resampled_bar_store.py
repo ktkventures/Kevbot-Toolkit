@@ -778,6 +778,13 @@ def maintain_all_coarse(targets: Optional[list] = None, *,
     for (s, tf, sess) in targets:
         try:
             w = maintain_coarse(s, tf, sess, recent_days=recent_days)
+            # An error/skip DICT is a failure too — store_window returns
+            # {'error': 'no DSN', rows: 0} rather than raising, and silently
+            # counting it as a clean 0-row pass hid a fleet-wide no-op
+            # (2026-07-10: Data Worker missing SUPABASE_CONNECTION_STRING
+            # reported 'RAN: 140 targets, 0 rows, 0 errors').
+            if w.get("error") or w.get("skipped"):
+                raise RuntimeError(w.get("error") or w.get("skipped"))
             rows += w.get("rows", 0)
             br.ok()
         except Exception as e:  # noqa: BLE001
