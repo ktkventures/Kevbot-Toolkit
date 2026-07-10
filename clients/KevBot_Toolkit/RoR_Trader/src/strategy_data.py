@@ -117,51 +117,99 @@ def _resampled_store_read_enabled() -> bool:
 
 
 def _coarse_secondary_from_store(symbol, coarse_tfs, start, end, session):
-    """CONSUMER #1 (M-RS2 Phase 2): serve the coarse (>=1Hour) secondaries from the
-    canonical resampled store instead of resampling here.
+    """CONSUMER #1 (M-RS2 Phase 2): VERIFIED-CANONICAL read of the coarse (>=1Hour)
+    secondaries — the output is ALWAYS byte-identical to the flag-OFF resample path
+    BY CONSTRUCTION, and the store is VERIFIED against it on the comparable zone.
 
-    BYTE-IDENTITY-SAFE BY CONSTRUCTION: for each coarse tf it reads the store AND
-    computes the canonical resample, and uses the store ONLY when the two are
-    byte-identical; on ANY miss/mismatch it returns None → the caller runs the
-    existing 1Min-resample path (== flag-OFF). So flag ON == flag OFF for trades,
-    always — the store can only ever REPLACE an identical value, never change one.
-    (This is the "ship with the comparator ON before any consumer trusts the store"
-    first cutover — correctness over speed; the compute-skipping promotion comes
-    later once the comparator is green for N days.)
+    v2 (2026-07-10, window-alignment fix — 5th comparator catch): the original
+    all-or-nothing compare failed on ANY non-bin-aligned window start, because
+    `read_store` floors its low bound (full first bar) while the canonical was
+    built from 1Min loaded at the RAW start (partial first bucket) → guaranteed
+    first-bucket cell diffs → permanent fallback. Same class at the tail: the
+    store's edge bucket is a settled snapshot while the canonical's tip is fresher.
+    Neither is drift — both are window-semantics artifacts.
 
-    Returns {canonical_tf: DataFrame[OHLCV]} or None. No-op (None) when the read
-    flag is off, so it's inert and byte-identical when disabled."""
-    if not _resampled_store_read_enabled():
-        return None
+    Design now:
+      - OUTPUT: resample of the session-filtered 1Min from the RAW [start, end] —
+        the same members the flag-OFF path resamples, from the same loader → flag
+        ON == flag OFF bytes ALWAYS, unconditionally (no "only when identical").
+      - VERIFY: compare store vs canonical ONLY on the comparable zone —
+        bin-ALIGNED head (ts >= floor(start, tf)) through the SETTLED cutoff
+        (drop the forming/just-closed tip) — and log green/drift per tf. A head
+        gap where the window pre-dates store coverage is reported as coverage,
+        not drift. This is the promotion evidence: once VERIFY is green across
+        real engine windows for N days, the compute-skip cutover (serve the
+        settled zone FROM the store and skip the resample — the speed payoff)
+        flips on with the store already field-proven on real windows.
+
+    Returns {canonical_tf: DataFrame[OHLCV]} or None (load failure → caller runs
+    its own identical resample path). Inert when the read flag is off."""
+    # v3: the OUTPUT no longer comes from this function at all — the caller's own
+    # load+resample (the flag-OFF body) is the single output path, so ON == OFF is
+    # the SAME code, not an equivalence claim. This function's job is now pure
+    # VERIFICATION (see _verify_coarse_secondary_store). Returning None always
+    # sends the caller down its own path.
+    return None
+
+
+def _verify_coarse_secondary_store(symbol, out, session, end):
+    """CONSUMER #1 verification (log-only, never affects output): compare the store
+    against the engine's own freshly-resampled coarse secondaries on the comparable
+    zone, and log GREEN/DRIFT per tf. The zone excludes:
+      - the HEAD bucket (its content depends on the caller's window-start loader
+        semantics — partial vs full first bucket is a window artifact, not drift);
+      - the UNSETTLED tail (the forming/just-closed WS-tip bucket legitimately
+        differs from the store's settled snapshot);
+      - bars before the store's coverage floor (seed depth = coverage, not drift).
+    What remains is like-for-like settled truth: ANY diff there is real drift and
+    is logged as a warning (the admin comparator diff-rate picks it up).
+
+    This is the promotion evidence for the compute-skip cutover: once VERIFY runs
+    green across real engine windows for N trading days, serving the settled zone
+    FROM the store (skipping the resample — the speed payoff) flips on with the
+    store already field-proven on the exact windows the engine uses."""
     try:
         import resampled_bar_store as rbs
-        cols = ["open", "high", "low", "close", "volume"]
-        out = {}
-        for tf in coarse_tfs:
-            store_df = rbs.read_store(symbol, tf, session, start, end)
-            if store_df is None or len(store_df) == 0:
-                logger.info("[ResampledStore#1] %s %s %s: store empty/uncovered "
-                            "→ fallback to resample", symbol, tf, session)
-                return None
-            # Gate on byte-identity vs the canonical resample (same source the
-            # resample path uses). Use the store ONLY if it exactly reproduces it.
-            canon = rbs.canonical_resampled(symbol, tf, session, start, end)
-            cmp = rbs.compare_store_vs_canonical(store_df, canon, symbol=symbol,
-                                                 tf=tf, session=session)
-            if not cmp["match"]:
-                detail = cmp.get("note") or f"{len(cmp['cell_diffs'])} cell diffs"
-                logger.warning("[ResampledStore#1] %s %s %s: store!=canonical (%s) "
-                               "→ fallback to resample", symbol, tf, session, detail)
-                return None
-            out[tf] = store_df[cols].copy()
-        if out:
-            logger.info("[ResampledStore#1] %s served %s from store (byte-identical "
-                        "to canonical) [%s]", symbol, sorted(out.keys()), session)
-        return out or None
+        for tf, sec in out.items():
+            try:
+                if sec is None or len(sec) < 3:
+                    continue
+                head = sec.index[0]
+                zone_hi = rbs._settled_cutoff_ts(tf)
+                sec_z = sec[(sec.index > head) & (sec.index <= zone_hi)]
+                if len(sec_z) == 0:
+                    continue
+                store_df = rbs.read_store(symbol, tf, session, sec_z.index[0], end)
+                if store_df is None or len(store_df) == 0:
+                    logger.info("[ResampledStore#1] %s %s %s: VERIFY skipped — "
+                                "store uncovered for window", symbol, tf, session)
+                    continue
+                store_z = store_df[(store_df.index > head)
+                                   & (store_df.index <= zone_hi)]
+                head_gap = 0
+                if len(store_z):
+                    head_gap = int((sec_z.index < store_z.index[0]).sum())
+                    if head_gap:
+                        sec_z = sec_z[sec_z.index >= store_z.index[0]]
+                cols = ["open", "high", "low", "close", "volume"]
+                cmp = rbs.compare_store_vs_canonical(
+                    store_z, sec_z[cols], symbol=symbol, tf=tf, session=session)
+                if cmp["match"]:
+                    logger.info("[ResampledStore#1] %s %s %s: VERIFY GREEN — %d "
+                                "settled bars byte-identical%s", symbol, tf, session,
+                                len(store_z),
+                                f" (head coverage gap {head_gap} bars)" if head_gap
+                                else "")
+                else:
+                    detail = cmp.get("note") or f"{len(cmp['cell_diffs'])} cell diffs"
+                    logger.warning("[ResampledStore#1] %s %s %s: VERIFY DRIFT — %s "
+                                   "(log-only; output is the engine's own resample)",
+                                   symbol, tf, session, detail)
+            except Exception as ve:  # noqa: BLE001 — verify must never break trades
+                logger.warning("[ResampledStore#1] verify failed %s %s: %s",
+                               symbol, tf, ve)
     except Exception as e:  # noqa: BLE001
-        logger.warning("[ResampledStore#1] store read failed %s %s: %s → fallback",
-                       symbol, coarse_tfs, e)
-        return None
+        logger.warning("[ResampledStore#1] verify unavailable %s: %s", symbol, e)
 
 
 def _build_coarse_secondary_from_1min(symbol, coarse_tfs, start, end,
@@ -173,12 +221,6 @@ def _build_coarse_secondary_from_1min(symbol, coarse_tfs, start, end,
     (full series, last bar kept — matches prepare_data's internal resample at
     services.py:360) or None on any miss → caller falls back to the resample
     path. The 1Min load is bar_cache-accelerated when BAR_CACHE_ENABLED."""
-    # CONSUMER #1 cutover: serve from the canonical store when armed + byte-identical
-    # (else falls through to the resample below). Inert/byte-identical when the flag
-    # is off.
-    store_out = _coarse_secondary_from_store(symbol, coarse_tfs, start, end, session)
-    if store_out is not None:
-        return store_out
     try:
         from data_loader import load_market_data, resample_to_timeframe
         cols = ["open", "high", "low", "close", "volume"]
@@ -191,6 +233,13 @@ def _build_coarse_secondary_from_1min(symbol, coarse_tfs, start, end,
             sec = resample_to_timeframe(df1[cols].copy(), tf)
             if sec is not None and len(sec) > 0:
                 out[tf] = sec
+        # CONSUMER #1 (M-RS2 Phase 2), v3: output above is the single path for
+        # flag ON and OFF alike (ON == OFF is the same code). When the read flag
+        # is armed, additionally VERIFY the store against these freshly-resampled
+        # secondaries on the settled/aligned zone — log-only promotion evidence
+        # for the later compute-skip cutover. Never affects trades.
+        if out and _resampled_store_read_enabled():
+            _verify_coarse_secondary_store(symbol, out, session, end)
         return out or None
     except Exception as e:  # noqa: BLE001
         logger.warning("[CoarseSecondary] build-from-1Min failed %s %s: %s",
