@@ -43,6 +43,10 @@ from unified_engine import (
     _GP_SESSION_WINDOWS, _eval_gp_scalar,
     _load_enabled_general_packs, _evaluate_general_packs,
 )
+# Coarse-secondary threshold (>=1Hour). Single source of truth in
+# strategy_data (backtest lane) — reused here so the live coarse-RTH reload
+# fix (RORT_MTF_COARSE_RTH_RELOAD) shares the exact same boundary.
+from strategy_data import COARSE_SECONDARY_SECONDS
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -1202,13 +1206,15 @@ class StrategyMonitor:
     @_prof_fn('m_on_bar_close')
     def on_bar_close(self, bar: dict,
                      bar_count: int,
-                     mtf_confluence: Dict[int, Set[str]] = None,
+                     mtf_confluence: Dict[Tuple[int, str], Set[str]] = None,
                      ) -> Tuple[List[dict], dict]:
         """Process a completed bar.
 
         Args:
             mtf_confluence: Cross-TF confluence buffer from SymbolHub.
-                Maps tf_seconds → latest confluence records from other TFs.
+                Maps (tf_seconds, session) → latest confluence records
+                from other TFs (session is 'RTH' unless
+                RORT_MTF_SESSION_SHADOWS — Bug Hunt Wave 1 #1).
 
         Returns:
             (signals, audit_data) — signals list and dict for fidelity logging.
@@ -1296,10 +1302,17 @@ class StrategyMonitor:
                 self._current_confluence |= _evaluate_general_packs(
                     self._general_packs, bar_ts)
 
-        # 3c. Merge cross-TF confluence records from hub's shared buffer
+        # 3c. Merge cross-TF confluence records from hub's shared buffer.
+        # Bug Hunt Wave 1 #1: merge ONLY records keyed to this monitor's
+        # own session ('RTH' with the flag off — legacy behavior, since
+        # every key is then ('tf', 'RTH')). A union across sessions would
+        # let e.g. an Extended-Hours 1d state satisfy an RTH monitor's
+        # gate (and vice versa) — the exact cross-contamination the
+        # session-keyed shadows exist to prevent.
         if mtf_confluence:
-            for other_tf, records in mtf_confluence.items():
-                if other_tf != self.tf_seconds:
+            _own_sess = (self.session if MTF_SESSION_SHADOWS else 'RTH')
+            for (other_tf, _sess), records in mtf_confluence.items():
+                if other_tf != self.tf_seconds and _sess == _own_sess:
                     self._current_confluence |= records
 
         # Use bar_start timestamp for bar-close signals — matches backtest
@@ -1799,6 +1812,205 @@ def _load_warmup_df(sym: str, tf_seconds: int, session: str) -> pd.DataFrame:
     return out
 
 
+# Bug Hunt Wave 1 #1 — coarse-gate SESSION MISMATCH (2026-07-06,
+# docs/_active/Bug_Hunt_Wave1_2026-07-06.md).
+#
+# The live coarse-secondary gate shadows (_ShadowIndicatorEngine) were keyed
+# by tf_seconds ONLY, and the hub warmup resolved the warmup session from
+# "first monitor whose PRIMARY tf == this tf" — which can NEVER match a
+# secondary TF, so every coarse gate shadow hard-defaulted to 'RTH'. The
+# backtest preps gate columns with the STRATEGY's session. For non-RTH
+# strategies (sid 338: TSLA 10Sec, session='Extended Hours', gate
+# 1d-SWING_123-NEUTRAL) the identical daily engine derives NEUTRAL on RTH
+# dailies but BEAR_C2 on extended dailies — live over-fired 65 entries on a
+# day the backtest correctly fired 0. RTH strategies matched by luck.
+#
+# Fix (flag ON): shadows and the cross-TF gate buffer are keyed per
+# (tf_seconds, session); each shadow warms up + reloads from ITS session's
+# bars, and monitors merge ONLY records from their own session's key. A
+# UNION of sessions' records would wrongly satisfy both gates (TSLA/1d is
+# required by 338 Extended AND 310/312/313 RTH) — hence per-key isolation,
+# not merging.
+#
+# Flag OFF (default): both dicts still use tuple keys internally, but the
+# session component is hard-pinned to 'RTH' everywhere — behavior is exactly
+# today's (single shadow per tf, 'RTH' warmup).
+#
+# Read once at module import (like GAP_SKIP in shadow_manager.py) — flip
+# requires a worker restart.
+MTF_SESSION_SHADOWS = os.getenv(
+    "RORT_MTF_SESSION_SHADOWS", "0").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
+# Bug Hunt Wave 1 #2 — sub-hour secondary stoch-state FREEZE (2026-07-06,
+# docs/_active/Bug_Hunt_Wave1_2026-07-06.md #2).
+#
+# Proven on sid 272: the SPY hub's 10m secondary shadow served a boot-era
+# record (10M-STOCHASTIC_OSCILLATOR-BULLISH_MIDRANGE) unchanged 13:53→17:00
+# while REST truth was OVERBOUGHT_* all day — sub-hour secondary shadow
+# records can FREEZE when their close-feed doesn't reach them (0609a
+# duplicate-close-freeze family, still alive on this path). Rather than
+# rewiring the delicate fan-out/duplicate plumbing, this enables a periodic
+# self-healing refresh (SymbolHub.refresh_mtf_states, driven by a worker
+# daemon thread) that re-derives every secondary shadow's records from a
+# fresh session-correct warmup — the state-layer analogue of the settle
+# sweeper.
+#
+# Value = refresh interval in SECONDS (e.g. 600). Default "0" = OFF (no
+# thread, zero behavior change). Read once at module import (like
+# MTF_SESSION_SHADOWS above) — flip requires a worker restart.
+try:
+    MTF_STATE_REFRESH_S = int(
+        os.getenv("RORT_MTF_STATE_REFRESH_S", "0").strip() or "0")
+except ValueError:
+    logger.warning(
+        "RORT_MTF_STATE_REFRESH_S=%r is not an int — MTF state refresher "
+        "stays OFF", os.getenv("RORT_MTF_STATE_REFRESH_S"))
+    MTF_STATE_REFRESH_S = 0
+
+
+# Bug Hunt Wave 2 W2-2 — session-edge bar-set asymmetry (2026-07-06,
+# docs/_active/Bug_Hunt_Wave1_2026-07-06.md W2-2).
+#
+# Live gates bar-close dispatch by event-ARRIVAL time; the backtest lane
+# filters by bar LABEL (data_loader._filter_session). Bars complete on the
+# first event AFTER their window, so live consumes one out-of-session
+# bleed-in bar at every session open (its close event lands ~1-4s inside
+# the boundary — live absorbs overnight gaps one bar before bt) and drops
+# the session-final bar at every close (event >= boundary). Proven on
+# ungated sids 268/270/302/321: boundary indicator state diverges until the
+# first mutually-observed flip, ~1-3 unpairable trades per session edge.
+#
+# Flag ON: bar-close dispatch judges the completed bar's START label with
+# the same half-open [open, close) rule — the exact backtest bar set.
+# Intra-bar tick paths stay arrival-gated (unchanged). Default OFF = byte-
+# identical legacy behavior. Read once at module import — flip requires a
+# worker restart.
+SESSION_LABEL_GATE = os.getenv(
+    "RORT_SESSION_LABEL_GATE", "0").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
+# Bug Hunt Wave 2 W2-5 — interpreter-blind shadow topology (2026-07-07,
+# docs/_active/Bug_Hunt_Wave1_2026-07-06.md W2-5).
+#
+# finalize_shadow_engines skips creating a secondary-TF shadow whenever ANY
+# real monitor exists on that (tf, session) — regardless of WHICH interpreter
+# records that monitor publishes. A real monitor only publishes its OWN
+# interpreter states, so gates needing other interpreters on that key are
+# permanently unsatisfiable: TSLA (300s,'RTH') is owned by the UT-Bot-only
+# 5Min canary (sid 266), so 5M-SWING_123-*/5M-RVOL_V2-*/5M-BOLLINGER_BANDS-*
+# records NEVER existed live — sids 327/328/329/310/340 have zero alerts
+# since creation while the backtest lane (which computes suffixed columns for
+# every gate) fires normally. The 1M key only works because the real 1Min
+# monitor (174) happens to include SWING_123 in its own interp set.
+#
+# Flag ON: a real monitor only suppresses the shadow when its OWN interpreter
+# set covers every interpreter the requesting gates need on that key;
+# otherwise the shadow is created (it computes the union of the gaters'
+# needs, and the existing publish path already defers to a shadow that owns
+# the key). Default OFF = byte-identical legacy topology. Read once at module
+# import — flip requires a worker restart.
+INTERP_AWARE_SHADOWS = os.getenv(
+    "RORT_INTERP_AWARE_SHADOWS", "0").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
+# CLASS 1a — coarse-gate SESSION CONTAMINATION (2026-07-08).
+#
+# COARSE secondary-TF gate shadows (tf_seconds >= COARSE_SECONDARY_SECONDS,
+# i.e. 4Hour/1Day) are fed a SESSION-UNFILTERED bar stream (the >=60s AM
+# fan-out / builder history), so on an RTH shadow they EAT after-hours coarse
+# buckets that a clean RTH resample never forms — carrying a stale gate state
+# across the overnight/session boundary. Proven on sid 313 (TSLA 15Sec, RTH,
+# gate 4h-STRAT_ASSISTANT-INSIDE): the live 4H shadow held INSIDE (from the
+# 20:00-UTC after-hours 4H bucket) while the backtest's RTH-resampled 4H read
+# TWO_DOWN — live fired 51 phantom entries on 07-08 (ceasing exactly at the
+# 16:00-UTC 4H close), backtest correctly 0.
+#
+# Flag ON: coarse (>=COARSE_SECONDARY_SECONDS) RTH shadows take the same
+# session-correct RELOAD branch the non-RTH shadows already use
+# (_load_warmup_df('RTH') resamples RTH-filtered 1Min UP to the coarse TF =
+# the backtest's RTH-resampled last-closed coarse bar), instead of consuming
+# the raw completed fan-out bar. Applied at every coarse-RTH injection point
+# (close chokepoint _close_shadow_with_bar + the rebroadcast-cascade /
+# rest-correction / gap-heal recompute paths that also feed builder.history
+# into the RTH shadow). Fine-grained TFs (<COARSE_SECONDARY_SECONDS: 1M/2m/5m
+# sub-hour shadows + real-monitor own_records) are UNCHANGED. Default OFF =
+# byte-identical legacy behavior (RTH coarse shadow eats the session-
+# unfiltered completed bar). Read once at module import (like
+# MTF_SESSION_SHADOWS / MTF_STATE_REFRESH_S) — flip requires a worker restart.
+MTF_COARSE_RTH_RELOAD = os.getenv(
+    "RORT_MTF_COARSE_RTH_RELOAD", "0").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
+def _bar_close_in_session(bar: dict, arrival_ts: datetime,
+                          monitor: 'StrategyMonitor') -> bool:
+    """W2-2: session membership for a completed bar at bar-close dispatch.
+
+    Flag OFF: legacy arrival-time rule. Flag ON: the completed bar's start
+    label decides (backtest-lane rule); every boundary disagreement between
+    the two rules logs a [SESSION-EDGE] line (expected exactly at session
+    open — "skip bleed-in" — and session close — "consume final").
+    """
+    arrival_ok = _is_in_session(arrival_ts, monitor.session)
+    if not SESSION_LABEL_GATE:
+        return arrival_ok
+    raw = bar.get('timestamp') if isinstance(bar, dict) else None
+    if raw is None:
+        return arrival_ok
+    try:
+        if isinstance(raw, str):
+            label = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+        else:
+            label = raw
+        if label.tzinfo is None:
+            label = label.replace(tzinfo=timezone.utc)
+    except Exception:  # noqa: BLE001
+        return arrival_ok
+    label_ok = _is_in_session(label, monitor.session)
+    if label_ok != arrival_ok:
+        logger.info(
+            "[SESSION-EDGE] %s: strat=%s session=%s bar_label=%s event=%s",
+            "consume final bar" if label_ok else "skip bleed-in bar",
+            monitor.strat_id, monitor.session, raw,
+            arrival_ts.isoformat())
+    return label_ok
+
+
+def _shadow_session_for(monitor: 'StrategyMonitor') -> str:
+    """Session key a monitor's cross-TF gate lookups/stores use.
+
+    Flag ON: the monitor's own trading session (verbatim — same string
+    that's passed to load_market_data at the monitor warmup sites).
+    Flag OFF: hard 'RTH', reproducing the legacy single-shadow behavior.
+    getattr-defensive: StrategyMonitor always sets .session, but test
+    doubles / duck-typed monitors may not.
+    """
+    if not MTF_SESSION_SHADOWS:
+        return 'RTH'
+    return getattr(monitor, 'session', 'RTH')
+
+
+def _closed_bars_only(df: pd.DataFrame, tf_seconds: int) -> pd.DataFrame:
+    """Drop the currently-forming bar from a warmup df (index >= current
+    period start). Mirrors what BarBuilder.seed_history does for the
+    builder-backed warmup path; used for session-shadow warmups that
+    bypass the builder (the builder holds the RTH-flavored feed)."""
+    if df is None or len(df) == 0:
+        return pd.DataFrame() if df is None else df
+    now_utc = pd.Timestamp.now(tz='UTC')
+    period_ns = int(tf_seconds) * 1_000_000_000
+    cur_start = pd.Timestamp(
+        (now_utc.value // period_ns) * period_ns, tz='UTC')
+    if getattr(df.index, 'tz', None) is None:
+        df = df.copy()
+        df.index = df.index.tz_localize('UTC')
+    return df[df.index < cur_start]
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SHADOW INDICATOR ENGINE — secondary TF interpreter state for MTF confluence
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1812,8 +2024,12 @@ class _ShadowIndicatorEngine:
     """
 
     def __init__(self, tf_seconds: int, req_ind: Set[str],
-                 req_interp: Set[str], params: Dict[str, Any]):
+                 req_interp: Set[str], params: Dict[str, Any],
+                 session: str = 'RTH'):
         self.tf_seconds = tf_seconds
+        # Bug Hunt Wave 1 #1: the trading session whose bars this shadow's
+        # state is derived from ('RTH' unless RORT_MTF_SESSION_SHADOWS).
+        self.session = session
         self.indicators = IncrementalIndicatorEngine(req_ind, params)
         # TriggerEvaluator needs interpreters but no triggers (empty set)
         self.trigger_eval = TriggerEvaluator(
@@ -2110,10 +2326,14 @@ class SymbolHub:
         # between them = price slippage (complements the time slippage in
         # the delta column).
         self.latest_close: Optional[float] = None
-        # Cross-TF confluence: tf_seconds → latest interpreter confluence records
-        self._mtf_confluence: Dict[int, Set[str]] = {}
-        # Shadow engines for secondary TFs not covered by real monitors
-        self._shadow_engines: Dict[int, '_ShadowIndicatorEngine'] = {}
+        # Cross-TF confluence: (tf_seconds, session) → latest interpreter
+        # confluence records. Bug Hunt Wave 1 #1: keys are ALWAYS tuples;
+        # session is 'RTH' unless RORT_MTF_SESSION_SHADOWS is on.
+        self._mtf_confluence: Dict[Tuple[int, str], Set[str]] = {}
+        # Shadow engines for secondary TFs not covered by real monitors,
+        # keyed (tf_seconds, session) — same convention as _mtf_confluence.
+        self._shadow_engines: Dict[
+            Tuple[int, str], '_ShadowIndicatorEngine'] = {}
         # Live-bar publisher (Supabase Realtime broadcast, Phase M8.5).
         # None is a valid value: all publish calls become silent no-ops.
         self._publisher = publisher
@@ -2197,16 +2417,25 @@ class SymbolHub:
         try:
             indicators: Dict[str, float] = {}
             states: Dict[str, str] = {}
+            _tf_sessions: Set[str] = set()
             for m in self.monitors.values():
                 if m.tf_seconds != tf_seconds:
                     continue
+                _tf_sessions.add(_shadow_session_for(m))
                 ind, interp = m.compute_tentative_state(forming_bar)
                 indicators.update(ind)
                 states.update(interp)
+            if not _tf_sessions:
+                _tf_sessions = {'RTH'}
 
+            # Bug Hunt Wave 1 #1: only surface cross-TF records whose key
+            # session matches a monitor on this TF (flag OFF: everything
+            # is keyed 'RTH', so all records pass — legacy behavior).
             state_cross_tf: Dict[str, str] = {}
-            for other_tf, records in self._mtf_confluence.items():
+            for (other_tf, _sess), records in self._mtf_confluence.items():
                 if other_tf == tf_seconds:
+                    continue
+                if _sess not in _tf_sessions:
                     continue
                 for rec in records:
                     if rec.startswith('GEN-'):
@@ -2394,21 +2623,190 @@ class SymbolHub:
         ]
         builder.grace_sec_override = max(graces) if graces else None
 
+    def _shadow_items_for_tf(
+        self, tf_seconds: int,
+    ) -> List[Tuple[str, '_ShadowIndicatorEngine']]:
+        """All (session, shadow) pairs registered for one TF.
+
+        Bug Hunt Wave 1 #1: with RORT_MTF_SESSION_SHADOWS off this is at
+        most one item — ('RTH', shadow) — matching the legacy
+        single-shadow-per-tf layout."""
+        return [(k[1], sh) for k, sh in self._shadow_engines.items()
+                if k[0] == tf_seconds]
+
+    def _shadow_tf_set(self) -> Set[int]:
+        """Distinct TFs that have at least one shadow engine."""
+        return {k[0] for k in self._shadow_engines}
+
+    def _coarse_rth_reload_active(self, tf_seconds: int) -> bool:
+        """CLASS 1a: does this (RTH) coarse-TF shadow take the session-correct
+        reload instead of eating the session-unfiltered fan-out/builder bar?
+
+        True only when RORT_MTF_COARSE_RTH_RELOAD is armed AND the TF is coarse
+        (>= COARSE_SECONDARY_SECONDS: 4Hour/1Day). Flag OFF → always False →
+        every coarse-RTH injection point keeps its exact legacy behavior."""
+        return MTF_COARSE_RTH_RELOAD and tf_seconds >= COARSE_SECONDARY_SECONDS
+
+    def _reload_coarse_rth_shadow(
+            self, tf_seconds: int,
+            shadow: '_ShadowIndicatorEngine') -> None:
+        """CLASS 1a: pin a coarse RTH shadow's gate records to the RTH-resampled
+        last-closed coarse bar (== backtest) via a session-correct reload,
+        instead of consuming the session-UNFILTERED fan-out / builder history
+        (which forms after-hours coarse buckets and carries a stale
+        cross-session gate state). This is the RTH analogue of the non-RTH
+        reload branch in _close_shadow_with_bar; shared by every coarse-RTH
+        injection point (close chokepoint + rebroadcast-cascade / rest-
+        correction / gap-heal recompute paths) so the live coarse gate can
+        never re-contaminate. Keeps previous records on empty/failed reload;
+        never crashes the caller. Only reached when RORT_MTF_COARSE_RTH_RELOAD
+        is armed (see _coarse_rth_reload_active)."""
+        key = (tf_seconds, 'RTH')
+        try:
+            df = _load_warmup_df(self.symbol, tf_seconds, 'RTH')
+            df = _closed_bars_only(df, tf_seconds)
+            if df is not None and len(df) > 0:
+                self._mtf_confluence[key] = shadow.recompute_confluence(df)
+                try:
+                    _last = df.iloc[-1]
+                    logger.info(
+                        "[COARSE-RTH-RELOAD] %s tf=%ss session=RTH bar=%s "
+                        "OHLC=%.4f/%.4f/%.4f/%.4f -> %s",
+                        self.symbol, tf_seconds,
+                        getattr(df.index[-1], 'isoformat', lambda: df.index[-1])(),
+                        float(_last['open']), float(_last['high']),
+                        float(_last['low']), float(_last['close']),
+                        sorted(self._mtf_confluence[key]))
+                except Exception:  # noqa: BLE001 — logging must never crash
+                    logger.info(
+                        "[COARSE-RTH-RELOAD] %s tf=%ss session=RTH -> %s",
+                        self.symbol, tf_seconds,
+                        sorted(self._mtf_confluence[key]))
+            else:
+                logger.warning(
+                    "[COARSE-RTH-RELOAD] %s tf=%ss session=RTH: empty session "
+                    "reload — keeping previous gate records",
+                    self.symbol, tf_seconds)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[COARSE-RTH-RELOAD] %s tf=%ss session=RTH: reload failed "
+                "(%s) — keeping previous gate records",
+                self.symbol, tf_seconds, e)
+
+    def _close_shadow_with_bar(self, tf_seconds: int, session: str,
+                               shadow: '_ShadowIndicatorEngine',
+                               completed: dict) -> None:
+        """Refresh one session-shadow's gate records on a TF close.
+
+        RTH-session shadows consume the completed bar directly — exactly
+        today's behavior (the fan-out/builder bars are RTH-flavored).
+        Non-RTH shadows (RORT_MTF_SESSION_SHADOWS only) must NOT eat that
+        bar — it's the wrong candle for their session — so they reload
+        session-correct history via _load_warmup_df and recompute. That
+        reload runs once per coarse-TF close (a few times/day for the
+        1H/4H/1D gates this exists for). On any failure the previous
+        records are kept — never crash the close path.
+
+        CLASS 1a (RORT_MTF_COARSE_RTH_RELOAD): coarse RTH shadows also take
+        the session-correct reload — the raw completed fan-out bar for a
+        coarse TF can be an after-hours bucket, so eating it contaminates the
+        RTH gate (sid 313). Flag OFF → RTH still eats the bar (byte-identical
+        legacy)."""
+        key = (tf_seconds, session)
+        if session == 'RTH':
+            if self._coarse_rth_reload_active(tf_seconds):
+                self._reload_coarse_rth_shadow(tf_seconds, shadow)
+                return
+            self._mtf_confluence[key] = shadow.on_bar_close(completed)
+            return
+        try:
+            df = _load_warmup_df(self.symbol, tf_seconds, session)
+            df = _closed_bars_only(df, tf_seconds)
+            if df is not None and len(df) > 0:
+                self._mtf_confluence[key] = shadow.recompute_confluence(df)
+            else:
+                logger.warning(
+                    "[MTF-SESSION] %s tf=%ss session=%s: empty session "
+                    "reload on close — keeping previous gate records",
+                    self.symbol, tf_seconds, session)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "[MTF-SESSION] %s tf=%ss session=%s: close reload failed "
+                "(%s) — keeping previous gate records",
+                self.symbol, tf_seconds, session, e)
+
     def finalize_shadow_engines(self):
         """Create shadow indicator engines for secondary TFs not covered by
         real monitors.  Call after all monitors have been added.  Idempotent.
         """
-        # Collect all secondary TFs needed across monitors
-        needed: Dict[int, List[StrategyMonitor]] = {}
+        # Collect all secondary TFs needed across monitors, keyed by
+        # (tf, session) — Bug Hunt Wave 1 #1. Flag OFF pins session='RTH'
+        # so the grouping collapses to the legacy per-tf layout.
+        needed: Dict[Tuple[int, str], List[StrategyMonitor]] = {}
         for monitor in self.monitors.values():
             for sec_tf in getattr(monitor, '_required_secondary_tf', set()):
-                needed.setdefault(sec_tf, []).append(monitor)
+                key = (sec_tf, _shadow_session_for(monitor))
+                needed.setdefault(key, []).append(monitor)
 
-        # For each needed secondary TF, check if a real monitor covers it
-        for sec_tf, requesting_monitors in needed.items():
-            if sec_tf in self._shadow_engines:
+        # For each needed secondary key, check if a real monitor covers it
+        for (sec_tf, sh_session), requesting_monitors in needed.items():
+            if (sec_tf, sh_session) in self._shadow_engines:
                 continue  # already created
-            has_real = any(m.tf_seconds == sec_tf for m in self.monitors.values())
+            # W2-5: interpreter keys the requesting gates need on THIS key —
+            # used (flag ON) to decide whether a covering real monitor
+            # actually publishes the records those gates consume.
+            needed_interps: Set[str] = set()
+            if INTERP_AWARE_SHADOWS:
+                for monitor in requesting_monitors:
+                    _all_conf = (
+                        list(monitor.strategy.get('confluence', []))
+                        + list(monitor.strategy.get(
+                            'general_confluences', [])))
+                    for rec in _all_conf:
+                        if rec.startswith('GEN-'):
+                            continue
+                        parts = rec.split('-', 2)
+                        if len(parts) < 3:
+                            continue
+                        if _LABEL_TO_TF_SECONDS.get(parts[0], 0) != sec_tf:
+                            continue
+                        needed_interps.add(parts[1])
+
+            def _real_monitor_covers(m: 'StrategyMonitor') -> bool:
+                if m.tf_seconds != sec_tf:
+                    return False
+                if MTF_SESSION_SHADOWS and m.session != sh_session:
+                    return False
+                if not INTERP_AWARE_SHADOWS or not needed_interps:
+                    return True  # legacy: any real monitor suppresses
+                # W2-5: only suppress when the monitor's own interp set
+                # covers everything the gates need on this key.
+                try:
+                    _, m_interps, _, _ = resolve_strategy_requirements(
+                        m.strategy)
+                    covered = needed_interps <= set(m_interps)
+                except Exception as _e:  # noqa: BLE001
+                    # Fail toward CREATING the shadow: an extra shadow only
+                    # widens the published record union (publish path defers
+                    # to the shadow); a suppressed one recreates this bug.
+                    logger.warning(
+                        "[INTERP-SHADOW] requirements resolve failed for "
+                        "strat=%s: %s — creating shadow", m.strat_id, _e)
+                    return False
+                if not covered:
+                    logger.info(
+                        "[INTERP-SHADOW] real monitor strat=%s on (%ss,%s) "
+                        "publishes %s but gates need %s — creating shadow",
+                        m.strat_id, sec_tf, sh_session,
+                        sorted(set(m_interps) & needed_interps) or 'none-of-them',
+                        sorted(needed_interps))
+                return covered
+
+            # A real monitor on that TF produces the records — but (flag
+            # ON) only for ITS OWN session key, and (W2-5 flag ON) only
+            # when its interpreter set covers the gates' needs.
+            has_real = any(
+                _real_monitor_covers(m) for m in self.monitors.values())
             if has_real:
                 continue  # real monitor produces confluence records
 
@@ -2472,10 +2870,13 @@ class SymbolHub:
 
             if req_interp:
                 shadow = _ShadowIndicatorEngine(
-                    sec_tf, req_ind, req_interp, shadow_params)
-                self._shadow_engines[sec_tf] = shadow
-                logger.info("Created shadow engine for %s/%ss: ind=%s interp=%s",
-                            self.symbol, sec_tf, req_ind, req_interp)
+                    sec_tf, req_ind, req_interp, shadow_params,
+                    session=sh_session)
+                self._shadow_engines[(sec_tf, sh_session)] = shadow
+                logger.info("Created shadow engine for %s/%ss session=%s: "
+                            "ind=%s interp=%s",
+                            self.symbol, sec_tf, sh_session,
+                            req_ind, req_interp)
 
     def seed_history(self, tf_seconds: int, df: pd.DataFrame):
         builder = self.builders.get(tf_seconds)
@@ -2495,7 +2896,8 @@ class SymbolHub:
                     "seed_history cache reconcile failed sym=%s tf=%ss: %s",
                     self.symbol, tf_seconds, e)
 
-    def seed_mtf_from_shadow(self, tf_seconds: int) -> bool:
+    def seed_mtf_from_shadow(self, tf_seconds: int,
+                             session: str = 'RTH') -> bool:
         """Publish a freshly-warmed shadow's confluence into the cross-TF gate
         dict (`_mtf_confluence[tf]`) right after warmup.
 
@@ -2512,23 +2914,92 @@ class SymbolHub:
         `_derive_confluence_records`) and seeds the gate dict so coarse gates are
         evaluable immediately, matching what the backtest sees (last CLOSED
         coarse bar). Updated normally thereafter on each live coarse close.
-        Kill-switch RORT_SEED_MTF_FROM_WARMUP=0 reverts (instant rollback)."""
+        Kill-switch RORT_SEED_MTF_FROM_WARMUP=0 reverts (instant rollback).
+
+        Bug Hunt Wave 1 #1: seeds ONE (tf, session) key per call — the
+        warmup loop calls it once per session-shadow of the TF."""
         if os.getenv('RORT_SEED_MTF_FROM_WARMUP', '1') != '1':
             return False
-        shadow = self._shadow_engines.get(tf_seconds)
+        shadow = self._shadow_engines.get((tf_seconds, session))
         if not (shadow and getattr(shadow.indicators, '_initialized', False)):
             return False
         try:
             recs = shadow._derive_confluence_records()
-            self._mtf_confluence[tf_seconds] = recs
-            logger.info("[MTF-SEED] %s tf=%ss: seeded cross-TF gate from warmup "
-                        "(%d records) — coarse gates now evaluable pre-close",
-                        self.symbol, tf_seconds, len(recs))
+            self._mtf_confluence[(tf_seconds, session)] = recs
+            logger.info("[MTF-SEED] %s tf=%ss session=%s: seeded cross-TF "
+                        "gate from warmup (%d records) — coarse gates now "
+                        "evaluable pre-close",
+                        self.symbol, tf_seconds, session, len(recs))
             return True
         except Exception as e:  # noqa: BLE001
-            logger.warning("[MTF-SEED] seed_mtf_from_shadow failed %s tf=%ss: %s",
-                           self.symbol, tf_seconds, e)
+            logger.warning("[MTF-SEED] seed_mtf_from_shadow failed %s tf=%ss "
+                           "session=%s: %s",
+                           self.symbol, tf_seconds, session, e)
             return False
+
+    def refresh_mtf_states(self) -> dict:
+        """Bug Hunt Wave 1 #2 — periodic self-healing refresh of every
+        secondary shadow's cross-TF gate records.
+
+        Sub-hour secondary shadow records can FREEZE when their close-feed
+        doesn't reach them (0609a duplicate-close-freeze family; proven on
+        sid 272 — SPY's 10m stoch record stuck at a boot-era value all day
+        while REST truth disagreed). Instead of rewiring the fan-out /
+        duplicate plumbing, this re-derives each shadow's records from a
+        fresh session-correct warmup (`_load_warmup_df` + trim the forming
+        bar + `recompute_confluence`) — the state-layer analogue of the
+        settle sweeper. Driven every RORT_MTF_STATE_REFRESH_S seconds by a
+        worker daemon thread (see worker.DBRalphEngine).
+
+        A CHANGED record set means the close-feed had gone stale (the bug
+        firing) → one WARNING line per changed shadow. Fresh records are
+        ALWAYS stored (even when unchanged) so the gate state converges to
+        REST truth regardless of freeze mode. Per-shadow failures keep the
+        old records and never propagate. Thread-safe by snapshot: iterates
+        a list() copy of the shadow dict; dict item assignment is atomic.
+
+        Returns {'refreshed': n, 'changed': n, 'failed': n}.
+        """
+        refreshed = changed = failed = 0
+        for key, shadow in list(self._shadow_engines.items()):
+            tf_seconds, session = key
+            try:
+                df = _load_warmup_df(
+                    self.symbol, tf_seconds,
+                    session if MTF_SESSION_SHADOWS else 'RTH')
+                df = _closed_bars_only(df, tf_seconds)
+                if df is None or len(df) == 0:
+                    logger.warning(
+                        "[MTF-REFRESH] %s tf=%s sess=%s: empty warmup "
+                        "reload — keeping previous records",
+                        self.symbol, tf_seconds, session)
+                    continue
+                recs = set(shadow.recompute_confluence(df))
+                prev = self._mtf_confluence.get(key)
+                if prev is not None and set(prev) != recs:
+                    changed += 1
+                    prev_s = set(prev)
+                    if len(prev_s | recs) <= 8:
+                        old_repr = sorted(prev_s)
+                        new_repr = sorted(recs)
+                    else:  # large sets: show only the changed subset
+                        old_repr = sorted(prev_s - recs)
+                        new_repr = sorted(recs - prev_s)
+                    logger.warning(
+                        "[MTF-REFRESH] %s tf=%s sess=%s: records changed "
+                        "%s -> %s",
+                        self.symbol, tf_seconds, session,
+                        old_repr, new_repr)
+                self._mtf_confluence[key] = recs
+                refreshed += 1
+            except Exception as e:  # noqa: BLE001
+                failed += 1
+                logger.warning(
+                    "[MTF-REFRESH] %s tf=%s sess=%s: refresh failed (%s) "
+                    "— keeping previous records",
+                    self.symbol, tf_seconds, session, e)
+        return {'refreshed': refreshed, 'changed': changed,
+                'failed': failed}
 
     def on_tick(self, price: float, volume: int, timestamp: datetime,
                 alert_callback: Callable = None, config: dict = None,
@@ -2554,17 +3025,15 @@ class SymbolHub:
 
             if completed is not None:
                 # Bar close — update shared confluence buffer FIRST
-                # so monitors on other TFs can see this TF's state
-                shadow = self._shadow_engines.get(tf_seconds)
-                if shadow and shadow.indicators._initialized:
-                    self._mtf_confluence[tf_seconds] = shadow.on_bar_close(completed)
-                else:
-                    # Use first real monitor's confluence as the TF's records
-                    for m in self.monitors.values():
-                        if m.tf_seconds == tf_seconds:
-                            # Will be updated after on_bar_close, but for
-                            # same-TF monitors the records don't matter
-                            break
+                # so monitors on other TFs can see this TF's state.
+                # Bug Hunt Wave 1 #1: one shadow per (tf, session); RTH
+                # shadows eat the bar, non-RTH shadows reload their own
+                # session's history inside _close_shadow_with_bar.
+                for _sh_sess, shadow in self._shadow_items_for_tf(
+                        tf_seconds):
+                    if shadow.indicators._initialized:
+                        self._close_shadow_with_bar(
+                            tf_seconds, _sh_sess, shadow, completed)
 
                 # Run all monitors for this timeframe
                 bar_audit_positions = {}
@@ -2572,7 +3041,10 @@ class SymbolHub:
                 for monitor in self.monitors.values():
                     if monitor.tf_seconds != tf_seconds:
                         continue
-                    if not _is_in_session(timestamp, monitor.session):
+                    # W2-2: completed-bar dispatch gates on the BAR LABEL
+                    # when SESSION_LABEL_GATE (matches backtest bar set).
+                    if not _bar_close_in_session(completed, timestamp,
+                                                 monitor):
                         if self.tick_count % 5000 == 0:
                             logger.debug("Session skip: strat=%s session=%s ts=%s",
                                          monitor.strat_id, monitor.session, timestamp)
@@ -2597,8 +3069,8 @@ class SymbolHub:
                     interp_str = ",".join(f"{k}={v}" for k, v in interp_states.items()) if interp_states else "none"
                     # MTF confluence diagnostic
                     mtf_count = sum(
-                        len(r) for tf, r in self._mtf_confluence.items()
-                        if tf != tf_seconds) if self._mtf_confluence else 0
+                        len(r) for k, r in self._mtf_confluence.items()
+                        if k[0] != tf_seconds) if self._mtf_confluence else 0
                     conf_str = (f" mtf_records={mtf_count} "
                                 f"confluence={len(monitor._current_confluence)}"
                                 if mtf_count else "")
@@ -2634,32 +3106,43 @@ class SymbolHub:
                         )
 
                 # Publish this TF's confluence to shared buffer (from real
-                # monitor if no shadow engine covers it)
-                if tf_seconds not in self._mtf_confluence or \
-                        not self._shadow_engines.get(tf_seconds):
-                    for m in self.monitors.values():
-                        if m.tf_seconds == tf_seconds:
-                            # 2026-06-12 (B5 TRUE root cause): publish
-                            # ONLY the monitor's OWN-TF records. The
-                            # monitor's _current_confluence also carries
-                            # records MERGED from every other TF (its own
-                            # gating input, step 3c) — publishing the
-                            # whole set re-broadcast stale copies of
-                            # other TFs' states; round-trips accumulated
-                            # until _mtf_confluence held ALL states of
-                            # ALL interpreters (observed live: GATE_DIAG
-                            # records carried all four 2M-UT_BOT states
-                            # at once) → every gate's subset check passed
-                            # → gates permanently open → the fleet-wide
-                            # phantom-flood ladder of 2026-06-12.
-                            _lbl = SECONDS_TO_TIMEFRAME.get(
-                                tf_seconds, '1Min').replace(
-                                'Min', 'M').replace('Hour', 'H').replace(
-                                'Day', 'D').replace('Week', 'W')
-                            own_records = {r for r in m._current_confluence
-                                           if r.startswith(_lbl + '-')}
-                            self._mtf_confluence[tf_seconds] = own_records
-                            break
+                # monitor if no shadow engine covers its (tf, session) key)
+                # Bug Hunt Wave 1 #1: real monitors are primary-TF, so the
+                # session belongs to the monitor — store under
+                # (tf, monitor's session), first monitor per session wins
+                # (flag OFF: single 'RTH' session == legacy first-monitor).
+                _stored_sessions: Set[str] = set()
+                for m in self.monitors.values():
+                    if m.tf_seconds != tf_seconds:
+                        continue
+                    _m_sess = _shadow_session_for(m)
+                    if _m_sess in _stored_sessions:
+                        continue
+                    _key = (tf_seconds, _m_sess)
+                    if _key in self._mtf_confluence and \
+                            self._shadow_engines.get(_key):
+                        continue  # session-shadow owns this key
+                    _stored_sessions.add(_m_sess)
+                    # 2026-06-12 (B5 TRUE root cause): publish
+                    # ONLY the monitor's OWN-TF records. The
+                    # monitor's _current_confluence also carries
+                    # records MERGED from every other TF (its own
+                    # gating input, step 3c) — publishing the
+                    # whole set re-broadcast stale copies of
+                    # other TFs' states; round-trips accumulated
+                    # until _mtf_confluence held ALL states of
+                    # ALL interpreters (observed live: GATE_DIAG
+                    # records carried all four 2M-UT_BOT states
+                    # at once) → every gate's subset check passed
+                    # → gates permanently open → the fleet-wide
+                    # phantom-flood ladder of 2026-06-12.
+                    _lbl = SECONDS_TO_TIMEFRAME.get(
+                        tf_seconds, '1Min').replace(
+                        'Min', 'M').replace('Hour', 'H').replace(
+                        'Day', 'D').replace('Week', 'W')
+                    own_records = {r for r in m._current_confluence
+                                   if r.startswith(_lbl + '-')}
+                    self._mtf_confluence[_key] = own_records
 
                 # M8.5: broadcast completed bar to Supabase Realtime (live chart)
                 self._publish_completed_bar(tf_seconds, completed)
@@ -2695,41 +3178,46 @@ class SymbolHub:
         """
         try:
             if not hasattr(self, '_gate_telemetry_state'):
-                self._gate_telemetry_state = {}   # tf -> (records, ts)
+                # (tf, session) -> (records, ts) — Bug Hunt Wave 1 #1
+                self._gate_telemetry_state = {}
             needed: dict = {}
             for m in self.monitors.values():
                 for sec in getattr(m, '_required_secondary_tf', ()):
-                    needed.setdefault(sec, []).append(m.strat_id)
+                    needed.setdefault(
+                        (sec, _shadow_session_for(m)), []).append(m.strat_id)
             if not needed:
                 return
             rows = []
-            for tf, sids in needed.items():
-                cur = frozenset(self._mtf_confluence.get(tf, set()))
+            for (tf, sess), sids in needed.items():
+                cur = frozenset(self._mtf_confluence.get((tf, sess), set()))
                 prev, prev_ts = self._gate_telemetry_state.get(
-                    tf, (None, None))
+                    (tf, sess), (None, None))
                 if cur != prev:
-                    self._gate_telemetry_state[tf] = (cur, now)
+                    self._gate_telemetry_state[(tf, sess)] = (cur, now)
                     bar_iso = datetime.fromtimestamp(
                         int(now.timestamp()) - int(now.timestamp()) % tf,
                         tz=timezone.utc).isoformat()
+                    _vals = {'tf': tf, 'records': sorted(cur)}
+                    if MTF_SESSION_SHADOWS:
+                        _vals['session'] = sess
                     for sid in sids:
                         rows.append({
                             'strategy_id': sid,
                             'bar_ts': bar_iso,
                             'source': 'live_gate',
-                            'values': {'tf': tf,
-                                       'records': sorted(cur)},
+                            'values': _vals,
                         })
                 elif prev_ts is not None:
                     age = (now - prev_ts).total_seconds()
                     if age > 3 * tf and self.tick_count > 0:
                         logger.warning(
-                            "GATE-FREEZE? sym=%s tf=%ss records unchanged "
-                            "for %.0fs (>3 periods) — secondary closes may "
-                            "have stopped (cf. 2026-06-12 247afec freeze)",
-                            self.symbol, tf, age)
+                            "GATE-FREEZE? sym=%s tf=%ss session=%s records "
+                            "unchanged for %.0fs (>3 periods) — secondary "
+                            "closes may have stopped (cf. 2026-06-12 "
+                            "247afec freeze)",
+                            self.symbol, tf, sess, age)
                         # re-arm so the warning fires once per stale period
-                        self._gate_telemetry_state[tf] = (prev, now)
+                        self._gate_telemetry_state[(tf, sess)] = (prev, now)
             if rows:
                 from live_bars_writer import _get_executor
                 from db import save_bar_diagnostics_batch
@@ -2779,7 +3267,7 @@ class SymbolHub:
                                      source='ws')
                 except Exception:
                     pass
-            elif (tf_seconds in self._shadow_engines
+            elif (tf_seconds in self._shadow_tf_set()
                   and tf_seconds not in
                   {m.tf_seconds for m in self.monitors.values()}):
                 # 2026-06-12 (clobber merge fix): PURE-SECONDARY >=60s
@@ -2801,15 +3289,19 @@ class SymbolHub:
                     pass
 
             # Update shared confluence buffer first (shadow or real monitor)
-            shadow = self._shadow_engines.get(tf_seconds)
-            if shadow and shadow.indicators._initialized:
-                self._mtf_confluence[tf_seconds] = shadow.on_bar_close(completed)
+            # Bug Hunt Wave 1 #1: per-(tf, session) — see _close_shadow_with_bar
+            for _sh_sess, shadow in self._shadow_items_for_tf(tf_seconds):
+                if shadow.indicators._initialized:
+                    self._close_shadow_with_bar(
+                        tf_seconds, _sh_sess, shadow, completed)
 
             # Run all monitors for this timeframe — same as on_tick bar-close
             for monitor in self.monitors.values():
                 if monitor.tf_seconds != tf_seconds:
                     continue
-                if not _is_in_session(now, monitor.session):
+                # W2-2: label-gated on flush too (flush fires the session-
+                # final bar's close AFTER the boundary — must still dispatch).
+                if not _bar_close_in_session(completed, now, monitor):
                     continue
 
                 signals, audit_data = monitor.on_bar_close(
@@ -2869,19 +3361,27 @@ class SymbolHub:
                     )
 
             # Publish real monitor's confluence to shared buffer
-            if not self._shadow_engines.get(tf_seconds):
-                for m in self.monitors.values():
-                    if m.tf_seconds == tf_seconds:
-                        # B5 own-TF filter (2026-06-12) — see the
-                        # on_polygon_bar site for the full story.
-                        _lbl = SECONDS_TO_TIMEFRAME.get(
-                            tf_seconds, '1Min').replace(
-                            'Min', 'M').replace('Hour', 'H').replace(
-                            'Day', 'D').replace('Week', 'W')
-                        own_records = {r for r in m._current_confluence
-                                       if r.startswith(_lbl + '-')}
-                        self._mtf_confluence[tf_seconds] = own_records
-                        break
+            # Bug Hunt Wave 1 #1: per (tf, monitor session) key; first
+            # monitor per session (flag OFF == legacy first-monitor 'RTH').
+            _stored_sessions: Set[str] = set()
+            for m in self.monitors.values():
+                if m.tf_seconds != tf_seconds:
+                    continue
+                _m_sess = _shadow_session_for(m)
+                if _m_sess in _stored_sessions:
+                    continue
+                if self._shadow_engines.get((tf_seconds, _m_sess)):
+                    continue  # session-shadow owns this key
+                _stored_sessions.add(_m_sess)
+                # B5 own-TF filter (2026-06-12) — see the
+                # on_polygon_bar site for the full story.
+                _lbl = SECONDS_TO_TIMEFRAME.get(
+                    tf_seconds, '1Min').replace(
+                    'Min', 'M').replace('Hour', 'H').replace(
+                    'Day', 'D').replace('Week', 'W')
+                own_records = {r for r in m._current_confluence
+                               if r.startswith(_lbl + '-')}
+                self._mtf_confluence[(tf_seconds, _m_sess)] = own_records
 
             # M8.5: broadcast completed bar to Supabase Realtime (live chart)
             self._publish_completed_bar(tf_seconds, completed)
@@ -2936,9 +3436,11 @@ class SymbolHub:
                 self.symbol, tf_seconds, _e)
 
         # Update shared confluence buffer (shadow engines first)
-        shadow = self._shadow_engines.get(tf_seconds)
-        if shadow and shadow.indicators._initialized:
-            self._mtf_confluence[tf_seconds] = shadow.on_bar_close(bar_dict)
+        # Bug Hunt Wave 1 #1: per-(tf, session) — see _close_shadow_with_bar
+        for _sh_sess, _shadow in self._shadow_items_for_tf(tf_seconds):
+            if _shadow.indicators._initialized:
+                self._close_shadow_with_bar(
+                    tf_seconds, _sh_sess, _shadow, bar_dict)
 
         # Collect committed indicator values + interpreter states from each
         # monitor so the live-chart broadcast carries fresh state on bar
@@ -2951,7 +3453,9 @@ class SymbolHub:
         for monitor in self.monitors.values():
             if monitor.tf_seconds != tf_seconds:
                 continue
-            if not _is_in_session(self.last_tick_time, monitor.session):
+            # W2-2: label-gated (per-second/AM close path).
+            if not _bar_close_in_session(bar_dict, self.last_tick_time,
+                                         monitor):
                 continue
             # Phase C (2026-05-05): live_model gate — symmetric skip sets
             # so each monitor only fires on its declared bar source.
@@ -3064,24 +3568,39 @@ class SymbolHub:
                 )
 
         # Publish real monitor's confluence
-        if not self._shadow_engines.get(tf_seconds):
-            for m in self.monitors.values():
-                if m.tf_seconds == tf_seconds:
-                    # B5 own-TF filter (2026-06-12) — see the
-                    # on_polygon_bar site for the full story.
-                    _lbl = SECONDS_TO_TIMEFRAME.get(
-                        tf_seconds, '1Min').replace(
-                        'Min', 'M').replace('Hour', 'H').replace(
-                        'Day', 'D').replace('Week', 'W')
-                    own_records = {r for r in m._current_confluence
-                                   if r.startswith(_lbl + '-')}
-                    self._mtf_confluence[tf_seconds] = own_records
-                    break
+        # Bug Hunt Wave 1 #1: per (tf, monitor session) key; first monitor
+        # per session (flag OFF == legacy first-monitor 'RTH').
+        _stored_sessions: Set[str] = set()
+        _tf_sessions: Set[str] = set()
+        for m in self.monitors.values():
+            if m.tf_seconds != tf_seconds:
+                continue
+            _m_sess = _shadow_session_for(m)
+            _tf_sessions.add(_m_sess)
+            if _m_sess in _stored_sessions:
+                continue
+            if self._shadow_engines.get((tf_seconds, _m_sess)):
+                continue  # session-shadow owns this key
+            _stored_sessions.add(_m_sess)
+            # B5 own-TF filter (2026-06-12) — see the
+            # on_polygon_bar site for the full story.
+            _lbl = SECONDS_TO_TIMEFRAME.get(
+                tf_seconds, '1Min').replace(
+                'Min', 'M').replace('Hour', 'H').replace(
+                'Day', 'D').replace('Week', 'W')
+            own_records = {r for r in m._current_confluence
+                           if r.startswith(_lbl + '-')}
+            self._mtf_confluence[(tf_seconds, _m_sess)] = own_records
+        if not _tf_sessions:
+            _tf_sessions = {'RTH'}
 
         # Build cross-TF state snapshot the same way as the forming-bar path
+        # Bug Hunt Wave 1 #1: session-filtered like _gather_tentative_state.
         state_cross_tf: Dict[str, str] = {}
-        for other_tf, records in self._mtf_confluence.items():
+        for (other_tf, _sess), records in self._mtf_confluence.items():
             if other_tf == tf_seconds:
+                continue
+            if _sess not in _tf_sessions:
                 continue
             for rec in records:
                 if rec.startswith('GEN-'):
@@ -3132,7 +3651,10 @@ class SymbolHub:
         Affects: VWAP_V2, RVOL_V2 (volume-based interpreters).
         Not affected: SWING_123, EMA_*, MACD_*, UT_BOT_V4 (price-based).
         """
-        for sec_tf in list(self._shadow_engines.keys()):
+        # Bug Hunt Wave 1 #1: shadow keys are (tf, session) — iterate each
+        # distinct TF once (insertion order preserved).
+        for sec_tf in list(dict.fromkeys(
+                k[0] for k in self._shadow_engines)):
             if sec_tf < 60:
                 continue  # sub-minute handled in on_second_bar
             sec_builder = self.builders.get(sec_tf)
@@ -3160,8 +3682,8 @@ class SymbolHub:
                     self.symbol, sec_tf, completed, source=source_label)
             except Exception:
                 pass
-            shadow = self._shadow_engines.get(sec_tf)
-            if shadow is None:
+            shadow_items = self._shadow_items_for_tf(sec_tf)
+            if not shadow_items:
                 continue
 
             if sec_was_duplicate:
@@ -3173,29 +3695,50 @@ class SymbolHub:
                 # stale (passed/blocked forever based on the secondary TF's
                 # state at the first close after worker start). See
                 # `_ShadowIndicatorEngine.recompute_confluence`.
-                try:
-                    self._mtf_confluence[sec_tf] = shadow.recompute_confluence(
-                        sec_builder.history)
-                    logger.info(
-                        "Rebroadcast cascade: shadow %s/%ss recomputed, "
-                        "records refreshed=%s (src=%s)",
-                        self.symbol, sec_tf,
-                        self._mtf_confluence[sec_tf], source_label)
-                except Exception as e:
-                    logger.warning(
-                        "shadow recompute_confluence failed (%ss): %s",
-                        sec_tf, e)
+                # Bug Hunt Wave 1 #1: RTH shadow only — non-RTH shadows
+                # never consumed this RTH-built fan-out history, so a
+                # correction to it can't affect their state; their records
+                # refresh via the session reload on real closes.
+                for _sh_sess, shadow in shadow_items:
+                    if _sh_sess != 'RTH':
+                        continue
+                    # CLASS 1a: a coarse RTH shadow must NOT recompute from the
+                    # session-unfiltered sec_builder.history on a revision (it
+                    # would re-inject the after-hours coarse bucket) — reload
+                    # RTH-resampled truth instead (see _reload_coarse_rth_shadow).
+                    if self._coarse_rth_reload_active(sec_tf):
+                        self._reload_coarse_rth_shadow(sec_tf, shadow)
+                        continue
+                    try:
+                        self._mtf_confluence[(sec_tf, 'RTH')] = \
+                            shadow.recompute_confluence(sec_builder.history)
+                        logger.info(
+                            "Rebroadcast cascade: shadow %s/%ss recomputed, "
+                            "records refreshed=%s (src=%s)",
+                            self.symbol, sec_tf,
+                            self._mtf_confluence[(sec_tf, 'RTH')],
+                            source_label)
+                    except Exception as e:
+                        logger.warning(
+                            "shadow recompute_confluence failed (%ss): %s",
+                            sec_tf, e)
                 continue
 
-            try:
-                self._mtf_confluence[sec_tf] = shadow.on_bar_close(completed)
-                logger.info(
-                    "shadow_close %s/%ss close=%.2f records=%s (src=%s)",
-                    self.symbol, sec_tf, float(completed['close']),
-                    self._mtf_confluence[sec_tf], source_label)
-            except Exception as e:
-                logger.warning(
-                    "shadow on_bar_close failed (%ss): %s", sec_tf, e)
+            for _sh_sess, shadow in shadow_items:
+                try:
+                    self._close_shadow_with_bar(
+                        sec_tf, _sh_sess, shadow, completed)
+                    logger.info(
+                        "shadow_close %s/%ss session=%s close=%.2f "
+                        "records=%s (src=%s)",
+                        self.symbol, sec_tf, _sh_sess,
+                        float(completed['close']),
+                        self._mtf_confluence.get((sec_tf, _sh_sess)),
+                        source_label)
+                except Exception as e:
+                    logger.warning(
+                        "shadow on_bar_close failed (%ss session=%s): %s",
+                        sec_tf, _sh_sess, e)
 
     @_prof_fn('s_fanout_pri')
     def _fanout_to_primary_builders_gt_60(
@@ -3382,8 +3925,10 @@ class SymbolHub:
                     # IncrementalIndicatorEngine via _user_pack_engines; the
                     # __init__ called by recompute_from_history rebuilds them
                     # cleanly with fresh state.
-                # Also recompute any shadow engine for this TF
-                shadow_self = self._shadow_engines.get(tf_seconds)
+                # Also recompute any shadow engine for this TF.
+                # Bug Hunt Wave 1 #1: RTH key only — builder.history is the
+                # RTH-flavored live feed; non-RTH shadows never consume it.
+                shadow_self = self._shadow_engines.get((tf_seconds, 'RTH'))
                 if shadow_self is not None:
                     try:
                         shadow_self.indicators.recompute_from_history(builder.history)
@@ -3711,8 +4256,18 @@ class SymbolHub:
                     self.symbol, monitor.strat_id, tf_seconds,
                     offset_from_latest, e)
         # Shadow engine (cross-TF confluence) — same logic.
-        shadow_self = self._shadow_engines.get(tf_seconds)
-        if shadow_self is not None:
+        # Bug Hunt Wave 1 #1: RTH key only — the corrected builder.history
+        # is the RTH-flavored feed; non-RTH shadows never consume it (their
+        # records refresh via session reloads on closes).
+        shadow_self = self._shadow_engines.get((tf_seconds, 'RTH'))
+        if shadow_self is not None and self._coarse_rth_reload_active(
+                tf_seconds):
+            # CLASS 1a: coarse RTH shadow — the corrected builder.history is
+            # session-UNFILTERED (forms after-hours coarse buckets), so
+            # applying its correction re-contaminates the RTH gate. Reload
+            # RTH-resampled truth instead (see _reload_coarse_rth_shadow).
+            self._reload_coarse_rth_shadow(tf_seconds, shadow_self)
+        elif shadow_self is not None:
             try:
                 if offset_from_latest == 0:
                     ok = shadow_self.indicators.apply_last_bar_correction(
@@ -3735,7 +4290,7 @@ class SymbolHub:
                 # < SUPERTREND 73% < ungated ~91-97%) with matched pairs
                 # ~100%. Mirrors the 0609a fan-out rebroadcast fix, which
                 # never reached this path.
-                self._mtf_confluence[tf_seconds] = \
+                self._mtf_confluence[(tf_seconds, 'RTH')] = \
                     shadow_self._derive_confluence_records()
             except Exception as e:
                 logger.warning(
@@ -3916,8 +4471,17 @@ class SymbolHub:
         # records so _mtf_confluence reflects healed data (the gate
         # must not stay frozen on pre-heal state; mirrors the 0609a
         # rebroadcast-cascade fix).
-        shadow_self = self._shadow_engines.get(tf_seconds)
-        if shadow_self is not None:
+        # Bug Hunt Wave 1 #1: RTH key only — the healed builder.history is
+        # the RTH-flavored feed; non-RTH shadows never consume it.
+        shadow_self = self._shadow_engines.get((tf_seconds, 'RTH'))
+        if shadow_self is not None and self._coarse_rth_reload_active(
+                tf_seconds):
+            # CLASS 1a: coarse RTH shadow — the healed builder.history is
+            # session-UNFILTERED (forms after-hours coarse buckets), so
+            # replaying the insert into it re-contaminates the RTH gate.
+            # Reload RTH-resampled truth instead (see _reload_coarse_rth_shadow).
+            self._reload_coarse_rth_shadow(tf_seconds, shadow_self)
+        elif shadow_self is not None:
             try:
                 ok = shadow_self.indicators.apply_inserted_bar_replay(
                     rest_ts, builder.history)
@@ -3925,7 +4489,7 @@ class SymbolHub:
                     shadow_self.indicators.recompute_from_history(
                         builder.history, force_full=True)
                     used_full = True
-                self._mtf_confluence[tf_seconds] = \
+                self._mtf_confluence[(tf_seconds, 'RTH')] = \
                     shadow_self._derive_confluence_records()
             except Exception as e:
                 logger.warning(
@@ -4196,7 +4760,7 @@ class SymbolHub:
         #     `5s-SWING_123_TEST-NEUTRAL` and sid 102's `15s-...`).
         primary_tfs = {m.tf_seconds for m in self.monitors.values()}
         secondary_subminute_tfs = {
-            tf for tf in self._shadow_engines.keys() if tf < 60
+            k[0] for k in self._shadow_engines if k[0] < 60
         }
 
         # Sub-minute secondary aggregation: feed each per-second bar into
@@ -4229,8 +4793,8 @@ class SymbolHub:
                 _live_bars_write(self.symbol, sec_tf, completed, source='ws')
             except Exception:
                 pass
-            shadow = self._shadow_engines.get(sec_tf)
-            if shadow is None:
+            shadow_items = self._shadow_items_for_tf(sec_tf)
+            if not shadow_items:
                 continue
 
             if sec_was_duplicate:
@@ -4240,16 +4804,21 @@ class SymbolHub:
                 # to avoid emitting confluence records that already fired.
                 # Skip the recompute on a pure re-delivery (no value change)
                 # — that is the lag-spiral hot path (2026-05-19).
+                # Bug Hunt Wave 1 #1: sub-minute builders are fed RAW
+                # per-second bars (not RTH-built fan-out), so every
+                # session-shadow of this TF consumed the same live stream
+                # — recompute all of them from the shared history.
                 if sec_was_correction:
-                    try:
-                        shadow.indicators.recompute_from_history(sec_builder.history)
-                        logger.info(
-                            "Rebroadcast cascade: shadow %s/%ss recomputed",
-                            self.symbol, sec_tf)
-                    except Exception as e:
-                        logger.warning(
-                            "shadow recompute_from_history failed (%ss): %s",
-                            sec_tf, e)
+                    for _sh_sess, shadow in shadow_items:
+                        try:
+                            shadow.indicators.recompute_from_history(sec_builder.history)
+                            logger.info(
+                                "Rebroadcast cascade: shadow %s/%ss recomputed",
+                                self.symbol, sec_tf)
+                        except Exception as e:
+                            logger.warning(
+                                "shadow recompute_from_history failed (%ss): %s",
+                                sec_tf, e)
                 continue
 
             # Note: do NOT gate on shadow.indicators._initialized here.
@@ -4259,16 +4828,21 @@ class SymbolHub:
             # via live data alone (chicken-and-egg). worker.py.warmup()
             # is an optimization, not a hard requirement. Found while
             # investigating Q4 data fidelity (2026-04-27).
-            try:
-                self._mtf_confluence[sec_tf] = shadow.on_bar_close(
-                    completed)
-                logger.info(
-                    "shadow_close %s/%ss close=%.2f records=%s",
-                    self.symbol, sec_tf, float(completed['close']),
-                    self._mtf_confluence[sec_tf])
-            except Exception as e:
-                logger.warning(
-                    "shadow on_bar_close failed (%ss): %s", sec_tf, e)
+            # Bug Hunt Wave 1 #1: sub-minute closes come from RAW
+            # per-second data (valid for any session), so — unlike the
+            # >=60s fan-out path — EVERY session-shadow eats the bar
+            # directly; no per-close session reloads at this cadence.
+            for _sh_sess, shadow in shadow_items:
+                try:
+                    self._mtf_confluence[(sec_tf, _sh_sess)] = \
+                        shadow.on_bar_close(completed)
+                    logger.info(
+                        "shadow_close %s/%ss close=%.2f records=%s",
+                        self.symbol, sec_tf, float(completed['close']),
+                        self._mtf_confluence[(sec_tf, _sh_sess)])
+                except Exception as e:
+                    logger.warning(
+                        "shadow on_bar_close failed (%ss): %s", sec_tf, e)
 
         for tf_seconds, b in self.builders.items():
             if tf_seconds not in primary_tfs:
@@ -4318,8 +4892,11 @@ class SymbolHub:
                                         "Rebroadcast recompute failed for strat %s "
                                         "(tf=%ss): %s",
                                         monitor.strat_id, tf_seconds, e)
-                            shadow_self = self._shadow_engines.get(tf_seconds)
-                            if shadow_self is not None:
+                            # Bug Hunt Wave 1 #1: sub-minute primary — raw
+                            # per-second history is session-agnostic, so
+                            # recompute every session-shadow of this TF.
+                            for _sh_sess, shadow_self in \
+                                    self._shadow_items_for_tf(tf_seconds):
                                 try:
                                     shadow_self.indicators.recompute_from_history(b.history)
                                 except Exception as e:
@@ -4822,22 +5399,27 @@ class RalphEngine:
 
     def _warmup_all(self):
         """Load historical data and initialize all monitors."""
-        seen_tf: Dict[Tuple[str, int], pd.DataFrame] = {}
+        # Bug Hunt Wave 1 #1: dedup cache keyed by (sym, tf, session).
+        seen_tf: Dict[Tuple[str, int, str], pd.DataFrame] = {}
 
         for sym, hub in self.hubs.items():
             for tf_seconds, builder in hub.builders.items():
-                cache_key = (sym, tf_seconds)
+                tf_str = SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min')
+                # Determine session from first monitor using this TF as
+                # its PRIMARY. (Bug Hunt Wave 1 #1: for pure-secondary
+                # TFs this never matches → 'RTH'; that was the broken
+                # session resolution for gate shadows. The builder + real
+                # monitors legitimately keep this resolution — the
+                # session-aware shadow warmup is the pass below.)
+                session = 'RTH'
+                for m in hub.monitors.values():
+                    if m.tf_seconds == tf_seconds:
+                        session = m.session
+                        break
+                cache_key = (sym, tf_seconds, session)
                 if cache_key in seen_tf:
                     df = seen_tf[cache_key]
                 else:
-                    tf_str = SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min')
-                    # Determine session from first monitor using this TF
-                    session = 'RTH'
-                    for m in hub.monitors.values():
-                        if m.tf_seconds == tf_seconds:
-                            session = m.session
-                            break
-
                     try:
                         # Bug 5 (2026-06-18): shared warmup loader — sub-minute
                         # native, >=60s resampled-from-1min over a TF-scaled
@@ -4871,17 +5453,47 @@ class RalphEngine:
                         logger.warning("Warmup SKIPPED %s: strat=%s tf=%ss — no historical data",
                                        sym, monitor.strat_id, tf_seconds)
 
-                # Warmup shadow engine for this TF (if exists)
-                shadow = hub._shadow_engines.get(tf_seconds)
-                if shadow and len(warmup_df) > 0:
+            # Warmup shadow engines — session-aware pass (Bug Hunt Wave 1
+            # #1). Iterate the shadow ENGINE KEYS instead of resolving the
+            # session from primary monitors (which can never match a
+            # secondary TF → hard 'RTH' — the root cause of the 338
+            # session mismatch). RTH shadows keep warming from the seeded
+            # builder history (byte-identical to the legacy path); non-RTH
+            # shadows (flag ON only) load their own session's bars.
+            for (tf_seconds, sh_session), shadow in \
+                    hub._shadow_engines.items():
+                builder = hub.builders.get(tf_seconds)
+                if sh_session == 'RTH':
+                    warmup_df = (builder.history if builder is not None
+                                 else pd.DataFrame())
+                else:
+                    cache_key = (sym, tf_seconds, sh_session)
+                    if cache_key in seen_tf:
+                        df = seen_tf[cache_key]
+                    else:
+                        try:
+                            df = _load_warmup_df(sym, tf_seconds, sh_session)
+                        except Exception as e:
+                            logger.error(
+                                "Shadow warmup load failed for %s/%ss "
+                                "session=%s: %s",
+                                sym, tf_seconds, sh_session, e)
+                            df = pd.DataFrame()
+                        seen_tf[cache_key] = df
+                    # The builder holds the RTH-flavored feed, so the
+                    # forming-bar split it provides isn't available here —
+                    # trim the forming bar explicitly.
+                    warmup_df = _closed_bars_only(df, tf_seconds)
+                if len(warmup_df) > 0:
                     shadow.warmup(warmup_df)
                     # Publish the warmed coarse-TF state into the cross-TF gate
                     # dict so 1H/4H/1D gates are evaluable immediately (2026-06-26
                     # fix — they were absent until a live close that never comes
                     # intraday → coarse-gated strategies silent live).
-                    hub.seed_mtf_from_shadow(tf_seconds)
-                    logger.info("Shadow warmup %s: tf=%ss bars=%d initialized=%s",
-                                sym, tf_seconds, len(warmup_df),
+                    hub.seed_mtf_from_shadow(tf_seconds, sh_session)
+                    logger.info("Shadow warmup %s: tf=%ss session=%s bars=%d "
+                                "initialized=%s",
+                                sym, tf_seconds, sh_session, len(warmup_df),
                                 shadow.indicators._initialized)
 
         logger.info("Warmup complete for %d symbols", len(self.hubs))
@@ -5948,14 +6560,41 @@ class RalphEngine:
                 # Removed-only hubs don't need new shadow engines.
                 if sym not in hubs_with_new_secondary_tfs and not added:
                     continue
-                pre_shadow_tfs = set(hub._shadow_engines.keys())
+                # Bug Hunt Wave 1 #1: shadow keys are (tf, session).
+                pre_shadow_keys = set(hub._shadow_engines.keys())
                 hub.finalize_shadow_engines()
-                post_shadow_tfs = set(hub._shadow_engines.keys())
-                new_shadow_tfs = post_shadow_tfs - pre_shadow_tfs
-                for sec_tf in new_shadow_tfs:
+                post_shadow_keys = set(hub._shadow_engines.keys())
+                new_shadow_keys = post_shadow_keys - pre_shadow_keys
+                for (sec_tf, sh_session) in new_shadow_keys:
                     sec_builder = hub.builders.get(sec_tf)
-                    shadow = hub._shadow_engines.get(sec_tf)
+                    shadow = hub._shadow_engines.get((sec_tf, sh_session))
                     if sec_builder is None or shadow is None:
+                        continue
+                    if sh_session != 'RTH':
+                        # Flag-ON non-RTH shadow: the builder history is
+                        # the RTH-flavored feed — load session-correct
+                        # bars instead (mirrors _warmup_all).
+                        try:
+                            sess_df = _closed_bars_only(
+                                _load_warmup_df(sym, sec_tf, sh_session),
+                                sec_tf)
+                            if len(sess_df) > 0:
+                                shadow.warmup(sess_df)
+                                logger.info(
+                                    "Hot-reload: shadow %s/%ss session=%s "
+                                    "warmed up (%d bars) initialized=%s",
+                                    sym, sec_tf, sh_session, len(sess_df),
+                                    shadow.indicators._initialized)
+                            else:
+                                logger.warning(
+                                    "Hot-reload: shadow %s/%ss session=%s "
+                                    "— no session history; stays cold",
+                                    sym, sec_tf, sh_session)
+                        except Exception as e:
+                            logger.error(
+                                "Hot-reload: session-shadow warmup failed "
+                                "%s/%ss session=%s: %s",
+                                sym, sec_tf, sh_session, e)
                         continue
                     if len(sec_builder.history) == 0:
                         logger.warning(

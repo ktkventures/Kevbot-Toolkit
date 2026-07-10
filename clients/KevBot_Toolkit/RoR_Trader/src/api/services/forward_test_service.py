@@ -229,7 +229,8 @@ def _do_recompute(
                            "failed (%s) — proceeding unfloored", strategy_id, _e)
 
     all_trades = None
-    if _os.getenv('RORT_USE_DOUGH_CACHE', '0') == '1' and not _floored:
+    # graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
+    if _os.getenv('RORT_USE_DOUGH_CACHE', '1') == '1' and not _floored:
         try:
             import bar_cache_store as _bcs
             from unified_engine import run_trades_from_cache as _rtfc
@@ -1049,6 +1050,21 @@ def _algo_history_cron_enabled() -> bool:
     return True  # default on
 
 
+def _require_algo_model(cfg: dict, strat: dict | None, strategy_id) -> str:
+    """Resolve the algo lane's model or FAIL LOUD. An unset model used to
+    format into the data_source tag as literal 'cache_None' — 18,871 such rows
+    (21 strategies, repaired 2026-07-02). Never write an unlabeled lane; a
+    strategy without a model is a config bug to surface, not default around."""
+    model = (cfg.get('algo_model') or cfg.get('backtest_model')
+             or (strat or {}).get('algo_model') or (strat or {}).get('backtest_model'))
+    if not model:
+        raise ValueError(
+            f"strategy {strategy_id}: algo_model/backtest_model unset — refusing "
+            "to write a 'cache_None'-labeled algo lane. Set config.algo_model "
+            "(fleet standard: 'cache_locked').")
+    return str(model)
+
+
 def _stamp_config(strategy_id: int, user_id: str, cfg: dict) -> None:
     """Write a fully-merged config dict back via the raw admin client.
 
@@ -1314,7 +1330,7 @@ def append_new_trades_for_strategy(
         # engine_snapshot_b64) since the two lanes may use different
         # models and produce different indicator-state trajectories.
         from unified_engine import compute_backtest_fingerprint
-        algo_model = cfg.get('algo_model') or cfg.get('backtest_model')
+        algo_model = _require_algo_model(cfg, strat, strategy_id)
         algo_snapshot_b64 = _guarded_snapshot(
             cfg, 'algo', 'engine_snapshot_b64_algo', strategy_id)
         algo_fingerprint = compute_backtest_fingerprint(strat)
@@ -1934,8 +1950,9 @@ def append_new_backtest_trades_for_strategy(
                 # BACKTEST lane so trades spanning an append boundary aren't
                 # dropped (root cause of ~50% lane under-production). Backtest
                 # lane ONLY — live/algo keep always-flat (§8.2). Kill-switch.
+                # graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
                 inherit_position=(_os_bt.getenv(
-                    'RORT_RESUME_INHERIT_POSITION', '0') == '1'),
+                    'RORT_RESUME_INHERIT_POSITION', '1') == '1'),
             )
         except Exception as e:
             logger.warning(
@@ -2569,8 +2586,7 @@ def recompute_and_persist_algo_trades(
     _raw_resp = get_admin_client().table('strategies').select('config') \
         .eq('id', strategy_id).eq('user_id', user_id).single().execute()
     cfg = dict(_raw_resp.data.get('config') or {}) if _raw_resp.data else {}
-    algo_model = cfg.get('algo_model') or cfg.get('backtest_model') \
-        or strat.get('algo_model') or strat.get('backtest_model')
+    algo_model = _require_algo_model(cfg, strat, strategy_id)
     now_iso = datetime.now(timezone.utc).isoformat()
 
     _prev_user = get_current_user_id()

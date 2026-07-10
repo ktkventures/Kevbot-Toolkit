@@ -8,7 +8,8 @@
  * without tailing Railway logs.
  *
  * Columns:
- *   strategy | symbol | timeframe | snapshot age | KPI age |
+ *   strategy | symbol | timeframe | bar parity (live vs REST, W2-6a) |
+ *   BT current (shadow heartbeat) | KPI age |
  *   last trade age | trades | paired | phantom | missed | flags
  *
  * Sort: default by red-flag count desc (most-broken first), click any
@@ -22,6 +23,10 @@ import {
   type StrategyHealthFlag,
   type StrategyHealthRow,
 } from '@/hooks/queries/useStrategyHealth';
+import {
+  useBarParity,
+  type BarParityPair,
+} from '@/hooks/queries/useBarParity';
 import { useSetSnapshotSubscription } from '@/hooks/mutations/useStrategyMutations';
 
 // ── Formatting helpers ────────────────────────────────────────────────
@@ -38,6 +43,19 @@ function fmtAge(seconds: number | null | undefined): string {
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
   return h === 0 ? `${d}d` : `${d}d ${h}h`;
+}
+
+/** Age in seconds of an ISO timestamp relative to the server's `now`
+ *  (falls back to client clock). Used for W2-0 bt_current_through, which
+ *  the API ships as a raw timestamp rather than a precomputed age. */
+function ageSecFrom(iso: string | null | undefined,
+                    nowIso: string | undefined): number | null {
+  if (!iso) return null;
+  const t = Date.parse(iso);
+  if (isNaN(t)) return null;
+  const n = nowIso ? Date.parse(nowIso) : Date.now();
+  if (isNaN(n)) return null;
+  return Math.max(0, Math.round((n - t) / 1000));
 }
 
 /** Color-coded age cell. Thresholds tuned for the data-worker cadence:
@@ -111,20 +129,32 @@ function flagChipStyle(tone: 'red' | 'amber' | 'gray'): React.CSSProperties {
 
 type SortKey =
   | 'flags' | 'name' | 'symbol' | 'timeframe'
-  | 'snapshot' | 'kpis' | 'lastTrade' | 'trades'
-  | 'lastBt' | 'lastAlert'
+  | 'btCurrent' | 'kpis' | 'lastTrade' | 'trades'
+  | 'lastBt' | 'lastAlert' | 'barParity'
   | 'combined' | 'paired' | 'phantom' | 'missed' | 'tbd';
+
+/** Join key between StrategyHealthRow and BarParityPair — parity is
+ *  computed per unique (symbol, timeframe), shared across strategies. */
+function parityKey(symbol: string | null, timeframe: string | null): string {
+  return `${symbol ?? ''}|${timeframe ?? ''}`;
+}
 
 function rowSortValue(
   r: StrategyHealthRow,
   key: SortKey,
+  parityByPair?: Map<string, BarParityPair>,
 ): number | string {
   switch (key) {
     case 'flags':     return -r.red_flags.length; // most flags first by default asc
     case 'name':      return r.name ?? '';
     case 'symbol':    return r.symbol ?? '';
     case 'timeframe': return r.timeframe ?? '';
-    case 'snapshot':  return r.snapshot_age_sec ?? Number.POSITIVE_INFINITY;
+    // W2-0: BT Current sorts by heartbeat coverage recency — newest boundary
+    // first on asc (equivalent to smallest age first). Nulls sort last.
+    case 'btCurrent': {
+      const t = r.bt_current_through ? Date.parse(r.bt_current_through) : NaN;
+      return isNaN(t) ? Number.POSITIVE_INFINITY : -t;
+    }
     case 'kpis':      return r.kpis_age_sec ?? Number.POSITIVE_INFINITY;
     case 'lastTrade': return r.last_entry_age_sec ?? Number.POSITIVE_INFINITY;
     case 'lastBt':    return r.last_backtest_created_age_sec ?? Number.POSITIVE_INFINITY;
@@ -134,6 +164,11 @@ function rowSortValue(
     // TBD makes the comparison apples-to-apples naturally — the old
     // fleet-wide global-fair cutoff is retired (it over-filtered).
     case 'combined':  return -(r.combined_pct ?? -1); // nulls (no data) sort last
+    // W2-6a: Bar Parity sorts worst-last on asc, nulls (not computable)
+    // last — mirrors the 'combined' convention.
+    case 'barParity':
+      return -(parityByPair?.get(parityKey(r.symbol, r.timeframe))
+        ?.parity_pct ?? -1);
     case 'paired':    return -r.paired_count_cov;
     case 'phantom':   return -r.phantom_count_cov;
     case 'missed':    return -r.missed_count_cov;
@@ -148,6 +183,53 @@ function combinedPctColor(v: number | null): string {
   if (v >= 70) return 'var(--text)';
   if (v >= 40) return '#ffc107';   // amber
   return '#ef5350';                // red
+}
+
+// W2-6a — Bar Parity % chip (age-chip styling, like ageStyle). Parity is
+// the worst-of-OHLC field match rate vs REST truth, so the thresholds sit
+// high: even a clean WS feed drops a few bars' worth of late prints.
+function barParityStyle(v: number | null | undefined): React.CSSProperties {
+  let color = 'var(--text-muted)';
+  let bg = 'transparent';
+  if (v != null) {
+    if (v >= 98) {
+      bg = 'rgba(76,175,80,0.15)'; color = '#7fd081';
+    } else if (v >= 90) {
+      bg = 'rgba(255,193,7,0.15)'; color = '#ffc107';
+    } else {
+      bg = 'rgba(244,67,54,0.18)'; color = '#ef5350';
+    }
+  }
+  return {
+    background: bg, color,
+    padding: '2px 6px', borderRadius: 3,
+    fontVariantNumeric: 'tabular-nums',
+    whiteSpace: 'nowrap',
+    fontWeight: 600,
+  };
+}
+
+// Tooltip for the Bar Parity cell: definition + per-field breakdown +
+// coverage stats, or the not-computable reason.
+function barParityTitle(p: BarParityPair | undefined): string {
+  const def = 'Bar Parity (data) = DATA-LAYER check, OHLC-only, recent window: '
+    + 'worst-of-OHLC field match rate, live bars (WS) '
+    + 'vs REST truth (bar_cache resampled to TF), tolerance max($0.01, 0.02%), '
+    + 'recent window anchored at the newest settled live bar. '
+    + 'No indicators or engine lens — for full per-indicator parity per '
+    + 'strategy see the Model Parity tab.';
+  if (!p) return `${def} No computation for this (symbol, TF) pair yet.`;
+  if (p.parity_pct == null) {
+    return `${def} Not computable: ${p.reason ?? 'unknown'}.`;
+  }
+  const f = p.field_pcts;
+  const fieldsLine = f
+    ? ` O ${f.open}% · H ${f.high}% · L ${f.low}% · C ${f.close}% ·`
+    : '';
+  return `${def}${fieldsLine} n=${p.bars_compared} bars (src ${p.source_timeframe ?? '—'})`
+    + ` · live-only ${p.bars_live_only} · rest-only ${p.bars_rest_only}`
+    + ` · backfilled ${p.bars_backfilled}`
+    + ` · window ${p.window_start ?? '—'} → ${p.window_end ?? '—'}`;
 }
 
 // ── Component ─────────────────────────────────────────────────────────
@@ -212,6 +294,19 @@ export default function StrategyHealthV1() {
       end: mode === 'custom' ? customEndIso : null,
     });
 
+  // W2-6a — Bar Parity % (live_bars vs REST truth), computed server-side
+  // per unique (symbol, timeframe) pair and cached ~5 min. Independent of
+  // the main health query so a slow/failed parity fetch never blocks the
+  // table — cells just show '—' until it lands.
+  const barParity = useBarParity();
+  const parityByPair = useMemo(() => {
+    const m = new Map<string, BarParityPair>();
+    for (const p of barParity.data?.pairs ?? []) {
+      m.set(parityKey(p.symbol, p.timeframe), p);
+    }
+    return m;
+  }, [barParity.data]);
+
   const [sortKey, setSortKey] = useState<SortKey>('flags');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [activeFlag, setActiveFlag] = useState<StrategyHealthFlag | null>(null);
@@ -231,15 +326,15 @@ export default function StrategyHealthV1() {
       rows = rows.filter(r => r.red_flags.includes(activeFlag));
     }
     const sorted = [...rows].sort((a, b) => {
-      const av = rowSortValue(a, sortKey);
-      const bv = rowSortValue(b, sortKey);
+      const av = rowSortValue(a, sortKey, parityByPair);
+      const bv = rowSortValue(b, sortKey, parityByPair);
       const cmp = typeof av === 'number' && typeof bv === 'number'
         ? av - bv
         : String(av).localeCompare(String(bv));
       return sortDir === 'asc' ? cmp : -cmp;
     });
     return sorted;
-  }, [data, sortKey, sortDir, activeFlag, includeLegacy]);
+  }, [data, sortKey, sortDir, activeFlag, includeLegacy, parityByPair]);
 
   // Summary: counts by flag, scoped to non-legacy strategies.
   const summary = useMemo(() => {
@@ -476,7 +571,8 @@ export default function StrategyHealthV1() {
                 <Th onClick={() => toggleSort('name')}      label={`Strategy${arrow('name')}`} />
                 <Th onClick={() => toggleSort('symbol')}    label={`Symbol${arrow('symbol')}`} />
                 <Th onClick={() => toggleSort('timeframe')} label={`TF${arrow('timeframe')}`} />
-                <Th onClick={() => toggleSort('snapshot')}  label={`Snapshot${arrow('snapshot')}`} />
+                <Th onClick={() => toggleSort('barParity')} label={`Bar Parity (data)${arrow('barParity')}`} align="right" />
+                <Th onClick={() => toggleSort('btCurrent')} label={`BT Current${arrow('btCurrent')}`} />
                 <Th onClick={() => toggleSort('kpis')}      label={`KPIs${arrow('kpis')}`} />
                 <Th onClick={() => toggleSort('lastTrade')} label={`Last trade${arrow('lastTrade')}`} />
                 <Th onClick={() => toggleSort('lastBt')}    label={`Last BT${arrow('lastBt')}`} />
@@ -495,7 +591,12 @@ export default function StrategyHealthV1() {
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map(r => (
+              {filteredRows.map(r => {
+                // W2-6a: one parity computation per (symbol, TF) pair —
+                // strategies sharing a pair show the same number.
+                const parity = parityByPair.get(
+                  parityKey(r.symbol, r.timeframe));
+                return (
                 <tr key={`${r.user_id}:${r.strategy_id}`}
                     style={{ borderTop: '1px solid var(--border)' }}>
                   <td style={{ padding: '6px 8px' }}>
@@ -511,9 +612,33 @@ export default function StrategyHealthV1() {
                     {r.symbol || '—'}
                   </td>
                   <td style={{ padding: '6px 8px' }}>{r.timeframe || '—'}</td>
-                  <td style={{ padding: '6px 8px' }}>
-                    <span style={ageStyle(r.snapshot_age_sec, { green: 600, yellow: 3600 })}>
-                      {fmtAge(r.snapshot_age_sec)}
+                  {/* W2-6a (2026-07-07): Bar Parity % — messy-vs-clean live
+                       data at a glance. Worst-of-OHLC field match rate,
+                       live_bars (WS) vs bar_cache REST truth resampled to
+                       the strategy TF, over the last ~2 trading hours
+                       (≤240 bars, anchored at the newest settled live bar). */}
+                  <td style={{ padding: '6px 8px', textAlign: 'right' }}
+                      title={barParityTitle(parity)}>
+                    <span style={barParityStyle(parity?.parity_pct)}>
+                      {parity?.parity_pct == null
+                        ? '—'
+                        : `${parity.parity_pct.toFixed(1)}%`}
+                    </span>
+                  </td>
+                  {/* W2-0 (2026-07-06): replaced the dead Snapshot column.
+                       BT Current = age of the shadow engine's settled coverage
+                       boundary (shadow_heartbeats.current_through) — honest
+                       "how current is the backtest lane" even when the model
+                       is quiet and Last BT ages. green ≤20m, amber ≤2h. */}
+                  <td style={{ padding: '6px 8px' }}
+                      title={r.bt_current_through
+                        ? `current through ${r.bt_current_through}`
+                          + ` · heartbeat ${r.bt_heartbeat_at ?? '—'}`
+                        : 'no shadow heartbeat on file'}>
+                    <span style={ageStyle(
+                        ageSecFrom(r.bt_current_through, data?.now),
+                        { green: 1200, yellow: 7200 })}>
+                      {fmtAge(ageSecFrom(r.bt_current_through, data?.now))}
                     </span>
                   </td>
                   <td style={{ padding: '6px 8px' }}>
@@ -632,10 +757,11 @@ export default function StrategyHealthV1() {
                     )}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               {filteredRows.length === 0 && (
                 <tr>
-                  <td colSpan={16} style={{ padding: 16, textAlign: 'center',
+                  <td colSpan={17} style={{ padding: 16, textAlign: 'center',
                                             color: 'var(--text-muted)' }}>
                     No strategies match the current filter.
                   </td>

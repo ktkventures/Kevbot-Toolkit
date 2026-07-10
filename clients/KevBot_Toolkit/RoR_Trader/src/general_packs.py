@@ -198,19 +198,29 @@ def _serialize_pack_list(packs: List[GeneralPack]) -> list:
     } for p in packs]
 
 
+def _load_general_packs_from_db() -> List[GeneralPack]:
+    """DB-backed load, factored out so config_cache can memoize it (Fix 1b)."""
+    from db import load_general_packs_db
+    raw = load_general_packs_db()
+    if not raw:
+        packs = create_default_packs()
+        try:
+            save_general_packs(packs)
+        except Exception:
+            pass  # Return in-memory defaults even if save fails (e.g. no JWT)
+        return packs
+    return _parse_pack_list(raw)
+
+
 def load_general_packs() -> List[GeneralPack]:
     from db import USE_DB
     if USE_DB:
-        from db import load_general_packs_db
-        raw = load_general_packs_db()
-        if not raw:
-            packs = create_default_packs()
-            try:
-                save_general_packs(packs)
-            except Exception:
-                pass  # Return in-memory defaults even if save fails (e.g. no JWT)
-            return packs
-        return _parse_pack_list(raw)
+        # M-RS4 Fix 1b: memoize the per-user DB load for the shadow-worker's poll
+        # loop (default OFF → calls _load_general_packs_from_db directly →
+        # byte-identical). See config_cache.py.
+        import config_cache
+        return config_cache.cached(
+            "general_packs", _load_general_packs_from_db)
 
     config_path = get_config_path()
 

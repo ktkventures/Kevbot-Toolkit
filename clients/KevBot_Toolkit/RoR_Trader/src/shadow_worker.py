@@ -47,6 +47,36 @@ VALID_MODES = ("button", "cron", "shadow")
 
 _running = True
 
+# Deploy-provenance fingerprint (2026-07-07 incident). A `railway up` from a stale
+# checkout shipped a shadow-worker image missing PRs #33/#34 (pass telemetry,
+# watchdog, heartbeats) while the fleet debugged it as a code regression pinned to
+# the *intended* SHA — Railway CLI uploads the WORKING TREE it is run from, and the
+# service's Railway `commitHash` metadata records repo HEAD, not tree content.
+# "Which code is this container actually running?" must be answerable from ONE boot
+# log line. The hash below is shell-reproducible against any ref:
+#   cat src/shadow_worker.py src/shadow_manager.py src/services.py | sha256sum
+#   git show <SHA>:clients/KevBot_Toolkit/RoR_Trader/src/shadow_worker.py \
+#       <SHA>:clients/KevBot_Toolkit/RoR_Trader/src/shadow_manager.py \
+#       <SHA>:clients/KevBot_Toolkit/RoR_Trader/src/services.py | sha256sum
+# `_validate_poll_runtime.py` (the pre-deploy runtime gate) prints the same value
+# for the tree under test — compare it to this boot line after every deploy.
+_FINGERPRINT_FILES = ("shadow_worker.py", "shadow_manager.py", "services.py")
+
+
+def _code_fingerprint() -> str:
+    """First 12 hex of sha256 over this service's key source files (in
+    _FINGERPRINT_FILES order). Never raises — a missing sibling hashes as a
+    marker string so the mismatch is still visible."""
+    import hashlib
+    h = hashlib.sha256()
+    base = Path(__file__).resolve().parent
+    for name in _FINGERPRINT_FILES:
+        try:
+            h.update((base / name).read_bytes())
+        except Exception:  # noqa: BLE001
+            h.update(f"missing:{name}".encode())
+    return h.hexdigest()[:12]
+
 
 def _handle_signal(signum, frame):
     global _running
@@ -135,6 +165,43 @@ def _kpi_drain_loop(mgr):
             _t.sleep(1)
 
 
+_poll_executor = None
+_poll_executor_workers = 0
+
+
+def _recycle_poll_executor():
+    """Abandon a poisoned executor (threads stuck on dead sockets after a DB
+    blip — 2026-07-06: two wedges in one day, writes froze while the loop
+    looked alive). shutdown(wait=False) detaches; the next _get_poll_executor
+    call builds a fresh pool. Leaked threads die with their sockets."""
+    global _poll_executor
+    if _poll_executor is not None:
+        try:
+            _poll_executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:  # py<3.9 signature
+            _poll_executor.shutdown(wait=False)
+        except Exception:  # noqa: BLE001
+            pass
+    _poll_executor = None
+
+
+def _get_poll_executor(workers: int):
+    """Lazy, reused ThreadPoolExecutor for parallel slot polls (M-RS4 Fix 2c).
+
+    Mirrors live_bars_writer.py's pool pattern. Sized to RORT_SHADOW_POLL_WORKERS;
+    rebuilt only if the worker count changes. Safe to share: get_admin_client() is a
+    thread-safe singleton, pack_registry is read-only post-startup, the KPI queue is
+    lock-guarded, and each poll sets its own per-thread user context via _UserContext.
+    """
+    global _poll_executor, _poll_executor_workers
+    if _poll_executor is None or _poll_executor_workers != workers:
+        from concurrent.futures import ThreadPoolExecutor
+        _poll_executor = ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="shadow-poll")
+        _poll_executor_workers = workers
+    return _poll_executor
+
+
 def _resident_loop(stop_evt: threading.Event):
     """The continuous-resident backtest lane (Step C). Per cycle: refresh the slot set,
     then poll each eligible slot (advance its resident engine to now-LAG, write new
@@ -165,6 +232,28 @@ def _resident_loop(stop_evt: threading.Event):
     # Fix 2a: process slots oldest-polled-first so no slot can starve (default on).
     fair_order = os.environ.get("RORT_SHADOW_FAIR_ORDER", "1").strip().lower() in (
         "1", "true", "yes", "on")
+    # Fix 2c: parallelize the per-slot polls across a thread pool so the serial
+    # bar_cache read tax is overlapped (default 1 = serial = today's behavior).
+    try:
+        poll_workers = max(1, int(os.environ.get("RORT_SHADOW_POLL_WORKERS", "1")))
+    except (TypeError, ValueError):
+        poll_workers = 1
+    if poll_workers > 1:
+        logger.warning("[shadow_worker] Fix 2c: parallel polls across %d workers",
+                       poll_workers)
+
+    def _poll_one(slot):
+        """Poll one slot, returning (inserted, status). Exceptions are contained so
+        one bad slot never aborts the cycle (mirrors the serial path's try/except)."""
+        if not _running:
+            return 0, 'halted'
+        try:
+            r = mgr.poll(slot)
+            return (r.get('inserted', 0) or 0), r.get('status', 'ok')
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[shadow_worker] sid=%s poll failed: %s", slot.sid, e,
+                           exc_info=True)
+            return 0, 'error'
 
     reload_every = int(os.environ.get("RORT_SHADOW_RELOAD_S", "300"))
     last_discover = 0.0
@@ -186,17 +275,46 @@ def _resident_loop(stop_evt: threading.Event):
             # oldest last_tick_at first (never-polled = -1 → front). No slot starves.
             slots_iter.sort(
                 key=lambda s: s.last_tick_at if s.last_tick_at is not None else -1.0)
-        for slot in slots_iter:
-            if not _running:
-                break
-            if not slot.eligible:
-                continue
-            try:
-                res = mgr.poll(slot)
-                wrote += res.get('inserted', 0) or 0
-            except Exception as e:  # noqa: BLE001
-                logger.warning("[shadow_worker] sid=%s poll failed: %s", slot.sid, e,
-                               exc_info=True)
+        eligible = [s for s in slots_iter if s.eligible]
+
+        # Pass watchdog (2026-07-06): the old unbounded f.result() join let one
+        # thread stuck on a dead socket freeze the whole loop forever ("alive but
+        # writing nothing" — twice today). Bound the pass; abandon stragglers and
+        # recycle the executor so the next pass starts on healthy threads.
+        from collections import Counter
+        from concurrent.futures import wait as _fut_wait
+        pass_timeout = int(os.environ.get("RORT_SHADOW_PASS_TIMEOUT_S", "600"))
+        statuses = Counter()
+        t_pass = time.monotonic()
+        if poll_workers > 1 and len(eligible) > 1:
+            # Submit in fair-order; join before the next pass so a slot is never
+            # polled by two workers at once and discover() never races a poll.
+            ex = _get_poll_executor(poll_workers)
+            fut_by_sid = {ex.submit(_poll_one, s): s.sid for s in eligible}
+            done, not_done = _fut_wait(fut_by_sid, timeout=pass_timeout)
+            for f in done:
+                ins, st = f.result()
+                wrote += ins
+                statuses[st] += 1
+            if not_done:
+                stuck = sorted(fut_by_sid[f] for f in not_done)
+                statuses['stuck'] += len(not_done)
+                logger.error(
+                    "[shadow_worker] PASS TIMEOUT %ss: abandoning %d stuck poll(s) "
+                    "sids=%s — recycling executor", pass_timeout, len(not_done), stuck)
+                _recycle_poll_executor()
+        else:
+            for slot in eligible:
+                if not _running:
+                    break
+                ins, st = _poll_one(slot)
+                wrote += ins
+                statuses[st] += 1
+        # One line per pass, always — a silent-zero pass is now attributable
+        # (ok vs ok_empty vs probe_skip vs no_new_bar vs error vs stuck).
+        logger.info("[shadow_worker] pass done in %.0fs: eligible=%d wrote=%d %s",
+                    time.monotonic() - t_pass, len(eligible), wrote,
+                    dict(statuses))
         if wrote:
             logger.info("[shadow_worker] cycle %s %d trades",
                         "would-write" if dry else "wrote", wrote)
@@ -227,6 +345,14 @@ def main():
     shard = os.environ.get("RORT_SHADOW_SHARD", "").strip() or "(all)"
     logger.info("[shadow_worker] up id=%s lane_mode=%s shard=%s poll=%ss",
                 WORKER_ID, mode, shard, POLL_INTERVAL_S)
+    # One-line deploy-provenance check (see _FINGERPRINT_FILES above): compare
+    # against the intended SHA's fingerprint after EVERY deploy. WARNING level so
+    # it survives any INFO filtering.
+    try:
+        logger.warning("[shadow_worker] code fingerprint=%s (sha256/12 over %s)",
+                       _code_fingerprint(), "+".join(_FINGERPRINT_FILES))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[shadow_worker] code fingerprint unavailable: %s", e)
 
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT, _handle_signal)

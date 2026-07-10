@@ -74,7 +74,7 @@ def build_prod_like_hub(tf_seconds=120):
                                     {'MACD_LINE'}, dict(PARAMS))
     seed = _resample(_seed_df(), tf_seconds)
     shadow.warmup(seed)
-    hub._shadow_engines[tf_seconds] = shadow
+    hub._shadow_engines[(tf_seconds, 'RTH')] = shadow
     # production: warmup seeds the secondary builder's history
     hub.seed_history(tf_seconds, seed)
     return hub, b

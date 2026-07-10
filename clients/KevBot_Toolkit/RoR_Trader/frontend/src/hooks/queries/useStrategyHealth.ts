@@ -41,6 +41,14 @@ export interface StrategyHealthRow {
   snapshot_at: string | null;
   snapshot_age_sec: number | null;
   last_recompute_until_ts: string | null;
+  /** W2-0 shadow heartbeat (2026-07-06) — the resident shadow engine's TRUE
+   *  settled coverage boundary (the bar timestamp it has processed through).
+   *  Fresh heartbeat = honest "BT current" even when the model is quiet and
+   *  Last BT ages. Null = no heartbeat on file (engine not resident). */
+  bt_current_through: string | null;
+  /** When the shadow engine last reported the heartbeat. The API treats a
+   *  heartbeat as authoritative coverage only while this is <30 min old. */
+  bt_heartbeat_at: string | null;
 
   kpis_computed_at: string | null;
   kpis_age_sec: number | null;

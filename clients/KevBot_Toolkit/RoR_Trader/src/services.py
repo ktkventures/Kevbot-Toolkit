@@ -319,7 +319,8 @@ def prepare_data_with_indicators(
     # stays full/unscoped on purpose (separate, later validation). Validated
     # byte-identical (trades + gate states) by the parity guard.
     import os
-    _scope_flag = os.getenv('RORT_SCOPE_CONFLUENCE_GROUPS', '0') == '1'
+    # graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
+    _scope_flag = os.getenv('RORT_SCOPE_CONFLUENCE_GROUPS', '1') == '1'
     if _scope_flag and required_confluence_ids is None and strat is not None:
         try:
             from unified_engine import resolve_required_confluence_groups
@@ -495,6 +496,19 @@ def unified_trades(
     Returns:
         trades_df matching generate_trades() schema.
     """
+    # 1-minute-secondary gate (RORT_ENFORCE_1MIN_GATE): primary-aware relabel of
+    # an overloaded '1M-' gate → lowercase '1m-' so the engine's confluence_set
+    # matches the 1-minute SECONDARY records built from the df (which use the
+    # lowercase '1m' suffix). MUST mirror the same relabel `load_strategy_data`
+    # applied when it built `df`, so the gate points at the '1m-' record (the
+    # true 1-minute state) instead of the mislabeled '1M-' PRIMARY record. Flag
+    # OFF / 1Min-primary → unchanged (byte-identical). Shallow copy — never
+    # mutate the caller's dict.
+    from data_loader import normalize_1min_secondary_gate as _norm_1m
+    _nc = _norm_1m(strategy.get('confluence'), strategy.get('timeframe', '1Min'))
+    if _nc is not strategy.get('confluence'):
+        strategy = {**strategy, 'confluence': _nc}
+
     # Fast path: replay from cache
     if bar_cache is not None and cache_metadata is not None:
         try:
@@ -682,7 +696,19 @@ def get_strategy_trades_for_window(
     import math
     from data_loader import (
         BARS_PER_DAY, get_required_tfs_from_confluence, get_tf_from_label,
+        normalize_1min_secondary_gate, enforce_1min_gate_enabled,
     )
+
+    # 1-minute-secondary gate (RORT_ENFORCE_1MIN_GATE): primary-aware relabel of
+    # an overloaded '1M-' gate → lowercase '1m-' so the windowed path resolves it
+    # as a 1-minute SECONDARY (loaded/built/matched) instead of dropping it. Flag
+    # OFF / 1Min-primary → unchanged (byte-identical). Shallow copy — the caller's
+    # dict is never mutated. Covers both the run_unified_backtest (return_snapshot)
+    # and unified_trades branches below.
+    _nc = normalize_1min_secondary_gate(
+        strat.get('confluence'), strat.get('timeframe', '1Min'))
+    if _nc is not strat.get('confluence'):
+        strat = {**strat, 'confluence': _nc}
 
     def _result(trades_df, new_b64=None):
         """Shape the return per the caller's request mode."""
@@ -760,6 +786,23 @@ def get_strategy_trades_for_window(
     else:
         start_date = since_naive - timedelta(days=warmup_days)
     end_date = until_dt.replace(tzinfo=None) if until_dt.tzinfo else until_dt
+
+    # 1-minute SECONDARY gate (RORT_ENFORCE_1MIN_GATE): build the 1Min secondary
+    # from the NATIVE 1Min bar (matches LIVE; no resample-from-primary drift) and
+    # inject it. Inert when flag OFF (1Min never appears in sec_tfs) or 1Min
+    # primary. Mirrors load_strategy_data's native-1Min injection.
+    if (enforce_1min_gate_enabled() and "1Min" in sec_tfs
+            and timeframe != "1Min"
+            and (_sec_inject is None or "1Min" not in _sec_inject)):
+        try:
+            from strategy_data import _build_native_1min_secondary
+            _n1 = _build_native_1min_secondary(
+                strat['symbol'], start_date, end_date,
+                strat.get('trading_session', 'RTH'), data_feed)
+            if _n1:
+                _sec_inject = {**(_sec_inject or {}), **_n1}
+        except Exception as _e1m:  # noqa: BLE001
+            _logger.warning("[1MinSecondary] window native build failed: %s", _e1m)
 
     df = prepare_data_with_indicators(
         strat['symbol'],
@@ -912,7 +955,8 @@ def _has_long_cycle_secondary_tf(strat: dict) -> bool:
 
 def _secondary_snapshot_enabled() -> bool:
     import os
-    return os.getenv('RORT_SECONDARY_TF_SNAPSHOT', '0') == '1'
+    # graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
+    return os.getenv('RORT_SECONDARY_TF_SNAPSHOT', '1') == '1'
 
 
 def _has_valid_secondary_snapshot(strat: dict, model_id: str | None = None) -> bool:
@@ -999,6 +1043,338 @@ def _secondary_snapshot_persist(strat, df, sec_tfs, model_id):
         _logger.warning("secondary-snapshot persist failed (%s) — non-fatal", _e)
 
 
+# ── Mechanism #1: bar-count warmup (RORT_PREP_BAR_COUNT_WARMUP) ───────────────
+# Bug_Hunt_Wave1_2026-07-06 §MECHANISM #1: the calendar-days warmup formula
+# (`ceil(warmup_bars/bpd × 365/252)`) yields 1 day for warmup_bars=300 on a
+# sub-minute strategy. After a weekend/holiday `since − 1 day` holds ZERO
+# trading bars, so the windowed re-prepare delivers a same-day-only window and
+# recursive user-pack columns (UT-Bot-v4 trailing stop, Wilder ATR — infinite-
+# memory recursions) RE-SEED at the session open (measured Δ up to 0.4858 on
+# sid 270 Mon 2026-07-06; 3 flip mismatches; day's first trade lost). The fix:
+# deliver warmup as bars ACTUALLY PRESENT — widen start_date back over closed
+# days until enough pre-`since` bars exist.
+
+PREP_WARMUP_MAX_LOOKBACK_DAYS = 30
+"""Cap (calendar days before `since`) for the bar-count warmup widen. Bounds
+the widen loop on symbols with sparse/no cached data, and leaves pathological
+coarse-gate windows (e.g. a 1Day gate whose legacy formula start is already
+~435d back) on their existing behavior — the widen only ever EXTENDS a window
+that is SHALLOWER than this cap; it never narrows one."""
+
+
+def _prep_warmup_submin_cap_days() -> int:
+    """Tighter widen cap for SUB-MINUTE primaries (2026-07-07 incident,
+    Bug_Hunt_Wave1_2026-07-06 'Re-arm attempt FAILED'): tf<60s bars are derived
+    from the native 1Sec layer (~0.8-1.2s of load per calendar day for TSLA), so
+    a widen chasing an UNSATISFIABLE secondary target (e.g. 300 x 4Hour buckets
+    ~ 150 trading days) to the generic 30d cap costs minutes per slot — x ~20
+    sub-minute slots vs the shadow-worker's 600s pass watchdog = starvation
+    loop, zero polls complete. 14 days ≈ 9-10 trading days ≈ 3-12x the 1200-bar
+    primary convergence target for every sub-minute TF (30Sec: 7.5k bars), and
+    comfortably spans any holiday cluster — so the PRIMARY target is always
+    satisfiable within it; only unsatisfiable coarse-secondary targets hit the
+    cap (logged with the existing CAPPED warning)."""
+    import os
+    try:
+        return max(1, int(os.getenv('RORT_PREP_WARMUP_SUBMIN_CAP_DAYS', '14')))
+    except ValueError:
+        return 14
+
+
+def _prep_warmup_cap_days(timeframe: str) -> int:
+    """Effective widen cap for a primary TF: the generic 30d cap, tightened to
+    the sub-minute cap for tf<60s (1Sec-source loads — see above)."""
+    try:
+        from unified_engine import TIMEFRAME_SECONDS
+        tf_s = int(TIMEFRAME_SECONDS.get(timeframe, 60))
+    except Exception:
+        tf_s = 60
+    if tf_s < 60:
+        return min(PREP_WARMUP_MAX_LOOKBACK_DAYS, _prep_warmup_submin_cap_days())
+    return PREP_WARMUP_MAX_LOOKBACK_DAYS
+
+
+def _prep_bar_count_warmup_enabled() -> bool:
+    """Mechanism #1 kill-switch. Default OFF = byte-identical legacy behavior
+    (calendar-days formula). Instant rollback by unsetting."""
+    import os
+    return os.getenv('RORT_PREP_BAR_COUNT_WARMUP', '0') == '1'
+
+
+# ── (c) per-slot widen cache ─────────────────────────────────────────────────
+# {(sid, symbol, timeframe, session, sec_tfs, warmup_bars, since_date): start}
+# The widened start for a given strategy/day is deterministic (bars already on
+# disk), so later polls the same day skip the count-fail + re-prep cycle and
+# make EXACTLY ONE prep at the known depth. A later `since` the same day only
+# ever has MORE pre-`since` bars, so a cached start stays sufficient; the
+# delivered-count verification still runs (cheap) and re-widens + refreshes
+# the entry if a hit ever under-delivers. Process-local, bounded, flag-ON only.
+_PREP_WARMUP_WIDEN_CACHE: dict = {}
+_PREP_WARMUP_WIDEN_CACHE_MAX = 4096
+_prep_warmup_widen_lock = threading.Lock()
+
+
+def _prep_warmup_cache_key(strat, timeframe, sec_tfs, warmup_bars, since_naive):
+    return (strat.get('id'), strat.get('symbol'), timeframe,
+            strat.get('trading_session', 'RTH'), tuple(sec_tfs or ()),
+            int(warmup_bars), since_naive.date())
+
+
+def _prep_warmup_cache_get(key):
+    return _PREP_WARMUP_WIDEN_CACHE.get(key)
+
+
+def _prep_warmup_cache_put(key, start_dt) -> None:
+    with _prep_warmup_widen_lock:
+        if len(_PREP_WARMUP_WIDEN_CACHE) >= _PREP_WARMUP_WIDEN_CACHE_MAX:
+            _PREP_WARMUP_WIDEN_CACHE.clear()
+        _PREP_WARMUP_WIDEN_CACHE[key] = start_dt
+
+
+# ── (a) one-shot widen depth from the native 1Min layer ─────────────────────
+def _derive_warmup_start_from_1min(symbol, session, since_naive, timeframe,
+                                   primary_target, sec_targets, cap_start):
+    """Compute the widened start_date in ONE cheap read of the native 1Min
+    SOURCE layer (~390-960 rows/day) instead of doubling full re-preps — for a
+    sub-minute Hi-Fi primary each doubling round is a multi-day 1Sec load, and
+    the 2026-07-07 incident showed the loop (1d->2d->4d->8d...) costs minutes
+    per slot. The 1Min layer is used ONLY FOR COUNTING depth; the delivered
+    bars keep their exact existing source (tf<60s stays 1Sec-derived Hi-Fi).
+
+    Counting rules (all on the session-filtered pre-`since` 1Min index):
+      - primary tf >= 60s : EXACT — distinct floor(tf) buckets == the bars the
+        prep will deliver (1Min-or-coarser bars are themselves 1Min-derived).
+      - primary tf < 60s  : ESTIMATE — ceil(target * tf/60) 1Min bars, i.e. a
+        liquid symbol carries 60/tf sub-minute bars per traded minute. Deep
+        warmup CONTEXT doesn't need the estimate to be exact: 1200 bars is
+        M-RS1's convergence bound with enormous margin (0.9^1200 is float-
+        zero; PR #39 measured utv4 bit-identical across 4 different seed
+        depths past ~1 trading day), and the caller VERIFIES the delivered
+        count and tops up if short — so a sparse symbol degrades to one extra
+        bounded re-prep, never to wrong values.
+      - each secondary tf : EXACT bucket count (same floor logic).
+
+    Returns (start_dt_naive_utc, satisfiable). `satisfiable=False` means some
+    target cannot be met even at `cap_start` (e.g. 300 x 4Hour buckets ~ 150
+    trading days vs a 14/30d cap) — the caller preps once AT the cap and logs
+    the existing CAPPED warning instead of crawling there in doubling rounds.
+    Returns (None, True) when the layer can't answer (no direct PG / no rows /
+    error) — caller falls back to the legacy doubling loop unchanged."""
+    import math as _math
+    try:
+        import bar_cache as _bc
+        if not (_bc.is_enabled() and _bc.direct_pg_available()):
+            return None, True
+        raw = _bc.read_bars(symbol, "1Min", cap_start, since_naive)
+        if raw is None or len(raw) == 0:
+            return None, True
+        from data_loader import _filter_session
+        if session and session != "24/7":
+            raw = _filter_session(raw, session)
+        if raw is None or len(raw) == 0:
+            return None, True
+        clip = pd.Timestamp(since_naive)
+        if raw.index.tz is not None and clip.tz is None:
+            clip = clip.tz_localize('UTC')
+        idx = raw.index[raw.index < clip]
+        if len(idx) == 0:
+            return None, True
+
+        from unified_engine import TIMEFRAME_SECONDS
+        requirements = []   # (needed_start_ts | None-if-unmet)
+        satisfiable = True
+
+        def _bucket_requirement(tf_label, target):
+            secs = int(TIMEFRAME_SECONDS.get(tf_label, 60))
+            buckets = idx.floor(f'{secs}s')
+            uniq = buckets.unique()          # ascending
+            if len(uniq) < target:
+                return None
+            cutoff = uniq[-int(target)]      # newest `target` buckets
+            return idx[buckets >= cutoff][0]
+
+        tf_s = int(TIMEFRAME_SECONDS.get(timeframe, 60))
+        if tf_s >= 60:
+            req = _bucket_requirement(timeframe, primary_target)
+        else:
+            need_1min = _math.ceil(primary_target * tf_s / 60.0)
+            req = idx[-need_1min] if len(idx) >= need_1min else None
+        if req is None:
+            satisfiable = False
+        else:
+            requirements.append(req)
+
+        for tf_label, target in (sec_targets or {}).items():
+            req = _bucket_requirement(tf_label, target)
+            if req is None:
+                satisfiable = False
+            else:
+                requirements.append(req)
+
+        if not satisfiable:
+            return cap_start, False
+        start_ts = min(requirements)
+        if getattr(start_ts, 'tz', None) is not None:
+            start_ts = start_ts.tz_convert('UTC').tz_localize(None)
+        # 5-min pad so the boundary bar is inside the read range and a couple
+        # of trade-less sub-minute slots can't leave the delivered count 1-2
+        # bars short (which would cost a full fallback re-prep); never deeper
+        # than the cap.
+        start_dt = max(cap_start, start_ts.to_pydatetime() - timedelta(minutes=5))
+        return start_dt, True
+    except Exception as _e:
+        _logger.warning("[PREP-WARMUP] 1Min-source depth derivation failed for "
+                        "%s (%s) — falling back to doubling widen", symbol, _e)
+        return None, True
+
+
+def _prep_warmup_counts(df, since_naive, count_sec_tfs):
+    """Count warmup bars ACTUALLY PRESENT before `since` in a prepared df.
+
+    primary  = raw pre-`since` row count of the prepared (session-filtered)
+               primary index.
+    each sec = the number of resampled buckets those pre-`since` primary rows
+               produce (distinct floor(period) values) — i.e. how many sec-TF
+               bars the in-prep resample derives from the warmup span. Only
+               meaningful on the FULL path where secondaries are resampled
+               from this very window (the snapshot fast path injects its own
+               fully-warmed series, left edge independent of this window)."""
+    if df is None or len(df) == 0:
+        return 0, {tf: 0 for tf in count_sec_tfs}
+    clip = pd.Timestamp(since_naive)
+    if df.index.tz is not None and clip.tz is None:
+        clip = clip.tz_localize('UTC')
+    elif df.index.tz is None and clip.tz is not None:
+        clip = clip.tz_localize(None)
+    pre = df.index[df.index < clip]
+    n_primary = int(len(pre))
+    n_sec = {}
+    if count_sec_tfs:
+        from unified_engine import TIMEFRAME_SECONDS
+        for tf in count_sec_tfs:
+            secs = int(TIMEFRAME_SECONDS.get(tf, 60))
+            n_sec[tf] = (int(pre.floor(f'{secs}s').nunique())
+                         if n_primary else 0)
+    return n_primary, n_sec
+
+
+def _widen_prep_for_bar_count_warmup(prep_fn, df, strat, since_naive,
+                                     start_date, warmup_days, warmup_bars,
+                                     timeframe, count_sec_tfs,
+                                     effective_start=None):
+    """Mechanism #1 fix core (flag ON only): re-prepare with a deeper
+    start_date until the DELIVERED window holds
+
+      - >= max(warmup_bars, strategy_data.PRIMARY_WARMUP_BARS) pre-`since`
+        PRIMARY bars (1200 — M-RS1's convergence target; 0.9^1200 is float-
+        zero, so infinite-memory recursions match a full-history prep), and
+      - >= warmup_bars resampled bars for EACH secondary TF (full path only —
+        callers pass count_sec_tfs=() when the snapshot fast path injected
+        pre-warmed secondaries).
+
+    BOUNDED (2026-07-07 incident rework — Bug_Hunt_Wave1_2026-07-06 'Re-arm
+    attempt FAILED'): the original doubling loop re-prepared the FULL window
+    each round (1d->2d->4d->8d ... cumulative), and for sub-minute Hi-Fi
+    primaries each round is a multi-day 1Sec load — measured 22.5s on sid 325
+    for one cold widen, minutes on the full path, x ~20 TSLA slots vs the
+    600s pass watchdog = starvation, zero polls completed. Now:
+
+      1. ONE-SHOT DEPTH: when the first prep is short, the required start is
+         derived from ONE cheap read of the native 1Min layer
+         (`_derive_warmup_start_from_1min`) and a SINGLE re-prep is made
+         there. The 1Min layer only decides DEPTH — delivered bars keep their
+         exact existing source (tf<60s stays 1Sec-derived Hi-Fi end to end).
+      2. TF-AWARE CAP: sub-minute primaries cap the widen at
+         `_prep_warmup_submin_cap_days()` (default 14d) instead of 30d, so an
+         UNSATISFIABLE secondary target (300 x 4Hour buckets ~ 150 trading
+         days) costs one bounded prep at the cap + the CAPPED warning — never
+         minutes of crawling. The primary 1200-bar target always fits.
+      3. VERIFIED + FALLBACK: the delivered count is still authoritative. If
+         the one-shot estimate under-delivers (sparse symbol) or the 1Min
+         layer can't answer, the legacy doubling loop finishes the job,
+         bounded by the same cap.
+      4. CACHE (per-slot, per-day): a successful widen records its start in
+         `_PREP_WARMUP_WIDEN_CACHE`; the caller's NEXT poll preps once at the
+         cached depth directly (`effective_start`), skipping the count-fail +
+         re-prep cycle entirely.
+
+    Counting the PREPARED df (not a raw probe) means "bars actually present"
+    holds for every backtest_model path, including cache-backed ones. The
+    widen only ever EXTENDS the legacy formula start — bars in (since, until]
+    are untouched (depth is added strictly LEFT of `since`), and the common
+    case (enough bars already present) costs zero extra work. Returns the
+    (possibly re-prepared) df."""
+    try:
+        from strategy_data import PRIMARY_WARMUP_BARS as _pwb
+    except Exception:
+        _pwb = 1200
+    primary_target = max(int(warmup_bars), int(_pwb))
+    sec_target = int(warmup_bars)
+    cache_key = _prep_warmup_cache_key(
+        strat, timeframe, count_sec_tfs, warmup_bars, since_naive)
+    if effective_start is None:
+        effective_start = start_date
+
+    def _satisfied(n_p, n_s):
+        return (n_p >= primary_target
+                and all(n >= sec_target for n in n_s.values()))
+
+    n_primary, n_sec = _prep_warmup_counts(df, since_naive, count_sec_tfs)
+    if _satisfied(n_primary, n_sec):
+        if effective_start != start_date:
+            # (c) keep the cache warm for the rest of the day's polls.
+            _prep_warmup_cache_put(cache_key, effective_start)
+        return df
+
+    cap_days = _prep_warmup_cap_days(timeframe)
+    cap_start = since_naive - timedelta(days=cap_days)
+    final_start = effective_start
+
+    # (a) one-shot: derive the needed depth from the native 1Min layer, then
+    # make a single re-prep there instead of doubling full re-preps.
+    if final_start > cap_start:
+        derived_start, satisfiable = _derive_warmup_start_from_1min(
+            strat.get('symbol'), strat.get('trading_session', 'RTH'),
+            since_naive, timeframe, primary_target,
+            {tf: sec_target for tf in count_sec_tfs}, cap_start)
+        if derived_start is not None and derived_start < final_start:
+            final_start = derived_start
+            df = prep_fn(final_start)
+            n_primary, n_sec = _prep_warmup_counts(df, since_naive, count_sec_tfs)
+            if not satisfiable:
+                # Target provably unmeetable within the cap — don't crawl.
+                final_start = cap_start
+
+    # Fallback / top-up: legacy doubling loop, bounded by the tf-aware cap.
+    if not _satisfied(n_primary, n_sec):
+        lookback = max(1, int(warmup_days),
+                       (since_naive - final_start).days)
+        while final_start > cap_start:
+            lookback = min(cap_days, lookback * 2)
+            final_start = since_naive - timedelta(days=lookback)
+            df = prep_fn(final_start)
+            n_primary, n_sec = _prep_warmup_counts(df, since_naive, count_sec_tfs)
+            if _satisfied(n_primary, n_sec):
+                break
+
+    if final_start != start_date:
+        # (c) cache even a CAPPED-short result — re-prepping deeper can't help,
+        # and without the entry every subsequent poll would re-pay the widen.
+        _prep_warmup_cache_put(cache_key, final_start)
+        _logger.info(
+            "[PREP-WARMUP] %s %s: widened warmup start %s -> %s "
+            "(requested primary>=%d bars%s; delivered pre-since: primary=%d%s)%s",
+            strat.get('symbol'), timeframe, start_date.isoformat(),
+            final_start.isoformat(), primary_target,
+            (", sec>=%d bars each %s" % (sec_target, list(count_sec_tfs))
+             if count_sec_tfs else ""),
+            n_primary,
+            (", sec=%s" % n_sec) if n_sec else "",
+            ("" if _satisfied(n_primary, n_sec)
+             else " — CAPPED at %dd, still short" % cap_days))
+    return df
+
+
 def prepare_strategy_window_df(
     strat: dict, since_dt: datetime, until_dt: datetime,
     warmup_bars: int = 300, data_feed: str = "sip",
@@ -1025,8 +1401,18 @@ def prepare_strategy_window_df(
     import math
     from data_loader import (
         BARS_PER_DAY, get_required_tfs_from_confluence, get_tf_from_label,
+        normalize_1min_secondary_gate, enforce_1min_gate_enabled,
     )
     timeframe = strat.get('timeframe', '1Min')
+    # 1-minute-secondary gate (RORT_ENFORCE_1MIN_GATE): primary-aware relabel of
+    # an overloaded '1M-' gate → lowercase '1m-' (a genuine 1-minute secondary)
+    # on a non-1Min primary, so the standard lowercase-secondary machinery loads,
+    # builds, and matches it — the shadow-worker's resident lane analog of
+    # load_strategy_data's normalize. Flag OFF / 1Min-primary → unchanged
+    # (byte-identical). Shallow copy — never mutate the caller's dict.
+    _norm_conf = normalize_1min_secondary_gate(strat.get('confluence'), timeframe)
+    if _norm_conf is not strat.get('confluence'):
+        strat = {**strat, 'confluence': _norm_conf}
     req_labels = get_required_tfs_from_confluence(strat.get('confluence', []))
     sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in req_labels))
 
@@ -1051,12 +1437,54 @@ def prepare_strategy_window_df(
     end_date = until_dt.replace(tzinfo=None) if until_dt.tzinfo else until_dt
     start_date = since_naive - timedelta(days=warmup_days)
 
-    df = prepare_data_with_indicators(
-        strat['symbol'], seed=strat.get('data_seed', 42),
-        start_date=start_date, end_date=end_date, timeframe=timeframe,
-        data_feed=data_feed, session=strat.get('trading_session', 'RTH'),
-        secondary_tfs=sec_tfs, secondary_tf_dfs=_sec_inject, strat=strat,
-        model_override=model_override, no_backfill=no_backfill)
+    # 1-minute SECONDARY gate (RORT_ENFORCE_1MIN_GATE): when the primary is NOT
+    # 1Min and a reclassified '1m' gate resolved to a 1Min secondary, build it
+    # from the NATIVE 1Min bar (matches LIVE; no resample-from-primary drift) and
+    # inject via secondary_tf_dfs — the resident-lane analog of load_strategy_data.
+    # Reads cache read-only (no_backfill) so the shadow-worker never writes.
+    # Inert when the flag is OFF (a 1Min secondary never appears in sec_tfs then).
+    if (enforce_1min_gate_enabled() and "1Min" in sec_tfs and timeframe != "1Min"
+            and (_sec_inject is None or "1Min" not in _sec_inject)):
+        from strategy_data import _build_native_1min_secondary
+        _native1 = _build_native_1min_secondary(
+            strat['symbol'], start_date, end_date,
+            strat.get('trading_session', 'RTH'), data_feed,
+            no_backfill=no_backfill)
+        if _native1:
+            _sec_inject = {**(_sec_inject or {}), **_native1}
+
+    def _prep(_start):
+        return prepare_data_with_indicators(
+            strat['symbol'], seed=strat.get('data_seed', 42),
+            start_date=_start, end_date=end_date, timeframe=timeframe,
+            data_feed=data_feed, session=strat.get('trading_session', 'RTH'),
+            secondary_tfs=sec_tfs, secondary_tf_dfs=_sec_inject, strat=strat,
+            model_override=model_override, no_backfill=no_backfill)
+
+    # Mechanism #1 (RORT_PREP_BAR_COUNT_WARMUP, default OFF): the calendar-days
+    # formula above can land `start_date` entirely inside closed days (weekend/
+    # holiday) so the window carries ~0 pre-`since` bars and recursive user-pack
+    # columns re-seed at the session open. Flag ON: widen start_date until the
+    # delivered warmup is BARS ACTUALLY PRESENT (see helper) — bounded one-shot
+    # depth via the 1Min layer + per-slot/day cache so the FIRST prep of a
+    # repeat poll already sits at the widened depth (2026-07-07 incident: the
+    # unbounded doubling widen starved the shadow-worker pass on sub-minute
+    # Hi-Fi slots). Flag OFF is byte-identical (single `_prep` call with the
+    # formula start above).
+    if _prep_bar_count_warmup_enabled():
+        _count_sec_tfs = () if _used_sec_snapshot else sec_tfs
+        _cached_start = _prep_warmup_cache_get(_prep_warmup_cache_key(
+            strat, timeframe, _count_sec_tfs, warmup_bars, since_naive))
+        _eff_start = (_cached_start
+                      if _cached_start is not None and _cached_start < start_date
+                      else start_date)
+        df = _prep(_eff_start)
+        df = _widen_prep_for_bar_count_warmup(
+            _prep, df, strat, since_naive, start_date, warmup_days,
+            warmup_bars, timeframe, _count_sec_tfs,
+            effective_start=_eff_start)
+    else:
+        df = _prep(start_date)
     if df is None or len(df) == 0:
         return df
 
@@ -1964,6 +2392,7 @@ def find_best_combinations(
     exclude_prefix: str = None,
     include_prefix: str = None,
     allowed_labels: set = None,
+    required_groups: list = None,
     progress_callback=None,
     oos_boundary=None,
     oos_required: dict = None,
@@ -1979,6 +2408,19 @@ def find_best_combinations(
         Matching is both by exact membership and by suffix (TF-agnostic for
         records like "{tf}-{INTERP}-{STATE}" — any TF prefix is accepted if
         "{INTERP}-{STATE}" is in the set).
+    required_groups: Mass Builder ✱ requirements. A list of alternative-sets:
+        each entry is ONE required selection, given as labels in exact or
+        TF-agnostic suffix form (same matching as allowed_labels). AND across
+        entries; OR within an entry (one selection may resolve to several
+        concrete records, e.g. the same state on two gate TFs). Every
+        concrete assignment becomes its own baseline: its mask is ANDed under
+        every candidate combo, a depth-0 (required-only) row is emitted, and
+        `max_depth` counts only the optional adds on top. Result rows carry
+        the concrete required records in `combination` (so downstream gating/
+        replay/save works unchanged) plus a `required` field naming them.
+        An entry that matches no trade records fails the search loudly
+        (returns []) rather than silently broadening it. None/empty →
+        behavior identical to before this parameter existed.
     progress_callback(idx, total): called during the combination loop.
 
     OOS gate (docs/Spec_OOS_Test_Periods.md §9): when `oos_boundary` (a
@@ -2003,51 +2445,103 @@ def find_best_combinations(
             return set(r)
         return set()
 
+    def _label_match(rec: str, labels) -> bool:
+        """Exact or TF-agnostic-suffix membership (see allowed_labels doc)."""
+        if rec in labels:
+            return True
+        parts = rec.split("-", 2)
+        return len(parts) == 3 and f"{parts[1]}-{parts[2]}" in labels
+
     # Get all unique records
     all_records = set()
     for records in trades_df['confluence_records']:
         all_records.update(_as_set(records))
+
+    # Resolve required selections to concrete records BEFORE the pool
+    # filters — a required record does not need to be in the optional pool.
+    required_alternatives: list[list[str]] = []
+    for grp in (required_groups or []):
+        grp_set = set(grp)
+        matches = sorted(r for r in all_records if _label_match(r, grp_set))
+        if not matches:
+            # No trade ever satisfied this requirement → no combo can pass.
+            # Fail loudly rather than silently dropping the requirement.
+            print(f"[MASS] required confluence {sorted(grp_set)} matched no "
+                  f"trade records — 0 combos for this base config", flush=True)
+            return []
+        required_alternatives.append(matches)
+
     if exclude_prefix:
         all_records = {r for r in all_records if not r.startswith(exclude_prefix)}
     if include_prefix:
         all_records = {r for r in all_records if r.startswith(include_prefix)}
-    if allowed_labels:
-        def _matches(rec: str) -> bool:
-            if rec in allowed_labels:
-                return True
-            parts = rec.split("-", 2)
-            if len(parts) == 3 and f"{parts[1]}-{parts[2]}" in allowed_labels:
-                return True
-            return False
-        all_records = {r for r in all_records if _matches(r)}
+    # `is not None` (not truthiness): an EMPTY set means "no optional pool"
+    # (required-only Mass Builder search), which must not fall through to
+    # explore-all. None keeps the historical unrestricted behavior.
+    if allowed_labels is not None:
+        all_records = {r for r in all_records if _label_match(r, allowed_labels)}
+
+    # Required records are baseline, never optional adds.
+    required_record_set = {r for alts in required_alternatives for r in alts}
+    all_records -= required_record_set
 
     # Pre-compute boolean mask per record (vectorized)
     n_trades = len(trades_df)
     record_masks = {}
     conf_list = trades_df['confluence_records'].tolist()
-    for r in all_records:
+    for r in all_records | required_record_set:
         mask = np.zeros(n_trades, dtype=bool)
         for i, recs in enumerate(conf_list):
             if r in _as_set(recs):
                 mask[i] = True
         record_masks[r] = mask
 
-    # Only test records that appear in >= min_trades
-    valid_records = sorted([r for r, m in record_masks.items() if m.sum() >= min_trades])
+    # One baseline per concrete assignment of the required alternatives
+    # (cartesian product — almost always 1×1×…). Baseline () = unrestricted.
+    if required_alternatives:
+        from itertools import product as _product
+        _MAX_BASELINES = 32
+        baselines = []
+        _seen = set()
+        for assign in _product(*required_alternatives):
+            key = tuple(sorted(set(assign)))
+            if key not in _seen:
+                _seen.add(key)
+                baselines.append(key)
+        if len(baselines) > _MAX_BASELINES:
+            print(f"[MASS] required confluences expand to {len(baselines)} "
+                  f"baselines; capping at {_MAX_BASELINES}", flush=True)
+            baselines = baselines[:_MAX_BASELINES]
+    else:
+        baselines = [()]
 
+    # Enumerate (baseline, optional-combo) pairs. Depth counts optional adds
+    # only; a non-empty baseline also gets a depth-0 (required-only) row.
+    # min_trades for the optional pool is evaluated WITHIN the baseline
+    # subset — a record plentiful overall may be too thin under the gates.
     all_combos = []
-    for depth in range(1, min(max_depth + 1, len(valid_records) + 1)):
-        for combo in combinations(valid_records, depth):
-            all_combos.append(combo)
+    for req in baselines:
+        req_mask = None
+        for r in req:
+            req_mask = record_masks[r] if req_mask is None else (req_mask & record_masks[r])
+        valid_records = sorted([
+            r for r in all_records
+            if (record_masks[r] if req_mask is None
+                else (record_masks[r] & req_mask)).sum() >= min_trades])
+        start_depth = 0 if req else 1
+        for depth in range(start_depth, min(max_depth + 1, len(valid_records) + 1)):
+            for combo in combinations(valid_records, depth):
+                all_combos.append((req, combo))
     total = len(all_combos)
 
     results = []
-    for idx, combo in enumerate(all_combos):
+    for idx, (req, combo) in enumerate(all_combos):
         if progress_callback and idx % 50 == 0:
             progress_callback(idx, total)
-        # AND the pre-computed masks
-        combined = record_masks[combo[0]]
-        for r in combo[1:]:
+        # AND the pre-computed masks (required baseline + optional adds)
+        full = tuple(req) + tuple(combo)
+        combined = record_masks[full[0]]
+        for r in full[1:]:
             combined = combined & record_masks[r]
 
         count = int(combined.sum())
@@ -2078,9 +2572,12 @@ def find_best_combinations(
                     risk_per_trade=risk_per_trade,
                     total_trading_days=total_trading_days)
             row = {
-                'combination': list(sorted(combo)),
-                'combo_str': ' + '.join(sorted(combo)),
-                'depth': len(combo),
+                'combination': list(sorted(full)),
+                'combo_str': ' + '.join(sorted(full)),
+                'depth': len(full),
+                # Concrete records that came from ✱ requirements ([] when
+                # none) — display marking; combination already includes them.
+                'required': list(req),
                 'total_trades': kpis['total_trades'],
                 'win_rate': round(_safe_float(kpis.get('win_rate', 0)), 1),
                 'profit_factor': round(_safe_float(kpis.get('profit_factor', 0)), 2),

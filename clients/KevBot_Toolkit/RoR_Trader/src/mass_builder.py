@@ -72,15 +72,21 @@ def estimate_combinations(config: dict) -> dict:
 
     base_configs = n_tickers * n_tfs * n_dirs * n_entries * n_exit_combos
 
-    # Confluence combinations per base config
+    # Confluence combinations per base config. ✱ requirements don't multiply
+    # the count — they sit under every combo — but a required-only search
+    # still evaluates its depth-0 baseline row.
     n_tf_conf = len(config.get('tf_confluences', []))
     tf_depth = config.get('tf_confluence_depth', 2)
     n_gen_conf = len(config.get('general_confluences', []))
     gen_depth = config.get('general_confluence_depth', 1)
+    n_required = (len(config.get('required_tf_confluences', []) or []) +
+                  len(config.get('required_general_confluences', []) or []))
 
     tf_combos = _n_choose_up_to(n_tf_conf, tf_depth) if n_tf_conf > 0 else 1
     gen_combos = _n_choose_up_to(n_gen_conf, gen_depth) if n_gen_conf > 0 else 1
     confluence_combos = tf_combos * gen_combos
+    if n_required > 0:
+        confluence_combos += 1  # the depth-0 required-baseline row
 
     total = base_configs * confluence_combos
 
@@ -606,6 +612,10 @@ def run_mass_search(
     gen_conf_depth = search_config.get('general_confluence_depth', 1)
     tf_conf_ids = search_config.get('tf_confluences', []) or []
     gen_conf_ids = search_config.get('general_confluences', []) or []
+    # ✱ requirements (2026-07-02): confluences every combo must satisfy.
+    # The frontend keeps these disjoint from the optional pools above.
+    required_tf_ids = search_config.get('required_tf_confluences', []) or []
+    required_gen_ids = search_config.get('required_general_confluences', []) or []
 
     # ── Out-of-Sample gate config (docs/Spec_OOS_Test_Periods.md §9) ──
     # When enabled, every combo is backtested through today and split at
@@ -626,61 +636,95 @@ def run_mass_search(
                             oos_in_sample_end)
             oos_enabled = False
 
-    # Resolve synthetic confluence IDs into allowed label suffixes for Layer 2
+    # Resolve synthetic confluence IDs into label suffixes for Layer 2
     # filtering. TF IDs have format "_TF_-{GROUP_ID}-{BULL|BEAR}-{fidelity}";
     # expand each to the real interpreter states via template outputs.
     # General IDs have format "GEN-{PACK_ID}-{STATE}" and match records directly.
     # Empty selections → skip confluence search entirely (no Layer 2).
+    group_by_upper_id = {g.id.upper(): g for g in enabled_groups}
+
+    def _resolve_tf_id_labels(syn) -> set:
+        """One `_TF_-…` UI id → the set of `{interp}-{state}` label suffixes."""
+        labels: set = set()
+        if not isinstance(syn, str) or not syn.startswith('_TF_-'):
+            return labels
+        # Strip prefix and optional trailing fidelity (e.g. "-PB", "-CB")
+        body = syn[len('_TF_-'):]
+        parts = body.rsplit('-', 2) if body.count('-') >= 2 else body.rsplit('-', 1)
+        # body forms: "GROUP_ID-DIR" or "GROUP_ID-DIR-FIDELITY"
+        if len(parts) == 3:
+            group_id_up, direction, _fidelity = parts
+        elif len(parts) == 2:
+            group_id_up, direction = parts
+        else:
+            return labels
+        group = group_by_upper_id.get(group_id_up)
+        if not group:
+            return labels
+        tmpl = _CONF_TEMPLATES.get(group.base_template)
+        if not tmpl:
+            return labels
+        outputs = tmpl.get('outputs', [])
+        for interp in tmpl.get('interpreters', []):
+            # `direction` is either a direction keyword (BULL/BEAR/NEUTRAL)
+            # or a real state code (e.g. "SML", "H+up"). Treat as a state
+            # when it's one of the template's outputs, else expand via the
+            # direction map.
+            if direction in outputs:
+                labels.add(f"{interp}-{direction}")
+            else:
+                for state in expand_direction_to_states(interp, direction):
+                    labels.add(f"{interp}-{state}")
+        return labels
+
     allowed_labels: Optional[set] = None
-    skip_confluence_search = not (tf_conf_ids or gen_conf_ids)
+    skip_confluence_search = not (tf_conf_ids or gen_conf_ids
+                                  or required_tf_ids or required_gen_ids)
+    # ✱ requirements → one alternative-set per selection (AND across
+    # selections; OR within — find_best_combinations resolves each set to
+    # concrete records). An id that resolves to nothing becomes an empty
+    # set, which find_best_combinations fails loudly on — never silently
+    # broader.
+    required_groups: list = []
+    for syn in required_tf_ids:
+        grp = _resolve_tf_id_labels(syn)
+        if not grp:
+            print(f"[MASS] required TF confluence {syn!r} did not resolve — "
+                  f"combos for affected configs will fail loudly", flush=True)
+        required_groups.append(grp)
+    for syn in required_gen_ids:
+        if isinstance(syn, str) and syn.startswith('GEN-'):
+            required_groups.append({syn})
+        else:
+            print(f"[MASS] required general confluence {syn!r} invalid — "
+                  f"combos for affected configs will fail loudly", flush=True)
+            required_groups.append(set())
     if not skip_confluence_search:
         allowed_labels = set()
-        group_by_upper_id = {g.id.upper(): g for g in enabled_groups}
         for syn in tf_conf_ids:
-            if not isinstance(syn, str) or not syn.startswith('_TF_-'):
-                continue
-            # Strip prefix and optional trailing fidelity (e.g. "-PB", "-CB")
-            body = syn[len('_TF_-'):]
-            parts = body.rsplit('-', 2) if body.count('-') >= 2 else body.rsplit('-', 1)
-            # body forms: "GROUP_ID-DIR" or "GROUP_ID-DIR-FIDELITY"
-            if len(parts) == 3:
-                group_id_up, direction, _fidelity = parts
-            elif len(parts) == 2:
-                group_id_up, direction = parts
-            else:
-                continue
-            group = group_by_upper_id.get(group_id_up)
-            if not group:
-                continue
-            tmpl = _CONF_TEMPLATES.get(group.base_template)
-            if not tmpl:
-                continue
-            outputs = tmpl.get('outputs', [])
-            for interp in tmpl.get('interpreters', []):
-                # `direction` is either a direction keyword (BULL/BEAR/NEUTRAL)
-                # or a real state code (e.g. "SML", "H+up"). Treat as a state
-                # when it's one of the template's outputs, else expand via the
-                # direction map.
-                if direction in outputs:
-                    allowed_labels.add(f"{interp}-{direction}")
-                else:
-                    for state in expand_direction_to_states(interp, direction):
-                        allowed_labels.add(f"{interp}-{state}")
+            allowed_labels |= _resolve_tf_id_labels(syn)
         for syn in gen_conf_ids:
             if isinstance(syn, str) and syn.startswith('GEN-'):
                 allowed_labels.add(syn)
         # Safety: user selected items but nothing resolved (e.g., stale group IDs).
         # Treat as empty selection → skip confluence search rather than falling
         # back to explore-all (which would surprise the user with a huge run).
-        if not allowed_labels:
+        # (Required-only searches legitimately have an empty optional pool —
+        # the depth-0 required baseline row is still produced.)
+        if not allowed_labels and not required_groups:
             skip_confluence_search = True
             allowed_labels = None
             print("[MASS] confluence selections did not resolve to any labels; "
                   "skipping confluence search", flush=True)
         else:
-            print(f"[MASS] confluence filter active with {len(allowed_labels)} "
-                  f"allowed labels (tf_selections={len(tf_conf_ids)}, "
-                  f"gen_selections={len(gen_conf_ids)})", flush=True)
+            # NOTE: an EMPTY allowed set (required-only search) is passed
+            # through as-is — find_best_combinations treats it as an empty
+            # optional pool (only the required baseline row), NOT explore-all.
+            print(f"[MASS] confluence filter active with "
+                  f"{len(allowed_labels or set())} allowed labels "
+                  f"(tf_selections={len(tf_conf_ids)}, "
+                  f"gen_selections={len(gen_conf_ids)}, "
+                  f"required={len(required_groups)})", flush=True)
 
     # Resolve stop/target/time_exit packs into config lists
     # If pack IDs are provided, resolve each to its config. Otherwise use default.
@@ -813,13 +857,16 @@ def run_mass_search(
                 'timeframe': timeframes[0] if timeframes else '1Min',
                 'entry_trigger': next(iter(_all_base_triggers), None),
                 'exit_triggers': sorted(_all_base_triggers),
-                'confluence': [], 'general_confluences': list(gen_conf_ids),
+                # ✱-required general confluences must be baked into prep
+                # too, or their records never exist and every combo fails.
+                'confluence': [], 'general_confluences': list(gen_conf_ids) + list(required_gen_ids),
             }
             _req = set(resolve_required_confluence_groups(_union_strat, enabled_groups))
             # Selected TF-confluence groups: their synthetic _TF_- IDs don't
             # flow through resolve_strategy_requirements, so add them directly.
+            # (✱-required TF ids included for the same reason as above.)
             _by_upper = {g.id.upper(): g for g in enabled_groups}
-            for syn in tf_conf_ids:
+            for syn in list(tf_conf_ids) + list(required_tf_ids):
                 if isinstance(syn, str) and syn.startswith('_TF_-'):
                     body = syn[len('_TF_-'):]
                     gid_up = (body.rsplit('-', 2) if body.count('-') >= 2
@@ -1397,7 +1444,11 @@ def run_mass_search(
                                     base_kpis, required_perf)
 
                             _diag['combos_passed_perf'] += 1
-                            if _gate_ok:
+                            # ✱ requirements suppress the ungated base row —
+                            # a no-confluence strategy can't satisfy them;
+                            # the depth-0 required-baseline row from Level 3
+                            # is its replacement.
+                            if _gate_ok and not required_groups:
                                 _res = {
                                     'config': dict(config),
                                     'kpis': base_kpis,
@@ -1451,6 +1502,7 @@ def run_mass_search(
                                             'risk_per_trade', 100),
                                         total_trading_days=is_trading_days,
                                         allowed_labels=allowed_labels,
+                                        required_groups=required_groups,
                                         progress_callback=_conf_progress,
                                         oos_boundary=(oos_in_sample_end_dt
                                                       if oos_enabled else None),
@@ -1529,8 +1581,13 @@ def run_mass_search(
                                                     filtered,
                                                     backtest_model=conf_config.get('backtest_model') or 'rest_hifi'),
                                                 'status': 'active',
-                                                'confluence_str': row.get(
-                                                    'combo_str', ''),
+                                                # ✱-prefix the required
+                                                # records so result cards
+                                                # show what was pinned vs
+                                                # discovered.
+                                                'confluence_str': ' + '.join(
+                                                    ('✱' + c) if c in set(row.get('required') or []) else c
+                                                    for c in sorted(combo_set)),
                                             }
                                             # OOS gate fields (find_best_
                                             # combinations stamps these when
@@ -1603,7 +1660,18 @@ def run_mass_search(
         _hifi_entries_total = 0
         _hifi_exits_total = 0
         _hifi_signal_exits_total = 0
-        for r in results[:_buffer_n]:
+        for _hifi_i, r in enumerate(results[:_buffer_n]):
+            # Visible progress during the Hi-Fi pass — this phase runs AFTER
+            # the main backtest/confluence bars complete, and before this it
+            # reported nothing, so long refinements looked like a hung
+            # "Processing" (2026-07-02).
+            if progress_callback and _hifi_i % 5 == 0:
+                progress_callback(
+                    total_steps, total_steps, 'Hi-Fi Pass 2',
+                    phase='save',
+                    phase_detail=f'Hi-Fi refining top candidates '
+                                 f'({_hifi_i + 1}/{_buffer_n})',
+                    inner_step=_hifi_i + 1, inner_total=_buffer_n)
             _cfg = r.get('config') or {}
             _sym = _cfg.get('symbol')
             _tf = _cfg.get('timeframe')

@@ -940,7 +940,11 @@ def run_quadrant_3_interpreter_secondary(
     monitor = StrategyMonitor(strategy, None, general_packs=[])
     hub.add_monitor(monitor)
     hub.finalize_shadow_engines()
-    shadow = hub._shadow_engines.get(sec_tf_seconds)
+    # Bug Hunt Wave 1 #1: shadow keys are (tf_seconds, session) — grab the
+    # (single) shadow for this TF whatever session key it landed under.
+    shadow = next(
+        (sh for (tf, _sess), sh in hub._shadow_engines.items()
+         if tf == sec_tf_seconds), None)
     if shadow is None:
         return {'verdict': 'FAIL',
                 'explanation': (f'no shadow engine created for '

@@ -235,7 +235,10 @@ def _replay_strategy(
     monitor.warmup(primary_df.iloc[:warmup])
 
     for sec_tf, sec_df in sec_dfs.items():
-        shadow = hub._shadow_engines.get(sec_tf)
+        # Bug Hunt Wave 1 #1: shadow keys are (tf, session) — scan by tf.
+        shadow = next(
+            (sh for (_tf, _s), sh in hub._shadow_engines.items()
+             if _tf == sec_tf), None)
         if shadow is None or sec_df is None or len(sec_df) < 5:
             continue
         sec_warmup = min(_DEFAULT_SHADOW_WARMUP_BARS,
@@ -314,7 +317,9 @@ def _replay_strategy(
         # every cross-TF gate (sid 141 TSLL: VWAP_V2 78/200 opposite
         # state). Found via `_probe_vwap_v2_divergence.py` 2026-04-29.
         for sec_tf, st in sec_state.items():
-            shadow = hub._shadow_engines.get(sec_tf)
+            shadow = next(
+                (sh for (_tf, _s), sh in hub._shadow_engines.items()
+                 if _tf == sec_tf), None)
             if shadow is None:
                 continue
             s_idx = st['idx']
@@ -337,7 +342,7 @@ def _replay_strategy(
                 }
                 try:
                     records = shadow.on_bar_close(sec_bar)
-                    hub._mtf_confluence[sec_tf] = records
+                    hub._mtf_confluence[(sec_tf, shadow.session)] = records
                 except Exception as e:
                     logger.warning(
                         "[parity] shadow bar_close failed (%ss @ %s): %s",

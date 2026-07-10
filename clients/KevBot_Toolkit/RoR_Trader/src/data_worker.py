@@ -751,6 +751,12 @@ def main():
 
     logger.info("RoR Trader Data-Worker starting (Phases 1+2 — bar layer + "
                 "streaming backtest engines)")
+    # Settle sweeper (default OFF): deterministic bar_cache correction that runs
+    # WITHOUT streaming — re-fetches the trailing settle window per capture
+    # symbol so bars converge to canonical REST even when nothing reads them
+    # in-horizon. Independent of the streaming flag by design.
+    import settle_sweeper
+    settle_sweeper.start_sweeper_thread(threading.Event())
     DataWorkerManager().run()
 
 

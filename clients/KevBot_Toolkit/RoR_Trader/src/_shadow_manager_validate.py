@@ -15,18 +15,25 @@ the per-poll re-prepare + resident feed.
   REFERENCE  run_unified_backtest over [T0-warmup, T_end]   (from-cold), entry > T0
   MANAGER    advance(slot, until=T0, since=T0)  then  K polls advance(slot, until_k)
 
-HI-FI GATE (M-RS4 Phase 3 §0, 2026-06-30) — the two-phase-loop regression let the
-shadow WRITE stop-loss exits on the PRIMARY-TF bar boundary (e.g. 10s edges) because
-Hi-Fi (the per-second refinement) lagged. Bar-aligned exits don't match the live lane's
-per-second fills → Strategy-Health pairing broke (all TBD). To catch that class of
-regression OFFLINE, after the bar-resolution byte-identity check we run the REAL
-`_hifi_resolve_trades` (Hi-Fi Pass 2 — the same refinement the KPI/recompute path calls)
-over BOTH the manager and the from-cold trades and assert:
-  (1) still byte-identical AFTER Hi-Fi (refinement is deterministic across lanes), and
-  (2) every eligible L-type stop/target exit that Hi-Fi refined landed INTRA-CANDLE
-      (NOT on the primary-TF bar boundary).
-Gated by VALIDATE_HIFI (default 1). AMBER when Hi-Fi couldn't be exercised (no 1-sec
-bars for the window — re-run near market hours); does NOT change the Step C verdict.
+DEEP-REFERENCE variant (default ON — Mechanism #1 gate hole, Bug_Hunt_Wave1
+2026-07-06): the original gate gave the reference the SAME left edge as the
+manager (both `since=T0, warmup_bars=300`), so a warmup-window truncation that
+hits both identically (e.g. the calendar-days formula delivering ZERO pre-T0
+bars after a weekend/holiday, re-seeding recursive user-pack columns) could
+never fail the gate. With VALIDATE_DEEP_REF=1 the reference's `since` is pushed
+back so its left edge sits >=2 TRADING days deeper than every window the
+manager prepares — the reference is then converged truth, and any manager-side
+warmup truncation shows up as divergence. The measured edge depth is asserted
+per sid (DEPTH-INVALID = the run cannot certify the bug class; deepen
+VALIDATE_DEEP_REF_DAYS).
+
+Env:
+  VALIDATE_DEEP_REF=1        deep reference ON (default; 0 = legacy same-edge)
+  VALIDATE_DEEP_REF_DAYS=10  min calendar days the reference `since` precedes T0
+                             (actual = max(this, manager-formula-days + 7))
+  VALIDATE_T0 / VALIDATE_TEND  pin the window explicitly (ISO, e.g.
+                             2026-07-06T13:30:00+00:00) — the Monday-after-
+                             holiday case; skips the latest-trade anchor.
 
 Usage:  PYTHONPATH=. ../.venv/bin/python _shadow_manager_validate.py [SIDS] [DAYS]
 """
@@ -46,6 +53,12 @@ DAYS = float(sys.argv[2]) if len(sys.argv) > 2 else 1.0
 POLLS = int(os.environ.get("VALIDATE_POLLS", "6"))
 ADMIN_USER = "19d47e46-f718-49a6-af32-5f5407f5b170"
 
+# DEEP-REFERENCE gate (Mechanism #1 — see module docstring)
+DEEP_REF = os.environ.get("VALIDATE_DEEP_REF", "1") == "1"
+DEEP_REF_DAYS = int(os.environ.get("VALIDATE_DEEP_REF_DAYS", "10"))
+PIN_T0 = os.environ.get("VALIDATE_T0")      # e.g. 2026-07-06T13:30:00+00:00
+PIN_TEND = os.environ.get("VALIDATE_TEND")  # e.g. 2026-07-06T20:00:00+00:00
+
 import db
 db.set_admin_user_context(ADMIN_USER)
 import pack_registry
@@ -61,72 +74,20 @@ from shadow_manager import ResidentEngineManager, EngineSlot
 from services import prepare_strategy_window_df
 from trade_snapshot import KEY_FIELDS, VAL_FIELDS
 
-# HI-FI GATE (§0). Default ON; degrades to AMBER when no 1-sec bars are available.
-HIFI_GATE = os.environ.get("VALIDATE_HIFI", "1").strip().lower() in (
-    "1", "true", "yes", "on")
-from api.services.backtest_service import _hifi_resolve_trades, _tf_to_seconds
-HIFI_VERDICTS: dict = {}   # sid -> 'green'|'amber'|'red'|None
 
-
-def _on_boundary(ts_val, tf_seconds):
-    """True if `ts_val` sits exactly on a primary-TF bar boundary (bar-aligned),
-    False if intra-candle, None if unparseable. Mirrors the eligibility test in
-    `backtest_service._hifi_resolve_trades` (`.second % tf_seconds == 0 and
-    .microsecond == 0`) so 'intra-candle' means the same thing as the refiner's."""
-    if ts_val is None:
-        return None
-    try:
-        ts = pd.Timestamp(ts_val)
-    except Exception:  # noqa: BLE001
-        return None
-    if pd.isna(ts):
-        return None
-    return (int(ts.second) % tf_seconds == 0
-            and int(ts.microsecond) == 0
-            and int(getattr(ts, "nanosecond", 0)) == 0)
-
-
-def _refine(df_trades, df_bars, strat, symbol, tf):
-    """Apply the REAL Hi-Fi Pass 2 to a COPY of the trades — exactly as the
-    KPI/recompute path does (`_hifi_resolve_trades`). Ensures the columns the
-    refiner reads are present (`hifi_resolved` default False; `direction` from
-    the strategy config — the engine dict omits it and the refiner defaults LONG,
-    so inject it for a faithful per-second walk on SHORTs)."""
-    if df_trades is None or len(df_trades) == 0:
-        return df_trades
-    d = df_trades.copy()
-    if "hifi_resolved" not in d.columns:
-        d["hifi_resolved"] = False
-    if "direction" not in d.columns:
-        d["direction"] = strat.get("direction", "LONG")
-    return _hifi_resolve_trades(d, symbol, tf, bar_df=df_bars)
-
-
-def _intra_candle_stats(df_ref_trades, tf_seconds, after_iso):
-    """Among steady (entry > after_iso) L-type stop/target exits in a REFINED
-    trade frame, count: eligible, Hi-Fi-refined, and of those how many landed
-    intra-candle (off the bar boundary). Uses the same `str(entry) <= after`
-    steady filter as `keyed()` so the population matches the byte-identity set."""
-    elig = refined = offbound = 0
-    if df_ref_trades is None or len(df_ref_trades) == 0:
-        return {"elig": 0, "refined": 0, "offbound": 0}
-    for t in df_ref_trades.to_dict("records"):
-        ent = t.get("entry_fill_ts")
-        if ent is None or str(ent) <= after_iso:
-            continue
-        er = t.get("exit_reason")
-        stop_et = str(t.get("stop_exec_type", "L")).upper()
-        tgt_et = str(t.get("target_exec_type", "L")).upper()
-        is_stop = er in ("stop_loss", "stop") and stop_et == "L"
-        is_tgt = er == "target" and tgt_et == "L"
-        if not (is_stop or is_tgt):
-            continue
-        elig += 1
-        if t.get("hifi_resolved") is True:
-            refined += 1
-            if _on_boundary(t.get("exit_fill_ts"), tf_seconds) is False:
-                offbound += 1
-    return {"elig": elig, "refined": refined, "offbound": offbound}
+def _mgr_formula_days(strat, warmup_bars=300):
+    """Replicate prepare_strategy_window_df's FULL-path calendar-days warmup
+    formula — the deepest start the manager's windowed prep would request via
+    the formula — so the deep reference can be sized strictly deeper than it."""
+    import math
+    from data_loader import (BARS_PER_DAY, get_required_tfs_from_confluence,
+                             get_tf_from_label)
+    tf = strat.get('timeframe', '1Min')
+    req = get_required_tfs_from_confluence(strat.get('confluence', []))
+    sec = [get_tf_from_label(lbl) for lbl in req]
+    bpds = [BARS_PER_DAY.get(t, 390) for t in [tf] + sec]
+    binding = min(b for b in bpds if b > 0) if bpds else 390
+    return max(1, math.ceil(warmup_bars / max(binding, 0.001) * 365 / 252))
 
 
 def keyed(df, after=None):
@@ -151,21 +112,42 @@ def run_sid(sid):
     model = strat.get("backtest_model")
     tf = strat.get("timeframe")
 
-    c = get_admin_client()
-    mx = (c.table("trades").select("entry_fill_ts").eq("strategy_id", sid)
-          .like("data_source", "backtest_%").order("entry_fill_ts", desc=True)
-          .limit(1).execute().data or [])
-    if not mx:
-        print(f"sid {sid}: no backtest trades to anchor on — skipping", flush=True)
-        return None
-    max_entry = datetime.fromisoformat(str(mx[0]["entry_fill_ts"]).replace("Z", "+00:00"))
-    if max_entry.tzinfo is None:
-        max_entry = max_entry.replace(tzinfo=timezone.utc)
-    T_end = max_entry + timedelta(hours=1)
-    T0 = T_end - timedelta(days=DAYS)
-    T0_iso = T0.isoformat()
+    if PIN_T0:
+        # Pinned window (Monday-after-holiday case): validate an EXPLICIT
+        # boundary instead of anchoring on the latest stored trade.
+        T0 = datetime.fromisoformat(PIN_T0)
+        if T0.tzinfo is None:
+            T0 = T0.replace(tzinfo=timezone.utc)
+        if PIN_TEND:
+            T_end = datetime.fromisoformat(PIN_TEND)
+            if T_end.tzinfo is None:
+                T_end = T_end.replace(tzinfo=timezone.utc)
+        else:
+            T_end = T0 + timedelta(days=DAYS)
+    else:
+        c = get_admin_client()
+        mx = (c.table("trades").select("entry_fill_ts").eq("strategy_id", sid)
+              .like("data_source", "backtest_%").order("entry_fill_ts", desc=True)
+              .limit(1).execute().data or [])
+        if not mx:
+            print(f"sid {sid}: no backtest trades to anchor on — skipping", flush=True)
+            return None
+        max_entry = datetime.fromisoformat(str(mx[0]["entry_fill_ts"]).replace("Z", "+00:00"))
+        if max_entry.tzinfo is None:
+            max_entry = max_entry.replace(tzinfo=timezone.utc)
+        T_end = max_entry + timedelta(hours=1)
+        T0 = T_end - timedelta(days=DAYS)
+    # Steady-region cut ('entry > T0') is a STRING compare against str(entry_fill_ts),
+    # which stringifies pandas-style ('2026-07-06 13:30:00+00:00', SPACE separator).
+    # datetime.isoformat() uses 'T', and ' ' < 'T' — so with a T-separated cut every
+    # same-date entry compared lexicographically below it and was silently dropped
+    # (vacuous pass on same-day pinned windows; the legacy anchored mode dodged it
+    # only because T0 lands the prior evening). Use the pandas string form so the
+    # lexicographic compare is chronological.
+    T0_iso = str(pd.Timestamp(T0))
     print(f"\n--- sid={sid} tf={tf} model={model}  window {T0.date()}->{T_end.date()} "
-          f"({DAYS}d, {POLLS} polls) ---", flush=True)
+          f"({DAYS}d, {POLLS} polls{', PINNED T0=' + T0_iso if PIN_T0 else ''}) ---",
+          flush=True)
 
     mgr = ResidentEngineManager(shard_symbols={strat['symbol']}, dry_run=True)
     slot = EngineSlot(sid, ADMIN_USER, strat)
@@ -182,8 +164,16 @@ def run_sid(sid):
     os.environ["RORT_SECONDARY_TF_SNAPSHOT"] = "0"
     import time
     t = time.time()
+    # DEEP-REFERENCE (Mechanism #1 gate): push the reference `since` back so its
+    # left edge is >=2 TRADING days deeper than anything the manager prepares.
+    # Same-edge (legacy, VALIDATE_DEEP_REF=0) is blind to warmup-window
+    # truncation because both sides truncate identically. The steady-region
+    # comparison (entry > T0) is unchanged — the deeper since only adds
+    # converged warmup history left of T0.
+    deep_days = max(DEEP_REF_DAYS, _mgr_formula_days(strat) + 7) if DEEP_REF else 0
+    T_ref = T0 - timedelta(days=deep_days)
     df_ref = prepare_strategy_window_df(
-        strat, T0, T_end, warmup_bars=300, data_feed="sip", model_override=model,
+        strat, T_ref, T_end, warmup_bars=300, data_feed="sip", model_override=model,
         no_backfill=False, persist_snapshot=False)
     if df_ref is None or len(df_ref) < 2:
         print(f"sid {sid}: only {0 if df_ref is None else len(df_ref)} bars — skipping",
@@ -195,8 +185,10 @@ def run_sid(sid):
         df_ref, strat, general_packs=enabled_gen, secondary_tf_map=sec_tf_map,
         include_open_position=False, last_bar_partial=False)
     A = keyed(df_A, after=T0_iso)
-    print(f"    REFERENCE (from-cold) : {len(A):4d} steady trades  {time.time()-t:5.1f}s",
-          flush=True)
+    ref_tag = (f"from-cold, DEEP since={T_ref.date().isoformat()}" if DEEP_REF
+               else "from-cold")
+    print(f"    REFERENCE ({ref_tag}) : {len(A):4d} steady trades  "
+          f"{time.time()-t:5.1f}s", flush=True)
 
     # MANAGER — bootstrap to T0 (same left edge), then K polls re-preparing each time.
     # RESTART (Step D): if VALIDATE_RESTART_POLL=p, after poll p we DISCARD the resident
@@ -206,21 +198,59 @@ def run_sid(sid):
     restart_poll = int(os.environ.get("VALIDATE_RESTART_POLL", "0"))
     os.environ["RORT_SECONDARY_TF_SNAPSHOT"] = mgr_snap   # manager mode (0=full, 1=fast path)
     t = time.time()
-    mgr.advance(slot, until_dt=T0, since_override=T0)   # bootstrap warm; discard its trades
-    edges = [T0 + (T_end - T0) * (i / POLLS) for i in range(POLLS + 1)]
-    acc = []
-    for i in range(POLLS):
-        acc.extend(mgr.advance(slot, until_dt=edges[i + 1]))
-        if restart_poll and (i + 1) == restart_poll:
-            slot.engine = None
-            slot.last_processed_ts = None
-            mgr.advance(slot, until_dt=edges[i + 1], since_override=edges[i + 1])  # re-warm
-            print(f"    ↻ simulated crash + cold re-bootstrap after poll {restart_poll}",
-                  flush=True)
+    # Record every window the manager actually prepares (left edge = first bar
+    # DELIVERED) so the deep-ref depth claim is MEASURED, not assumed.
+    import shadow_manager as _sm
+    _mgr_left_edges = []
+    _orig_prepare = _sm.prepare_window
+    def _rec_prepare(*a, **kw):
+        d = _orig_prepare(*a, **kw)
+        try:
+            if d is not None and len(d):
+                _mgr_left_edges.append(d.index[0])
+        except Exception:
+            pass
+        return d
+    _sm.prepare_window = _rec_prepare
+    try:
+        mgr.advance(slot, until_dt=T0, since_override=T0)   # bootstrap warm; discard its trades
+        edges = [T0 + (T_end - T0) * (i / POLLS) for i in range(POLLS + 1)]
+        acc = []
+        for i in range(POLLS):
+            acc.extend(mgr.advance(slot, until_dt=edges[i + 1]))
+            if restart_poll and (i + 1) == restart_poll:
+                slot.engine = None
+                slot.last_processed_ts = None
+                mgr.advance(slot, until_dt=edges[i + 1], since_override=edges[i + 1])  # re-warm
+                print(f"    ↻ simulated crash + cold re-bootstrap after poll {restart_poll}",
+                      flush=True)
+    finally:
+        _sm.prepare_window = _orig_prepare
     M = keyed(pd.DataFrame(acc) if acc else pd.DataFrame(), after=T0_iso)
     tag = f"bootstrap+{POLLS}×" + (f", restart@{restart_poll}" if restart_poll else "")
     print(f"    MANAGER ({tag}): {len(M):4d} steady trades  {time.time()-t:5.1f}s",
           flush=True)
+
+    # DEEP-REF PATH gate: certify the reference really sat >=2 TRADING days
+    # deeper than the SHALLOWEST window the manager delivered — otherwise this
+    # run cannot catch the Mechanism #1 bug class and must not count as green.
+    if DEEP_REF:
+        if not _mgr_left_edges:
+            print("    DEEP-REF depth: no manager windows recorded — "
+                  "⚠️ DEPTH-INVALID (treating as skipped)", flush=True)
+            return None
+        mgr_min_edge = min(_mgr_left_edges)
+        ref_edge = df_ref.index[0]
+        _between = df_ref.index[(df_ref.index >= ref_edge)
+                                & (df_ref.index < mgr_min_edge)]
+        tdays_deeper = len(_between.normalize().unique())
+        depth_ok = tdays_deeper >= 2
+        print(f"    DEEP-REF depth: ref_edge={ref_edge}  mgr_min_edge={mgr_min_edge}  "
+              f"trading_days_deeper={tdays_deeper}  "
+              f"{'✅ >=2' if depth_ok else '⚠️ DEPTH-INVALID (raise VALIDATE_DEEP_REF_DAYS)'}",
+              flush=True)
+        if not depth_ok:
+            return None
 
     ka, km = set(A), set(M)
     added, removed = km - ka, ka - km
@@ -237,62 +267,6 @@ def run_sid(sid):
         for k in changed[:5]:
             diffs = {f: (A[k][f], M[k][f]) for f in VAL_FIELDS if A[k][f] != M[k][f]}
             print(f"        changed {k}: {diffs}", flush=True)
-
-    # ── HI-FI GATE (§0) — refine BOTH lanes with the real Pass 2, then assert
-    # post-Hi-Fi byte-identity + intra-candle stop/target exits. Additive: never
-    # changes the Step C (bar-resolution) verdict returned below.
-    if HIFI_GATE:
-        try:
-            tf_secs = _tf_to_seconds(tf)
-            sym = strat["symbol"]
-            rA = _refine(df_A, df_ref, strat, sym, tf)
-            rM = _refine(pd.DataFrame(acc) if acc else pd.DataFrame(),
-                         df_ref, strat, sym, tf)
-            Ahf, Mhf = keyed(rA, after=T0_iso), keyed(rM, after=T0_iso)
-            ka2, km2 = set(Ahf), set(Mhf)
-            hf_added, hf_removed = km2 - ka2, ka2 - km2
-            hf_changed = [k for k in (ka2 & km2) if Ahf[k] != Mhf[k]]
-            hf_ident = not hf_added and not hf_removed and not hf_changed
-            st = _intra_candle_stats(rM, tf_secs, T0_iso)
-            # Verdict keys on WHETHER eligible exits got Hi-Fi-walked, NOT on the
-            # refined timestamp's boundary alignment. A refined exit that lands on
-            # the bar boundary is legitimate — the gap-aware walker fills at the exit
-            # bar's OPEN (second :00) when the first 1-sec bar already breached the
-            # level (overnight gap / flash move). The REGRESSION signature is the
-            # opposite: eligible stop/target exits left UN-walked (refined < elig),
-            # which stay bar-aligned because Hi-Fi never resolved them.
-            on_bound = st["refined"] - st["offbound"]   # refined-but-boundary = gap fills
-            if not hf_ident:
-                verdict = "red"
-                note = (f"post-Hi-Fi DIVERGENCE added={len(hf_added)} "
-                        f"removed={len(hf_removed)} changed={len(hf_changed)}")
-            elif st["elig"] == 0:
-                verdict = "amber"
-                note = "no L-type stop/target exits in window — nothing to refine"
-            elif st["refined"] == 0:
-                verdict = "amber"
-                note = ("Hi-Fi not exercised (no 1-sec bars for window) — "
-                        "re-run near market hours")
-            elif st["refined"] < st["elig"]:
-                verdict = "amber"
-                note = (f"partial 1-sec coverage: {st['refined']}/{st['elig']} "
-                        f"eligible walked — re-run near market hours for full coverage")
-            else:  # refined == elig: every eligible stop/target exit was Hi-Fi-walked
-                verdict = "green"
-                note = (f"{st['refined']}/{st['elig']} eligible refined; "
-                        f"{st['offbound']} intra-candle"
-                        + (f", {on_bound} boundary/gap fill(s)" if on_bound else ""))
-            HIFI_VERDICTS[sid] = verdict
-            sym_e = {"green": "✅", "amber": "🟡", "red": "❌"}[verdict]
-            print(f"    HI-FI GATE {sym_e} {verdict.upper()}: post-hifi identical="
-                  f"{hf_ident} elig={st['elig']} refined={st['refined']} "
-                  f"intra_candle={st['offbound']} boundary/gap={on_bound} — {note}",
-                  flush=True)
-        except Exception as e:  # noqa: BLE001
-            import traceback
-            HIFI_VERDICTS[sid] = None
-            print(f"    HI-FI GATE: ERROR {e}", flush=True)
-            traceback.print_exc()
     return ok
 
 
@@ -321,22 +295,3 @@ elif green:
 else:
     print("  ⚠️  no canaries evaluated.")
 print("=" * 64)
-
-if HIFI_GATE:
-    hg = [s for s, v in HIFI_VERDICTS.items() if v == "green"]
-    ha = [s for s, v in HIFI_VERDICTS.items() if v == "amber"]
-    hr = [s for s, v in HIFI_VERDICTS.items() if v == "red"]
-    he = [s for s, v in HIFI_VERDICTS.items() if v is None]
-    print("HI-FI GATE — stop/target exits intra-candle + byte-identical post-Hi-Fi")
-    print(f"  green={hg}  amber={ha}  red={hr}  error={he}")
-    if hr:
-        print("  ❌ HI-FI RED — refined exits bar-aligned or lanes diverge post-Hi-Fi; "
-              "do NOT arm live.")
-    elif hg:
-        print(f"  ✅ HI-FI GREEN ({len(hg)}) — per-second exits validated"
-              + (f"; {len(ha)} amber (no 1-sec data — re-run at market hours)"
-                 if ha else "") + ".")
-    elif ha:
-        print("  🟡 HI-FI AMBER only — Hi-Fi not exercised offline (no 1-sec bars). "
-              "Re-run near market hours to turn green.")
-    print("=" * 64)

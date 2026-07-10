@@ -308,50 +308,6 @@ function ToggleChip({ label, active, onClick }: { label: string; active: boolean
   );
 }
 
-// algo_model split (2026-05-08): per-model dropdown for Mass Builder spec.
-function MassBuilderModelDropdown({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: Record<string, { label: string; available: boolean; description: string }>;
-  onChange: (v: string) => void;
-}) {
-  const entries = Object.entries(options);
-  const currentDesc = options[value]?.description;
-  return (
-    <div>
-      <label className="text-[10px] font-medium block mb-1" style={{ color: 'var(--text-muted)' }}>
-        {label}
-      </label>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full px-3 py-1.5 rounded-lg text-sm"
-        style={{
-          background: 'var(--bg-input)',
-          border: '1px solid var(--border)',
-          color: 'var(--text-primary)',
-        }}
-      >
-        {entries.map(([key, opt]) => (
-          <option key={key} value={key} disabled={!opt.available && key !== value}>
-            {opt.label}{opt.available ? '' : ' (coming soon)'}
-          </option>
-        ))}
-      </select>
-      {currentDesc && (
-        <p className="text-[10px] mt-1" style={{ color: 'var(--text-muted)', lineHeight: 1.4 }}>
-          {currentDesc.length > 120 ? currentDesc.slice(0, 117) + '…' : currentDesc}
-        </p>
-      )}
-    </div>
-  );
-}
-
 /* ========================================================================
    Main Component
    ======================================================================== */
@@ -379,10 +335,40 @@ export default function MassBuilderPage() {
     return primary.length > 0 ? primary : TIMEFRAMES_FALLBACK;
   }, [userSettings]);
 
+  // ---- User-pack scoping (Mass Builder only, 2026-07-02) ----
+  // MB builds NEW strategies, so it only offers Entry/Exit/TF-Confluence
+  // options backed by modular user packs (template `_user_pack` marker).
+  // Groups on built-in templates stay functional elsewhere (Strategy
+  // Builder, existing strategies) — they're just not offered here, so a
+  // new search can't be built on the legacy non-modular path.
+  const userPackGroupIds = useMemo(() => {
+    if (!apiConfluenceGroups || !apiConfluenceTemplates) return null;
+    const ids = new Set<string>();
+    for (const g of apiConfluenceGroups) {
+      if (apiConfluenceTemplates[g.base_template]?._user_pack) ids.add(g.id);
+    }
+    return ids;
+  }, [apiConfluenceGroups, apiConfluenceTemplates]);
+
+  // Trigger ids are `${groupId}_${base}` (ConfluenceGroup.get_trigger_id).
+  // Group ids can be prefixes of one another (e.g. `utbot` vs `utbot_v2`),
+  // so resolve ownership by the LONGEST matching group id, then check that
+  // group's user-pack status.
+  const isUserPackTrigger = useCallback((trigId: string): boolean => {
+    if (!userPackGroupIds || !apiConfluenceGroups) return false;
+    let owner: string | null = null;
+    for (const g of apiConfluenceGroups) {
+      if (trigId.startsWith(g.id + '_') && (!owner || g.id.length > owner.length)) {
+        owner = g.id;
+      }
+    }
+    return owner !== null && userPackGroupIds.has(owner);
+  }, [userPackGroupIds, apiConfluenceGroups]);
+
   // ---- Derive trigger/pack data from API ----
   const ENTRY_TRIGGER_DEFS: TriggerDef[] = useMemo(() => {
     if (!apiEntryTriggers) return [];
-    return Object.entries(apiEntryTriggers).map(([id, name]) => {
+    return Object.entries(apiEntryTriggers).filter(([id]) => isUserPackTrigger(id)).map(([id, name]) => {
       const parts = id.split('_');
       const pack = parts[0] || 'unknown';
       return {
@@ -393,11 +379,11 @@ export default function MassBuilderPage() {
         execTypes: ['[C]'], // Base exec type; full exec support comes from templates
       };
     });
-  }, [apiEntryTriggers]);
+  }, [apiEntryTriggers, isUserPackTrigger]);
 
   const EXIT_TRIGGER_DEFS: TriggerDef[] = useMemo(() => {
     if (!apiExitTriggers) return [];
-    return Object.entries(apiExitTriggers).map(([id, name]) => {
+    return Object.entries(apiExitTriggers).filter(([id]) => isUserPackTrigger(id)).map(([id, name]) => {
       const parts = id.split('_');
       const pack = parts[0] || 'unknown';
       return {
@@ -408,13 +394,15 @@ export default function MassBuilderPage() {
         execTypes: ['[C]'],
       };
     });
-  }, [apiExitTriggers]);
+  }, [apiExitTriggers, isUserPackTrigger]);
 
   const TF_CONFLUENCES: TfConfDef[] = useMemo(() => {
     if (!apiConfluenceGroups) return [];
     const confs: TfConfDef[] = [];
     for (const g of apiConfluenceGroups) {
       const tmpl = apiConfluenceTemplates?.[g.base_template] as any | undefined;
+      // User-pack scoping: skip groups backed by built-in templates.
+      if (!tmpl?._user_pack) continue;
       // `outputs` is an array of state codes; `output_descriptions` is state→text;
       // `output_directions` is state→"BULL"|"BEAR"|"NEUTRAL" (added by backend).
       const outputs: string[] = Array.isArray(tmpl?.outputs) ? tmpl.outputs : [];
@@ -527,8 +515,6 @@ export default function MassBuilderPage() {
 
   // Config state
   const [searchName, setSearchName] = useState(`Search ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`);
-  const [triggerHiFi, setTriggerHiFi] = useState(false);
-  const [confluenceHiFi, setConfluenceHiFi] = useState(false);
   const [selectedTickers, setSelectedTickers] = useState<string[]>([]);
   const [tickerInput, setTickerInput] = useState('');
   const [selectedTFs, setSelectedTFs] = useState<string[]>([]);
@@ -540,6 +526,10 @@ export default function MassBuilderPage() {
   const [tfConfDepth, setTfConfDepth] = useState(2);
   const [selectedGenConf, setSelectedGenConf] = useState<string[]>([]);
   const [genConfDepth, setGenConfDepth] = useState(1);
+  // ✱ requirements: confluences every combo must satisfy (AND baseline).
+  // Disjoint from the optional (✓) pools above — an id is in one or neither.
+  const [requiredTfConf, setRequiredTfConf] = useState<string[]>([]);
+  const [requiredGenConf, setRequiredGenConf] = useState<string[]>([]);
   const [session, setSession] = useState('RTH');
   const [lookbackDays, setLookbackDays] = useState(90);
   const [selectedStopPacks, setSelectedStopPacks] = useState<string[]>([]);
@@ -566,17 +556,21 @@ export default function MassBuilderPage() {
   const [oosSigmaN, setOosSigmaN] = useState(2);
   const [activeSearchId, setActiveSearchId] = useState<string | number | null>(null);
 
-  // Model selection (algo_model split — 2026-05-08). Spawned strategies
-  // inherit these values via mass_builder.py:build_strategy_config.
+  // Models are no longer user-selectable here (2026-07-02): spawned
+  // strategies are stamped with the registry defaults (Admin → Live Models
+  // / Backtest & Algo Models) resolved by /api/strategies/models. If the
+  // defaults haven't loaded yet, the fields are omitted from the payload
+  // and mass_builder.build_strategy_config leaves them unset — downstream
+  // readers then resolve the same registry defaults.
   const { data: modelsResp } = useStrategyModels();
-  const [backtestModel, setBacktestModel] = useState<string>('rest_hifi');
-  const [algoModel, setAlgoModel] = useState<string>('cache_locked');
-  const [liveModel, setLiveModel] = useState<string>('ws_agg_locked');
+  const backtestModel = modelsResp?.defaults?.backtest_model;
+  const algoModel = modelsResp?.defaults?.algo_model;
+  const liveModel = modelsResp?.defaults?.live_model;
 
-  // Search Mode (Mass Builder §8.5 fidelity fix).
-  // Default 'Rapid' until Kevin verifies HighFidelity parity vs Update
-  // All Data on real strategies (plan: piped-wondering-tower.md).
-  const [searchFidelity, setSearchFidelity] = useState<'Rapid' | 'HighFidelity'>('Rapid');
+  // Search Mode (Mass Builder §8.5). HighFidelity is the default —
+  // parity vs Update All Data verified (dough re-bake byte-identical,
+  // 2026-06-18g). Rapid stays available as a fast estimate.
+  const [searchFidelity, setSearchFidelity] = useState<'Rapid' | 'HighFidelity'>('HighFidelity');
   const [skipHifi, setSkipHifi] = useState<boolean>(false);
   const [hifiBufferMultiplier, setHifiBufferMultiplier] = useState<number>(3);
 
@@ -623,6 +617,8 @@ export default function MassBuilderPage() {
     if (Array.isArray(cfg.exit_triggers)) setSelectedExits(cfg.exit_triggers);
     if (Array.isArray(cfg.tf_confluences)) setSelectedTfConf(cfg.tf_confluences);
     if (Array.isArray(cfg.general_confluences)) setSelectedGenConf(cfg.general_confluences);
+    if (Array.isArray(cfg.required_tf_confluences)) setRequiredTfConf(cfg.required_tf_confluences);
+    if (Array.isArray(cfg.required_general_confluences)) setRequiredGenConf(cfg.required_general_confluences);
     if (typeof cfg.tf_confluence_depth === 'number') setTfConfDepth(cfg.tf_confluence_depth);
     if (typeof cfg.general_confluence_depth === 'number') setGenConfDepth(cfg.general_confluence_depth);
     if (Array.isArray(cfg.stop_packs)) setSelectedStopPacks(cfg.stop_packs);
@@ -906,6 +902,10 @@ export default function MassBuilderPage() {
       tf_confluence_depth: tfConfDepth,
       general_confluences: selectedGenConf,
       general_confluence_depth: genConfDepth,
+      // ✱ requirements: baseline gates under every combo; depth applies to
+      // the optional pools above only. Disjoint from them by construction.
+      required_tf_confluences: requiredTfConf,
+      required_general_confluences: requiredGenConf,
       stop_packs: selectedStopPacks.length > 0 ? selectedStopPacks : undefined,
       target_packs: selectedTargetPacks.length > 0 ? selectedTargetPacks : undefined,
       time_exit_packs: selectedTimeExitPacks.length > 0 ? selectedTimeExitPacks : undefined,
@@ -931,8 +931,9 @@ export default function MassBuilderPage() {
         sigma: { enabled: oosSigmaEnabled, n: oosSigmaN },
       } : undefined,
       max_results: maxResults,
-      // Model fields (algo_model split — 2026-05-08). Spawned strategies
-      // inherit these via mass_builder.py:build_strategy_config.
+      // Model fields: registry defaults from /api/strategies/models
+      // (undefined until loaded → omitted → downstream default resolution).
+      // Spawned strategies inherit via mass_builder.build_strategy_config.
       backtest_model: backtestModel,
       algo_model: algoModel,
       live_model: liveModel,
@@ -995,6 +996,39 @@ export default function MassBuilderPage() {
     }
   }
 
+  /** Tri-state confluence cycle: empty → ✓ optional → ✱ required → empty. */
+  function cycleTriState(
+    id: string,
+    selected: string[], setSelected: (v: string[]) => void,
+    required: string[], setRequired: (v: string[]) => void,
+  ) {
+    if (required.includes(id)) {
+      setRequired(required.filter((x) => x !== id));
+    } else if (selected.includes(id)) {
+      setSelected(selected.filter((x) => x !== id));
+      setRequired([...required, id]);
+    } else {
+      setSelected([...selected, id]);
+    }
+  }
+
+  /** Tri-state box: shows ✱ (required), ✓ (optional), or empty. */
+  function TriStateBox({ state, color }: { state: 'off' | 'optional' | 'required'; color: string }) {
+    const REQUIRED_COLOR = 'var(--orange)';
+    return (
+      <span
+        className="w-3.5 h-3.5 rounded flex-shrink-0 flex items-center justify-center text-[9px] font-bold leading-none"
+        style={{
+          border: '1px solid ' + (state === 'required' ? REQUIRED_COLOR : state === 'optional' ? color : 'var(--border)'),
+          background: state === 'required' ? REQUIRED_COLOR : state === 'optional' ? color : 'transparent',
+          color: '#fff',
+        }}
+      >
+        {state === 'required' ? '✱' : state === 'optional' ? '✓' : ''}
+      </span>
+    );
+  }
+
   // Identify results by `_raw` reference (the original backend object), not
   // by array index. The filteredResults array is a sorted/filtered view, so
   // the index in the view does not correspond to the index in `results`.
@@ -1021,6 +1055,16 @@ export default function MassBuilderPage() {
       stop_config: cfg.stop_config,
       target_config: cfg.target_config,
       time_exit_config: cfg.time_exit_config,
+      // Model fields (2026-07-06, bug-hunt wave 2): saveResult() hand-copies
+      // config fields and silently DROPPED all three models — manually-saved
+      // results (unlike search-spawned strategies) landed with algo_model
+      // unset, which pre-#26 wrote 'cache_None' lanes and post-#26 fails
+      // loud at every recompute (nightly tripwire, sids 339/340). Inherit
+      // from the candidate config; fall back to the form's current model
+      // selections (same values build_strategy_config would have applied).
+      backtest_model: cfg.backtest_model || backtestModel,
+      algo_model: cfg.algo_model || algoModel,
+      live_model: cfg.live_model || liveModel,
       // OOS: carry the in-sample window onto the saved strategy so its
       // chart bands + KPI split know where the held-out region begins.
       // Without this the saved strategy has no in_sample_end → no band.
@@ -1093,39 +1137,6 @@ export default function MassBuilderPage() {
             style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
           />
         </div>
-        {/* Fidelity toggles */}
-        <div className="flex items-center gap-4">
-          <label className="flex items-center gap-2 cursor-pointer select-none">
-            <div
-              className="relative w-9 h-5 rounded-full transition-colors"
-              style={{ background: triggerHiFi ? 'var(--accent)' : 'var(--bg-input)', border: '1px solid var(--border)' }}
-              onClick={() => setTriggerHiFi(!triggerHiFi)}
-            >
-              <div
-                className="absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all"
-                style={{ background: triggerHiFi ? '#fff' : 'var(--text-muted)', left: triggerHiFi ? '18px' : '2px' }}
-              />
-            </div>
-            <span className="text-xs font-medium whitespace-nowrap" style={{ color: triggerHiFi ? 'var(--accent)' : 'var(--text-muted)' }}>
-              Trigger HiFi
-            </span>
-          </label>
-          <label className="flex items-center gap-2 cursor-pointer select-none">
-            <div
-              className="relative w-9 h-5 rounded-full transition-colors"
-              style={{ background: confluenceHiFi ? 'var(--accent)' : 'var(--bg-input)', border: '1px solid var(--border)' }}
-              onClick={() => setConfluenceHiFi(!confluenceHiFi)}
-            >
-              <div
-                className="absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all"
-                style={{ background: confluenceHiFi ? '#fff' : 'var(--text-muted)', left: confluenceHiFi ? '18px' : '2px' }}
-              />
-            </div>
-            <span className="text-xs font-medium whitespace-nowrap" style={{ color: confluenceHiFi ? 'var(--accent)' : 'var(--text-muted)' }}>
-              Confluence HiFi
-            </span>
-          </label>
-        </div>
         <button
           className="px-5 py-2 rounded-lg text-sm font-medium transition-opacity hover:opacity-80"
           style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', color: 'var(--text-secondary)' }}
@@ -1174,6 +1185,16 @@ export default function MassBuilderPage() {
               {tab === 'Exit' && selectedExits.length > 0 && (
                 <span className="ml-1 text-[10px] px-1 py-0.5 rounded" style={{ background: 'var(--accent-muted)', color: 'var(--accent)' }}>
                   {selectedExits.length}
+                </span>
+              )}
+              {tab === 'TF Confluence' && requiredTfConf.length > 0 && (
+                <span className="ml-1 text-[9px] px-1 rounded-full" style={{ background: 'var(--orange)', color: '#fff' }}>
+                  ✱{requiredTfConf.length}
+                </span>
+              )}
+              {tab === 'General' && requiredGenConf.length > 0 && (
+                <span className="ml-1 text-[9px] px-1 rounded-full" style={{ background: 'var(--orange)', color: '#fff' }}>
+                  ✱{requiredGenConf.length}
                 </span>
               )}
               {tab === 'TF Confluence' && selectedTfConf.length > 0 && (
@@ -1365,37 +1386,9 @@ export default function MassBuilderPage() {
                 </div>
               </div>
 
-              {/* Models — algo_model split (2026-05-08) */}
+              {/* Search Mode — Mass Builder §8.5 fidelity toggle */}
               <div className="mt-4">
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Models</p>
-                  <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
-                    Backtest = KPI baseline · Algo = live accountability · Live = engine reality
-                  </span>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <MassBuilderModelDropdown
-                    label="Backtest Model"
-                    value={backtestModel}
-                    options={modelsResp?.backtest_models || {}}
-                    onChange={setBacktestModel}
-                  />
-                  <MassBuilderModelDropdown
-                    label="Algo Model"
-                    value={algoModel}
-                    options={(modelsResp as any)?.algo_models || modelsResp?.backtest_models || {}}
-                    onChange={setAlgoModel}
-                  />
-                  <MassBuilderModelDropdown
-                    label="Live Model"
-                    value={liveModel}
-                    options={modelsResp?.live_models || {}}
-                    onChange={setLiveModel}
-                  />
-                </div>
-
-                {/* Search Mode — Mass Builder §8.5 fidelity toggle */}
-                <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
+                <div>
                   <div className="flex items-center justify-between mb-2">
                     <p className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Search Mode</p>
                     <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>
@@ -1422,8 +1415,8 @@ export default function MassBuilderPage() {
                         </div>
                         <div className="text-[10px] mt-0.5" style={{ opacity: 0.8 }}>
                           {mode === 'HighFidelity'
-                            ? 'Bit-matches Update All Data. 5–20× slower.'
-                            : 'Fast preview, KPIs may differ from saved (current).'}
+                            ? 'Bit-matches Update All Data. 5–20× slower. (default)'
+                            : 'Fast estimate — KPIs may differ from saved results.'}
                         </div>
                       </button>
                     ))}
@@ -1606,12 +1599,15 @@ export default function MassBuilderPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <button className="text-[10px] px-2 py-0.5 rounded" style={{ background: 'var(--accent-muted)', color: 'var(--accent)', cursor: 'pointer', border: 'none' }}
-                    onClick={() => setSelectedTfConf(TF_CONFLUENCES.map((c) => c.id))}>Select All</button>
-                  {selectedTfConf.length > 0 && (
+                    onClick={() => setSelectedTfConf(TF_CONFLUENCES.map((c) => c.id).filter((id) => !requiredTfConf.includes(id)))}>Select All</button>
+                  {(selectedTfConf.length > 0 || requiredTfConf.length > 0) && (
                     <button className="text-[10px] px-2 py-0.5 rounded" style={{ color: 'var(--text-muted)', cursor: 'pointer', border: 'none', background: 'transparent' }}
-                      onClick={() => setSelectedTfConf([])}>Clear</button>
+                      onClick={() => { setSelectedTfConf([]); setRequiredTfConf([]); }}>Clear</button>
                   )}
                   <span className="text-xs" style={{ color: 'var(--accent)' }}>{selectedTfConf.length} selected</span>
+                  {requiredTfConf.length > 0 && (
+                    <span className="text-xs" style={{ color: 'var(--orange)' }}>· {requiredTfConf.length} required ✱</span>
+                  )}
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-4" style={{ maxHeight: 500, overflowY: 'auto' }}>
@@ -1627,14 +1623,16 @@ export default function MassBuilderPage() {
                     BEAR: confs.filter((c) => c.direction === 'BEAR'),
                     NEUTRAL: confs.filter((c) => c.direction === 'NEUTRAL'),
                   };
-                  const selectedCount = confs.filter((c) => selectedTfConf.includes(c.id)).length;
+                  const selectedCount = confs.filter((c) => selectedTfConf.includes(c.id) || requiredTfConf.includes(c.id)).length;
                   const DIR_META: Record<'BULL' | 'BEAR' | 'NEUTRAL', { label: string; color: string; bg: string }> = {
                     BULL: { label: 'Bull', color: 'var(--green)', bg: 'var(--green-muted)' },
                     BEAR: { label: 'Bear', color: 'var(--red)', bg: 'var(--red-muted)' },
                     NEUTRAL: { label: 'Neutral', color: 'var(--text-muted)', bg: 'var(--bg-elevated)' },
                   };
+                  // Bulk buttons manage ✓ only; ✱ is always an individual
+                  // click and survives all/clear.
                   const toggleDirection = (dir: 'BULL' | 'BEAR' | 'NEUTRAL') => {
-                    const ids = byDirection[dir].map((c) => c.id);
+                    const ids = byDirection[dir].map((c) => c.id).filter((id) => !requiredTfConf.includes(id));
                     const allSelected = ids.every((id) => selectedTfConf.includes(id));
                     if (allSelected) {
                       setSelectedTfConf(selectedTfConf.filter((id) => !ids.includes(id)));
@@ -1657,23 +1655,27 @@ export default function MassBuilderPage() {
                       {(['BULL', 'BEAR', 'NEUTRAL'] as const).map((dir) => {
                         if (byDirection[dir].length === 0) return null;
                         const meta = DIR_META[dir];
-                        const dirSelected = byDirection[dir].filter((c) => selectedTfConf.includes(c.id)).length;
+                        const dirOptIds = byDirection[dir].map((c) => c.id).filter((id) => !requiredTfConf.includes(id));
+                        const dirAllSelected = dirOptIds.length > 0 && dirOptIds.every((id) => selectedTfConf.includes(id));
                         return (
                           <div key={dir} className="mb-2 last:mb-0">
                             <div className="flex items-center justify-between mb-1">
                               <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: meta.color }}>{meta.label}</span>
                               <button className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: meta.bg, color: meta.color, border: 'none', cursor: 'pointer' }}
                                 onClick={() => toggleDirection(dir)}>
-                                {dirSelected === byDirection[dir].length ? 'clear' : 'all'}
+                                {dirAllSelected ? 'clear' : 'all'}
                               </button>
                             </div>
                             <div className="space-y-0.5">
                               {byDirection[dir].map((c) => (
-                                <label key={c.id} title={c.description} className="flex items-center gap-1.5 cursor-pointer py-0.5 px-1 rounded hover:bg-black/10">
-                                  <input type="checkbox" checked={selectedTfConf.includes(c.id)} onChange={() => toggleItem(selectedTfConf, c.id, setSelectedTfConf)} className="w-3 h-3 rounded flex-shrink-0" style={{ accentColor: meta.color }} />
+                                <div key={c.id} title={`${c.description} — click cycles: ✓ optional → ✱ required → off`}
+                                  className="flex items-center gap-1.5 cursor-pointer py-0.5 px-1 rounded hover:bg-black/10"
+                                  onClick={() => cycleTriState(c.id, selectedTfConf, setSelectedTfConf, requiredTfConf, setRequiredTfConf)}>
+                                  <TriStateBox color={meta.color}
+                                    state={requiredTfConf.includes(c.id) ? 'required' : selectedTfConf.includes(c.id) ? 'optional' : 'off'} />
                                   <span className="text-[11px] font-mono flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>{c.state}</span>
                                   <span className="text-[9px] truncate" style={{ color: 'var(--text-muted)' }}>{c.description}</span>
-                                </label>
+                                </div>
                               ))}
                             </div>
                           </div>
@@ -1704,12 +1706,15 @@ export default function MassBuilderPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <button className="text-[10px] px-2 py-0.5 rounded" style={{ background: 'var(--accent-muted)', color: 'var(--accent)', cursor: 'pointer', border: 'none' }}
-                    onClick={() => setSelectedGenConf(GENERAL_CONFLUENCES.map((c) => c.id))}>Select All</button>
-                  {selectedGenConf.length > 0 && (
+                    onClick={() => setSelectedGenConf(GENERAL_CONFLUENCES.map((c) => c.id).filter((id) => !requiredGenConf.includes(id)))}>Select All</button>
+                  {(selectedGenConf.length > 0 || requiredGenConf.length > 0) && (
                     <button className="text-[10px] px-2 py-0.5 rounded" style={{ color: 'var(--text-muted)', cursor: 'pointer', border: 'none', background: 'transparent' }}
-                      onClick={() => setSelectedGenConf([])}>Clear</button>
+                      onClick={() => { setSelectedGenConf([]); setRequiredGenConf([]); }}>Clear</button>
                   )}
                   <span className="text-xs" style={{ color: 'var(--accent)' }}>{selectedGenConf.length} selected</span>
+                  {requiredGenConf.length > 0 && (
+                    <span className="text-xs" style={{ color: 'var(--orange)' }}>· {requiredGenConf.length} required ✱</span>
+                  )}
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 mb-4" style={{ maxHeight: 500, overflowY: 'auto' }}>
@@ -1720,9 +1725,10 @@ export default function MassBuilderPage() {
                   }, {})
                 ).map(([packId, confs]) => {
                   const first = confs[0];
-                  const packIds = confs.map((c) => c.id);
-                  const packSelected = confs.filter((c) => selectedGenConf.includes(c.id)).length;
-                  const allSelected = packSelected === confs.length;
+                  // Bulk buttons manage ✓ only; ✱ survives all/clear.
+                  const packIds = confs.map((c) => c.id).filter((id) => !requiredGenConf.includes(id));
+                  const packSelected = confs.filter((c) => selectedGenConf.includes(c.id) || requiredGenConf.includes(c.id)).length;
+                  const allSelected = packIds.every((id) => selectedGenConf.includes(id));
                   const togglePack = () => {
                     if (allSelected) {
                       setSelectedGenConf(selectedGenConf.filter((id) => !packIds.includes(id)));
@@ -1746,11 +1752,14 @@ export default function MassBuilderPage() {
                       </div>
                       <div className="space-y-0.5">
                         {confs.map((c) => (
-                          <label key={c.id} title={c.description} className="flex items-center gap-1.5 cursor-pointer py-0.5 px-1 rounded hover:bg-black/10">
-                            <input type="checkbox" checked={selectedGenConf.includes(c.id)} onChange={() => toggleItem(selectedGenConf, c.id, setSelectedGenConf)} className="w-3 h-3 rounded flex-shrink-0" style={{ accentColor: 'var(--accent)' }} />
+                          <div key={c.id} title={`${c.description} — click cycles: ✓ optional → ✱ required → off`}
+                            className="flex items-center gap-1.5 cursor-pointer py-0.5 px-1 rounded hover:bg-black/10"
+                            onClick={() => cycleTriState(c.id, selectedGenConf, setSelectedGenConf, requiredGenConf, setRequiredGenConf)}>
+                            <TriStateBox color="var(--accent)"
+                              state={requiredGenConf.includes(c.id) ? 'required' : selectedGenConf.includes(c.id) ? 'optional' : 'off'} />
                             <span className="text-[11px] font-mono flex-shrink-0" style={{ color: 'var(--text-secondary)' }}>{c.state}</span>
                             <span className="text-[9px] truncate" style={{ color: 'var(--text-muted)' }}>{c.description}</span>
-                          </label>
+                          </div>
                         ))}
                       </div>
                     </div>

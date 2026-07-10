@@ -90,12 +90,57 @@ KPI_DEBOUNCE_S = int(os.getenv("RORT_SHADOW_KPI_DEBOUNCE_S", "300"))
 # (today's behavior). Steady-state (caught-up) strategies advance their small delta
 # in one poll regardless.
 MAX_ADVANCE_S = int(os.getenv("RORT_SHADOW_MAX_ADVANCE_S", "0"))
+# Gap-skip: when a MAX_ADVANCE_S-capped advance finds NO new bars, move the cursor
+# to the capped bound anyway so the engine can walk across bar-free regions (the
+# overnight session gap is >1h wide, so a capped engine otherwise re-prepares the
+# same empty window forever and never reaches the next session — 2026-07-02 stall).
+# Safe: prepare_window delta-fetches the range from Polygon before reading, so an
+# empty capped window means Polygon has no (session-eligible) bars there — and a
+# capped cursor is already >MAX_ADVANCE_S behind now-LAG, far past REST finality.
+# A true ingest outage backfilled later is the nightly full_recompute's job (§G).
+GAP_SKIP = os.getenv("RORT_SHADOW_GAP_SKIP", "1").strip().lower() in (
+    "1", "true", "yes", "on")
 # Fix 2b: run the KPI + equity + Hi-Fi recompute on a SEPARATE worker thread instead
 # of inline in poll() — the poll loop then only does advance + write (fast, O(new
 # bars)); KPIs/Health/Hi-Fi lag on their own cadence without starving trade freshness.
 # Default OFF = today's inline recompute.
-KPI_ASYNC = os.getenv("RORT_SHADOW_KPI_ASYNC", "0").strip().lower() in (
+# graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
+KPI_ASYNC = os.getenv("RORT_SHADOW_KPI_ASYNC", "1").strip().lower() in (
     "1", "true", "yes", "on")
+# Empty-window probe (2026-07-03): before the expensive warmup-window prep, ask the
+# source layer ONE indexed question — "does any bar exist in (cursor, bound]?" — and
+# skip the whole advance when the answer is no. Gap-walking (nights/weekends/holidays)
+# otherwise re-prepares the full warmup window per slot per tf-interval just to learn
+# "still no bars": measured 34k window reads / ~889M rows returned in one idle night
+# (pg_stat_statements, 07-03) — the top egress driver. Byte-identical: with zero
+# source bars in the window, advance() would return [] and leave the cursor unmoved;
+# the probe just reaches the same outcome without the read. Session-filtered windows
+# (source bars exist but all filtered) still take the full prep + gap-skip path.
+# Probe failures fall through to the normal advance (fail-open).
+EMPTY_PROBE = os.getenv("RORT_SHADOW_EMPTY_PROBE", "1").strip().lower() in (
+    "1", "true", "yes", "on")
+# W2-0 shadow heartbeat (2026-07-06, Kevin's trust ask + Fleet_Divergence_Audit
+# W2-0): after each poll, publish the slot's TRUE settled coverage boundary
+# (last_processed_ts) to `shadow_heartbeats` so the Health page can distinguish
+# "engine current, model quiet" from "engine stalled" — Last BT ages on quiet
+# strategies and TBD is otherwise computed from stale recompute stamps, so
+# trust evaporates. Debounced (~4 min/slot); write failures are swallowed
+# (heartbeat must never break the poll). Default ON.
+HEARTBEAT = os.getenv("RORT_SHADOW_HEARTBEAT", "1").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
+def _source_bars_exist(symbol: str, tf_seconds: int, after_dt, until_dt) -> bool:
+    """ONE indexed row: does the symbol's SOURCE layer (1Sec for sub-minute
+    primaries, else 1Min) hold any bar in (after_dt, until_dt]? Raises on query
+    failure — the caller treats that as 'unknown' and runs the full advance."""
+    from db import get_admin_client
+    layer = "1Sec" if tf_seconds < 60 else "1Min"
+    r = (get_admin_client().table("bar_cache").select("ts")
+         .eq("symbol", symbol).eq("timeframe", layer)
+         .gt("ts", after_dt.isoformat()).lte("ts", until_dt.isoformat())
+         .limit(1).execute())
+    return bool(r.data)
 
 
 def prepare_window(strat: dict, model, since_dt: datetime, until_dt: datetime,
@@ -132,6 +177,7 @@ class EngineSlot:
         self.has_traded_since_kpi = False       # set on a settled write; drives KPI recompute
         self.last_kpi_at = None                 # monotonic stamp of last KPI recompute
         self.last_tick_at = None                # monotonic stamp of last poll (Fix 2a fairness)
+        self.last_hb_at = None                  # monotonic stamp of last heartbeat (W2-0)
         self.classify()
 
     def classify(self) -> None:
@@ -250,6 +296,7 @@ class ResidentEngineManager:
         import pandas as pd
         from services import get_secondary_tf_map
         from shadow_engine import ResidentStrategyEngine
+        from data_loader import normalize_1min_secondary_gate
 
         from data_worker_engine import _UserContext
 
@@ -259,17 +306,31 @@ class ResidentEngineManager:
         if isinstance(since, pd.Timestamp):
             since = since.to_pydatetime()
 
+        # 1-minute-secondary gate (RORT_ENFORCE_1MIN_GATE): relabel an overloaded
+        # '1M-' gate → lowercase '1m-' on the strat the resident ENGINE sees, so
+        # its confluence_set matches the '1m-' records the native 1Min secondary
+        # (built by prepare_strategy_window_df) produces — not the sub-minute
+        # primary's own '1M-' record, which over-counts. prepare_window normalizes
+        # the DATA side independently; this normalizes the GATE side. Flag OFF /
+        # 1Min-primary → unchanged (byte-identical). Shallow copy — the slot's
+        # strat (backing the fingerprint) is never mutated.
+        _eng_strat = slot.strat
+        _norm_conf = normalize_1min_secondary_gate(
+            slot.strat.get('confluence'), slot.timeframe)
+        if _norm_conf is not slot.strat.get('confluence'):
+            _eng_strat = {**slot.strat, 'confluence': _norm_conf}
+
         # The prep path loads PER-USER config (confluence groups, general packs); without
         # the slot's user context it queries user_id=None and silently drops them.
         with _UserContext(slot.uid):
-            df = prepare_window(slot.strat, slot.bt_model, since, until_dt,
+            df = prepare_window(_eng_strat, slot.bt_model, since, until_dt,
                                 slot.timeframe, slot.sec_tfs)
             if df is None or len(df) == 0:
                 return []
             sec_tf_map = get_secondary_tf_map(df) or None
 
             if slot.engine is None:
-                slot.engine = ResidentStrategyEngine(slot.strat, self._gen_packs())
+                slot.engine = ResidentStrategyEngine(_eng_strat, self._gen_packs())
                 # Bootstrap anchor: hydrate last_entry_written from the DB so the engine's
                 # warm-window re-emissions (which re-derive the strategy's existing trades)
                 # are filtered out instead of re-attempted one-by-one → flooding 409
@@ -287,39 +348,63 @@ class ResidentEngineManager:
                                        slot.sid, e)
 
             new = slot.engine.feed(df, sec_tf_map)
-        slot.last_processed_ts = slot.engine.last_bar_ts
+        # High-water mark: never move the cursor backwards. A window can be
+        # non-empty yet feed nothing new (warmup context only), leaving the
+        # engine's last_bar_ts at an older bar than a cursor a gap-skip already
+        # pushed past a bar-free region — clobbering it would oscillate forever.
+        eng_ts = slot.engine.last_bar_ts
+        cur = slot.last_processed_ts
+        if eng_ts is not None and (
+                cur is None or pd.Timestamp(eng_ts) > pd.Timestamp(cur)):
+            slot.last_processed_ts = eng_ts
         return [t for t in (new or []) if t.get('exit_fill_ts')]
 
     def _filter_new(self, slot: EngineSlot, closed: List[dict]) -> List[dict]:
         """Closed trades whose entry is strictly newer than the DB anchor (idempotent
-        with the (strategy_id, entry_fill_ts, exit_fill_ts) unique index regardless)."""
+        with the (strategy_id, entry_fill_ts, exit_fill_ts) unique index regardless).
+
+        Compare as Timestamps, NOT raw strings: the DB-hydrated anchor is ISO
+        (`2026-07-01T00:00:00+00:00`, 'T' separator) while a trade's entry_fill_ts is a
+        pandas-Timestamp str (`2026-07-01 20:46:20+00:00`, space separator). Space (0x20)
+        < 'T' (0x54), so a naive string `>` filters out EVERY same-day trade → 0 writes
+        on every re-arm once the anchor is DB-hydrated (b14657c). See feedback_gengate_
+        live_string_ts for the same string-vs-datetime bug class."""
         if not closed:
             return []
         anchor = slot.last_entry_written
         if not anchor:
             return closed
-        return [t for t in closed if str(t.get('entry_fill_ts')) > str(anchor)]
+        import pandas as pd
+        anchor_ts = pd.Timestamp(anchor)
+        return [t for t in closed
+                if pd.Timestamp(t.get('entry_fill_ts')) > anchor_ts]
 
     def commit(self, slot: EngineSlot, closed: List[dict]) -> int:
         """Write settled closed trades. No-op in dry_run. Advances the entry anchor."""
         if not closed:
             return 0
+        import pandas as pd
+        # Advance the anchor by Timestamp comparison, not raw strings (mixed 'T'/space
+        # separators otherwise mis-order — see _filter_new).
         if self.dry_run:
             mx = slot.last_entry_written
+            mx_ts = pd.Timestamp(mx) if mx else None
             for t in closed:
                 ek = t.get('entry_fill_ts')
-                if ek and (mx is None or str(ek) > str(mx)):
-                    mx = str(ek)
+                if ek:
+                    ek_ts = pd.Timestamp(ek)
+                    if mx_ts is None or ek_ts > mx_ts:
+                        mx, mx_ts = str(ek), ek_ts
             slot.last_entry_written = mx
             return len(closed)
 
-        import pandas as pd
         from api.services.forward_test_service import _serialize_trades
         from db import insert_trade_admin
 
         records = _serialize_trades(pd.DataFrame(closed))
         inserted = 0
         mx = slot.last_entry_written
+        mx_ts = pd.Timestamp(mx) if mx else None
         for rec in records:
             rec = dict(rec)
             rec['data_source'] = slot.data_source
@@ -327,8 +412,10 @@ class ResidentEngineManager:
             if insert_trade_admin(slot.sid, slot.uid, rec) is not None:
                 inserted += 1
             ek = rec.get('entry_fill_ts')
-            if ek and (mx is None or str(ek) > str(mx)):
-                mx = str(ek)
+            if ek:
+                ek_ts = pd.Timestamp(ek)
+                if mx_ts is None or ek_ts > mx_ts:
+                    mx, mx_ts = str(ek), ek_ts
         slot.last_entry_written = mx
         return inserted
 
@@ -345,15 +432,27 @@ class ResidentEngineManager:
         from unified_engine import run_unified_backtest
         from services import get_secondary_tf_map
         from data_worker_engine import _UserContext
+        from data_loader import normalize_1min_secondary_gate
+
+        # 1-minute-secondary gate (RORT_ENFORCE_1MIN_GATE): normalize the gate on
+        # the strat the provisional-tail engine sees so the unsettled window
+        # enforces the 1Min gate identically to the settled resident lane (no
+        # over-count at the settled/unsettled boundary). Flag OFF / 1Min-primary →
+        # unchanged (byte-identical). Shallow copy — slot.strat is never mutated.
+        _eng_strat = slot.strat
+        _norm_conf = normalize_1min_secondary_gate(
+            slot.strat.get('confluence'), slot.timeframe)
+        if _norm_conf is not slot.strat.get('confluence'):
+            _eng_strat = {**slot.strat, 'confluence': _norm_conf}
 
         with _UserContext(slot.uid):
-            df = prepare_window(slot.strat, slot.bt_model, settled_until, now,
+            df = prepare_window(_eng_strat, slot.bt_model, settled_until, now,
                                 slot.timeframe, slot.sec_tfs)
             if df is None or len(df) < 2:
                 return []
             sec_tf_map = get_secondary_tf_map(df) or None
             trades_df, _ = run_unified_backtest(
-                df, slot.strat, general_packs=self._gen_packs(),
+                df, _eng_strat, general_packs=self._gen_packs(),
                 secondary_tf_map=sec_tf_map, include_open_position=True,
                 last_bar_partial=True)
         if trades_df is None or len(trades_df) == 0:
@@ -499,12 +598,37 @@ class ResidentEngineManager:
             # bootstrap (last_processed None) is left unbounded — it needs its full warm
             # window; the KPI decouple (2b) keeps that poll light. 0 = unbounded (today).
             advance_until = settled_until
+            capped = False
             if MAX_ADVANCE_S > 0 and slot.last_processed_ts is not None:
-                last_dt = pd.Timestamp(slot.last_processed_ts).to_pydatetime()
-                capped = last_dt + timedelta(seconds=MAX_ADVANCE_S)
-                if capped < advance_until:
-                    advance_until = capped
-            closed = self.advance(slot, advance_until)
+                bound = (pd.Timestamp(slot.last_processed_ts).to_pydatetime()
+                         + timedelta(seconds=MAX_ADVANCE_S))
+                if bound < advance_until:
+                    advance_until, capped = bound, True
+            prev_cursor = slot.last_processed_ts
+            # Empty-window probe: cheap indexed existence check before the full
+            # warmup-window prep. Only for WARM slots (cold bootstrap must prep).
+            skip_advance = False
+            if EMPTY_PROBE and slot.engine is not None and prev_cursor is not None:
+                try:
+                    cur_dt = pd.Timestamp(prev_cursor).to_pydatetime()
+                    if not _source_bars_exist(slot.symbol, slot.tf_seconds,
+                                              cur_dt, advance_until):
+                        skip_advance = True
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("[shadow] sid=%s empty-probe failed (%s) — "
+                                 "full advance", slot.sid, e)
+            closed = [] if skip_advance else self.advance(slot, advance_until)
+            if (GAP_SKIP and capped and prev_cursor is not None
+                    and slot.last_processed_ts == prev_cursor):
+                # Capped window had no new bars → bar-free (or session-filtered,
+                # which every compute path drops identically). Move the cursor to
+                # the bound so the next poll's window starts past the dead zone;
+                # the engine walks a gap in MAX_ADVANCE_S steps, one per poll.
+                # Uncapped no-new-bars keeps today's behavior (window grows with
+                # the clock; late REST bars inside LAG can still land).
+                slot.last_processed_ts = advance_until
+                logger.info("[shadow] sid=%s gap-skip: no bars in capped window, "
+                            "cursor %s -> %s", slot.sid, prev_cursor, advance_until)
             new = self._filter_new(slot, closed)
             inserted = self.commit(slot, new)
             if inserted > 0:
@@ -522,6 +646,38 @@ class ResidentEngineManager:
             kpis = self.maybe_recompute_kpis(slot)   # debounced; refreshes derived metrics
         import time as _time
         slot.last_tick_at = _time.monotonic()
-        status = 'ok' if new_settled_bar else 'no_new_bar'
+        # Telemetry statuses (2026-07-06 watchdog): distinguish the silent paths so
+        # a pass full of zeros is attributable from one log line. 'probe_skip' =
+        # empty-window probe skipped the advance; 'ok_empty' = advance ran but fed
+        # nothing new (prep empty / all bars ≤ engine cursor).
+        if not new_settled_bar:
+            status = 'no_new_bar'
+        elif skip_advance:
+            status = 'probe_skip'
+        elif not closed and slot.last_processed_ts == prev_cursor:
+            status = 'ok_empty'
+        else:
+            status = 'ok'
+        # W2-0 shadow heartbeat: publish the engine's settled coverage boundary
+        # so Health can tell "engine current, model quiet" from "engine stalled".
+        # Debounced per slot; NEVER allowed to break the poll.
+        if (HEARTBEAT and not self.dry_run and slot.last_processed_ts is not None
+                and (slot.last_hb_at is None
+                     or _time.monotonic() - slot.last_hb_at > 240)):
+            try:
+                from db import get_admin_client
+                ct = slot.last_processed_ts
+                # pd.Timestamp and datetime both expose isoformat(); anything
+                # else (already a string) passes through via str().
+                ct_iso = ct.isoformat() if hasattr(ct, 'isoformat') else str(ct)
+                get_admin_client().table('shadow_heartbeats').upsert({
+                    'strategy_id': slot.sid,
+                    'current_through': ct_iso,
+                    'updated_at': datetime.now(timezone.utc).isoformat(),
+                }, on_conflict='strategy_id').execute()
+                slot.last_hb_at = _time.monotonic()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("[shadow] sid=%s heartbeat write failed: %s",
+                             slot.sid, e)
         return {'status': status, 'inserted': inserted, 'provisional': max(prov, 0),
                 'kpis_recomputed': kpis, 'last_bar_ts': slot.last_processed_ts}

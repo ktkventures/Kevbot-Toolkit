@@ -135,7 +135,8 @@ def start_update_job_async(
         # until the algo lane runs separately → divergence three-way + algo
         # views lag. Safe to skip: `mode='window'` already runs BT-only
         # (algo=None) and the summary handles a None algo cleanly.
-        _skip_algo = os.environ.get('RORT_UPDATE_ALL_SKIP_ALGO', '').strip().lower() in (
+        # graduated to default-ON 2026-07-03 (flag-graduation; env remains the kill switch)
+        _skip_algo = os.environ.get('RORT_UPDATE_ALL_SKIP_ALGO', '1').strip().lower() in (
             '1', 'true', 'yes', 'on')
         if _skip_algo:
             logger.info("[update_job %s] RORT_UPDATE_ALL_SKIP_ALGO=1 → BACKTEST "
