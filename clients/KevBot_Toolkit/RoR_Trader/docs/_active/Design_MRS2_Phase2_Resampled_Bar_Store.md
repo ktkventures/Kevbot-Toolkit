@@ -6,6 +6,11 @@ bar-cache" idea as the next phase of M-RS2 (the shared bar store). Phase 1 = the
 that BOTH the live and backtest lanes read, so they can no longer construct the same gate bar
 differently. Read `Design_Gate_Fidelity_Hardening.md` first (the "why").
 
+> **STATUS (2026-07-10):** BUILT + MERGED (PRs #52/#53/#54) with a stronger-than-spec safety model
+> (verify-first: flag ON runs the same output code as OFF; the store is byte-verified against the
+> engine's own builds on the settled/aligned zone). Flags armed Fri 21:46Z. **The living rollout
+> tracker is `Plan_MRS2_P2_Rollout.md`** — phases, evidence gates, serve-cutover criteria.
+
 ---
 
 ## 1. The problem it retires (measured, 2026-07-06→09)
