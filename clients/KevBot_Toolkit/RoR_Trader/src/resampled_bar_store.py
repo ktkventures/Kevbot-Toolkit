@@ -330,3 +330,172 @@ def build_and_compare(symbol: str, tf: str, session: str, start, end,
                                 one_min_df=one_min_df)
     return compare_store_vs_canonical(built, canon, symbol=symbol, tf=tf,
                                       session=session)
+
+
+# =============================================================================
+# M1b — PERSISTENCE (WINDOW-REPLACE), store read, comparator shadow.
+# All gated: store_window is a no-op unless RORT_RESAMPLED_STORE_WRITE. read_store
+# is inert until rows exist. Nothing here is wired into a live consumer — the
+# consumer cutovers (backtest secondary -> ribbon -> LIVE shadow) are separate,
+# each byte-identity-gated. The live-shadow cutover (#3) is HELD for coordinated
+# review (it must read the row matching the STRATEGY's session — RTH-4H != Ext-4H;
+# that is the 313 fix made structural).
+# =============================================================================
+
+def _dsn() -> Optional[str]:
+    return os.environ.get("SUPABASE_CONNECTION_STRING")
+
+
+def _utc_days(start, end) -> list:
+    """Inclusive list of UTC-day midnight Timestamps covered by [start, end]. The
+    window-REPLACE unit — every day in the requested range is replaced (so a day
+    whose 1Min was fully RETRACTED gets its stale coarse rows deleted, which an
+    upsert of only the surviving buckets could never do)."""
+    d = pd.Timestamp(start).tz_convert("UTC").normalize()
+    last = pd.Timestamp(end).tz_convert("UTC").normalize()
+    out = []
+    while d <= last:
+        out.append(d)
+        d = d + pd.Timedelta(days=1)
+    return out
+
+
+def store_window(symbol: str, tf: str, session: str, start, end,
+                 *, one_min_df: Optional[pd.DataFrame] = None) -> dict:
+    """Build the store's coarse bars for the window and PERSIST them WINDOW-REPLACE,
+    one atomic transaction PER (symbol, tf, session, UTC-day): DELETE the day scope,
+    INSERT that day's freshly-built bars. Delete-then-insert (not upsert) so a
+    retracted bucket's stale row is removed. Per-day commit keeps transactions tiny
+    (no idle-in-txn bloat — the #7 lesson) and models the real incremental path
+    (a settle/revise re-resamples ONE day and replaces it).
+
+    Gated by RORT_RESAMPLED_STORE_WRITE — a no-op when off. Returns
+    {days, rows, retracted_days}."""
+    if not writethrough_enabled():
+        return {"skipped": "RORT_RESAMPLED_STORE_WRITE off", "days": 0, "rows": 0}
+    dsn = _dsn()
+    if not dsn:
+        return {"error": "no DSN", "days": 0, "rows": 0}
+    import psycopg
+    from datetime import datetime, timedelta, timezone
+
+    tf_s = tf_seconds(tf)
+    built = build_window(symbol, tf, session, start, end, one_min_df=one_min_df)
+    # Group built rows by UTC-day.
+    by_day: dict = {}
+    for ts, r in built.iterrows():
+        day = pd.Timestamp(ts).tz_convert("UTC").normalize()
+        by_day.setdefault(day, []).append((ts, r))
+
+    settle_min = _settle_min()
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    days = _utc_days(start, end)
+    total_rows = 0
+    retracted = 0
+    ins_sql = ("INSERT INTO resampled_bar_cache (symbol, timeframe_seconds, session, "
+               "ts, open, high, low, close, volume, source_1min_span_hash, settled, "
+               "revised_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)")
+    del_sql = ("DELETE FROM resampled_bar_cache WHERE symbol=%s AND "
+               "timeframe_seconds=%s AND session=%s AND ts >= %s AND ts < %s")
+    with psycopg.connect(dsn, connect_timeout=20, prepare_threshold=None,
+                         autocommit=False) as conn:
+        with conn.cursor() as cur:
+            for day in days:
+                day_start = day.isoformat()
+                day_end = (day + pd.Timedelta(days=1)).isoformat()
+                cur.execute(del_sql, (symbol, tf_s, session, day_start, day_end))
+                deleted = cur.rowcount
+                rows = by_day.get(day, [])
+                if not rows and deleted > 0:
+                    retracted += 1  # a day that had rows now has none (retraction)
+                payload = []
+                for ts, r in rows:
+                    bar_end = ts + timedelta(seconds=tf_s)
+                    settled = bool(bar_end <= now - timedelta(minutes=settle_min))
+                    payload.append((
+                        symbol, tf_s, session, ts.isoformat(),
+                        float(r["open"]), float(r["high"]), float(r["low"]),
+                        float(r["close"]), float(r["volume"]),
+                        r.get("source_1min_span_hash"), settled, now_iso))
+                if payload:
+                    cur.executemany(ins_sql, payload)
+                    total_rows += len(payload)
+                conn.commit()  # atomic per day
+    return {"days": len(days), "rows": total_rows, "retracted_days": retracted}
+
+
+def _settle_min() -> int:
+    """Reuse bar_cache's settle threshold so the store and the 1Min cache agree on
+    what 'settled' means."""
+    from bar_cache import _settle_min as _sm
+    return _sm()
+
+
+def read_store(symbol: str, tf: str, session: str, start, end
+               ) -> Optional[pd.DataFrame]:
+    """Read persisted coarse bars for (symbol, tf, session) in [start, end] over a
+    direct-PG SELECT (same fast path as bar_cache.read_bars). Returns an OHLCV
+    DataFrame (UTC DatetimeIndex) or None if no DSN / no rows. This is what the
+    comparator and future consumers read."""
+    dsn = _dsn()
+    if not dsn:
+        return None
+    import psycopg
+    tf_s = tf_seconds(tf)
+    s = start.isoformat() if hasattr(start, "isoformat") else start
+    e = end.isoformat() if hasattr(end, "isoformat") else end
+    sql = ("select ts, open, high, low, close, volume from resampled_bar_cache "
+           "where symbol=%s and timeframe_seconds=%s and session=%s "
+           "and ts between %s and %s order by ts")
+    try:
+        with psycopg.connect(dsn, connect_timeout=15, prepare_threshold=None,
+                             autocommit=True) as conn:
+            # BINARY result format — protocol-exact float8. The DEFAULT text format
+            # rounds float8 to ~15 sig digits (pooler extra_float_digits), which
+            # drops the last ULP of a RESAMPLED volume that carries a long
+            # fractional tail (e.g. 1986300.6153870001 -> ...387) — a 1e-10 diff
+            # from the on-the-fly canonical. Byte-identity is the acceptance
+            # criterion, so the store must return the stored double EXACTLY. (The
+            # write is already lossless; binary read makes the round-trip exact and
+            # doesn't depend on a session GUC surviving transaction pooling.
+            # bar_cache.read_bars is unaffected: native 1Min volumes are
+            # integer-valued, so text round-trips them exactly.)
+            with conn.cursor(binary=True) as cur:
+                cur.execute(sql, (symbol, tf_s, session, s, e))
+                rows = cur.fetchall()
+    except Exception as ex:  # noqa: BLE001
+        logger.warning("resampled_bar_store.read_store failed %s/%s/%s: %s",
+                       symbol, tf, session, ex)
+        return None
+    if not rows:
+        return None
+    df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "volume"])
+    df["ts"] = pd.to_datetime(df["ts"], utc=True)
+    df = df.set_index("ts")
+    df.index.name = None
+    for col in OHLCV:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def shadow_check(symbol: str, tf: str, session: str, start, end,
+                 *, one_min_df: Optional[pd.DataFrame] = None,
+                 persist: bool = False) -> dict:
+    """The read-time comparator SHADOW: (optionally persist, gated), then read the
+    STORE back and byte-compare it to the canonical resample. This is stronger than
+    the M1a offline check because it validates the PERSISTENCE ROUND-TRIP (Postgres
+    tz/float) — the store the consumer would actually read must equal canonical.
+    Alarms (logs) on any diff. Returns the comparator dict."""
+    if persist and writethrough_enabled():
+        store_window(symbol, tf, session, start, end, one_min_df=one_min_df)
+    stored = read_store(symbol, tf, session, start, end)
+    canon = canonical_resampled(symbol, tf, session, start, end,
+                                one_min_df=one_min_df)
+    res = compare_store_vs_canonical(stored, canon, symbol=symbol, tf=tf,
+                                     session=session)
+    if not res["match"]:
+        detail = (res.get("note") or f"{len(res['cell_diffs'])} cell diffs")
+        logger.warning("[RESAMPLED-STORE-SHADOW] DIFF %s/%s/%s: %s",
+                       symbol, tf, session, detail)
+    return res

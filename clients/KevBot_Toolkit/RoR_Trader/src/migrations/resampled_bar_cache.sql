@@ -1,10 +1,17 @@
 -- Canonical Resampled Bar Store (M-RS2 Phase 2)
 -- =================================================================
--- ⚠️ NOT YET APPLIED. This is the M1b schema, authored during the M1a
---    offline byte-identity milestone. Do NOT run it until the offline
---    matrix (src/_resampled_store_byteident.py) is green AND the main
---    session has reviewed the store against the byte-identity gate.
---    Creating this table writes to prod; the M1a milestone is read-only.
+-- APPLIED 2026-07-09 (M1b), after the M1a offline byte-identity matrix
+-- (src/_resampled_store_byteident.py) went green (700/700) and the M1b
+-- persistence shadow (src/_resampled_store_shadow.py) proved the DB
+-- round-trip byte-identical + WINDOW-REPLACE idempotent + retraction-safe.
+-- Idempotent (CREATE ... IF NOT EXISTS) — safe to re-run.
+--
+-- The table is currently EMPTY: the store is NOT yet wired to any consumer.
+-- The three consumer cutovers (backtest coarse-secondary -> parity ribbon ->
+-- LIVE coarse shadow) are separate, each byte-identity-gated; the LIVE-shadow
+-- cutover (#3) is HELD for a coordinated review (it must read the row matching
+-- the STRATEGY's session — RTH-4H != Extended-4H — which is the 313 fix made
+-- structural). Populate for validation via _resampled_store_shadow.py.
 -- =================================================================
 --
 -- Session-keyed store of RESAMPLED COARSE bars (2Min..1Day) that BOTH the
