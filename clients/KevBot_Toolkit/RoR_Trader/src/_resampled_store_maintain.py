@@ -50,7 +50,12 @@ import resampled_bar_store as rbs  # noqa: E402
 def _targets(args) -> list:
     if args.symbols or args.tfs or args.sessions:
         syms = [s.strip().upper() for s in (args.symbols or "TSLA").split(",") if s.strip()]
-        tfs = [t.strip() for t in (args.tfs or "4Hour,1Day").split(",") if t.strip()]
+        # Unspecified axes follow the SAME config-derived defaults as
+        # default_coarse_targets — a --symbols-only run must not silently
+        # shrink the TF set to a hardcoded pair (2026-07-10: a SPY,KO seed
+        # quietly skipped every fine TF because of the old "4Hour,1Day" here).
+        tfs = ([t.strip() for t in args.tfs.split(",") if t.strip()]
+               if args.tfs else rbs.confluence_enabled_coarse_tfs())
         sess = [s.strip() for s in (args.sessions or "RTH,Extended Hours").split(",") if s.strip()]
         return [(s, tf, se) for s in syms for tf in tfs for se in sess]
     return rbs.default_coarse_targets()
