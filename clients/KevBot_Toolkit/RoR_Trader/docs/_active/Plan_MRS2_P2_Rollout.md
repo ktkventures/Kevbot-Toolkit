@@ -24,13 +24,24 @@ so residual divergence = real logic bugs.
   **shadow-worker deliberately NOT touched** (var-set reverts its pinned snapshot; it gets the
   new code via a deliberate `railway up` + fingerprint later). Rollback = unset the var.
 
-## Phase 1 — Arm & observe (Fri evening, ~2h extended hours) ✅ armed / 🔄 observing
-- First maintain pass on cadence; first `#3-live` verifies (Worker boot warm-ups cover every
-  (sym, tf, session) the fleet gates on; extended-hours fine-TF closes add intraday events).
-- **00:00Z close check:** maintain captured the settled session close (the edge-staleness lesson:
-  an RTH-time maintain leaves a forming last bucket; post-close it must settle).
-- What 2h extended CANNOT give: RTH open/close boundary under full live WS load → that is
-  Monday's observation, and it gates ONLY the live serve flip (Phase 4), not the weekend work.
+## Phase 1 — Arm & observe (Fri evening) ✅ COMPLETE (00:30Z Sat)
+- **Live verify: 100+ GREEN sweeps** across the fleet (TSLA full board ×5+ independent boots;
+  SPY/KO/DIA/TSLL as seeded/maintained). ONE true drift caught → diagnosed (late-print settle
+  revision on the newest bar) → maintain re-trued → GREEN. **Full detect→diagnose→heal loop
+  proven in production in under an hour.**
+- **Store COMPLETE: ~700k rows** — all 7 capture symbols × 10 gate-eligible TFs × 2 sessions,
+  every chunk comparator-clean at write. Targets fully config-derived (Timeframes page × Bar
+  Cache capture authority) — new TFs/symbols auto-join.
+- **00:00Z close check: ALL GREEN** — post-close maintain (33.6k rows, 0 errors) captured the
+  settled close; sentinel settled-shadows (TSLA 1Day both sessions, SPY 2Min Ext) match=True.
+- **8 silent-fail catches** during rollout (window-alignment #5, CLI TF-default shrink, silent
+  maintain skip, error-dicts-as-success, bar-set-vs-edge-lag conflation, +3 earlier) — each now
+  logs loudly or is structurally impossible.
+- DSN (`SUPABASE_CONNECTION_STRING`) set on Data Worker (Kevin-approved 23:59Z). Sweeper idles
+  outside market window → **first on-service credentialed maintain = Monday pre-market ~08:00Z**
+  (first item on Monday's checklist). Weekend staleness impossible (no new bars form).
+- What Friday evening could NOT give: RTH open/close boundary under full live WS load → Monday's
+  observation, gating ONLY the live serve flip (Phase 4), not the weekend work.
 
 ## Phase 2 — Weekend sprint (offline; no live data needed — the lanes' history is recorded)
 1. **Fleet-wide historical verify replay**: run every gated strategy's REAL engine windows with
