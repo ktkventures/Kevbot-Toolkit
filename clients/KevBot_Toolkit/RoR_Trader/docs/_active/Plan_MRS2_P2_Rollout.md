@@ -43,19 +43,32 @@ so residual divergence = real logic bugs.
 - What Friday evening could NOT give: RTH open/close boundary under full live WS load → Monday's
   observation, gating ONLY the live serve flip (Phase 4), not the weekend work.
 
-## Phase 2 — Weekend sprint (offline; no live data needed — the lanes' history is recorded)
-1. **Fleet-wide historical verify replay**: run every gated strategy's REAL engine windows with
-   verify armed → GREEN/DRIFT ledger per (sid, tf, session). The "N days of evidence,"
-   retroactively.
-2. **Fine-TF divergence quantification (327/328/329/333/340 class)**: backtest builds 2m–30m
-   secondaries by resampling the PRIMARY; live builds from WS-aggregated bars (`live_bars`
-   history, recorded since 2026-04-30). Compare BOTH against the store canonical → quantify
-   exactly where/how much each lane's construction diverges. Also: theoretical gate replay vs
-   the live engine's recorded per-close gate states (`bar_diagnostics` source=live_gate).
-3. **Build + prove the OFFLINE compute-skip** (backtest lane serves settled bars FROM the store,
-   skips the resample): deterministic → provable byte-identical fleet-wide on historical data
-   this weekend. Arrives Monday proven, not experimental. Kill-switched, separate flag.
-4. Triage any DRIFT the replays surface (finding them in a Saturday replay >> Monday's alerts).
+## Phase 2 — Weekend sprint ✅ items 1/2/4 DONE (Sat ~06:30Z); item 3 remaining
+1. ✅ **Fleet ledger** (`Weekend_Sprint_Ledger.md`): 41 gated sids, 18 targets — **ZERO drift
+   fleet-wide**; store byte-identical to canonical everywhere the fleet gates. Store-integrity
+   evidence for the compute-skip gate = MET. (1Day head margin = 0 bars: reseed head before any
+   warmup-depth change.)
+2. ✅ **Fine-TF quantification** (`Fine_TF_Divergence_Quantification.md`): **construction
+   FALSIFIED as the cause** — ≤1% gate-flip ceiling vs the 37-78% gap. Traps found: volume gates
+   (VWAP/RVOL) on sub-minute primaries structurally divergent in backtest; fan-out persisted bars
+   2× noisier than clean 1Min aggregation.
+3. ⏳ **Offline compute-skip** build + fleet byte-proof (main session, next).
+4. ✅ **Autopsy** (`Gated_Five_Divergence_Autopsy.md`, method anchor: theoretical engine == recorded
+   backtest 164/164): ranked causes of the five's divergence —
+   (1) 30% interp-blind shadow = **DEAD** (PR #38, 07-07): clean-window re-baselines 327→67%,
+   328→64%, 333→61%, 340→33%, 329→29%;
+   (2) 30% live shadow interpreter-state divergence (stale/wrong/lagged; 333's UT_BOT wrong-side
+   lock survives reboots — hysteretic warmup, needs deep-anchor warmup + #32 refresher extended
+   to fine TFs + the Phase-4 store cutover);
+   (3) 27% **cross-TF boundary race** — ordering SEMANTICS (live gates on the just-closed
+   secondary at coinciding closes; backtest one primary bar later). Store cutover will NOT fix;
+   needs a semantics-alignment DECISION (live-side one-bar defer is parity-preserving) — Kevin
+   input wanted;
+   (4) 6% WS≠REST primary floor (accepted per the 90%@10s bar) + 340's exit-side MACD-cross
+   timing (only genuine exit-side case);
+   (5) 6% **gate-pass anomaly** — 7 fires (327/328, 07-09 18:04:30Z) with truth AND telemetry
+   saying gate CLOSED; check `GATE_DIAG` logs (ralph_engine.py:1357) + `check_entry` empty-set
+   fail-open (unified_engine.py:~2527) — Monday (CLI log retention insufficient Saturday).
 
 ## Phase 3 — Monday: boundary + live day #1
 - Weekend-boundary observation (Fri close → Mon open maintain/verify — the gap class).
