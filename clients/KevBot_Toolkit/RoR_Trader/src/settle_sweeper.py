@@ -107,9 +107,15 @@ def _maintain_resampled_store() -> None:
     RORT_RESAMPLED_STORE_WRITE (default OFF → this is a no-op), own throttle
     RORT_RESAMPLED_STORE_MAINTAIN_S (default 900s) so cadence is independent of
     the sweep interval, chunked + circuit-breakered inside maintain_all_coarse.
-    Never raises — the sweeper loop must not be breakable from here. Runs only
-    inside the market window like the sweep (plus the post-close sweeps cover
-    the settled session close — the maintain-post-close lesson)."""
+    Never raises — the sweeper loop must not be breakable from here.
+
+    Runs AROUND THE CLOCK (unlike the sweep): T+1 revisions land OVERNIGHT —
+    the nightly full_recompute re-trues the 1Min cache with Polygon's finalized
+    numbers after 00:20Z, and a market-window-only maintain would carry that
+    drift until the next session (observed 2026-07-11 05:09Z: a coordinated
+    volume-drift wave across the fleet on the prior day's bars). Off-hours
+    passes throttle to RORT_RESAMPLED_STORE_MAINTAIN_OFFHOURS_S (default 3600s)
+    since only the nightly changes anything overnight."""
     import time as _time
     try:
         import resampled_bar_store as rbs
@@ -117,8 +123,13 @@ def _maintain_resampled_store() -> None:
             logger.info("[settle_sweeper] resampled-store maintain: skip "
                         "(RORT_RESAMPLED_STORE_WRITE off)")
             return
-        every = max(300, int(os.environ.get(
-            "RORT_RESAMPLED_STORE_MAINTAIN_S", "900")))
+        from data_worker_ingest import is_market_window
+        if is_market_window():
+            every = max(300, int(os.environ.get(
+                "RORT_RESAMPLED_STORE_MAINTAIN_S", "900")))
+        else:
+            every = max(900, int(os.environ.get(
+                "RORT_RESAMPLED_STORE_MAINTAIN_OFFHOURS_S", "3600")))
         now = _time.time()
         remaining = every - (now - _STORE_MAINT_LAST["ts"])
         if remaining > 0:
@@ -162,9 +173,13 @@ def run_sweeper_loop(stop_evt: threading.Event) -> None:
                             sym, r["sec_rows"], r["min_rows"], r["settled"])
                 except Exception as e:  # noqa: BLE001
                     logger.warning("[settle_sweeper] sweep %s failed: %s", sym, e)
-            # M-RS2-P2: store maintain AFTER the sweep (coarse derives from the
-            # just-corrected 1Min). No-op unless RORT_RESAMPLED_STORE_WRITE=1.
-            _maintain_resampled_store()
+        # M-RS2-P2: store maintain AFTER the sweep (coarse derives from the
+        # just-corrected 1Min) — and ALSO outside the market window, on its own
+        # slower off-hours throttle, so overnight T+1 revisions (the nightly
+        # full_recompute re-truing 1Min after 00:20Z) propagate into the store
+        # instead of drifting until the next session. No-op unless
+        # RORT_RESAMPLED_STORE_WRITE=1.
+        _maintain_resampled_store()
         stop_evt.wait(_interval_s())
 
 
