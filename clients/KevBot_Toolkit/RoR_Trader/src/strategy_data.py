@@ -233,6 +233,113 @@ def _verify_coarse_secondary_store(symbol, out, session, end, tag="#1"):
         logger.warning("[ResampledStore%s] verify unavailable %s: %s", tag, symbol, e)
 
 
+def _resampled_store_serve_enabled() -> bool:
+    """COMPUTE-SKIP kill-switch (default OFF): serve the SETTLED zone of coarse
+    secondaries FROM the canonical store and load 1Min only for the edge days —
+    the M-RS2-P2 speed payoff. Promotion-gated: arm only after the verify ledger
+    is green on real windows (docs/_active/Weekend_Sprint_Ledger.md: fleet-wide
+    zero drift, 2026-07-11). Instant rollback by unsetting."""
+    return os.getenv("RORT_RESAMPLED_STORE_SERVE", "0") == "1"
+
+
+def _coarse_secondary_serve_from_store(symbol, coarse_tfs, start, end,
+                                       session, data_feed):
+    """COMPUTE-SKIP (M-RS2 Phase 2, sprint item 3): build the coarse secondaries
+    as  [store bars over the settled whole-days]  +  [fresh 1Min resample for the
+    EDGE days only]  — byte-identical to the full deep resample BY CONSTRUCTION:
+      - resample bins are UTC-day-anchored and never straddle days (the proven
+        window-REPLACE property), so per-day pieces == whole-window resample;
+      - the store's whole-day bars are byte-identical to the canonical resample
+        (fleet-wide zero-drift ledger, 2026-07-11);
+      - edge days (today / any day newer than the store's last SETTLED whole
+        day, plus any head day older than store coverage) are resampled from a
+        fresh 1Min load exactly as the deep path would.
+    The 1Min load collapses from warmup-depth (e.g. 182d for a 4Hour gate) to
+    the edge days only. Returns {tf: DataFrame} or None on ANY doubt → caller
+    runs the full deep path (== flag-OFF bytes, always)."""
+    try:
+        import pandas as pd
+        import resampled_bar_store as rbs
+        from data_loader import load_market_data, resample_to_timeframe
+        cols = ["open", "high", "low", "close", "volume"]
+        now = datetime.now(timezone.utc)
+        out = {}
+        lo = pd.Timestamp(start)
+        lo = (lo.tz_localize("UTC") if lo.tzinfo is None else lo)
+        head_day = lo.floor("1D")
+        # Edge cut: last COMPLETE UTC day that is fully settled (yesterday once
+        # today began; today is always rebuilt fresh — its bars may be forming).
+        edge_day = pd.Timestamp(now).tz_convert("UTC").normalize()
+        # HEAD day is rebuilt fresh from the RAW window start, NOT served from
+        # the store: the deep path's first-day bars are PARTIAL when `start`
+        # falls mid-day — and for sessions whose UTC bucket straddles midnight
+        # (winter Extended Hours includes the prior evening's 00:00-01:00Z tail)
+        # the store's full-day bar differs from that partial. Caught by the
+        # byte-proof 2026-07-11 (TSLA/KO 1Day Extended first-day 'open').
+        df1_head = None
+        df1_edge = None  # lazy — one load each, shared by every tf
+        for tf in coarse_tfs:
+            store_df = rbs.read_store(symbol, tf, session, start, end)
+            if store_df is None or len(store_df) == 0:
+                return None
+            # Store piece: whole settled days strictly AFTER the head day and
+            # strictly BEFORE the edge day.
+            store_piece = store_df[
+                (store_df.index >= head_day + pd.Timedelta(days=1))
+                & (store_df.index < edge_day)][cols]
+            if len(store_piece) == 0:
+                return None
+            # Coverage: the store must reach the first post-head day the window
+            # needs (deeper windows fall back to the deep path).
+            if store_piece.index[0] > head_day + pd.Timedelta(days=2):
+                logger.info("[ResampledStore#skip] %s %s %s: head coverage short "
+                            "(store starts %s, window %s) → deep path", symbol,
+                            tf, session, store_piece.index[0], lo)
+                return None
+            # Head piece: fresh 1Min for [start, next midnight) — reproduces the
+            # deep path's partial first-day bars exactly (all sessions).
+            if df1_head is None:
+                df1_head = load_market_data(
+                    symbol, start_date=start,
+                    end_date=(head_day + pd.Timedelta(days=1)).to_pydatetime(),
+                    timeframe="1Min", feed=data_feed, session=session)
+            head_piece = None
+            if df1_head is not None and len(df1_head) > 0:
+                head_1m = df1_head[
+                    (df1_head.index >= lo)
+                    & (df1_head.index < head_day + pd.Timedelta(days=1))]
+                if len(head_1m) > 0:
+                    head_piece = resample_to_timeframe(head_1m[cols].copy(), tf)
+            # Edge piece: fresh 1Min from edge_day forward, resampled per tf.
+            if df1_edge is None:
+                df1_edge = load_market_data(
+                    symbol, start_date=edge_day.to_pydatetime(), end_date=end,
+                    timeframe="1Min", feed=data_feed, session=session)
+            edge_piece = None
+            if df1_edge is not None and len(df1_edge) > 0:
+                edge_1m = df1_edge[df1_edge.index >= edge_day]
+                if len(edge_1m) > 0:
+                    edge_piece = resample_to_timeframe(edge_1m[cols].copy(), tf)
+            pieces = []
+            if head_piece is not None and len(head_piece) > 0:
+                pieces.append(head_piece[cols])
+            pieces.append(store_piece)
+            if edge_piece is not None and len(edge_piece) > 0:
+                pieces.append(edge_piece[cols])
+            sec = pd.concat(pieces)
+            sec = sec[~sec.index.duplicated(keep="last")].sort_index()
+            out[tf] = sec
+        if out:
+            logger.info("[ResampledStore#skip] %s SERVED %s from store + edge-day "
+                        "resample [%s] (compute-skip)", symbol,
+                        sorted(out.keys()), session)
+        return out or None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[ResampledStore#skip] serve failed %s %s: %s → deep path",
+                       symbol, coarse_tfs, e)
+        return None
+
+
 def _build_coarse_secondary_from_1min(symbol, coarse_tfs, start, end,
                                       session, data_feed):
     """Build coarse (>=1Hour) secondary OHLCV from a single 1Min load + resample
@@ -242,6 +349,14 @@ def _build_coarse_secondary_from_1min(symbol, coarse_tfs, start, end,
     (full series, last bar kept — matches prepare_data's internal resample at
     services.py:360) or None on any miss → caller falls back to the resample
     path. The 1Min load is bar_cache-accelerated when BAR_CACHE_ENABLED."""
+    # COMPUTE-SKIP (RORT_RESAMPLED_STORE_SERVE, default OFF): serve settled
+    # whole days from the store + resample only the edge days. Byte-identical
+    # by construction; any doubt → None → the deep path below (== OFF bytes).
+    if _resampled_store_serve_enabled():
+        served = _coarse_secondary_serve_from_store(
+            symbol, coarse_tfs, start, end, session, data_feed)
+        if served is not None:
+            return served
     try:
         from data_loader import load_market_data, resample_to_timeframe
         cols = ["open", "high", "low", "close", "volume"]
