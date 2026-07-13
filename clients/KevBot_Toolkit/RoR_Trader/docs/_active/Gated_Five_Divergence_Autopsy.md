@@ -1,5 +1,16 @@
 # Gated-Five Divergence Autopsy (sids 327 / 328 / 329 / 333 / 340)
 
+> **CORRECTION 2 (2026-07-13, 340 exits reclassified D→C):** the MACD-cross exit divergence is NOT
+> the WS≠REST floor — every canonical reconstruction (REST settled, live_bars first-write, revised)
+> crosses on the SAME bars as backtest. The live monitor's IN-MEMORY incremental MACD state drifts:
+> injected at boot (native days=7 warmup reads an unsettled bar_cache tail) then wanders (262
+> unconsumed rest_insert gap bars; fire-and-forget writer). Cross margins ~0.005-0.03 vs state error
+> 0.01-0.16 → ±1-4 bar shifts, both directions. Fixes: Phase-4 live-serve warmup (kills boot
+> injection); interim settled-only warmup tail; extending the refresher to PRIMARY-TF pack engines
+> needs a Kevin ruling (touches the live position machine mid-session). LATENT (separate ticket):
+> grace-fire sets _fired_bucket even with no signals (ralph 2838) → close-commit signals for that
+> bucket suppressed (3846) — a one-shot cross can be silently dropped on spliced models.
+
 > **CORRECTION (2026-07-13, validation-gated):** cause **A2's mechanism was FALSIFIED** during
 > implementation — sid 333's 15Min BEAR lock is NOT warmup hysteresis (UT Bot's ratchet resets per
 > flip; 0/728 depth-sensitive closes; the '7 reboots' were pre-market when BEAR was correct). The
