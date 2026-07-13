@@ -21,6 +21,16 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-07-13
 
+- **21:18 UTC (15:18 MT)** — `f3b297b` (PR #60) feat(fidelity): primary-TF pack state re-sync
+  (the 340-class fix) — default OFF
+  - Service(s) redeployed: all dev services on push to dev (shadow-worker excluded, pinned).
+    Worker deployment SUCCESS 21:18:36Z.
+  - **~21:14 UTC: `RORT_PRIMARY_STATE_RESYNC_S=900` set on Worker** (dry-run drift METER only;
+    `RORT_PRIMARY_STATE_RESYNC_APPLY` deliberately NOT set — verify-first). Claude-armed per
+    standing authorization. Expect `[PRIMARY-RESYNC-DRY]` drift lines each 900s cycle; review
+    fleet drift before flipping APPLY.
+  - Worker re-warm gap expected ~21:18–21:25 UTC.
+
 - **20:56 UTC (14:56 MT)** — `d48c884` (PR #59) feat(M-RS2-P2 Phase 4): live-lane store serve
   (`_load_warmup_df` serves settled history from the resampled store) + weekend-head coverage
   tolerance fix in the shared splice

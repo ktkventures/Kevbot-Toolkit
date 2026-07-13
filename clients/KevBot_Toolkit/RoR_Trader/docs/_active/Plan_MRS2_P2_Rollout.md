@@ -136,7 +136,8 @@ below. NOTE: 1Min PRIMARY warmup (340's boot injection) is NOT store-covered (st
    tolerance, fixed to +5d). Boot watch: `[ResampledStore#4-live] SERVED` lines.
    Canary-script lessons: set_admin_user_context + pack_registry.scan_and_load_all needed in
    ANY standalone engine script; run canaries OFF/ON/OFF when a session is live.
-2. ✅ **BUILT + replay-validated (PR pending)** — Primary-TF pack state re-sync (Kevin-approved,
+2. ✅ **SHIPPED (PR #60 f3b297b) + METER ARMED ~21:57Z** (`RESYNC_S=900` dry-run; APPLY pending
+   drift review) — Primary-TF pack state re-sync (Kevin-approved,
    mid-position OK): `SymbolHub.resync_primary_states` rebuilds each monitor's primary
    indicator/pack state from a fresh `_load_warmup_df` (store-served for 2Min+) and diffs it
    against live in-memory state. Two flags: `RORT_PRIMARY_STATE_RESYNC_S` (cadence; dry-run
