@@ -112,9 +112,27 @@ so residual divergence = real logic bugs.
 D→C (in-memory MACD state drift; boot-warmup injection + wander; NOT the WS floor).
 **Kevin rulings on file:** PB/CB boundary (backtest = spec); primary-state re-sync approved
 INCLUDING mid-position ("indicator states can change mid-position — exits depend on them").
+**~19:30Z — item 1 BUILT + validated (PR pending merge/arm):** `RORT_RESAMPLED_STORE_SERVE_LIVE`
+(default OFF) in `_load_warmup_df`: for store TFs (2Min+), warmup serves [store settled whole-days
++ fresh 1Min head/edge] via the SAME `_coarse_secondary_serve_from_store` splice the offline lane
+armed at 16:42Z; ANY doubt → unchanged deep path (== OFF bytes). Validation ALL GREEN (23/23):
+11 e2e OFF-vs-ON `_load_warmup_df` cases byte-identical (TSLA all store TFs × RTH/Ext + SPY/KO);
+10 fixed-window serve-vs-deep byte-proofs incl. Fri-holiday/Sat head days; 2 graceful fallbacks
+(uncovered symbol/session). Bycatch fixed in the SHARED splice: head-coverage tolerance was
+calendar `+2d` → any Fri/Sat-head window (2/7 of days!) + long weekends fell back needlessly
+(that's why offline 5Min "fell back on head coverage" this morning — window head = Fri Jul-3
+holiday weekend, NOT short store coverage) → now `+5d`, still catches real under-coverage by
+months. Store depth probe: fine TFs (2Min-30Min) head 2026-04-13 (~90d) vs ≤19d warmup need;
+1Hour 2025-06-09; 4Hour/1Day-RTH 2025-03-20; 1Day-Ext 2025-06-09 vs 355d need — ALL live warmup
+windows covered. Ralph fidelity 13 pass (+1 known pre-existing fail); parity suite run logged
+below. NOTE: 1Min PRIMARY warmup (340's boot injection) is NOT store-covered (store starts at
+2Min) — that class needs item 2's re-sync (Kevin-approved) or the interim settled-only tail.
 **REMAINING (ranked):**
-1. Live-lane serve (Phase 4): `_load_warmup_df` reads store for settled history (kills 340-class
-   boot injection + finishes single-source); design mirrors the proven offline serve-splice.
+1. ✅ built/validated (above) — Live-lane serve (Phase 4): `_load_warmup_df` reads store for
+   settled history (finishes single-source for 2Min+ TFs); mirrors the proven offline
+   serve-splice. LEFT: merge PR, `railway up` shadow-worker excluded as usual, Kevin arms
+   `RORT_RESAMPLED_STORE_SERVE_LIVE=1` on Worker, watch one boot cycle's
+   `[ResampledStore#4-live] SERVED` lines.
 2. Primary-TF pack state re-sync (Kevin-approved, mid-position OK): periodic re-true of monitor
    in-memory indicator state from settled bars — the 340-class fix; flag-gated + replay-validated.
 3. 900s fan-out starvation root-cause (why 15m closes starve while 3m flows — refresher heals

@@ -290,8 +290,15 @@ def _coarse_secondary_serve_from_store(symbol, coarse_tfs, start, end,
             if len(store_piece) == 0:
                 return None
             # Coverage: the store must reach the first post-head day the window
-            # needs (deeper windows fall back to the deep path).
-            if store_piece.index[0] > head_day + pd.Timedelta(days=2):
+            # needs (deeper windows fall back to the deep path). Tolerance is
+            # calendar days but markets aren't: a Fri/Sat head day puts the
+            # first real bar on Monday 13:30Z (> head+2d), and a long weekend
+            # (Jul-4 2026: Fri head → first bar Mon) pushes further — those
+            # fell back needlessly (caught by the live-serve validation,
+            # 2026-07-13). 5 days rides out any US market gap while still
+            # catching genuine under-coverage (a short seed misses by months,
+            # e.g. the 182d-seed canary missed by ~218d).
+            if store_piece.index[0] > head_day + pd.Timedelta(days=5):
                 logger.info("[ResampledStore#skip] %s %s %s: head coverage short "
                             "(store starts %s, window %s) → deep path", symbol,
                             tf, session, store_piece.index[0], lo)

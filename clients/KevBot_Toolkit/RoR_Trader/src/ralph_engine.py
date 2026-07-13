@@ -1972,6 +1972,40 @@ def _load_warmup_df(sym: str, tf_seconds: int, session: str) -> pd.DataFrame:
                         "(mult=%d, cap=%dd)", sym, tf_str, wd, wd_new,
                         SHADOW_DEEP_ANCHOR_MULT, SHADOW_DEEP_ANCHOR_MAX_DAYS)
         wd = wd_new
+    # PHASE-4 LIVE SERVE (M-RS2-P2, RORT_RESAMPLED_STORE_SERVE_LIVE, default
+    # OFF): serve this warmup's settled whole-days FROM the canonical resampled
+    # store and load 1Min only for the head/edge days — the LIVE-lane
+    # compute-skip, the SAME splice as the proven offline serve
+    # (strategy_data._coarse_secondary_serve_from_store: byte-identical to the
+    # deep resample BY CONSTRUCTION; fleet-wide zero-drift ledger 2026-07-11
+    # plus 100+ GREEN #3-live verifies on these exact windows). Every live
+    # warmup/reload funnels through here (boot builder seeds, close reloads,
+    # session shadows, the MTF refresher), so 2Min+ gate history stops
+    # depending on the boot-time bar_cache tail lineage — the C-class
+    # feed-lineage kill. `days=wd` and `[now-wd, now]` are the same window
+    # (bar_cache.cached_load_market_data resolves days exactly this way). ANY
+    # doubt (no DSN, uncovered symbol/session, head coverage short, error)
+    # → fall through to the deep path below == unchanged flag-OFF bytes.
+    if os.getenv('RORT_RESAMPLED_STORE_SERVE_LIVE', '0') == '1':
+        try:
+            import resampled_bar_store as _rbs
+            if _rbs.is_store_tf(tf_str):
+                from strategy_data import _coarse_secondary_serve_from_store
+                _end = datetime.now(timezone.utc)
+                served = _coarse_secondary_serve_from_store(
+                    sym, [tf_str], _end - timedelta(days=wd), _end,
+                    session, 'sip')
+                _sdf = (served or {}).get(tf_str)
+                if _sdf is not None and len(_sdf) > 0:
+                    logger.info(
+                        "[ResampledStore#4-live] warmup %s tf=%s %s: SERVED "
+                        "%d bars (store settled days + 1Min head/edge; deep "
+                        "1min_days=%d load skipped)",
+                        sym, tf_str, session, len(_sdf), wd)
+                    return _sdf
+        except Exception as _se:  # noqa: BLE001 — serve must never break warmup
+            logger.warning("[ResampledStore#4-live] serve failed %s %s: %s — "
+                           "deep path", sym, tf_str, _se)
     df1 = load_market_data(
         sym, days=wd, timeframe='1Min', feed='sip', session=session)
     if df1 is None or len(df1) == 0:
