@@ -95,3 +95,36 @@ so residual divergence = real logic bugs.
   sub-minute primaries the volumes legitimately differ (1Min ≠ Σsub-minute) — price-only gates
   unaffected; volume-sensitive packs (RVOL) need the quantification in Phase 2.2 before any
   fine-TF serve decision.
+
+## Phase 3+ EXECUTION LOG (Mon 2026-07-13) — for session handoff
+**Armed today (all validated before arming; deploy log has exact times):**
+- 15:35Z `RORT_MTF_PB_DEFER` (PR #55) — PB gates honor last bar closed BEFORE the primary bar
+  (Kevin's PB/CB ruling = memory `feedback_pb_boundary_semantics_ruling`); replay 254/254 == backtest.
+- 15:41Z `RORT_GATE_FAIL_CLOSED` (PR #56) — empty record set can no longer fire ungated (autopsy E).
+- 16:42Z `RORT_RESAMPLED_STORE_SERVE` on api/batch/DataWorker/Worker (Kevin-named) — OFFLINE lane
+  serves settled coarse bars FROM the store (compute-skip). Canary: first run fell back on head
+  coverage (seed 182d < full-recompute window) → coarse TFs re-seeded to 400d (12k rows, clean) →
+  canary v2 pending SERVED confirmation.
+- 17:07Z `RORT_MTF_STATE_REFRESH_S=600` — the REAL 333-class healer (close-feed FREEZE, see autopsy
+  CORRECTION 1; hysteresis falsified; PR #57 deep-anchor = default-OFF insurance).
+- 18:25Z maintain cadence 900s in-session (store hugs the settle boundary).
+**Also:** PR #58 admin page `/admin/resampled-store`; autopsy CORRECTION 2 = 340 exits reclassified
+D→C (in-memory MACD state drift; boot-warmup injection + wander; NOT the WS floor).
+**Kevin rulings on file:** PB/CB boundary (backtest = spec); primary-state re-sync approved
+INCLUDING mid-position ("indicator states can change mid-position — exits depend on them").
+**REMAINING (ranked):**
+1. Live-lane serve (Phase 4): `_load_warmup_df` reads store for settled history (kills 340-class
+   boot injection + finishes single-source); design mirrors the proven offline serve-splice.
+2. Primary-TF pack state re-sync (Kevin-approved, mid-position OK): periodic re-true of monitor
+   in-memory indicator state from settled bars — the 340-class fix; flag-gated + replay-validated.
+3. 900s fan-out starvation root-cause (why 15m closes starve while 3m flows — refresher heals
+   meanwhile every 10min).
+4. Grace-fire `_fired_bucket` suppression hole (ralph 2838/3846) — latent alert-drop, ticket.
+5. EOD + next clean day: re-measure the five @90%@10s on post-17:07Z windows.
+6. Housekeeping: SPY 10Sec re-true; 3 pre-existing test_unified_parity fails; frontend '1M'→'1m';
+   span-hash incremental maintain.
+**Fresh-session note:** this file + `Gated_Five_Divergence_Autopsy.md` (with corrections) +
+memory (`project_mrs2_phase2_resampled_store`, `feedback_pb_boundary_semantics_ruling`,
+`feedback_trading_target_90pct_gated_focus`) = the complete state. WS-tip clarification: live
+gating is INSTANT (WS closes); the store is the SETTLED layer (~15min = settle physics, same as
+bar_cache) — congruent with the primary's multi-stage treatment by design.
