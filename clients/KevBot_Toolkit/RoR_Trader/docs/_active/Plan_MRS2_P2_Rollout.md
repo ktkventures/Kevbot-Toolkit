@@ -128,11 +128,14 @@ windows covered. Ralph fidelity 13 pass (+1 known pre-existing fail); parity sui
 below. NOTE: 1Min PRIMARY warmup (340's boot injection) is NOT store-covered (store starts at
 2Min) — that class needs item 2's re-sync (Kevin-approved) or the interim settled-only tail.
 **REMAINING (ranked):**
-1. ✅ built/validated (above) — Live-lane serve (Phase 4): `_load_warmup_df` reads store for
-   settled history (finishes single-source for 2Min+ TFs); mirrors the proven offline
-   serve-splice. LEFT: merge PR, `railway up` shadow-worker excluded as usual, Kevin arms
-   `RORT_RESAMPLED_STORE_SERVE_LIVE=1` on Worker, watch one boot cycle's
-   `[ResampledStore#4-live] SERVED` lines.
+1. ✅ **SHIPPED + ARMED 20:59Z** — Live-lane serve (Phase 4): PR #59 merged (`d48c884`),
+   `RORT_RESAMPLED_STORE_SERVE_LIVE=1` on Worker (Claude-armed per Kevin's standing
+   authorization). Evidence: 23/23 byte-validation; suite effectively 18/18 (267 post-settle
+   PASS 308==308); 338 sandwich OFF^ON=0 across 3,323 trades with SERVED confirmed (also
+   closes the 16:42Z "canary v2" pending item — the morning fallback was the +2d weekend
+   tolerance, fixed to +5d). Boot watch: `[ResampledStore#4-live] SERVED` lines.
+   Canary-script lessons: set_admin_user_context + pack_registry.scan_and_load_all needed in
+   ANY standalone engine script; run canaries OFF/ON/OFF when a session is live.
 2. Primary-TF pack state re-sync (Kevin-approved, mid-position OK): periodic re-true of monitor
    in-memory indicator state from settled bars — the 340-class fix; flag-gated + replay-validated.
 3. 900s fan-out starvation root-cause (why 15m closes starve while 3m flows — refresher heals

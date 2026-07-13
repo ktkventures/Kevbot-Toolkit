@@ -19,6 +19,22 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-07-13
+
+- **20:56 UTC (14:56 MT)** — `d48c884` (PR #59) feat(M-RS2-P2 Phase 4): live-lane store serve
+  (`_load_warmup_df` serves settled history from the resampled store) + weekend-head coverage
+  tolerance fix in the shared splice
+  - Service(s) redeployed: all dev services on push to dev (shadow-worker excluded, pinned).
+  - **20:59 UTC: `RORT_RESAMPLED_STORE_SERVE_LIVE=1` set on Worker** (second redeploy) —
+    Claude-armed per Kevin's standing authorization (2026-07-13). Rollback = delete the var.
+  - Expected on Worker boot: `[ResampledStore#4-live] SERVED` per store-TF warmup; any
+    `serve failed`/fallback lines are safe (deep path == old behavior).
+  - Worker re-warm gap expected ~20:57–21:05 UTC (two restarts) — filter from divergence reads.
+  - NOTE: earlier 07-13 armings (15:35 PB_DEFER, 15:41 GATE_FAIL_CLOSED, 16:42 STORE_SERVE
+    offline, 17:07 MTF_STATE_REFRESH_S=600, 18:25 maintain 900s) are recorded in
+    `docs/_active/Plan_MRS2_P2_Rollout.md` execution log.
+  - Backup of pre-merge dev: branch `dev-backup-pre-serve-live`.
+
 ## 2026-06-29
 
 - **~17:55 UTC (11:55 MT 06-29)** — `2010063` (PR #6) feat(bar_cache): write-through unification step 2 + `9595387` (PR #5) read_bars autocommit bar-leak fix
