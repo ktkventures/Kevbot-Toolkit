@@ -1032,6 +1032,17 @@ class StrategyMonitor:
         self.grace_seconds: int = resolve_grace_seconds(strategy)
         self._fired_bucket: Optional[int] = None
 
+        # PRIMARY-RESYNC (M-RS2-P2 item 2, 2026-07-13): the pending
+        # rebuilt-state handoff (staged by SymbolHub.resync_primary_states
+        # on its own thread; single-attr assignment = atomic; consumed at
+        # the top of on_bar_close on THIS monitor's dispatch thread), the
+        # grace-fire suppression flag (fire_on_partial_bucket's snapshot/
+        # restore would silently revert a swap), and the last-committed-bar
+        # stamp the handoff aligns against.
+        self._pending_resync: Optional[dict] = None
+        self._suppress_resync = False
+        self._last_committed_bar_epoch: Optional[int] = None
+
         # Resolve requirements (uses confluence mapping for trigger IDs)
         req_ind, req_interp, req_trig, params = (
             resolve_strategy_requirements(strategy))
@@ -1202,6 +1213,11 @@ class StrategyMonitor:
         # correction resolves in O(1) (apply_last_bar_correction) rather
         # than an O(N) recompute_from_history replay.
         self.indicators._snapshot_enabled = True
+        # PRIMARY-RESYNC alignment stamp: state now ends at the warmup
+        # df's last bar (lets a resync align even before the first live
+        # close).
+        if df is not None and len(df) > 0:
+            self._last_committed_bar_epoch = _bar_epoch(df.index[-1])
 
     @_prof_fn('m_on_bar_close')
     def on_bar_close(self, bar: dict,
@@ -1230,9 +1246,45 @@ class StrategyMonitor:
         """
         signals = []
 
+        # 0. PRIMARY-RESYNC pending handoff (item 2): install a rebuilt
+        # state prepared by resync_primary_states BEFORE this bar commits —
+        # only when the rebuild ends EXACTLY at the last committed bar
+        # (exact continuity: state@N-1 in, bar N commits onto it). A
+        # misaligned pending is dropped (next cycle retries). Skipped
+        # under grace-fire: its snapshot/restore would silently revert
+        # the swap.
+        if self._pending_resync is not None and not self._suppress_resync:
+            _pend, self._pending_resync = self._pending_resync, None
+            if (_pend.get('end_epoch') is not None
+                    and _pend['end_epoch'] == self._last_committed_bar_epoch):
+                self.indicators.state = _pend['state']
+                self.indicators._user_pack_engines = _pend['packs']
+                # The rebuilt lineage invalidates rewind tokens — a stale
+                # pre-bar snapshot would rewind a rebroadcast correction
+                # into the OLD state line.
+                self.indicators._pre_bar_snapshot = None
+                try:
+                    self.indicators._snapshot_buffer.clear()
+                except Exception:  # noqa: BLE001
+                    pass
+                logger.info(
+                    "[PRIMARY-RESYNC] sid=%s APPLIED rebuilt state @%s (%s)",
+                    self.strat_id, _pend['end_epoch'],
+                    _pend.get('summary', ''))
+            else:
+                logger.info(
+                    "[PRIMARY-RESYNC] sid=%s pending DROPPED (prepared_end=%s"
+                    " last_committed=%s — misaligned; next cycle retries)",
+                    self.strat_id, _pend.get('end_epoch'),
+                    self._last_committed_bar_epoch)
+
         # 1. Update indicators (O(1))
         current = self.indicators.update_bar(bar)
         prev = self.indicators.get_prev_values()
+        # PRIMARY-RESYNC alignment stamp — this bar is now committed. Not
+        # stamped under grace-fire (the partial commit gets rolled back).
+        if not self._suppress_resync:
+            self._last_committed_bar_epoch = _bar_epoch(bar.get('timestamp'))
 
         # 1a. Bar-diagnostics capture (#57C). Project declared columns
         # from `current`; buffer; flush every N bars. Skipped if pack
@@ -1543,6 +1595,10 @@ class StrategyMonitor:
                 self.indicators, '_user_pack_engines', {}).items()
         }
         try:
+            # PRIMARY-RESYNC guard: the restore below would silently
+            # revert a pending-state swap, and the partial bucket must not
+            # advance the last-committed stamp.
+            self._suppress_resync = True
             signals, audit_data = self.on_bar_close(
                 partial_bar, bar_count, mtf_confluence=mtf_confluence,
                 mtf_prev=mtf_prev, mtf_effective_from=mtf_effective_from)
@@ -1553,6 +1609,7 @@ class StrategyMonitor:
                 self.strat_id, partial_bar.get('timestamp'), e)
             return [], {}
         finally:
+            self._suppress_resync = False
             # Restore INDICATOR state only — position state must keep
             # whatever transition just happened, so any fired alert
             # corresponds to a real entry/exit on the strategy.
@@ -2094,6 +2151,104 @@ except ValueError:
         "RORT_MTF_STATE_REFRESH_S=%r is not an int — MTF state refresher "
         "stays OFF", os.getenv("RORT_MTF_STATE_REFRESH_S"))
     MTF_STATE_REFRESH_S = 0
+
+
+# M-RS2-P2 ranked item 2 — PRIMARY-TF pack state re-sync (2026-07-13,
+# Gated_Five autopsy CORRECTION 2). The 340 finding: the live monitor's
+# in-memory incremental state (1Min MACD EMAs) is injected wrong at boot
+# (native warmup reads an unsettled bar_cache tail) and then WANDERS (262
+# unconsumed rest_insert heals in the sample; the writer is fire-and-
+# forget) — state error 0.01-0.16 vs cross margins 0.005-0.03 → exits
+# shift ±1-4 bars vs backtest. refresh_mtf_states heals SECONDARY gate
+# shadows; nothing re-trued the PRIMARY engine. Kevin ruling on file
+# (2026-07-13): primary re-sync approved INCLUDING mid-position
+# ("indicator states can change mid-position — exits depend on them").
+#
+# RORT_PRIMARY_STATE_RESYNC_S = cadence seconds (default 0 = OFF, no
+# thread, zero behavior change; read once at import like
+# MTF_STATE_REFRESH_S). Each cycle, resync_primary_states rebuilds every
+# monitor's primary indicator+pack state from a fresh session-correct
+# warmup (_load_warmup_df — REST bar_cache, store-served for 2Min+ when
+# SERVE_LIVE is armed) and DIFFs it against the live in-memory state:
+# [PRIMARY-RESYNC] drift lines are the 340-class drift METER fleet-wide.
+# RORT_PRIMARY_STATE_RESYNC_APPLY=1 additionally stages the rebuilt state
+# as a PENDING HANDOFF consumed at the top of the monitor's own next
+# on_bar_close — installed ONLY when the rebuilt history ends EXACTLY at
+# the monitor's last committed bar (else dropped; next cycle retries), so
+# continuity is exact: state@bar(N-1) swaps in, then bar N commits onto
+# it. APPLY unset = dry-run observability only (verify-first).
+try:
+    PRIMARY_STATE_RESYNC_S = int(
+        os.getenv("RORT_PRIMARY_STATE_RESYNC_S", "0").strip() or "0")
+except ValueError:
+    logger.warning(
+        "RORT_PRIMARY_STATE_RESYNC_S=%r is not an int — primary state "
+        "resync stays OFF", os.getenv("RORT_PRIMARY_STATE_RESYNC_S"))
+    PRIMARY_STATE_RESYNC_S = 0
+
+
+def _bar_epoch(ts) -> Optional[int]:
+    """Normalize a bar timestamp (datetime / pd.Timestamp / ISO str /
+    epoch number) to int epoch seconds; None on any failure (callers
+    treat unknown as 'not aligned'). Live bar ts can be a STRING
+    (feedback_gengate_live_string_ts) — never assume datetime."""
+    try:
+        if ts is None:
+            return None
+        if isinstance(ts, (int, float)):
+            return int(ts)
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+        if getattr(ts, 'tzinfo', None) is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return int(ts.timestamp())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _state_drift(cur_eng, fresh_eng, top_n: int = 3):
+    """Numeric drift between a live engine's state and a fresh rebuild.
+    Compares IndicatorState float fields, the ema dict, the committed
+    `current` values, and one level of user-pack engine numeric attrs.
+    Returns (n_diffs, top-N [(name, live, rebuilt)] by |delta|). Must
+    never raise — it's a meter, not a gate."""
+    diffs = []
+
+    def _add(name, a, b):
+        try:
+            fa, fb = float(a), float(b)
+        except (TypeError, ValueError):
+            return
+        if fa != fa or fb != fb:  # NaN on either side — not comparable
+            return
+        if abs(fa - fb) > 1e-9:
+            diffs.append((name, fa, fb))
+
+    try:
+        cs, fs = cur_eng.state, fresh_eng.state
+        for f in ('macd_ema_fast', 'macd_ema_slow', 'macd_signal_ema',
+                  'atr_value', 'prev_close', 'vwap_value', 'vwap_std',
+                  'utbot_atr', 'utbot_trail_stop', 'utbot_direction',
+                  'utbot_prev_close', 'vol_sum', 'prev_macd_hist',
+                  'prev2_macd_hist'):
+            _add(f, getattr(cs, f, 0.0), getattr(fs, f, 0.0))
+        for p in set(cs.ema) | set(fs.ema):
+            _add(f'ema_{p}', cs.ema.get(p, 0.0), fs.ema.get(p, 0.0))
+        for k in set(cs.current) | set(fs.current):
+            _add(f'cur_{k}', cs.current.get(k), fs.current.get(k))
+        cur_packs = getattr(cur_eng, '_user_pack_engines', {}) or {}
+        fresh_packs = getattr(fresh_eng, '_user_pack_engines', {}) or {}
+        for slug in set(cur_packs) & set(fresh_packs):
+            a, b = vars(cur_packs[slug]), vars(fresh_packs[slug])
+            for k in set(a) & set(b):
+                if (isinstance(a[k], (int, float))
+                        and isinstance(b[k], (int, float))
+                        and not isinstance(a[k], bool)):
+                    _add(f'{slug}.{k}', a[k], b[k])
+    except Exception:  # noqa: BLE001
+        pass
+    diffs.sort(key=lambda d: abs(d[1] - d[2]), reverse=True)
+    return len(diffs), diffs[:top_n]
 
 
 # Bug Hunt Wave 2 W2-2 — session-edge bar-set asymmetry (2026-07-06,
@@ -3367,6 +3522,90 @@ class SymbolHub:
                     self.symbol, tf_seconds, session, e)
         return {'refreshed': refreshed, 'changed': changed,
                 'failed': failed}
+
+    def resync_primary_states(self) -> dict:
+        """M-RS2-P2 item 2 — periodic re-true of every monitor's PRIMARY
+        in-memory indicator/pack state from a fresh session-correct warmup
+        (the 340-class fix; the primary-engine analogue of
+        refresh_mtf_states — see the PRIMARY_STATE_RESYNC_S block for the
+        full why).
+
+        DRY-RUN by default: rebuilds and logs [PRIMARY-RESYNC-DRY] drift
+        lines only — the fleet-wide drift meter. When
+        RORT_PRIMARY_STATE_RESYNC_APPLY=1, additionally stages the rebuilt
+        state as `monitor._pending_resync`, consumed at the top of that
+        monitor's next on_bar_close when (and only when) the rebuild ends
+        exactly at its last committed bar. Never touches position state
+        (Kevin ruling: mid-position state change approved). Per-monitor
+        failures never propagate.
+
+        Returns {'checked': n, 'drifted': n, 'staged': n, 'failed': n}."""
+        apply_mode = os.getenv(
+            'RORT_PRIMARY_STATE_RESYNC_APPLY', '0') == '1'
+        tag = '' if apply_mode else '-DRY'
+        out = {'checked': 0, 'drifted': 0, 'staged': 0, 'failed': 0}
+        groups: Dict[Tuple[int, str], list] = {}
+        for m in list(self.monitors.values()):
+            groups.setdefault((m.tf_seconds, m.session), []).append(m)
+        for (tf_s, session), mons in groups.items():
+            try:
+                df = _load_warmup_df(self.symbol, tf_s, session)
+                df = _closed_bars_only(df, tf_s)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[PRIMARY-RESYNC%s] %s tf=%ss sess=%s: warmup load "
+                    "failed (%s) — keeping live state", tag, self.symbol,
+                    tf_s, session, e)
+                out['failed'] += len(mons)
+                continue
+            if df is None or len(df) < 2:
+                out['failed'] += len(mons)
+                continue
+            end_epoch = _bar_epoch(df.index[-1])
+            for m in mons:
+                try:
+                    fresh = IncrementalIndicatorEngine(
+                        m.indicators.required, m.indicators.params)
+                    fresh.warmup(df)
+                    if not fresh._initialized:
+                        out['failed'] += 1
+                        continue
+                    n_diffs, top = _state_drift(m.indicators, fresh)
+                    aligned = (end_epoch is not None
+                               and end_epoch == m._last_committed_bar_epoch)
+                    out['checked'] += 1
+                    if n_diffs:
+                        out['drifted'] += 1
+                        top_s = ', '.join(
+                            f"{n} {a:.6g}->{b:.6g}" for n, a, b in top)
+                        summary = f"{n_diffs} fields drifted: {top_s}"
+                        logger.warning(
+                            "[PRIMARY-RESYNC%s] sid=%s %s tf=%ss sess=%s: "
+                            "%s (aligned=%s)", tag, m.strat_id, self.symbol,
+                            tf_s, session, summary, aligned)
+                    else:
+                        summary = 'no drift'
+                        logger.info(
+                            "[PRIMARY-RESYNC%s] sid=%s %s tf=%ss sess=%s: "
+                            "state matches settled rebuild (%d bars)", tag,
+                            m.strat_id, self.symbol, tf_s, session, len(df))
+                    if apply_mode and aligned:
+                        # Single-attr assignment — atomic handoff; the
+                        # bar-close thread re-checks alignment on consume.
+                        m._pending_resync = {
+                            'state': fresh.state,
+                            'packs': fresh._user_pack_engines,
+                            'end_epoch': end_epoch,
+                            'summary': summary,
+                        }
+                        out['staged'] += 1
+                except Exception as e:  # noqa: BLE001
+                    out['failed'] += 1
+                    logger.warning(
+                        "[PRIMARY-RESYNC%s] sid=%s rebuild failed: %s — "
+                        "keeping live state", tag,
+                        getattr(m, 'strat_id', '?'), e)
+        return out
 
     def on_tick(self, price: float, volume: int, timestamp: datetime,
                 alert_callback: Callable = None, config: dict = None,
