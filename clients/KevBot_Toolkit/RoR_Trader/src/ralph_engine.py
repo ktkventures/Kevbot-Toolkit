@@ -1207,6 +1207,8 @@ class StrategyMonitor:
     def on_bar_close(self, bar: dict,
                      bar_count: int,
                      mtf_confluence: Dict[Tuple[int, str], Set[str]] = None,
+                     mtf_prev: Dict[Tuple[int, str], Set[str]] = None,
+                     mtf_effective_from: Dict[Tuple[int, str], float] = None,
                      ) -> Tuple[List[dict], dict]:
         """Process a completed bar.
 
@@ -1215,6 +1217,13 @@ class StrategyMonitor:
                 Maps (tf_seconds, session) → latest confluence records
                 from other TFs (session is 'RTH' unless
                 RORT_MTF_SESSION_SHADOWS — Bug Hunt Wave 1 #1).
+            mtf_prev: SymbolHub._mtf_confluence_prev — each key's record
+                set from BEFORE its most recent publish. Only consulted
+                when RORT_MTF_PB_DEFER is on (PB boundary defer).
+            mtf_effective_from: SymbolHub._mtf_confluence_effective_from —
+                epoch seconds from which each key's CURRENT records are
+                PB-usable (= that secondary bar's close). Only consulted
+                when RORT_MTF_PB_DEFER is on.
 
         Returns:
             (signals, audit_data) — signals list and dict for fidelity logging.
@@ -1311,8 +1320,44 @@ class StrategyMonitor:
         # session-keyed shadows exist to prevent.
         if mtf_confluence:
             _own_sess = (self.session if MTF_SESSION_SHADOWS else 'RTH')
+            # PB boundary defer (RORT_MTF_PB_DEFER — 2026-07-13 Kevin
+            # ruling, memory feedback_pb_boundary_semantics_ruling; autopsy
+            # cause C "cross-TF boundary race",
+            # docs/_active/Gated_Five_Divergence_Autopsy.md): PB gates must
+            # honor the last secondary bar fully CLOSED BEFORE this primary
+            # bar began. A key's CURRENT records merge iff they became
+            # PB-usable at/before this bar's START (effective_from <=
+            # bar_start); otherwise the hub's PREVIOUS records for that key
+            # merge instead. The '<=' comparator mirrors the backtest's
+            # construction (services.prepare_data_with_indicators re-labels
+            # each secondary bar at its CLOSE then ffill-reindexes onto the
+            # primary index — an exact label match IS served to that
+            # primary bar). Live's record namespace carries no CB marker
+            # (all current gates are PB), so the defer applies to every
+            # cross-TF record. Flag OFF (or unparseable bar ts): _pb_cutoff
+            # stays None → legacy instant merge, byte-identical.
+            _pb_cutoff = None
+            if MTF_PB_DEFER and mtf_effective_from is not None:
+                _raw_bts = bar.get('timestamp')
+                if _raw_bts is not None:
+                    try:
+                        _bts = pd.Timestamp(_raw_bts)
+                        if _bts.tzinfo is None:
+                            _bts = _bts.tz_localize('UTC')
+                        _pb_cutoff = _bts.timestamp()
+                    except Exception:  # noqa: BLE001 — fall back to legacy
+                        _pb_cutoff = None
             for (other_tf, _sess), records in mtf_confluence.items():
                 if other_tf != self.tf_seconds and _sess == _own_sess:
+                    if (_pb_cutoff is not None
+                            and mtf_effective_from.get(
+                                (other_tf, _sess), 0.0) > _pb_cutoff):
+                        # New secondary bar closed AT/AFTER this primary
+                        # bar opened — PB gates must still see the prior
+                        # state (first-ever publish: empty set = unknown
+                        # prior state, gate can't pass — conservative).
+                        records = (mtf_prev or {}).get(
+                            (other_tf, _sess), set())
                     self._current_confluence |= records
 
         # Use bar_start timestamp for bar-close signals — matches backtest
@@ -1462,7 +1507,9 @@ class StrategyMonitor:
     @_prof_fn('m_fire_partial')
     def fire_on_partial_bucket(self, partial_bar: dict,
                                 bar_count: int,
-                                mtf_confluence=None) -> tuple:
+                                mtf_confluence=None,
+                                mtf_prev=None,
+                                mtf_effective_from=None) -> tuple:
         """Fire on a still-forming sub-minute bucket at strategy-grace.
 
         LEF Phase 2b (2026-05-20). Snapshots indicator state and the
@@ -1497,7 +1544,8 @@ class StrategyMonitor:
         }
         try:
             signals, audit_data = self.on_bar_close(
-                partial_bar, bar_count, mtf_confluence=mtf_confluence)
+                partial_bar, bar_count, mtf_confluence=mtf_confluence,
+                mtf_prev=mtf_prev, mtf_effective_from=mtf_effective_from)
         except Exception as e:
             logger.warning(
                 "fire_on_partial_bucket strat=%s bucket=%s failed: %s — "
@@ -1967,6 +2015,45 @@ MTF_COARSE_RTH_RELOAD = os.getenv(
     "1", "true", "yes", "on")
 
 
+# PB boundary semantics — cross-TF gate one-bar DEFER (2026-07-13, Kevin
+# ruling: memory feedback_pb_boundary_semantics_ruling; Gated-Five autopsy
+# cause C — cross-TF boundary race, ~27% of the gated-five divergence,
+# docs/_active/Gated_Five_Divergence_Autopsy.md).
+#
+# PB (Previous-Bar) confluence gates must honor the last secondary bar
+# fully CLOSED BEFORE the current primary bar began. The backtest builds
+# its gate columns as resample -> re-label each secondary bar at its CLOSE
+# (bar_start + period) -> ffill onto the primary index
+# (services.prepare_data_with_indicators), so a primary bar with bar_start
+# T gates on the latest secondary bar whose CLOSE <= T. Live merges a
+# just-closed secondary bar's records INSTANTLY, so at coinciding closes
+# (secondary close == primary bar boundary — e.g. every 5m boundary for a
+# 30Sec primary) live gates one bar EARLY vs the backtest (sid 327 phantom
+# 07-10 15:10:00Z; mirror-image block 07-10 14:15:00Z).
+#
+# Flag ON: every cross-TF publish goes through SymbolHub._publish_mtf,
+# which keeps the legacy dict byte-identical AND records (a) the previous
+# record set and (b) the epoch ts from which the NEW records are PB-usable
+# (= the published secondary bar's CLOSE). The monitor merge (step 3c)
+# serves the PREVIOUS records whenever effective_from > primary bar_start;
+# current records merge iff secondary_close <= primary_bar_start — the
+# '<=' mirrors the backtest's exact-label-inclusive ffill (see the merge
+# site). CB (Current-Bar) gates are NOT representable in the live record
+# namespace today (records are `<TF>-<INTERP>-<STATE>`; the backtest's CB
+# columns are `_spec_`-prefixed and unused in trading decisions —
+# services.enrich_confluence_with_fidelity tags every cross-TF condition
+# [PB]), so the defer applies to ALL cross-TF records; CB support needs
+# the namespace first (all current strategies are PB — Kevin).
+#
+# Default OFF = byte-identical legacy behavior (instant merge; the defer
+# branch is unreachable and the bookkeeping dicts stay empty). Read once
+# at module import (like MTF_SESSION_SHADOWS) — flip requires a worker
+# restart.
+MTF_PB_DEFER = os.getenv(
+    "RORT_MTF_PB_DEFER", "0").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
 def _bar_close_in_session(bar: dict, arrival_ts: datetime,
                           monitor: 'StrategyMonitor') -> bool:
     """W2-2: session membership for a completed bar at bar-close dispatch.
@@ -2351,6 +2438,18 @@ class SymbolHub:
         # confluence records. Bug Hunt Wave 1 #1: keys are ALWAYS tuples;
         # session is 'RTH' unless RORT_MTF_SESSION_SHADOWS is on.
         self._mtf_confluence: Dict[Tuple[int, str], Set[str]] = {}
+        # PB boundary defer (RORT_MTF_PB_DEFER, 2026-07-13) bookkeeping —
+        # maintained by _publish_mtf ONLY when the flag is on; always
+        # initialized so readers never AttributeError.
+        #   _mtf_confluence_prev[key] = the record set the key held BEFORE
+        #       the most recent publish (what a PB gate on a primary bar
+        #       that OPENED before the new secondary close must still see).
+        #   _mtf_confluence_effective_from[key] = epoch seconds (UTC) from
+        #       which the CURRENT records are PB-usable (= the published
+        #       secondary bar's close). 0.0 = immediately usable (legacy /
+        #       warmup-seed semantics).
+        self._mtf_confluence_prev: Dict[Tuple[int, str], Set[str]] = {}
+        self._mtf_confluence_effective_from: Dict[Tuple[int, str], float] = {}
         # Shadow engines for secondary TFs not covered by real monitors,
         # keyed (tf_seconds, session) — same convention as _mtf_confluence.
         self._shadow_engines: Dict[
@@ -2604,7 +2703,9 @@ class SymbolHub:
             try:
                 signals, _audit = monitor.fire_on_partial_bucket(
                     partial_bar, bar_count_for_partial,
-                    mtf_confluence=self._mtf_confluence)
+                    mtf_confluence=self._mtf_confluence,
+                    mtf_prev=self._mtf_confluence_prev,
+                    mtf_effective_from=self._mtf_confluence_effective_from)
             except Exception as e:
                 logger.warning(
                     "strategy-grace fire failed strat=%s tf=%ss: %s — "
@@ -2659,6 +2760,44 @@ class SymbolHub:
         """Distinct TFs that have at least one shadow engine."""
         return {k[0] for k in self._shadow_engines}
 
+    def _publish_mtf(self, key: Tuple[int, str], records: Set[str],
+                     closed_bar_start_ts=None) -> None:
+        """Single chokepoint for every `_mtf_confluence[key] = ...` write.
+
+        Legacy behavior is preserved EXACTLY — same dict, same value
+        object — so every existing reader (monitor merge, gate telemetry,
+        broadcast snapshots, log lines) is untouched. When RORT_MTF_PB_DEFER
+        is on it ADDITIONALLY maintains the PB-defer bookkeeping (see
+        __init__): the key's previous record set + the epoch ts from which
+        the new records are PB-usable (= the closed secondary bar's CLOSE
+        = closed_bar_start_ts + tf_seconds).
+
+        closed_bar_start_ts: bar-START label of the newest CLOSED
+        secondary bar the records derive from — `completed['timestamp']`
+        (ISO string) on live close paths, `df.index[-1]` / last
+        builder-history row on reload/refresh/recompute paths (both are
+        bar-start labels; a reload's WALL CLOCK is NOT the bar close and
+        must never be passed here). None → effective_from 0.0
+        (immediately usable — matches legacy; used by the warmup seed,
+        where only the warmed indicator state exists, no bar handle).
+        Naive timestamps are treated as UTC (data_loader indexes are
+        UTC-localized; live 'timestamp' ISO strings carry an offset).
+        """
+        if MTF_PB_DEFER:
+            self._mtf_confluence_prev[key] = self._mtf_confluence.get(
+                key, set())
+            eff = 0.0
+            if closed_bar_start_ts is not None:
+                try:
+                    _ts = pd.Timestamp(closed_bar_start_ts)
+                    if _ts.tzinfo is None:
+                        _ts = _ts.tz_localize('UTC')
+                    eff = _ts.timestamp() + key[0]
+                except Exception:  # noqa: BLE001 — never break a publish
+                    eff = 0.0
+            self._mtf_confluence_effective_from[key] = eff
+        self._mtf_confluence[key] = records
+
     def _coarse_rth_reload_active(self, tf_seconds: int) -> bool:
         """CLASS 1a: does this (RTH) coarse-TF shadow take the session-correct
         reload instead of eating the session-unfiltered fan-out/builder bar?
@@ -2687,7 +2826,8 @@ class SymbolHub:
             df = _load_warmup_df(self.symbol, tf_seconds, 'RTH')
             df = _closed_bars_only(df, tf_seconds)
             if df is not None and len(df) > 0:
-                self._mtf_confluence[key] = shadow.recompute_confluence(df)
+                self._publish_mtf(key, shadow.recompute_confluence(df),
+                                  closed_bar_start_ts=df.index[-1])
                 try:
                     _last = df.iloc[-1]
                     logger.info(
@@ -2738,13 +2878,15 @@ class SymbolHub:
             if self._coarse_rth_reload_active(tf_seconds):
                 self._reload_coarse_rth_shadow(tf_seconds, shadow)
                 return
-            self._mtf_confluence[key] = shadow.on_bar_close(completed)
+            self._publish_mtf(key, shadow.on_bar_close(completed),
+                              closed_bar_start_ts=completed.get('timestamp'))
             return
         try:
             df = _load_warmup_df(self.symbol, tf_seconds, session)
             df = _closed_bars_only(df, tf_seconds)
             if df is not None and len(df) > 0:
-                self._mtf_confluence[key] = shadow.recompute_confluence(df)
+                self._publish_mtf(key, shadow.recompute_confluence(df),
+                                  closed_bar_start_ts=df.index[-1])
             else:
                 logger.warning(
                     "[MTF-SESSION] %s tf=%ss session=%s: empty session "
@@ -2946,7 +3088,10 @@ class SymbolHub:
             return False
         try:
             recs = shadow._derive_confluence_records()
-            self._mtf_confluence[(tf_seconds, session)] = recs
+            # PB defer: no closed-bar handle here (warmup seed derives from
+            # the warmed indicator state) → effective_from 0.0 = immediately
+            # usable, matching legacy.
+            self._publish_mtf((tf_seconds, session), recs)
             logger.info("[MTF-SEED] %s tf=%ss session=%s: seeded cross-TF "
                         "gate from warmup (%d records) — coarse gates now "
                         "evaluable pre-close",
@@ -3011,7 +3156,8 @@ class SymbolHub:
                         "%s -> %s",
                         self.symbol, tf_seconds, session,
                         old_repr, new_repr)
-                self._mtf_confluence[key] = recs
+                self._publish_mtf(key, recs,
+                                  closed_bar_start_ts=df.index[-1])
                 refreshed += 1
             except Exception as e:  # noqa: BLE001
                 failed += 1
@@ -3073,7 +3219,10 @@ class SymbolHub:
 
                     signals, audit_data = monitor.on_bar_close(
                         completed, builder._bar_count,
-                        mtf_confluence=self._mtf_confluence)
+                        mtf_confluence=self._mtf_confluence,
+                        mtf_prev=self._mtf_confluence_prev,
+                        mtf_effective_from=(
+                            self._mtf_confluence_effective_from))
 
                     # Log every bar-close evaluation for diagnostics
                     pos_state = audit_data.get('position_state', '?')
@@ -3163,7 +3312,9 @@ class SymbolHub:
                         'Day', 'D').replace('Week', 'W')
                     own_records = {r for r in m._current_confluence
                                    if r.startswith(_lbl + '-')}
-                    self._mtf_confluence[_key] = own_records
+                    self._publish_mtf(
+                        _key, own_records,
+                        closed_bar_start_ts=completed.get('timestamp'))
 
                 # M8.5: broadcast completed bar to Supabase Realtime (live chart)
                 self._publish_completed_bar(tf_seconds, completed)
@@ -3327,7 +3478,9 @@ class SymbolHub:
 
                 signals, audit_data = monitor.on_bar_close(
                     completed, builder._bar_count,
-                    mtf_confluence=self._mtf_confluence)
+                    mtf_confluence=self._mtf_confluence,
+                    mtf_prev=self._mtf_confluence_prev,
+                    mtf_effective_from=self._mtf_confluence_effective_from)
 
                 # Diagnostic logging (same as tick-driven bar close)
                 pos_state = audit_data.get('position_state', '?')
@@ -3402,7 +3555,9 @@ class SymbolHub:
                     'Day', 'D').replace('Week', 'W')
                 own_records = {r for r in m._current_confluence
                                if r.startswith(_lbl + '-')}
-                self._mtf_confluence[(tf_seconds, _m_sess)] = own_records
+                self._publish_mtf(
+                    (tf_seconds, _m_sess), own_records,
+                    closed_bar_start_ts=completed.get('timestamp'))
 
             # M8.5: broadcast completed bar to Supabase Realtime (live chart)
             self._publish_completed_bar(tf_seconds, completed)
@@ -3500,7 +3655,9 @@ class SymbolHub:
 
             signals, audit_data = monitor.on_bar_close(
                 bar_dict, bar_count,
-                mtf_confluence=self._mtf_confluence)
+                mtf_confluence=self._mtf_confluence,
+                mtf_prev=self._mtf_confluence_prev,
+                mtf_effective_from=self._mtf_confluence_effective_from)
 
             # LEF Phase 2b (2026-05-20): if a ws_agg_reconciled monitor
             # already fired at strategy-grace for this bucket, suppress
@@ -3611,7 +3768,9 @@ class SymbolHub:
                 'Day', 'D').replace('Week', 'W')
             own_records = {r for r in m._current_confluence
                            if r.startswith(_lbl + '-')}
-            self._mtf_confluence[(tf_seconds, _m_sess)] = own_records
+            self._publish_mtf(
+                (tf_seconds, _m_sess), own_records,
+                closed_bar_start_ts=bar_dict.get('timestamp'))
         if not _tf_sessions:
             _tf_sessions = {'RTH'}
 
@@ -3731,8 +3890,12 @@ class SymbolHub:
                         self._reload_coarse_rth_shadow(sec_tf, shadow)
                         continue
                     try:
-                        self._mtf_confluence[(sec_tf, 'RTH')] = \
-                            shadow.recompute_confluence(sec_builder.history)
+                        self._publish_mtf(
+                            (sec_tf, 'RTH'),
+                            shadow.recompute_confluence(sec_builder.history),
+                            closed_bar_start_ts=(
+                                sec_builder.history.index[-1]
+                                if len(sec_builder.history) else None))
                         logger.info(
                             "Rebroadcast cascade: shadow %s/%ss recomputed, "
                             "records refreshed=%s (src=%s)",
@@ -4311,8 +4474,11 @@ class SymbolHub:
                 # < SUPERTREND 73% < ungated ~91-97%) with matched pairs
                 # ~100%. Mirrors the 0609a fan-out rebroadcast fix, which
                 # never reached this path.
-                self._mtf_confluence[(tf_seconds, 'RTH')] = \
-                    shadow_self._derive_confluence_records()
+                self._publish_mtf(
+                    (tf_seconds, 'RTH'),
+                    shadow_self._derive_confluence_records(),
+                    closed_bar_start_ts=(builder.history.index[-1]
+                                         if len(builder.history) else None))
             except Exception as e:
                 logger.warning(
                     "REST correction shadow recompute failed sym=%s "
@@ -4510,8 +4676,11 @@ class SymbolHub:
                     shadow_self.indicators.recompute_from_history(
                         builder.history, force_full=True)
                     used_full = True
-                self._mtf_confluence[(tf_seconds, 'RTH')] = \
-                    shadow_self._derive_confluence_records()
+                self._publish_mtf(
+                    (tf_seconds, 'RTH'),
+                    shadow_self._derive_confluence_records(),
+                    closed_bar_start_ts=(builder.history.index[-1]
+                                         if len(builder.history) else None))
             except Exception as e:
                 logger.warning(
                     "gap_heal: shadow recompute failed sym=%s tf=%ss: %s",
@@ -4855,8 +5024,9 @@ class SymbolHub:
             # directly; no per-close session reloads at this cadence.
             for _sh_sess, shadow in shadow_items:
                 try:
-                    self._mtf_confluence[(sec_tf, _sh_sess)] = \
-                        shadow.on_bar_close(completed)
+                    self._publish_mtf(
+                        (sec_tf, _sh_sess), shadow.on_bar_close(completed),
+                        closed_bar_start_ts=completed.get('timestamp'))
                     logger.info(
                         "shadow_close %s/%ss close=%.2f records=%s",
                         self.symbol, sec_tf, float(completed['close']),
