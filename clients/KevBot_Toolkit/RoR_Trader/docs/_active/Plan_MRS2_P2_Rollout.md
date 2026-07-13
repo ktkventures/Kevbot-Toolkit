@@ -169,8 +169,35 @@ below. NOTE: 1Min PRIMARY warmup (340's boot injection) is NOT store-covered (st
 5. EOD + next clean day: re-measure the five @90%@10s on post-17:07Z windows.
 6. Housekeeping: SPY 10Sec re-true; 3 pre-existing test_unified_parity fails; frontend '1M'→'1m';
    span-hash incremental maintain.
+## 🌙 OVERNIGHT LOOP HANDOFF (written 2026-07-13 ~23:40Z for the /loop session)
+**Armed flag state (Worker):** RORT_RESAMPLED_STORE_SERVE_LIVE=1 · RORT_PRIMARY_STATE_RESYNC_S=900
+· RORT_PRIMARY_STATE_RESYNC_APPLY=1 · RORT_MTF_STATE_REFRESH_S=600 · RORT_MTF_PB_DEFER=1 ·
+RORT_GATE_FAIL_CLOSED=1 (+ api/batch: RORT_RESAMPLED_STORE_SERVE=1, READ=1). All kill-switch =
+unset the var. Deploy log has times.
+**The Five's lanes:** settled-recomputed 23:06Z under prod-parity flags (329 repaired −787).
+Nightly recompute re-trues fleet 00:20Z (batch-worker; do NOT push 00:15-?? while it runs —
+pushes orphan running jobs).
+**T1 — build first:** MTF publish CLOBBER fix (memory `project_mtf_publish_clobber` has full
+evidence + fix design; code = `_publish_mtf` in ralph_engine.py; verify `finalize_shadow_engines`
+multiplicity). Replay-validate → PR → merge → arm; acceptance = every gate's needed interpreter
+present in 100% of end-of-window `_mtf_confluence` sets, no-op byte-identity, PB effective_from
+intact.
+**T2 — counterfactual audit:** today's 17:07-20:00Z unpaired events on 327/328/329/333 (16 events,
+listed by `bar_diagnostics` source='live_gate' analysis): ≥90% must be resolved-by-stack;
+any event in a supposedly-fixed class = live bug, fix tonight.
+**T3 — pre-market live (08:00Z+):** telemetry last-writer acceptance ≥99%; [PRIMARY-RESYNC]
+APPLIED lines healing real drift; `src/_measure_five.py --sids ... --since ... --until ...`
+(rolling paired-%; run from src/ with .venv python; alerts pairing = side entry/exit ×
+data->>'entry_fill_ts'/'exit_fill_ts').
+**Gotchas for the loop:** standalone scripts need suite-main() env (admin ctx + pack registry +
+USE_DB — bug-hunt skill SOP); local lane writes need prod RORT flag mirror (local-update skill
+hard rule 0); canaries during live sessions need OFF/ON/OFF sandwich; health page = use 1h/3h
+window buttons (24h drags today's pre-fix history); freeze deploys 13:15-13:45Z (RTH open);
+real-money sids 308-314 are 15Sec RTH — no deploys during their live trading without checking.
+
 **Fresh-session note:** this file + `Gated_Five_Divergence_Autopsy.md` (with corrections) +
-memory (`project_mrs2_phase2_resampled_store`, `feedback_pb_boundary_semantics_ruling`,
+memory (`project_mrs2_phase2_resampled_store`, `project_mtf_publish_clobber`,
+`feedback_pb_boundary_semantics_ruling`,
 `feedback_trading_target_90pct_gated_focus`) = the complete state. WS-tip clarification: live
 gating is INSTANT (WS closes); the store is the SETTLED layer (~15min = settle physics, same as
 bar_cache) — congruent with the primary's multi-stage treatment by design.
