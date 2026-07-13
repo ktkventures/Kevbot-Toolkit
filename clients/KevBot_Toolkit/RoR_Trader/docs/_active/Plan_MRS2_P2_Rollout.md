@@ -175,8 +175,10 @@ below. NOTE: 1Min PRIMARY warmup (340's boot injection) is NOT store-covered (st
 RORT_GATE_FAIL_CLOSED=1 (+ api/batch: RORT_RESAMPLED_STORE_SERVE=1, READ=1). All kill-switch =
 unset the var. Deploy log has times.
 **The Five's lanes:** settled-recomputed 23:06Z under prod-parity flags (329 repaired −787).
-Nightly recompute re-trues fleet 00:20Z (batch-worker; do NOT push 00:15-?? while it runs —
-pushes orphan running jobs).
+**NIGHTLY COORDINATION:** nightly fleet recompute starts 00:20Z on batch-worker (~couple hrs).
+While its jobs run: NO dev pushes / PR merges (redeploys orphan jobs), NO local lane writes,
+lane reads may be mid-rewrite. Build + replay-validate + prep PRs locally meanwhile; detect
+completion (recompute job records / batch-worker logs quiet 10+ min) → then ship the queue.
 **T1 — build first:** MTF publish CLOBBER fix (memory `project_mtf_publish_clobber` has full
 evidence + fix design; code = `_publish_mtf` in ralph_engine.py; verify `finalize_shadow_engines`
 multiplicity). Replay-validate → PR → merge → arm; acceptance = every gate's needed interpreter
