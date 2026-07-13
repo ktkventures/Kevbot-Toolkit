@@ -21,6 +21,13 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-07-13
 
+- **~21:45 UTC (15:45 MT)** — `RORT_PRIMARY_STATE_RESYNC_APPLY=1` set on Worker (no code
+  change; var-set redeploy). Claude-armed per standing authorization + Kevin's "everything
+  firing by tomorrow" directive. Swap path is replay-proven (no-drift swap == no-op,
+  byte-identical; alignment-gated; grace-fire-suppressed). Overnight = guaranteed no-op;
+  tomorrow intraday drift heals within one 900s cycle. Watch `[PRIMARY-RESYNC] sid=…
+  APPLIED` lines. Rollback = unset the var (meter keeps running via RESYNC_S).
+
 - **21:18 UTC (15:18 MT)** — `f3b297b` (PR #60) feat(fidelity): primary-TF pack state re-sync
   (the 340-class fix) — default OFF
   - Service(s) redeployed: all dev services on push to dev (shadow-worker excluded, pinned).

@@ -136,8 +136,9 @@ below. NOTE: 1Min PRIMARY warmup (340's boot injection) is NOT store-covered (st
    tolerance, fixed to +5d). Boot watch: `[ResampledStore#4-live] SERVED` lines.
    Canary-script lessons: set_admin_user_context + pack_registry.scan_and_load_all needed in
    ANY standalone engine script; run canaries OFF/ON/OFF when a session is live.
-2. ✅ **SHIPPED (PR #60 f3b297b) + METER ARMED ~21:57Z** (`RESYNC_S=900` dry-run; APPLY pending
-   drift review) — Primary-TF pack state re-sync (Kevin-approved,
+2. ✅ **SHIPPED (PR #60 f3b297b) + FULLY ARMED** (`RESYNC_S=900` 21:14Z; **APPLY=1 ~21:45Z** —
+   Kevin's tomorrow-opens-healed directive; overnight no-op, intraday drift heals ≤900s)
+   — Primary-TF pack state re-sync (Kevin-approved,
    mid-position OK): `SymbolHub.resync_primary_states` rebuilds each monitor's primary
    indicator/pack state from a fresh `_load_warmup_df` (store-served for 2Min+) and diffs it
    against live in-memory state. Two flags: `RORT_PRIMARY_STATE_RESYNC_S` (cadence; dry-run
@@ -148,8 +149,22 @@ below. NOTE: 1Min PRIMARY warmup (340's boot injection) is NOT store-covered (st
    swapped), injected-MACD-drift detect+heal (the 340 mode), misalignment drop, grace-fire
    suppression, hub dry/apply staging. Ralph fidelity 13 pass. ARMING PLAN: dry-run meter
    first (RESYNC_S=900, no APPLY) → review fleet drift lines → flip APPLY.
-3. 900s fan-out starvation root-cause (why 15m closes starve while 3m flows — refresher heals
-   meanwhile every 10min).
+3. 🔥 **NEW #1 HUNT (found 07-13 ~23:45Z, telemetry-proven): MTF publish CLOBBER.** Multiple
+   interp-aware gate shadows (W2-5/PR #38 class) share one `_mtf_confluence[(tf, session)]`
+   key and REPLACE-publish it — last writer wins, and the clobbered set persists the whole
+   window. Measured 15:41→20:00Z RTH: narrow sets landed LAST in 33/33 tf=180 windows,
+   11/11 tf=900 (9/11 = MACD-only, 333's UT_BOT_V4 ABSENT; 1 EMPTY SET — the E-class
+   fail-open mechanism, seen in the wild), 43/83 tf=120 (EMA_PP-only, 327's SWING absent),
+   7/25 tf=300 (MACD-only, 327/328's SWING absent). Consequence: gates unsatisfiable in
+   those windows → fail-closed silent blocks now (tonight's bt-only residuals), fail-open
+   phantom fires before 15:41Z. UNIFIES much of autopsy class C + all of class E. NOTE:
+   unsetting FAIL_CLOSED does NOT help (non-empty narrow set fails the subset check either
+   way). FIX: `_publish_mtf` must MERGE per-interpreter (publisher replaces only records
+   whose interpreter it computes), preserving PB effective_from bookkeeping; also covers
+   refresher + seed paths (same chokepoint). Likely also the real face of old item 3
+   ("900s starvation" = the 15m key being clobbered, not starved).
+3b. (superseded by 3) 900s fan-out starvation root-cause — re-examine only if the merge fix
+   leaves a residue.
 4. Grace-fire `_fired_bucket` suppression hole (ralph 2838/3846) — latent alert-drop, ticket.
 5. EOD + next clean day: re-measure the five @90%@10s on post-17:07Z windows.
 6. Housekeeping: SPY 10Sec re-true; 3 pre-existing test_unified_parity fails; frontend '1M'→'1m';
