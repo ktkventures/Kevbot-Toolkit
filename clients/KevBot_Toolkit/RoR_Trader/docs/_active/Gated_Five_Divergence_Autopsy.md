@@ -1,5 +1,15 @@
 # Gated-Five Divergence Autopsy (sids 327 / 328 / 329 / 333 / 340)
 
+> **CORRECTION (2026-07-13, validation-gated):** cause **A2's mechanism was FALSIFIED** during
+> implementation — sid 333's 15Min BEAR lock is NOT warmup hysteresis (UT Bot's ratchet resets per
+> flip; 0/728 depth-sensitive closes; the '7 reboots' were pre-market when BEAR was correct). The
+> REAL mechanism is a **15Min close-feed FREEZE** (0609a family): live_gate telemetry shows ZERO
+> 900s-key evaluations 13:30-17:30Z on 07-10 while the 180s key updated every ~3min and truth
+> flipped 6×. Operative fix = the existing state refresher, ARMED 17:07Z
+> (RORT_MTF_STATE_REFRESH_S=600). Deep-anchor shipped default-OFF as insurance (PR #57). OPEN
+> ROOT-CAUSE: why the 900s fan-out starves while 180s flows — dedicated hunt queued.
+
+
 **Date:** 2026-07-11 (Saturday, markets closed — all data settled)
 **Weekend Sprint Item 4** — `Plan_MRS2_P2_Rollout.md` Phase 2.4
 **Window:** last 5 trading days, 2026-07-06 → 2026-07-10, RTH
