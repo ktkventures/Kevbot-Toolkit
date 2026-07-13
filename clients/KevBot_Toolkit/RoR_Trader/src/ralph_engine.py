@@ -1806,23 +1806,122 @@ def _ws_agg_primary_fanout_enabled() -> bool:
 _SHADOW_WARMUP_TARGET_BARS = 250
 
 
-def _secondary_warmup_days(tf_str: str, is_crypto_sym: bool = False) -> int:
-    """Calendar days of 1-min history needed to warm ~_SHADOW_WARMUP_TARGET_BARS
-    bars of `tf_str`. The shadow is then built by resampling that 1-min history
-    to `tf_str` — mirroring the backtest's resample-from-1min construction
-    (CLAUDE.md), so live and backtest gate states align. Sub-minute TFs keep
-    the flat 7-day native load (can't resample 1-min finer)."""
+def _secondary_warmup_days(tf_str: str, is_crypto_sym: bool = False,
+                           target_bars: int = _SHADOW_WARMUP_TARGET_BARS
+                           ) -> int:
+    """Calendar days of 1-min history needed to warm ~`target_bars`
+    (default _SHADOW_WARMUP_TARGET_BARS) bars of `tf_str`. The shadow is then
+    built by resampling that 1-min history to `tf_str` — mirroring the
+    backtest's resample-from-1min construction (CLAUDE.md), so live and
+    backtest gate states align. Sub-minute TFs keep the flat 7-day native
+    load (can't resample 1-min finer)."""
     import math as _m
     from data_loader import BARS_PER_DAY, CRYPTO_BARS_PER_DAY
     bpd_map = CRYPTO_BARS_PER_DAY if is_crypto_sym else BARS_PER_DAY
     bpd = bpd_map.get(tf_str, 390)
     if bpd <= 0:
         return 7
-    trading_days = _SHADOW_WARMUP_TARGET_BARS / bpd
+    trading_days = target_bars / bpd
     # trading-days -> calendar-days. Equities skip weekends (×7/5); crypto is
     # 24/7. Add a holiday/weekend buffer either way.
     cal = trading_days if is_crypto_sym else trading_days * 7.0 / 5.0
     return max(7, int(_m.ceil(cal)) + 5)
+
+
+# DEEP-ANCHOR shadow warmup for HYSTERETIC interpreter families (2026-07-13,
+# Gated-Five autopsy cause C, docs/_active/Gated_Five_Divergence_Autopsy.md).
+#
+# Trailing-stop interpreters (UT Bot's ATR trail, SuperTrend's ratcheted
+# bands) carry unbounded path dependence WITHIN a trend run: the ratchet only
+# forgets its anchor when the trend flips. If a trend run on the gate TF is
+# LONGER than the shadow's warmup window (~_SHADOW_WARMUP_TARGET_BARS bars),
+# a warmup anchored mid-run can converge to the opposite side of the stop vs
+# the backtest's deeper, strategy-window-anchored warmup — and every reload
+# (boot, close reload, MTF refresher) re-derives the same wrong state because
+# it re-warms from the same depth.
+#
+# Flag ON: for (symbol, tf) shadow keys whose requesting gates need a
+# hysteretic interpreter (registered by finalize_shadow_engines — reuses the
+# W2-5 gate-need parse; when the need parse yields nothing, the key is
+# registered anyway = conservative), _load_warmup_df multiplies the warmup
+# bar target by RORT_SHADOW_DEEP_ANCHOR_MULT (default 4 → 1000 bars), capped
+# at RORT_SHADOW_DEEP_ANCHOR_MAX_DAYS calendar days of 1-min history
+# (default 90 — a 1Day/4Hour gate already loads 180-355 days for its shallow
+# 250 bars; quadrupling those would be a multi-year 1Min load, so coarse TFs
+# are effectively unchanged and the deep anchor targets the sub-hour/fine
+# gate TFs). The depth decision lives INSIDE _load_warmup_df, so every
+# warmup/reload path (boot _warmup_all builder seed, _close_shadow_with_bar
+# non-RTH reload, _reload_coarse_rth_shadow, refresh_mtf_states, hot-reload
+# seeds) deepens consistently — a reload can never re-introduce the shallow
+# anchor. Deep never returns LESS history than the legacy shallow window
+# (feedback_indicator_warmup: never reduce warmup).
+#
+# Registry key is (symbol, tf_seconds) — session-agnostic — because the boot
+# path warms RTH shadows from the shared BarBuilder history whose seed
+# session is resolved from PRIMARY monitors; keying by session could let a
+# session variant of the same (sym, tf) slip back to the shallow anchor.
+# Side effect (flag ON only, documented): a REAL monitor whose primary TF
+# coincides with a registered key warms from the same deepened builder seed —
+# strictly MORE history, the parity-safe direction.
+#
+# HONEST STATUS (VALIDATION A, 2026-07-13): the flagship case this was
+# designed for — sid 333's 15Min UT_BOT_V4 3h BEAR lock on 07-10 — is NOT
+# warmup hysteresis: settled-bar replays at 250-bar, exact-live (19d), and
+# 1000-bar depths ALL match the settled backtest truth (0 mismatches across
+# 728 closes, 06-01→07-10), and live_gate telemetry shows the (900,'RTH')
+# key frozen 13:30→17:30Z while the (180,'RTH') key updated every ~3 min —
+# a close-feed FREEZE (0609a family), healed by the W1 #2 refresher
+# (refresh_mtf_states already covers ALL shadow TFs; arm
+# RORT_MTF_STATE_REFRESH_S). This flag is defense-in-depth for the
+# trend-run-longer-than-warmup latch only; do NOT arm it expecting it to
+# fix the 333-class divergence. Default OFF = byte-identical legacy
+# behavior. Read once at module import (like MTF_SESSION_SHADOWS) — flip
+# requires a worker restart.
+SHADOW_DEEP_ANCHOR = os.getenv(
+    "RORT_SHADOW_DEEP_ANCHOR", "0").strip().lower() in (
+    "1", "true", "yes", "on")
+
+try:
+    SHADOW_DEEP_ANCHOR_MULT = max(1, int(
+        os.getenv("RORT_SHADOW_DEEP_ANCHOR_MULT", "4").strip() or "4"))
+except ValueError:
+    logger.warning(
+        "RORT_SHADOW_DEEP_ANCHOR_MULT=%r is not an int — using default 4",
+        os.getenv("RORT_SHADOW_DEEP_ANCHOR_MULT"))
+    SHADOW_DEEP_ANCHOR_MULT = 4
+
+try:
+    SHADOW_DEEP_ANCHOR_MAX_DAYS = max(7, int(
+        os.getenv("RORT_SHADOW_DEEP_ANCHOR_MAX_DAYS", "90").strip() or "90"))
+except ValueError:
+    logger.warning(
+        "RORT_SHADOW_DEEP_ANCHOR_MAX_DAYS=%r is not an int — using default "
+        "90", os.getenv("RORT_SHADOW_DEEP_ANCHOR_MAX_DAYS"))
+    SHADOW_DEEP_ANCHOR_MAX_DAYS = 90
+
+# Interpreter families whose state carries unbounded path dependence
+# (trailing-stop / ratchet recursion). Bounded-lookback packs (SWING_123 =
+# 1-bar pattern, BOLLINGER_BANDS / STOCHASTIC / RVOL = rolling-window) and
+# geometrically-forgetting EMAs are deliberately NOT here — their warmup
+# converges within the existing 250-bar target. No PSAR pack exists as of
+# 2026-07-13 (checked user_packs/*/manifest.json + TEMPLATE_REQUIREMENTS).
+HYSTERETIC_INTERPRETERS = frozenset({
+    'UTBOT', 'UTBOT_V2',    # built-in UT Bot (Wilder ATR trailing stop)
+    'UT_BOT_V4',            # user pack, same recursion
+    'SUPERTREND',           # user pack, ratcheted ATR bands + trend latch
+})
+
+# (symbol, tf_seconds) keys whose shadow serves a hysteretic gate need.
+# Populated by finalize_shadow_engines (boot + hot-reload; idempotent adds),
+# read by _load_warmup_df. Set add/membership are GIL-atomic; the refresher
+# thread only reads. Never populated when SHADOW_DEEP_ANCHOR is off.
+_deep_anchor_keys: Set[Tuple[str, int]] = set()
+
+
+def _deep_anchor_active(sym: str, tf_seconds: int) -> bool:
+    """Does this (symbol, tf) warmup take the deep anchor? Flag OFF → always
+    False (registry stays empty) → byte-identical legacy depth."""
+    return SHADOW_DEEP_ANCHOR and (sym, tf_seconds) in _deep_anchor_keys
 
 
 def _load_warmup_df(sym: str, tf_seconds: int, session: str) -> pd.DataFrame:
@@ -1845,10 +1944,34 @@ def _load_warmup_df(sym: str, tf_seconds: int, session: str) -> pd.DataFrame:
     # (flip the env var, no code revert/redeploy of logic). 1Min stays native
     # either way (the resample-to-1Min no-op is invalid).
     _tf_scaled = os.getenv('RORT_TF_SCALED_WARMUP', '1') == '1'
+    _deep = _deep_anchor_active(sym, tf_seconds)
     if tf_seconds <= 60 or not _tf_scaled:
+        _days = 7
+        if _deep:
+            # Deep anchor on a native-load TF: scale the flat window by the
+            # same multiplier, same calendar-day cap, never below legacy 7.
+            _days = max(7, min(7 * SHADOW_DEEP_ANCHOR_MULT,
+                               SHADOW_DEEP_ANCHOR_MAX_DAYS))
+            if _days != 7:
+                logger.info("[DEEP-ANCHOR] warmup %s tf=%s: native days "
+                            "7 -> %d (mult=%d)", sym, tf_str, _days,
+                            SHADOW_DEEP_ANCHOR_MULT)
         return load_market_data(
-            sym, days=7, timeframe=tf_str, feed='sip', session=session)
+            sym, days=_days, timeframe=tf_str, feed='sip', session=session)
     wd = _secondary_warmup_days(tf_str, is_crypto(sym))
+    if _deep:
+        # Hysteretic gate on this (sym, tf): multiply the bar target, cap the
+        # resulting 1-min window at SHADOW_DEEP_ANCHOR_MAX_DAYS, and never go
+        # below the legacy shallow window (never reduce warmup).
+        wd_deep = _secondary_warmup_days(
+            tf_str, is_crypto(sym),
+            target_bars=_SHADOW_WARMUP_TARGET_BARS * SHADOW_DEEP_ANCHOR_MULT)
+        wd_new = max(wd, min(wd_deep, SHADOW_DEEP_ANCHOR_MAX_DAYS))
+        if wd_new != wd:
+            logger.info("[DEEP-ANCHOR] warmup %s tf=%s: 1min_days %d -> %d "
+                        "(mult=%d, cap=%dd)", sym, tf_str, wd, wd_new,
+                        SHADOW_DEEP_ANCHOR_MULT, SHADOW_DEEP_ANCHOR_MAX_DAYS)
+        wd = wd_new
     df1 = load_market_data(
         sym, days=wd, timeframe='1Min', feed='sip', session=session)
     if df1 is None or len(df1) == 0:
@@ -3040,6 +3163,49 @@ class SymbolHub:
                             "ind=%s interp=%s",
                             self.symbol, sec_tf, sh_session,
                             req_ind, req_interp)
+
+        # DEEP-ANCHOR registration (flag ON only; see the module block above
+        # SHADOW_DEEP_ANCHOR). Runs on EVERY finalize (boot + hot-reload —
+        # the creation pass above `continue`s over already-existing shadow
+        # keys, so a hot-reloaded monitor adding a hysteretic gate to an
+        # existing key still registers here). Only SHADOW-owned keys are
+        # registered: keys served by a real monitor's own records keep their
+        # own warmup depth (a divergence there is a different bug class).
+        # Idempotent set adds; keys are never unregistered (deeper warmup is
+        # always parity-safe, and monitor removal mid-session shouldn't
+        # shallow an anchor a surviving shadow already warmed with).
+        if SHADOW_DEEP_ANCHOR:
+            for (sec_tf, sh_session), requesting_monitors in needed.items():
+                if (sec_tf, sh_session) not in self._shadow_engines:
+                    continue  # monitor-owned key — out of scope
+                if (self.symbol, sec_tf) in _deep_anchor_keys:
+                    continue  # already registered
+                gate_interps: Set[str] = set()
+                for monitor in requesting_monitors:
+                    _all_conf = (
+                        list(monitor.strategy.get('confluence', []))
+                        + list(monitor.strategy.get(
+                            'general_confluences', [])))
+                    for rec in _all_conf:
+                        if rec.startswith('GEN-'):
+                            continue
+                        parts = rec.split('-', 2)
+                        if len(parts) < 3:
+                            continue
+                        if _LABEL_TO_TF_SECONDS.get(parts[0], 0) != sec_tf:
+                            continue
+                        gate_interps.add(parts[1])
+                # Unknown/empty need parse -> register anyway (conservative:
+                # a deeper warmup can only improve convergence).
+                if not gate_interps or (
+                        gate_interps & HYSTERETIC_INTERPRETERS):
+                    _deep_anchor_keys.add((self.symbol, sec_tf))
+                    logger.info(
+                        "[DEEP-ANCHOR] registered %s tf=%ss (gate interps: "
+                        "%s) — shadow warmup/reloads use the deep anchor",
+                        self.symbol, sec_tf,
+                        sorted(gate_interps & HYSTERETIC_INTERPRETERS)
+                        or 'unknown->conservative')
 
     def seed_history(self, tf_seconds: int, df: pd.DataFrame):
         builder = self.builders.get(tf_seconds)
