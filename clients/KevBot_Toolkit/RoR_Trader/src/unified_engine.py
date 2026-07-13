@@ -36,6 +36,21 @@ def _suppress_eod_reentry() -> bool:
     generated Pine always matches the engine's active flag state."""
     return os.getenv("RORT_SUPPRESS_EOD_REENTRY", "0") == "1"
 
+
+def _gate_fail_closed() -> bool:
+    """RORT_GATE_FAIL_CLOSED (default OFF), 2026-07-13 — autopsy cause E
+    ("gate-pass anomaly": 7 ungated fires on sids 327/328 at 07-09 18:04:30Z
+    while settled truth AND live_gate telemetry said the gate was CLOSED).
+    The confluence check used to be `if confluence_set and confluence_records:`
+    — an EMPTY record set skipped the check entirely, so a GATED strategy
+    fired UNGATED during live record gaps (boot, shadow reload windows, the
+    PB-defer first-publish edge). A required gate over an empty record set is
+    UNSATISFIABLE → fail CLOSED ("if it's flagged as a gate, it should be
+    treated as a gate"). Backtest derives records per bar (non-empty for
+    gated strategies), so this is effectively a LIVE-transient guard. Read at
+    runtime so the parity suite can toggle it."""
+    return os.getenv("RORT_GATE_FAIL_CLOSED", "0") == "1"
+
 # (Phase 2 cleanup) The `_warned_unpicklable_slugs` set used to dedupe
 # per-slug pickle-probe warnings in `snapshot_state(persistent=True)`. The
 # probe is gone — `user_pack_state_codec.serialize_pack_state` now extracts
@@ -2523,9 +2538,17 @@ class PositionStateMachine:
         fill_price = entry_result.fill_price
         is_ltype = entry_result.is_ltype
 
-        # Confluence check
-        if self.confluence_set and confluence_records:
-            if not self.confluence_set.issubset(confluence_records):
+        # Confluence check (fail-CLOSED on empty records when
+        # RORT_GATE_FAIL_CLOSED is armed — see _gate_fail_closed)
+        if self.confluence_set:
+            if confluence_records:
+                if not self.confluence_set.issubset(confluence_records):
+                    return None
+            elif _gate_fail_closed():
+                logger.warning(
+                    "[GATE-FAIL-CLOSED] sid=%s gated entry suppressed: empty "
+                    "confluence record set (gate %s unsatisfiable)",
+                    self.strat_id, sorted(self.confluence_set))
                 return None
 
         # For L-type entries, use previous bar's indicator values for
@@ -2948,9 +2971,17 @@ class PositionStateMachine:
                                self.strategy.get('trading_session', 'RTH')):
                 return None
 
-        # Confluence check
-        if self.confluence_set and confluence_records:
-            if not self.confluence_set.issubset(confluence_records):
+        # Confluence check (fail-CLOSED on empty records when
+        # RORT_GATE_FAIL_CLOSED is armed — see _gate_fail_closed)
+        if self.confluence_set:
+            if confluence_records:
+                if not self.confluence_set.issubset(confluence_records):
+                    return None
+            elif _gate_fail_closed():
+                logger.warning(
+                    "[GATE-FAIL-CLOSED] sid=%s gated entry suppressed: empty "
+                    "confluence record set (gate %s unsatisfiable)",
+                    self.strat_id, sorted(self.confluence_set))
                 return None
 
         atr = current_values.get('atr', fill_price * 0.01)
