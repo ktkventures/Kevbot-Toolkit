@@ -796,6 +796,16 @@ class DBRalphEngine:
         except Exception as e:
             logger.warning("MTF state refresher setup failed: %s", e)
 
+        # PRIMARY state re-sync (M-RS2-P2 item 2, 2026-07-13): periodic
+        # re-true of each monitor's primary in-memory indicator state from
+        # settled-lineage warmups — the 340-class drift meter (dry-run) and,
+        # with RORT_PRIMARY_STATE_RESYNC_APPLY=1, the fix. No-op unless
+        # RORT_PRIMARY_STATE_RESYNC_S > 0.
+        try:
+            self._start_primary_state_resync(engine)
+        except Exception as e:
+            logger.warning("primary state resync setup failed: %s", e)
+
         # Bar-close recompute hook is OFF. stored_trades is now appended
         # atomically by DBAlertDispatcher.dispatch on exit signals (see
         # docs/Alert_Recovery_Plan_2026-04-17.md, Phase 1). The
@@ -1192,6 +1202,72 @@ class DBRalphEngine:
             target=loop, daemon=True, name=f"mtf-state-refresh-{uid}")
         t.start()
         self._mtf_refresh_thread = t
+        return t
+
+    def _start_primary_state_resync(
+            self, engine) -> Optional[threading.Thread]:
+        """Launch the PRIMARY-TF state re-sync daemon thread (M-RS2-P2
+        ranked item 2, 2026-07-13 — the 340-class fix; see the
+        PRIMARY_STATE_RESYNC_S block in ralph_engine for the full why).
+
+        Every RORT_PRIMARY_STATE_RESYNC_S seconds, calls
+        `hub.resync_primary_states()` on every SymbolHub — rebuilding each
+        monitor's primary indicator/pack state from a fresh session-correct
+        warmup and logging drift ([PRIMARY-RESYNC] lines = the fleet drift
+        meter). Dry-run unless RORT_PRIMARY_STATE_RESYNC_APPLY=1 (then
+        rebuilt state is staged and consumed at the monitor's next bar
+        close, alignment-checked). Mirrors _start_mtf_state_refresh.
+
+        Gate: RORT_PRIMARY_STATE_RESYNC_S (read once at ralph_engine
+        import; default 0). <= 0 → returns None, NO thread."""
+        from ralph_engine import PRIMARY_STATE_RESYNC_S
+        if PRIMARY_STATE_RESYNC_S <= 0:
+            logger.info(
+                "primary state resync disabled — set "
+                "RORT_PRIMARY_STATE_RESYNC_S>0 (seconds) to enable")
+            return None
+        interval = PRIMARY_STATE_RESYNC_S
+        uid = self.user_id[:8]
+
+        def loop():
+            logger.info("[PRIMARY-RESYNC] loop started (interval=%ss, "
+                        "apply=%s)", interval,
+                        os.getenv('RORT_PRIMARY_STATE_RESYNC_APPLY', '0'))
+            # Stagger first cycle so engine warmup completes first.
+            time.sleep(min(float(interval), 90.0))
+            while True:
+                try:
+                    hubs = 0
+                    totals = {'checked': 0, 'drifted': 0, 'staged': 0,
+                              'failed': 0}
+                    for sym, hub in list(engine.hubs.items()):
+                        try:
+                            summary = hub.resync_primary_states()
+                        except Exception as e:  # noqa: BLE001
+                            logger.warning(
+                                "[PRIMARY-RESYNC] hub %s resync crashed: %s",
+                                sym, e)
+                            totals['failed'] += 1
+                            continue
+                        hubs += 1
+                        for k in totals:
+                            totals[k] += int(summary.get(k, 0))
+                        # Stagger hubs — each cycle reloads warmups.
+                        time.sleep(3.0)
+                    logger.info(
+                        "[PRIMARY-RESYNC] cycle: hubs=%d checked=%d "
+                        "drifted=%d staged=%d failed=%d", hubs,
+                        totals['checked'], totals['drifted'],
+                        totals['staged'], totals['failed'])
+                except Exception as e:  # noqa: BLE001
+                    logger.error("[PRIMARY-RESYNC] cycle crashed: %s", e,
+                                 exc_info=True)
+                time.sleep(float(interval))
+
+        t = threading.Thread(
+            target=loop, daemon=True, name=f"primary-state-resync-{uid}")
+        t.start()
+        self._primary_resync_thread = t
         return t
 
     @property

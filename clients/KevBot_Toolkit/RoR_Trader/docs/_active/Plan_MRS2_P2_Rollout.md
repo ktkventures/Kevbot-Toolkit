@@ -136,8 +136,17 @@ below. NOTE: 1Min PRIMARY warmup (340's boot injection) is NOT store-covered (st
    tolerance, fixed to +5d). Boot watch: `[ResampledStore#4-live] SERVED` lines.
    Canary-script lessons: set_admin_user_context + pack_registry.scan_and_load_all needed in
    ANY standalone engine script; run canaries OFF/ON/OFF when a session is live.
-2. Primary-TF pack state re-sync (Kevin-approved, mid-position OK): periodic re-true of monitor
-   in-memory indicator state from settled bars — the 340-class fix; flag-gated + replay-validated.
+2. ✅ **BUILT + replay-validated (PR pending)** — Primary-TF pack state re-sync (Kevin-approved,
+   mid-position OK): `SymbolHub.resync_primary_states` rebuilds each monitor's primary
+   indicator/pack state from a fresh `_load_warmup_df` (store-served for 2Min+) and diffs it
+   against live in-memory state. Two flags: `RORT_PRIMARY_STATE_RESYNC_S` (cadence; dry-run
+   drift METER — `[PRIMARY-RESYNC]` lines) and `RORT_PRIMARY_STATE_RESYNC_APPLY=1` (stage swap,
+   consumed at the monitor's next bar close ONLY when the rebuild ends exactly at its last
+   committed bar; grace-fire suppressed; pre-bar rewind tokens invalidated on swap). Position
+   machine untouched. Replay validation 6/6: no-op byte-identity (swap+next-commit == never-
+   swapped), injected-MACD-drift detect+heal (the 340 mode), misalignment drop, grace-fire
+   suppression, hub dry/apply staging. Ralph fidelity 13 pass. ARMING PLAN: dry-run meter
+   first (RESYNC_S=900, no APPLY) → review fleet drift lines → flip APPLY.
 3. 900s fan-out starvation root-cause (why 15m closes starve while 3m flows — refresher heals
    meanwhile every 10min).
 4. Grace-fire `_fired_bucket` suppression hole (ralph 2838/3846) — latent alert-drop, ticket.
