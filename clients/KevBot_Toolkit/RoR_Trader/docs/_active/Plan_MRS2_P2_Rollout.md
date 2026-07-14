@@ -248,6 +248,33 @@ completion (recompute job records / batch-worker logs quiet 10+ min) → then sh
   SWING flips near boundaries. Poisoning class (yesterday's engine) = confirmed DEAD live:
   keys stable between boundaries all morning, refresher-backed, [FINE-DUP-SKIP] active.
 
+## NEXT PHASE (agreed with Kevin 07-14 ~17:00Z) — Fine-TF Canonical Edge
+Target: close the pinned residual (live fine-TF SWING state drift on the NEWEST bar) →
+327/328 join 338 at ≥90%; the 5m-SWING Gate Parity row goes green.
+1. 🔨 **Canonical newest-bar state serve for fine-TF shadows** (the main build). At each
+   fine-TF boundary close, build the just-closed bar by AGGREGATING LIVE 1MIN BARS (same
+   resample-from-1Min construction as backtest/store) on top of the refresher's clean t-1
+   state — live state(t) = canonical state(t-1) + canonically-built bar(t). Residual after
+   this = WS-vs-settled tip on the 1Min bars = the accepted 90%@10s floor. Also improves
+   volume packs (1Min AM volume is canonical; fan-out volume is the noisy path).
+   **Design choice (Kevin: inline-first approved):** inline at boundary (~100-300ms per
+   fine-TF close, canonical before the next primary close) behind a new flag, measure
+   hot-path cost; fall back to thread-side boundary-triggered if latency bites (sub-second
+   alert latency stays the hard requirement). Same validation discipline: flag-gated,
+   OFF=byte-identical, lock tests, replay-predict, parity suite + ralph fidelity.
+2. 🔨 **Recorded-events replay harness (in-house).** Replay a recorded session (live_bars as
+   the recorded WS stream) through live aggregation AND backtest construction; diff every
+   bar, gate state, and decision. The validation tool for #1 and the permanent
+   which-bar-diverged lookup. (Idea credited to the Sol audit's closing recommendation;
+   building in-house — needs engine-internal hooks.)
+3. 🔨 **Worker healthcheck freshness** (30-min quick win, from the Sol audit — verified
+   still true): Dockerfile.worker HEALTHCHECK only does `test -f /tmp/worker_alive`;
+   make it validate file age + last-candle freshness so a hung worker actually restarts.
+4. External-audit protocol (brother-in-law/Sol): their branch reviewed on request; standard
+   for adopting anything = failing test against current origin/dev, one small flag-gated PR
+   per finding. Their uncommitted aggregation rewrite = do NOT apply (predates months of
+   shipped edge-case fixes; see 07-14 review notes in session log).
+
 **T1 — SUPERSEDED 07-14 00:20Z:** clobber RETRACTED (see item 3 above — cross-hub aggregation
 artifact; per-hub scan = needed interps ~100% present; memory `project_mtf_publish_clobber`
 rewritten). T1' replacement = the warmup prev-chain fix (item 3'): `RORT_WARMUP_PREV_CHAIN`,
