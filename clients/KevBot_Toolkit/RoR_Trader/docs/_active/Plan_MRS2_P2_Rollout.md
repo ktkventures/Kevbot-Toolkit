@@ -210,6 +210,22 @@ completion (recompute job records / batch-worker logs quiet 10+ min) → then sh
   327=33% 328=25% 329=0% 333=65% 340=quiet. Most unpaired events attribute to the cascade
   class (bt entries sat inside settled gate-open windows the poisoned live key missed).
   Post-nightly re-audit + tomorrow's live telemetry-vs-settled comparison = acceptance.
+- **T2 COMPLETE (~02:50Z, post-nightly lanes == pre-nightly, window final):** every unpaired
+  17:07-20:00Z event on 327/328 (12 events: live 18:22/18:41/18:42 fired in boundary flashes;
+  bt 18:38/19:19/19:45:30 inside settled gate-open windows the poisoned key missed) +
+  329 (2: same flash mechanism on its tf=60 key — also fine-TF, #62 covers) attributes to the
+  cascade class → resolved-by-stack. 333 (65%) = same class on 15m/3m keys + accepted WS
+  floor residue. ≥90% attributed ✓. LIVE acceptance = T3: telemetry-vs-settled gate series
+  match on the armed stack + the Five ≥90% paired in the 1h/3h window during RTH.
+
+- **T3 PRE-MARKET BATTERY ALL GREEN (08:13Z):** fleet presence scan since 08:00Z = **32/32
+  keys, zero missing/empty** (the T1 acceptance metric, met on live data); sid 285's
+  `2M-MACD_HISTOGRAM_V2` present in EVERY event with evolving state (0/204 all yesterday —
+  the #61 live proof); `[FINE-DUP-SKIP]` firing on TSLA/TSLL/SPY (#62 live);
+  `[MTF-REFRESH] cycle: hubs=5 refreshed=18 failed=0` at the new 120s cadence;
+  `[PRIMARY-RESYNC] APPLIED` healing real drift (287/288/289); 0 errors, no GATE-FREEZE.
+  09:00Z pre-market paired-%: 338=90% (9E+9X), 290=87%, 285 firing again (was structurally
+  blocked), 337/291 legitimately quiet. RTH goal check (the Five ≥90% @1h/3h) after 14:30Z.
 
 **T1 — SUPERSEDED 07-14 00:20Z:** clobber RETRACTED (see item 3 above — cross-hub aggregation
 artifact; per-hub scan = needed interps ~100% present; memory `project_mtf_publish_clobber`
