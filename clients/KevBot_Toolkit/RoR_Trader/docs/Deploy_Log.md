@@ -21,6 +21,20 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-07-14
 
+- **~17:50 UTC (11:50 MT)** — PR #65 merged (`feat/shadow-retrue-force-full`) +
+  `RORT_SHADOW_RETRUE_FORCE_FULL=1` armed on Worker right after deploy SUCCESS.
+  ROOT-CAUSE fix for the residual class: shadow re-trues (refresher / session reloads /
+  coarse reloads) were hitting `recompute_from_history`'s snapshot fast-path (NO alignment
+  check) — restoring the live lineage instead of replaying clean, so drifted states survived
+  every re-true (proven live: TSLA 5m SWING NEUTRAL 14:35→15:06+ across refresher cycles vs
+  canonical BULL_C2 from the identical df; the 14:39 bt-only misses on 327/328). Flag ON =
+  force full replay on re-true paths. Kill-switch = unset. Backup branch
+  `backup/dev-pre-retrue-forcefull-2026-07-14`. Validation: new lock suite 3/3, ralph
+  13+1 baseline, gap-heal 23/23, prior lock suites green, parity --quick 16/16.
+  Watch: post-arm burst of `[MTF-REFRESH] records changed` (lineage re-truing) then
+  convergence; refresher cycle duration (full-replay cost, thread-side).
+  Kevin ruling in effect: not actively trading — RTH deploys OK (memory
+  `feedback_deploy_autonomy` update).
 - **15:40 UTC (09:40 MT)** — `<this commit>` docs: overnight-loop close-out (goal check +
   residual-class finding). Also retro-logs the **11:19 UTC** docs-only push (`e9e3835`, T3
   battery results) — both are docs-only redeploys, no code/flag changes.

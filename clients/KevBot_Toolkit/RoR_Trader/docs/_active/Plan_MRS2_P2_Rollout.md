@@ -248,6 +248,24 @@ completion (recompute job records / batch-worker logs quiet 10+ min) → then sh
   SWING flips near boundaries. Poisoning class (yesterday's engine) = confirmed DEAD live:
   keys stable between boundaries all morning, refresher-backed, [FINE-DUP-SKIP] active.
 
+## NEXT PHASE — EXECUTION UPDATE (07-14 ~17:50Z): plan item 1 SUPERSEDED by a sharper root cause
+Pre-build verification of item 1's premise falsified it step by step (fresh-tail ✓ present,
+anchor-dependence ✗ none, incremental==vectorized ✓, data revisions ✗ byte-identical,
+write-through quality ✗ identical, refresher running ✓) and converged on the REAL mechanism:
+**`recompute_confluence` → `recompute_from_history(df)` takes the snapshot FAST-PATH whenever
+a pre-bar snapshot exists (NO alignment check) — restoring the LIVE lineage + re-applying only
+the df's last bar. Every shadow re-true since snapshots were enabled (05-19) was
+lineage-preserving, not clean.** Live proof: TSLA 5m SWING held NEUTRAL 14:35→15:06+ across
+refresher cycles (changed=0) while the identical df full-replays to BULL_C2 (== vectorized ==
+settled at 2/10/30d anchors; 1Min inputs byte-identical across live_bars first-writes /
+bar_cache / settled). Retro-explains "shadow drift survives reloads/reboots" (autopsy class B
+residue, 333's UT_BOT lock). **FIX SHIPPED: PR #65 `RORT_SHADOW_RETRUE_FORCE_FULL` — re-trues
+force the full clean replay; armed on Worker ~17:50Z.** With this, the 120s refresher is
+genuinely canonical: wrong boundary states heal ≤2min (the 14:39-class events pair). The
+boundary-inline canonical recompute (original item 1) stays on the shelf pending post-arm
+measurement — only needed if the ≤120s heal window still costs pairs. Items 2 (replay
+harness) + 3 (healthcheck) unchanged.
+
 ## NEXT PHASE (agreed with Kevin 07-14 ~17:00Z) — Fine-TF Canonical Edge
 Target: close the pinned residual (live fine-TF SWING state drift on the NEWEST bar) →
 327/328 join 338 at ≥90%; the 5m-SWING Gate Parity row goes green.
