@@ -51,6 +51,26 @@ def _gate_fail_closed() -> bool:
     runtime so the parity suite can toggle it."""
     return os.getenv("RORT_GATE_FAIL_CLOSED", "0") == "1"
 
+
+def _warmup_prev_chain() -> bool:
+    """RORT_WARMUP_PREV_CHAIN (default OFF), 2026-07-14 — warmup() and the
+    recompute_from_history full-replay path never populated the prev-value
+    chain (`state.prev_values` / `prev_macd_hist` / `prev2_macd_hist`); only
+    update_bar() maintains it. Every NON-incremental record derivation
+    (`_derive_confluence_records` after a warmup seed, the non-RTH session
+    reload that runs on EVERY close, the RORT_MTF_STATE_REFRESH refresher,
+    rebroadcast recompute, gap-heal) therefore handed prev={} to the
+    user-pack interpreter dispatch, which built a 1-row DataFrame → shift(1)
+    = NaN → shift-based interpreters (MACD_HISTOGRAM_V2) silently emitted NO
+    record. Observed live 2026-07-13: sid 285's 2m Extended gate record
+    absent in 204/204 telemetry events; sid 136's 15m key EMPTY 5-20 min
+    after every deploy (ungated fires under fail-open, silent blocks under
+    RORT_GATE_FAIL_CLOSED). Flag ON: warmup runs update_bar's exact
+    prev-chain prelude each iteration, so a warmed engine's state is
+    identical to sequential update_bar ingestion and derive == incremental.
+    Flag OFF: byte-identical legacy. Read at runtime so tests can toggle."""
+    return os.getenv("RORT_WARMUP_PREV_CHAIN", "0") == "1"
+
 # (Phase 2 cleanup) The `_warned_unpicklable_slugs` set used to dedupe
 # per-slug pickle-probe warnings in `snapshot_state(persistent=True)`. The
 # probe is gone — `user_pack_state_codec.serialize_pack_state` now extracts
@@ -958,6 +978,7 @@ class IncrementalIndicatorEngine:
         if len(df) < 2:
             return
 
+        prev_chain = _warmup_prev_chain()
         for i in range(len(df)):
             row = df.iloc[i]
             bar = {
@@ -966,6 +987,16 @@ class IncrementalIndicatorEngine:
                 'volume': float(row.get('volume', 0)),
                 'timestamp': df.index[i],
             }
+            if prev_chain:
+                # update_bar's exact prelude (see RORT_WARMUP_PREV_CHAIN):
+                # a warmed engine must hold the same prev-value chain as
+                # sequential update_bar ingestion, or the derive-based
+                # record paths evaluate shift-based interpreters on a
+                # 1-row frame and drop their records.
+                self.state.prev2_macd_hist = self.state.prev_macd_hist
+                self.state.prev_macd_hist = self.state.current.get(
+                    'macd_hist', 0.0)
+                self.state.prev_values = dict(self.state.current)
             self._update_indicators(bar, is_first=(i == 0))
 
         self._initialized = True
