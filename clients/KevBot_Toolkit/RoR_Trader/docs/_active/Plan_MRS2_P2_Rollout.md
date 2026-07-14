@@ -1,12 +1,34 @@
 # Plan — M-RS2 Phase 2 Rollout: Resampled Bar Store → Both Lanes Serve From It
 
 ---
-## ▶ ACTIVE WORK QUEUE (agreed with Kevin 07-14 ~20:30Z — do in this order)
+## ▶ ACTIVE WORK QUEUE (agreed with Kevin 07-14 — updated ~23:10Z)
 Context: the gate-state class is fixed+proven (#61/#62/#65); the live engine was being
 STARVED by PRIMARY-RESYNC (disabled 20:11Z — see the 🚨 section below), which invalidated
 today's live paired-% numbers. Neither 07-13 (gate bugs live) nor 07-14 (stalls) is a clean
-day; 07-15 is the first clean read. These four items make the next read trustworthy AND make
-future test-and-learn fast.
+day; **07-15 is the first clean read.**
+
+**✅ STATUS ~23:10Z — items 1, 2, and 4 are DONE; canonical-edge build DELETED.**
+- **1. Liveness watchdogs** — SHIPPED+LIVE (PR #66). Alert lag median 6s; watchdogs silent.
+- **2. Replay harness** — WORKS (`src/replay_harness.py`; memory `project_replay_harness`).
+  Ceiling 327=95% 328=88% 333=83% @10s vs live 48/64/63% → stalls cost ~25-47pp.
+- **4. Primary-drift check** — DONE: **no trade-affecting primary drift exists** (all
+  in-session resync checks were misaligned-endpoint artifacts; aligned ones = volume/tip/
+  float noise). ⇒ **RESYNC STAYS DELETED PERMANENTLY** (code-removal cleanup PR later). The
+  340-class was fixed by #65 + boot-warmup, not by rebuilding primary state.
+
+**⏳ TOMORROW (07-15) — the plan Kevin can commit to (~2h, not a full day):**
+Kevin will hold page edits until ~**15:30Z (09:30 MT)** = ~2h of RTH + pre-market data, then
+we do BOTH in one pass:
+  (a) **Measure the Five** on the clean window (stalls gone, gate fixes in) — the real verdict
+      vs the ≥90%@10s bar; and
+  (b) **VALIDATE THE REPLAY HARNESS**: run it over the same clean window and confirm
+      **REPLAY-vs-LIVE @10s ≥ ~90%**. That agreement is what promotes the harness from
+      "strong hypothesis" to "proven oracle" — and it doubles as the permanent primary-drift
+      monitor (live ≈ fresh warm ⇒ no drift). Once validated, the harness graduates to its own
+      skill (and, later, a possible admin-page "Replay" tab). This is the payoff: validated,
+      it makes every future logic edit testable offline in MINUTES instead of an overnight soak.
+
+These items made the next read trustworthy AND make future test-and-learn fast.
 
 **1. Latency tripwire + worker healthcheck freshness** (small, prevents recurrence)
    - WARN when alert dispatch lag (`alerts.timestamp − fill_ts`) p95 > 30s (normal 3–8s).
