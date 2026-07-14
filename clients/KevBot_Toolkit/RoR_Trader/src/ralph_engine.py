@@ -222,6 +222,22 @@ STRATEGY_REFRESH_INTERVAL = 300  # seconds
 # Partial bar pickle write interval
 PICKLE_WRITE_INTERVAL = 2.0  # seconds
 
+# ── Liveness watchdogs (2026-07-14, post PRIMARY-RESYNC starvation) ──────────
+# The engine's asyncio loop is the pulse; the worker MANAGER runs on a separate
+# thread and used to be the only thing touching the Docker healthcheck file —
+# so a starved engine looked "alive" indefinitely while alerts ran 5-10 MINUTES
+# late and bar closes were skipped outright. These make a stall LOUD and, via
+# the heartbeat file's AGE, actually detectable from outside the process.
+ENGINE_HEARTBEAT_FILE = os.getenv(
+    "RORT_ENGINE_HEARTBEAT_FILE", "/tmp/engine_alive")
+# Periodic loop is expected every PICKLE_WRITE_INTERVAL (2s). Warn when it is
+# this many seconds LATE — well above normal jitter, well below the multi-minute
+# stalls we are guarding against.
+ENGINE_STALL_WARN_S = float(os.getenv("RORT_ENGINE_STALL_WARN_S", "15"))
+# Alert dispatch: fire time vs the bar it decided on. Normal is 3-8s
+# (bar close + engine + save). Minutes = the engine was starved.
+ALERT_LAG_WARN_S = float(os.getenv("RORT_ALERT_LAG_WARN_S", "30"))
+
 # Trade condition codes excluded from OHLCV bar building.
 # These match the standard CTA/UTP exclusions that Alpaca applies
 # to their historical bar aggregation.  Form T ('T') is intentionally
@@ -2847,6 +2863,33 @@ class SymbolHub:
         """
         if not alert_callback or not sig:
             return
+
+        # ALERT-LAG TRIPWIRE (2026-07-14 — memory
+        # project_primary_resync_engine_starvation). Dispatch should follow the
+        # deciding bar's CLOSE by seconds; when the engine is starved it can be
+        # MINUTES (measured 07-14: fill 18:54:30 dispatched 18:59:43 fleet-wide,
+        # and bar closes inside the stall were skipped entirely — sid 333's
+        # 18:44:30 entry never fired live). The engine cannot see its own
+        # starvation from the outside, so say it here, loudly. Log-only;
+        # never raises into the dispatch path.
+        try:
+            _bt = sig.get('bar_time')
+            if _bt:
+                _bar_start = pd.Timestamp(_bt)
+                if _bar_start.tzinfo is None:
+                    _bar_start = _bar_start.tz_localize('UTC')
+                _expected = _bar_start.timestamp() + monitor.tf_seconds
+                _lag = datetime.now(timezone.utc).timestamp() - _expected
+                if _lag > ALERT_LAG_WARN_S:
+                    logger.warning(
+                        "[ALERT-LAG] sid=%s %s dispatched %.0fs after its bar "
+                        "closed (bar=%s tf=%ss) — normal is 3-8s; the engine is "
+                        "likely being starved (see [ENGINE-STALL]).",
+                        monitor.strat_id, sig.get('type') or sig.get('side'),
+                        _lag, _bt, monitor.tf_seconds)
+        except Exception:  # noqa: BLE001 — tripwire must never break dispatch
+            pass
+
         if self.latest_close is not None and 'actual_price' not in sig:
             sig['actual_price'] = self.latest_close
         # Snapshot engine indicator state. monitor.indicators.state.current is
@@ -6885,14 +6928,47 @@ class RalphEngine:
 
         Heavy I/O work (pickle writes, reconciliation) is offloaded to
         the default thread pool to avoid blocking the event loop.
+
+        ENGINE-STALL WATCHDOG (2026-07-14, after the PRIMARY-RESYNC
+        starvation incident — memory project_primary_resync_engine_starvation):
+        this loop is the engine's pulse (every PICKLE_WRITE_INTERVAL = 2s). Any
+        in-process work that hogs the GIL (a periodic full-warmup rebuild, a
+        heavy sweep) delays it — and a delayed loop means bar closes, alerts and
+        gate telemetry are ALL late. Measure the actual gap each iteration and
+        WARN loudly past ENGINE_STALL_WARN_S; also refresh the engine heartbeat
+        file that Dockerfile.worker's HEALTHCHECK ages out (the old check tested
+        mere EXISTENCE of a file touched by the MANAGER thread — so a fully
+        starved engine passed it forever). Observability only: no behavior
+        change, and every step is failure-isolated.
         """
         logger.info("Periodic tasks loop started")
         loop = asyncio.get_running_loop()
+        _last_beat = time.monotonic()
+        _stall_warned_at = 0.0
         try:
             while self._running:
                 await asyncio.sleep(PICKLE_WRITE_INTERVAL)
                 if not self._running:
                     break
+
+                # --- engine pulse: lag + heartbeat (never raises) ---
+                try:
+                    _now_m = time.monotonic()
+                    _gap = _now_m - _last_beat
+                    _last_beat = _now_m
+                    _delay = _gap - PICKLE_WRITE_INTERVAL
+                    if (_delay > ENGINE_STALL_WARN_S
+                            and _now_m - _stall_warned_at > 30):
+                        _stall_warned_at = _now_m
+                        logger.warning(
+                            "[ENGINE-STALL] periodic loop ran %.1fs late "
+                            "(expected every %.0fs) — live bar closes / alerts "
+                            "/ gate telemetry are ALL delayed by this. Look for "
+                            "in-process heavy work (periodic rebuilds, sweeps) "
+                            "holding the GIL.", _delay, PICKLE_WRITE_INTERVAL)
+                    Path(ENGINE_HEARTBEAT_FILE).touch()
+                except Exception:  # noqa: BLE001 — watchdog must never break the loop
+                    pass
 
                 now = time.monotonic()
 
