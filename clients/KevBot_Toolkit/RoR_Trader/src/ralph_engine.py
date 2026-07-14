@@ -2366,6 +2366,28 @@ MTF_PB_DEFER = os.getenv(
     "1", "true", "yes", "on")
 
 
+def _shadow_retrue_force_full() -> bool:
+    """RORT_SHADOW_RETRUE_FORCE_FULL (default OFF), 2026-07-14 — every
+    explicit shadow re-true (`_ShadowIndicatorEngine.recompute_confluence`:
+    the MTF state refresher, the non-RTH session reloads, the coarse-RTH
+    CLASS-1a reload) funnels into `recompute_from_history(df)`, whose
+    default path takes the O(1) snapshot fast-path whenever a pre-bar
+    snapshot exists — WITHOUT checking that the snapshot aligns with the
+    reload df. That restores the LIVE lineage and re-applies only the
+    df's last bar, so the "clean re-true" silently preserves whatever
+    state drift the incremental lineage carries (observed 2026-07-14:
+    TSLA 5m SWING held NEUTRAL for hours across refresher cycles while
+    the same df full-replays to BULL_C2 — sid 327/328 bt-only entries at
+    14:39; also the long-standing "shadow drift survives reloads" class,
+    e.g. 333's UT_BOT wrong-side lock). Flag ON: re-trues force the full
+    clean replay — the fast path stays for its designed use (rebroadcast
+    corrections via update_bar's own snapshot cycle). Flag OFF:
+    byte-identical legacy. Read at runtime (cheap: once per re-true)."""
+    return os.getenv(
+        "RORT_SHADOW_RETRUE_FORCE_FULL", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def _fine_incremental_authority() -> bool:
     """RORT_MTF_FINE_INCREMENTAL_AUTHORITY (default OFF), 2026-07-14 — see
     the duplicate-branch comment in _fanout_to_secondary_builders. Flag ON
@@ -2510,8 +2532,16 @@ class _ShadowIndicatorEngine:
         only gating (no triggers/positions/alerts), so re-emitting is safe —
         the original "don't re-emit" rule was inherited from the primary
         own_records path, where re-emit could double-fire alerts.
+
+        RORT_SHADOW_RETRUE_FORCE_FULL (2026-07-14): a re-true exists to
+        DISCARD the live lineage, but recompute_from_history's default
+        snapshot fast-path restores that very lineage whenever a pre-bar
+        snapshot exists (no alignment check) — so every refresher pass /
+        session reload silently preserved drifted states. Flag ON forces
+        the full clean replay here; flag OFF keeps legacy bytes.
         """
-        self.indicators.recompute_from_history(history_df)
+        self.indicators.recompute_from_history(
+            history_df, force_full=_shadow_retrue_force_full())
         return self._derive_confluence_records()
 
     def _derive_confluence_records(self) -> Set[str]:
