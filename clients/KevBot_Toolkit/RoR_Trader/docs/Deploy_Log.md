@@ -21,6 +21,16 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-07-14
 
+- **~20:55 UTC (14:55 MT)** — `5fdaeaa` (PR #66) feat(ops): engine liveness watchdogs.
+  `[ENGINE-STALL]` (periodic-loop lateness > 15s), `[ALERT-LAG]` (dispatch > 30s after its
+  bar closed), and a HEALTHCHECK that **ages out the ENGINE heartbeat** instead of testing
+  file existence (the old check watched a file touched by the MANAGER thread — a starved
+  engine passed it forever; healthcheck weakness also flagged by the external Sol audit).
+  Observability only — no trading-path behavior change. Tests 8/8 incl. the exact regression
+  (manager fresh + engine stalled → UNHEALTHY); suites at baseline; parity --quick 16/16.
+  Post-deploy: watchdogs SILENT (0 stalls / 0 lag warnings / 0 errors) and alert dispatch lag
+  median **6s** (max 8s) — i.e. the engine is healthy with resync off, and any future stall
+  now announces itself within seconds. Backup: `backup/dev-pre-liveness-2026-07-14`.
 - **🚨 20:11 UTC (14:11 MT) — `RORT_PRIMARY_STATE_RESYNC_S=0` + `RORT_PRIMARY_STATE_RESYNC_APPLY=0`
   (DISABLED) on Worker.** ROOT CAUSE of today's latency + missed entries: each resync cycle
   full-warmup-replays ~50 strategies SEQUENTIALLY (~4s each → **~9.5-min cycle**, 18:39:32→
