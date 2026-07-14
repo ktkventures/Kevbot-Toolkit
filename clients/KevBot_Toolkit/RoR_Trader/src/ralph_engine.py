@@ -2366,6 +2366,18 @@ MTF_PB_DEFER = os.getenv(
     "1", "true", "yes", "on")
 
 
+def _fine_incremental_authority() -> bool:
+    """RORT_MTF_FINE_INCREMENTAL_AUTHORITY (default OFF), 2026-07-14 — see
+    the duplicate-branch comment in _fanout_to_secondary_builders. Flag ON
+    suppresses the fine-RTH-shadow duplicate recompute+republish so the
+    boot-seeded deep-anchor incremental state stays authoritative between
+    refresher re-trues. Read at runtime (cheap; once per duplicate per TF)
+    so tests and the parity suite can toggle without a module reload."""
+    return os.getenv(
+        "RORT_MTF_FINE_INCREMENTAL_AUTHORITY", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def _bar_close_in_session(bar: dict, arrival_ts: datetime,
                           monitor: 'StrategyMonitor') -> bool:
     """W2-2: session membership for a completed bar at bar-close dispatch.
@@ -2762,6 +2774,9 @@ class SymbolHub:
         #       warmup-seed semantics).
         self._mtf_confluence_prev: Dict[Tuple[int, str], Set[str]] = {}
         self._mtf_confluence_effective_from: Dict[Tuple[int, str], float] = {}
+        # RORT_MTF_FINE_INCREMENTAL_AUTHORITY: once-per-TF boot-watch log
+        # dedupe for the suppressed duplicate-branch recompute.
+        self._fine_dup_skip_logged: Set[int] = set()
         # Shadow engines for secondary TFs not covered by real monitors,
         # keyed (tf_seconds, session) — same convention as _mtf_confluence.
         self._shadow_engines: Dict[
@@ -4327,6 +4342,31 @@ class SymbolHub:
                     # RTH-resampled truth instead (see _reload_coarse_rth_shadow).
                     if self._coarse_rth_reload_active(sec_tf):
                         self._reload_coarse_rth_shadow(sec_tf, shadow)
+                        continue
+                    # RORT_MTF_FINE_INCREMENTAL_AUTHORITY (2026-07-14): for
+                    # FINE RTH shadows the duplicate-branch recompute is the
+                    # gate-state POISONING engine — sec_builder.history is a
+                    # shallow, fan-out-flavored series (different anchor than
+                    # the backtest-family warmup), so path-dependent interps
+                    # (SWING_123 counts) land off-by-one and this republish
+                    # OWNS the key's steady state between boundary closes
+                    # (proven 2026-07-13: GATE_DIAG BULL_C2 fire at 18:41:03
+                    # == settled truth, vs telemetry steady BULL_C3; cascade
+                    # log re-poisoned 11s after the 18:42:00 boundary). Flag
+                    # ON: skip recompute AND republish — the boot-seeded
+                    # deep-anchor incremental state stays authoritative, and
+                    # the thread-side refresher (RORT_MTF_STATE_REFRESH_S,
+                    # clean _load_warmup_df) does the canonical re-trues.
+                    # Mirrors the sub-minute path's existing discipline.
+                    # Flag OFF: byte-identical legacy recompute+republish.
+                    if _fine_incremental_authority():
+                        if sec_tf not in self._fine_dup_skip_logged:
+                            self._fine_dup_skip_logged.add(sec_tf)
+                            logger.info(
+                                "[FINE-DUP-SKIP] %s tf=%ss: duplicate-branch "
+                                "recompute suppressed (incremental "
+                                "authoritative; refresher re-trues)",
+                                self.symbol, sec_tf)
                         continue
                     try:
                         self._publish_mtf(
