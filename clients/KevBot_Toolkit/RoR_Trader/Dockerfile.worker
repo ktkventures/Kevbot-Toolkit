@@ -12,7 +12,16 @@ COPY config/ ./config/
 COPY user_packs/ ./user_packs/
 COPY reference-indicators/ ./reference-indicators/
 
+# Liveness = the ENGINE's pulse, not a file's existence (2026-07-14).
+# The old check (`test -f /tmp/worker_alive`) tested only that a file EXISTS —
+# and that file is touched by the worker MANAGER thread, which keeps ticking
+# even when the asyncio ENGINE is starved. On 2026-07-14 the engine was stalled
+# for ~9 minutes at a time (alerts 5-10 min late, bar closes skipped) while this
+# healthcheck stayed green the whole way. Now: age out the ENGINE heartbeat
+# (refreshed every 2s by ralph_engine._periodic_tasks_loop). Threshold is
+# generous (300s) so a cold-boot warmup — which legitimately runs minutes before
+# the periodic loop starts — cannot flap the container.
 HEALTHCHECK --interval=60s --timeout=5s --retries=3 \
-    CMD test -f /tmp/worker_alive || exit 1
+    CMD python src/engine_health.py || exit 1
 
 CMD ["python", "src/worker.py"]
