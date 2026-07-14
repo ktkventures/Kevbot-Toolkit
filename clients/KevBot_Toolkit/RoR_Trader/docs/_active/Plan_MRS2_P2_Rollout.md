@@ -15,6 +15,20 @@ future test-and-learn fast.
      EXISTENCE — a hung worker passes forever). Make it validate file AGE + last-candle
      freshness. (Credit: the Sol audit — this one survived contact with current dev.)
 
+**STATUS 07-14 ~22:20Z — items 1 & 2 DONE; item 1's canonical-edge build DELETED.**
+- ✅ **1. Liveness watchdogs SHIPPED+LIVE** (PR #66, `5fdaeaa`): `[ENGINE-STALL]`,
+  `[ALERT-LAG]`, engine-heartbeat healthcheck. Post-deploy silent; alert lag median 6s.
+- ✅ **2. Replay harness WORKS** (`src/replay_harness.py`, memory `project_replay_harness`).
+  **ACHIEVABLE CEILING (07-14 RTH, armed stack, no stalls): 327=95%, 328=88%, 333=83%
+  (93% @60s) @10s — while LIVE scored 48/64/63%.** ⇒ the resync stalls cost **~25-47pp**
+  today; with resync off, tomorrow should land near the ceiling. Entries are ~92%
+  EXACT-SECOND matches vs backtest; the residual is a couple of trades + exit timing in the
+  10-60s band (the next hunt, now diagnosable in minutes instead of overnight).
+- ❌ **CANONICAL-EDGE BUILD DROPPED.** The harness A/B'd it (`REPLAY` vs `REPLAY+FIX`) and the
+  results are IDENTICAL — because the engine's fan-out secondary bar is byte-identical to the
+  canonical resample-from-1Min AND to REST. The "fan-out bars are noisy" theory is dead. A
+  whole build avoided by measuring first.
+
 **2. Replay harness v1** (the accelerator + the counterfactual answer)
    - Replay recorded DECISION-TIME bars (`live_bars.first_*` — the WS view at the moment the
      engine decided; seed recipe in `src/_retro_replay_gate_states.py` header) through the
