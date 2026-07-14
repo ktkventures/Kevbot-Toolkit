@@ -21,6 +21,17 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-07-14
 
+- **⚠️ 19:20–19:33 UTC — OPS INCIDENT (self-inflicted, no deploy):** Supabase broken-pipe
+  burst on Worker (78 lines, 19:20–19:22Z) incl. **14 ALERT SAVE FAILED** (canary/PACKTEST
+  sids — those alerts are LOST), plus **alert dispatch lag of 10–12 minutes** (fill_ts
+  19:06:00 → saved 19:16:41; 19:21:30 → 19:33:20; normal is 3–5s). Cause: heavy LOCAL
+  analysis against the same prod Supabase during RTH (retro-replay 3d bar loads + two event
+  audits + `_measure_five` runs + a `local_update` smoke recompute, 19:00–19:25Z). Worker
+  never died — bars + alerts normal again by 19:41Z. **Consequence: the 19:06–19:33Z slice of
+  today's post-arm measurement is CONTAMINATED** (delayed/lost alerts read as missed).
+  Rule adopted (memory `feedback_local_analysis_starves_live_worker`): keep local prod-DB
+  load light during live sessions; defer replays / local-update / fleet scans to after close;
+  verify alert `timestamp − fill_ts` lag (normal 3–8s) before trusting any paired-% window.
 - **~17:50 UTC (11:50 MT)** — PR #65 merged (`feat/shadow-retrue-force-full`) +
   `RORT_SHADOW_RETRUE_FORCE_FULL=1` armed on Worker right after deploy SUCCESS.
   ROOT-CAUSE fix for the residual class: shadow re-trues (refresher / session reloads /

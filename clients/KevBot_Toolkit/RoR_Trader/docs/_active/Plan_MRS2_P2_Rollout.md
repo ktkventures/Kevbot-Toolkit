@@ -248,6 +248,27 @@ completion (recompute job records / batch-worker logs quiet 10+ min) → then sh
   SWING flips near boundaries. Poisoning class (yesterday's engine) = confirmed DEAD live:
   keys stable between boundaries all morning, refresher-backed, [FINE-DUP-SKIP] active.
 
+## POST-ARM STATUS (07-14 ~19:50Z) — partial evidence, clean verdict deferred to 07-15
+**What the armed stack showed (17:52→19:05Z, the uncontaminated slice):**
+- Refresher is genuinely re-truing now: `[MTF-REFRESH] cycle … changed=5` (pre-#65 cycles
+  logged `changed=0` while states were demonstrably wrong — the fast-path bug in one line).
+- Gate keys held CORRECT states all window; 333's first three entries paired EXACTLY
+  (18:02:30, 18:17:00, 18:33:30) and 327's single post-arm event paired 1/1.
+- **RETRO-PROOF (src/_retro_replay_gate_states.py):** replaying 14:30→15:08 under force-full
+  semantics opens BOTH gates at the 14:39 events (5M BULL_C2 ✓, 2M NEUTRAL ✓ vs the actual
+  NEUTRAL / BULL_C2) — i.e. this morning's goal-check misses WOULD have paired.
+**Why today is not the verdict:** (a) tiny N — the Five fired 3–5 events each post-arm;
+(b) **ops incident 19:20–19:33Z contaminated the tail** (Supabase broken-pipe burst from
+heavy LOCAL analysis during RTH → 14 alert saves lost + 10–12 min dispatch lag; see Deploy
+Log + memory `feedback_local_analysis_starves_live_worker`).
+**Genuine open residual (pre-incident, worth the next hunt):** 333 bt-only entry 18:44:30
+(and exit 18:48:30) with BOTH gate keys open on both lanes → not a gate-state divergence; it
+is PRIMARY-side (30Sec trigger) divergence. Algo lane is empty in prod
+(`RORT_UPDATE_ALL_SKIP_ALGO=1`) → compute it offline AFTER close for three-lane arbitration.
+**Plan for 07-15:** full clean session under the complete stack (#61+#62+#65+PB defer+
+fail-closed+store serve+resync) → measure the Five on 1h/3h windows; keep local DB load off
+during RTH; then decide whether boundary-inline canonical recompute is needed at all.
+
 ## NEXT PHASE — EXECUTION UPDATE (07-14 ~17:50Z): plan item 1 SUPERSEDED by a sharper root cause
 Pre-build verification of item 1's premise falsified it step by step (fresh-tail ✓ present,
 anchor-dependence ✗ none, incremental==vectorized ✓, data revisions ✗ byte-identical,
