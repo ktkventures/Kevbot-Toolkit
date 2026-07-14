@@ -1,5 +1,51 @@
 # Plan — M-RS2 Phase 2 Rollout: Resampled Bar Store → Both Lanes Serve From It
 
+---
+## ▶ ACTIVE WORK QUEUE (agreed with Kevin 07-14 ~20:30Z — do in this order)
+Context: the gate-state class is fixed+proven (#61/#62/#65); the live engine was being
+STARVED by PRIMARY-RESYNC (disabled 20:11Z — see the 🚨 section below), which invalidated
+today's live paired-% numbers. Neither 07-13 (gate bugs live) nor 07-14 (stalls) is a clean
+day; 07-15 is the first clean read. These four items make the next read trustworthy AND make
+future test-and-learn fast.
+
+**1. Latency tripwire + worker healthcheck freshness** (small, prevents recurrence)
+   - WARN when alert dispatch lag (`alerts.timestamp − fill_ts`) p95 > 30s (normal 3–8s).
+     Would have caught today's stall in MINUTES instead of after a contaminated day.
+   - `Dockerfile.worker` HEALTHCHECK currently only does `test -f /tmp/worker_alive` (file
+     EXISTENCE — a hung worker passes forever). Make it validate file AGE + last-candle
+     freshness. (Credit: the Sol audit — this one survived contact with current dev.)
+
+**2. Replay harness v1** (the accelerator + the counterfactual answer)
+   - Replay recorded DECISION-TIME bars (`live_bars.first_*` — the WS view at the moment the
+     engine decided; seed recipe in `src/_retro_replay_gate_states.py` header) through the
+     fixed engine → the trades live WOULD have taken with no stalls/dispatch loss.
+   - Pair replay-vs-backtest at **5s / 10s / 60s** → the achievable combined-% ceiling (the
+     number Kevin actually reads on Strategy Health). live-vs-replay gap = operational cost
+     (stalls, lost alerts); replay-vs-backtest gap = REAL remaining logic bugs.
+   - Permanently replaces overnight soaks for validating a fix (soak stays as final check).
+
+**3. Fleet divergence scan at 5s/10s/60s** (read-only; "are there other bugs?")
+   - `strategy_health.get_strategy_health(user=None, tolerance_seconds=…)` offline across the
+     catalog, gated strategies first; cross-read with #2's replay to separate logic from ops.
+
+**4. PRIMARY-RESYNC: MEASURE before redesigning** (likely: delete, don't rebuild)
+   - Kevin's architectural read (endorsed): resync = the OLD "reload history + rebuild" way,
+     smuggled back in. The streaming architecture already corrects state EVENT-DRIVEN
+     (rebroadcast correction, gap-heal insert-replay, settle sweeper). We only built the
+     periodic sledgehammer because a correction primitive was silently broken — and that
+     primitive is exactly what #65 fixed.
+   - So: re-measure primary-state drift NOW that #65 is armed. If drift is gone → resync stays
+     OFF permanently (whole risk class deleted). If real drift remains → fix it event-driven,
+     never on a timer inside the trading process.
+   - Note why it was so expensive: the store starts at 2Min, so sub-minute PRIMARIES
+     (10s/15s/30s) fell through to a native 7-day load (~180k bars) + full replay PER
+     STRATEGY, ~4s each × ~50 = ~9.5-min GIL-held cycles every 900s.
+   - Clarification for the record: Update-All / nightly recompute runs on **batch-worker**, a
+     SEPARATE service — it never stalls the live engine. No need to trade away intraday lane
+     freshness; the rule is simply: no heavy rebuilds inside the live Worker process.
+---
+
+
 **The living rollout tracker** (created Fri 2026-07-10 ~22:00Z, main session). Design/why:
 `Design_MRS2_Phase2_Resampled_Bar_Store.md` · hardening context: `Design_Gate_Fidelity_Hardening.md`.
 North star: gated strategies (the tradable ones) reach **≥90% combined @ ≤10s tolerance** measured
