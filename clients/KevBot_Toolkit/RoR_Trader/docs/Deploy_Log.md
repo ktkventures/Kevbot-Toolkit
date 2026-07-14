@@ -19,6 +19,32 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-07-14
+
+- **02:38 UTC (20:38 MT 07-13)** — `RORT_WARMUP_PREV_CHAIN=1` +
+  `RORT_MTF_FINE_INCREMENTAL_AUTHORITY=1` + `RORT_MTF_STATE_REFRESH_S=120` (600→120) set on
+  Worker in one var-set (single redeploy). Claude-armed per standing authorization (overnight
+  loop). Both flags ship in the merges below; kill-switch = unset. Boot watch:
+  `[FINE-DUP-SKIP]` (first duplicate per TF), `[MTF-SEED]`, refresher cadence now 120s.
+- **02:36 UTC (20:36 MT 07-13)** — `c1e8875` (PR #61) + `eb4ae5b` (PR #62) merged back-to-back
+  after nightly recompute went quiet (69 refreshed, 12+ min quiet at 02:35Z).
+  - PR #61 `RORT_WARMUP_PREV_CHAIN`: warmup/recompute populate the prev-value chain — fixes
+    shift-based pack interpreters (MACD_HISTOGRAM_V2) emitting NO records on all derive paths
+    (sid 285 0/204 events; sid 136 15m key EMPTY 5–20 min post-boot). Also documents the
+    RETRACTION of the 07-13 "MTF publish clobber" (cross-hub telemetry aggregation artifact).
+  - PR #62 `RORT_MTF_FINE_INCREMENTAL_AUTHORITY`: stops the fan-out duplicate branch from
+    re-poisoning fine-TF shadow gate states every ~2-3 min from shallow noisy history — the
+    proven state-divergence engine behind 327/328/329's 5m/2m SWING gate unpairing (GATE_DIAG
+    18:41:03 C2 fire == settled truth, vs telemetry steady C3; cascade re-poison 11s after the
+    18:42:00 boundary).
+  - Service(s) redeployed: all dev services on merge (shadow-worker excluded, pinned). Worker
+    deployment SUCCESS 02:36:21Z on `eb4ae5b9`, then var-set redeploy ~02:38Z.
+  - Backup branch: `backup/dev-pre-prevchain-fineauth-2026-07-14`.
+  - Validation (both PRs, pre-merge): new lock tests 5/5 + 4/4; test_ralph_fidelity 13+1 known
+    pre-existing (== clean-dev baseline); test_ralph_gap_heal 23/23; fidelity_parity_suite
+    FULL 18/18 PASS (incl. both previously-failing SPY/10Sec legs) + --quick 16/16 on the #62
+    tree. Flag-OFF byte-identity locked by tests in both PRs.
+
 ## 2026-07-13
 
 - **~21:45 UTC (15:45 MT)** — `RORT_PRIMARY_STATE_RESYNC_APPLY=1` set on Worker (no code

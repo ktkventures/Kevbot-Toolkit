@@ -188,6 +188,29 @@ unset the var. Deploy log has times.
 While its jobs run: NO dev pushes / PR merges (redeploys orphan jobs), NO local lane writes,
 lane reads may be mid-rewrite. Build + replay-validate + prep PRs locally meanwhile; detect
 completion (recompute job records / batch-worker logs quiet 10+ min) → then ship the queue.
+**OVERNIGHT LOOP EXECUTION (07-14, this session):**
+- ~00:20Z clobber RETRACTED (item 3) → T1' prev-chain bug found + built (PR #61).
+- ~00:45Z 🔥 **NEW finding while auditing T2 events: fine-TF shadow CASCADE-RECOMPUTE
+  POISONING** (memory `project_shadow_cascade_recompute_poisoning`) — the ≥60s fan-out
+  duplicate branch recomputes fine-TF RTH shadow records from `sec_builder.history` (shallow
+  anchor, fan-out-flavored bars) every ~2-3 min and republishes; path-dependent SWING counts
+  land off-by-one → the wrong-family state OWNS the gate key between boundary closes (proof:
+  GATE_DIAG 18:41:03 sid-328 fire with 5M SWING BULL_C2 == settled truth, vs live_gate
+  telemetry steady BULL_C3 18:25→19:15; cascade log re-poisoned the 2m key 11s after the
+  18:42:00 boundary state fired sid 327). THE divergence engine for 327/328/329's 5m/2m SWING
+  gates; revises autopsy class B; explains why REFRESH_S=600 never stuck. Fix = PR #62
+  `RORT_MTF_FINE_INCREMENTAL_AUTHORITY` (skip duplicate recompute+republish for fine RTH
+  shadows; refresher does canonical re-trues; sub-minute discipline mirrored).
+- 02:35Z nightly quiet (69 refreshed) → 02:36Z merged PR #61 (`c1e8875`) + PR #62 (`eb4ae5b`)
+  (backup `backup/dev-pre-prevchain-fineauth-2026-07-14`) → 02:38Z ARMED on Worker:
+  `RORT_WARMUP_PREV_CHAIN=1` + `RORT_MTF_FINE_INCREMENTAL_AUTHORITY=1` +
+  `RORT_MTF_STATE_REFRESH_S=120`. Deploy log has details. The two fixes COMPOSE: the 120s
+  refresher re-true is now both clean-sourced (store) and faithful-derived (prev chain).
+- T2 audit tooling ready (`scratchpad t2_audit.py` pattern); pre-fix window baseline:
+  327=33% 328=25% 329=0% 333=65% 340=quiet. Most unpaired events attribute to the cascade
+  class (bt entries sat inside settled gate-open windows the poisoned live key missed).
+  Post-nightly re-audit + tomorrow's live telemetry-vs-settled comparison = acceptance.
+
 **T1 — SUPERSEDED 07-14 00:20Z:** clobber RETRACTED (see item 3 above — cross-hub aggregation
 artifact; per-hub scan = needed interps ~100% present; memory `project_mtf_publish_clobber`
 rewritten). T1' replacement = the warmup prev-chain fix (item 3'): `RORT_WARMUP_PREV_CHAIN`,
