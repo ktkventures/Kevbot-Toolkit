@@ -21,6 +21,9 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-07-14
 
+- **15:40 UTC (09:40 MT)** — `<this commit>` docs: overnight-loop close-out (goal check +
+  residual-class finding). Also retro-logs the **11:19 UTC** docs-only push (`e9e3835`, T3
+  battery results) — both are docs-only redeploys, no code/flag changes.
 - **02:38 UTC (20:38 MT 07-13)** — `RORT_WARMUP_PREV_CHAIN=1` +
   `RORT_MTF_FINE_INCREMENTAL_AUTHORITY=1` + `RORT_MTF_STATE_REFRESH_S=120` (600→120) set on
   Worker in one var-set (single redeploy). Claude-armed per standing authorization (overnight

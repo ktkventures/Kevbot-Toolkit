@@ -227,6 +227,27 @@ completion (recompute job records / batch-worker logs quiet 10+ min) → then sh
   09:00Z pre-market paired-%: 338=90% (9E+9X), 290=87%, 285 firing again (was structurally
   blocked), 337/291 legitimately quiet. RTH goal check (the Five ≥90% @1h/3h) after 14:30Z.
 
+- **15:30Z GOAL CHECK (loop close-out; window 13:30→15:04Z, bt fresh to 14:39Z):**
+  328 = **75%** (3/4 E + 3/4 X; was 25% yesterday), 327 = **25%** (bt fired 4×, live 2×),
+  329/333 quiet on BOTH lanes (agreement, no opportunities), 340 = 1 bt-only trade.
+  ≥90% NOT reached for 327/328 → 3-probe run on every unpaired event:
+  **RESIDUAL CLASS PINNED (new precision): live fine-TF SWING states drift from settled
+  truth; the BACKTEST was RIGHT today.** At 14:39 both bt-only entries sat on gates where
+  settled-1Min truth said 5m=BULL_C2 + 2m=NEUTRAL (== backtest) while the LIVE keys held
+  5m=NEUTRAL + 2m=BULL_C2 (both wrong). Mechanism: (a) the boundary incremental state is
+  path-dependent and drifts from its boot lineage; (b) the 120s refresher CANNOT heal the
+  newest bar — its clean source (store settled + 1Min head) lags ~1 fine-TF bar (settle
+  physics), so it re-trues to the one-bar-old state and CONFIRMS the boundary error instead
+  of correcting it. Also one live-only entry (13:41:30) where live gates were genuinely open
+  and one primary-trigger timing miss (13:51:30, gates open live, 30s trigger differed) —
+  WS/REST floor class. Three-lane arbitration: live ≠ (bt ≈ settled) → LIVE-side bug.
+  **⇒ KEVIN DECISION NEEDED (day session): canonical fine-TF gate STATE serve** — extend the
+  store cutover so the live shadow's newest fine-TF bar/state is built from the same 1Min
+  head the offline lane uses (M-RS5 resident-window / Phase 2b family; price-based packs
+  safe, volume caveat only for RVOL/VWAP). Until then 327/328's ceiling is set by how often
+  SWING flips near boundaries. Poisoning class (yesterday's engine) = confirmed DEAD live:
+  keys stable between boundaries all morning, refresher-backed, [FINE-DUP-SKIP] active.
+
 **T1 — SUPERSEDED 07-14 00:20Z:** clobber RETRACTED (see item 3 above — cross-hub aggregation
 artifact; per-hub scan = needed interps ~100% present; memory `project_mtf_publish_clobber`
 rewritten). T1' replacement = the warmup prev-chain fix (item 3'): `RORT_WARMUP_PREV_CHAIN`,
