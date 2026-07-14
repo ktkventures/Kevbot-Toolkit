@@ -128,6 +128,8 @@ STRATEGY_REFRESH_INTERVAL = 300  # seconds
 
 # Partial bar pickle write interval
 PICKLE_WRITE_INTERVAL = 2.0  # seconds
+STATUS_WRITE_INTERVAL = 30.0  # avoid a database/file heartbeat on every loop
+AUDIT_FLUSH_INTERVAL = 30.0   # flush DB-backed fidelity records in batches
 
 # Trade condition codes excluded from OHLCV bar building.
 # These match the standard CTA/UTP exclusions that Alpaca applies
@@ -183,6 +185,19 @@ class PartialBar:
         self.volume += volume
         self.tick_count += 1
 
+    def update_from_bar(self, bar: dict):
+        """Merge a completed, finer-grained aggregate into this bar."""
+        if self.tick_count == 0:
+            self.open = float(bar['open'])
+            self.high = float(bar['high'])
+            self.low = float(bar['low'])
+        else:
+            self.high = max(self.high, float(bar['high']))
+            self.low = min(self.low, float(bar['low']))
+        self.close = float(bar['close'])
+        self.volume += float(bar.get('volume', 0) or 0)
+        self.tick_count += 1
+
     def to_dict(self) -> dict:
         return {
             'open': self.open, 'high': self.high,
@@ -200,11 +215,17 @@ class BarBuilder:
         self.history: pd.DataFrame = pd.DataFrame()
         self._partial: Optional[PartialBar] = None
         self._bar_count = 0
+        self._close_grace_seconds = 0.0
 
     def seed_history(self, df: pd.DataFrame):
         if df is not None and len(df) > 0:
-            self.history = df.tail(MAX_HISTORY).copy()
+            history = df.copy()
+            history.index = pd.to_datetime(history.index, utc=True)
+            history = history.sort_index()
+            history = history[~history.index.duplicated(keep='last')]
+            self.history = history.tail(MAX_HISTORY)
             self._bar_count = len(self.history)
+            self._partial = None
 
     def process_tick(self, price: float, volume: int,
                      timestamp: datetime) -> Optional[dict]:
@@ -214,25 +235,76 @@ class BarBuilder:
             self._partial.update(price, volume)
             return None
         if period_start > self._partial.bar_start:
-            fill_close = self._partial.close
-            old_bar_end = self._partial.bar_start + timedelta(
-                seconds=self.tf_seconds)
             completed = self._close_bar()
-            gap_ts = old_bar_end
-            while gap_ts < period_start:
-                self._append_to_history({
-                    'timestamp': gap_ts.isoformat(),
-                    'open': fill_close, 'high': fill_close,
-                    'low': fill_close, 'close': fill_close,
-                    'volume': 0,
-                })
-                self._bar_count += 1
-                gap_ts += timedelta(seconds=self.tf_seconds)
             self._partial = PartialBar(price, period_start, self.tf_seconds)
             self._partial.update(price, volume)
             return completed
+        if period_start < self._partial.bar_start:
+            return None  # ignore late/out-of-order ticks
         self._partial.update(price, volume)
         return None
+
+    def process_aggregate_bar(self, bar_dict: dict,
+                              source_tf_seconds: int) -> Optional[dict]:
+        """Roll a completed source aggregate into this builder's timeframe.
+
+        Unlike tick aggregation, this preserves the source bar's high/low and
+        volume. Empty source intervals are intentionally not synthesized: the
+        historical provider omits them too, so filling them would change EMA,
+        ATR, VWAP, and bar-count exit semantics between live and backtest.
+        """
+        if source_tf_seconds <= 0 or self.tf_seconds < source_tf_seconds:
+            raise ValueError("source timeframe must be no larger than target")
+        if self.tf_seconds % source_tf_seconds != 0:
+            raise ValueError("source timeframe must divide target timeframe")
+        # Completed provider aggregates normally arrive shortly after their
+        # boundary. Give the last source bar time to arrive before the periodic
+        # stale-bar closer finalizes a sparse target bar.
+        self._close_grace_seconds = max(
+            self._close_grace_seconds,
+            min(10.0, max(2.0, float(source_tf_seconds))),
+        )
+
+        source_ts = pd.Timestamp(bar_dict['timestamp'])
+        if source_ts.tzinfo is None:
+            source_ts = source_ts.tz_localize('UTC')
+        else:
+            source_ts = source_ts.tz_convert('UTC')
+        period_start = self._align_to_period(source_ts.to_pydatetime())
+
+        # Warmup or a reconnect may overlap the first streamed aggregate.
+        if len(self.history) > 0:
+            last_ts = pd.Timestamp(self.history.index[-1])
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.tz_localize('UTC')
+            else:
+                last_ts = last_ts.tz_convert('UTC')
+            if period_start <= last_ts and self._partial is None:
+                return None
+
+        completed = None
+        if self._partial is None:
+            self._partial = PartialBar(
+                float(bar_dict['open']), period_start, self.tf_seconds)
+        elif period_start > self._partial.bar_start:
+            completed = self._close_bar()
+            self._partial = PartialBar(
+                float(bar_dict['open']), period_start, self.tf_seconds)
+        elif period_start < self._partial.bar_start:
+            return None  # late/out-of-order aggregate
+
+        self._partial.update_from_bar(bar_dict)
+
+        # A completed source bar that reaches the target boundary lets us
+        # close immediately, without waiting for the next period's first bar.
+        source_end = source_ts.to_pydatetime() + timedelta(
+            seconds=source_tf_seconds)
+        target_end = period_start + timedelta(seconds=self.tf_seconds)
+        if source_end >= target_end:
+            completed = self._close_bar()
+            self._partial = None
+
+        return completed
 
     @property
     def partial_bar(self) -> Optional[PartialBar]:
@@ -250,7 +322,12 @@ class BarBuilder:
         return pd.concat([self.history, partial_row])
 
     def _align_to_period(self, ts: datetime) -> datetime:
-        epoch = int(ts.timestamp())
+        normalized = pd.Timestamp(ts)
+        if normalized.tzinfo is None:
+            normalized = normalized.tz_localize('UTC')
+        else:
+            normalized = normalized.tz_convert('UTC')
+        epoch = int(normalized.timestamp())
         aligned = epoch - (epoch % self.tf_seconds)
         return datetime.fromtimestamp(aligned, tz=timezone.utc)
 
@@ -273,38 +350,30 @@ class BarBuilder:
         if len(self.history) > MAX_HISTORY:
             self.history = self.history.iloc[-MAX_HISTORY:]
 
-    def accept_bar(self, bar_dict: dict) -> dict:
+    def accept_bar(self, bar_dict: dict) -> Optional[dict]:
         """Accept a pre-built bar (from Polygon WebSocket).
 
-        Appends to history, increments bar count, gap-fills missing bars.
-        Returns the bar dict for downstream consumption.
+        Appends to history and increments bar count. Duplicate/older bars are
+        ignored and return None; missing periods are not synthesized.
         """
         bar_ts = pd.Timestamp(bar_dict['timestamp'])
         if bar_ts.tzinfo is None:
             bar_ts = bar_ts.tz_localize('UTC')
         bar_start = self._align_to_period(bar_ts.to_pydatetime())
+        normalized_bar = dict(bar_dict)
+        normalized_bar['timestamp'] = bar_start.isoformat()
 
-        # Gap-fill if there are missing bars between last history and this bar
         if len(self.history) > 0:
-            last_ts = self.history.index[-1]
+            last_ts = pd.Timestamp(self.history.index[-1])
             if last_ts.tzinfo is None:
                 last_ts = last_ts.tz_localize('UTC')
-            last_period = self._align_to_period(last_ts.to_pydatetime())
-            expected_next = last_period + timedelta(seconds=self.tf_seconds)
-            fill_close = self.history['close'].iloc[-1]
-            gap_ts = expected_next
-            while gap_ts < bar_start:
-                self._append_to_history({
-                    'timestamp': gap_ts.isoformat(),
-                    'open': fill_close, 'high': fill_close,
-                    'low': fill_close, 'close': fill_close,
-                    'volume': 0,
-                })
-                self._bar_count += 1
-                gap_ts += timedelta(seconds=self.tf_seconds)
+            else:
+                last_ts = last_ts.tz_convert('UTC')
+            if bar_start <= last_ts.to_pydatetime():
+                return None
 
         # Append the actual bar
-        self._append_to_history(bar_dict)
+        self._append_to_history(normalized_bar)
         self._bar_count += 1
         # Clear partial since this bar is complete
         self._partial = None
@@ -313,33 +382,16 @@ class BarBuilder:
     def force_close_stale_bar(self, now: datetime) -> Optional[dict]:
         """Close the partial bar if wall-clock time has passed bar_end.
 
-        Returns the completed bar dict, or None if no bar was stale.
-        Gap-fills any missing intermediate bars (same logic as process_tick).
+        Returns the completed bar dict, or None if no bar was stale. Missing
+        intervals remain absent so live history matches provider history.
         """
         if self._partial is None:
             return None
         bar_end = self._partial.bar_start + timedelta(seconds=self.tf_seconds)
-        if now < bar_end:
+        if now < bar_end + timedelta(seconds=self._close_grace_seconds):
             return None  # Bar still forming
-        fill_close = self._partial.close
         completed = self._close_bar()
-        # Fill gap bars between bar_end and current period
-        current_period = self._align_to_period(now)
-        gap_ts = bar_end
-        while gap_ts < current_period:
-            self._append_to_history({
-                'timestamp': gap_ts.isoformat(),
-                'open': fill_close, 'high': fill_close,
-                'low': fill_close, 'close': fill_close,
-                'volume': 0,
-            })
-            self._bar_count += 1
-            gap_ts += timedelta(seconds=self.tf_seconds)
-        # Start a new partial bar at the current period using last known
-        # close, so that arriving ticks will update it normally.
-        if current_period >= bar_end:
-            self._partial = PartialBar(fill_close, current_period,
-                                       self.tf_seconds)
+        self._partial = None
         return completed
 
 
@@ -380,6 +432,10 @@ class StrategyMonitor:
         self.indicators = IncrementalIndicatorEngine(req_ind, params)
         self.trigger_eval = TriggerEvaluator(
             req_interp, req_trig, params.get('ema_periods', [8, 21, 50]))
+        self._intrabar_triggers = {
+            trigger_id for trigger_id in req_trig
+            if get_trigger_exec_type(trigger_id) in ('L0', 'L1', 'HM', 'HL')
+        }
         self.position = PositionStateMachine(
             strategy, position_state,
             resolved_entry=resolved_entry,
@@ -874,10 +930,19 @@ class SymbolHub:
         self.last_tick_time = timestamp
         ts_str = timestamp.isoformat()
 
-        for tf_seconds, builder in self.builders.items():
+        # Process shorter timeframes first. At a shared boundary this makes a
+        # newly closed lower-TF state available to the higher-TF strategy,
+        # while the lower-TF strategy still sees only the previously closed
+        # higher-TF state (the same no-lookahead contract used by backtests).
+        for tf_seconds in sorted(self.builders):
+            builder = self.builders[tf_seconds]
             completed = builder.process_tick(price, volume, timestamp)
 
             if completed is not None:
+                completed_ts = pd.Timestamp(completed['timestamp'])
+                if completed_ts.tzinfo is None:
+                    completed_ts = completed_ts.tz_localize('UTC')
+                completed_dt = completed_ts.to_pydatetime()
                 # Bar close — update shared confluence buffer FIRST
                 # so monitors on other TFs can see this TF's state
                 shadow = self._shadow_engines.get(tf_seconds)
@@ -897,7 +962,7 @@ class SymbolHub:
                 for monitor in self.monitors.values():
                     if monitor.tf_seconds != tf_seconds:
                         continue
-                    if not _is_in_session(timestamp, monitor.session):
+                    if not _is_in_session(completed_dt, monitor.session):
                         if self.tick_count % 5000 == 0:
                             logger.debug("Session skip: strat=%s session=%s ts=%s",
                                          monitor.strat_id, monitor.session, timestamp)
@@ -995,10 +1060,16 @@ class SymbolHub:
         arrive (e.g., after-hours low liquidity).  Called from the
         periodic tasks loop every PICKLE_WRITE_INTERVAL seconds.
         """
-        for tf_seconds, builder in self.builders.items():
+        for tf_seconds in sorted(self.builders):
+            builder = self.builders[tf_seconds]
             completed = builder.force_close_stale_bar(now)
             if completed is None:
                 continue
+
+            completed_ts = pd.Timestamp(completed['timestamp'])
+            if completed_ts.tzinfo is None:
+                completed_ts = completed_ts.tz_localize('UTC')
+            completed_dt = completed_ts.to_pydatetime()
 
             # Update shared confluence buffer first (shadow or real monitor)
             shadow = self._shadow_engines.get(tf_seconds)
@@ -1009,7 +1080,7 @@ class SymbolHub:
             for monitor in self.monitors.values():
                 if monitor.tf_seconds != tf_seconds:
                     continue
-                if not _is_in_session(now, monitor.session):
+                if not _is_in_session(completed_dt, monitor.session):
                     continue
 
                 signals, audit_data = monitor.on_bar_close(
@@ -1063,38 +1134,28 @@ class SymbolHub:
                         self._mtf_confluence[tf_seconds] = own_records
                         break
 
-    def on_polygon_bar(self, bar_dict: dict, tf_seconds: int,
-                        alert_callback: Callable = None,
-                        config: dict = None,
-                        auditor: 'FidelityAuditor' = None):
-        """Handle a pre-aggregated bar from Polygon WebSocket.
-
-        Bypasses tick aggregation — the bar arrives already complete.
-        Routes through the same monitor pipeline as tick-built bars.
-        """
-        builder = self.builders.get(tf_seconds)
-        if builder is None:
-            return
-
+    def _dispatch_completed_bar(self, bar_dict: dict, tf_seconds: int,
+                                builder: BarBuilder,
+                                alert_callback: Callable = None,
+                                config: dict = None,
+                                auditor: 'FidelityAuditor' = None,
+                                source: str = 'polygon'):
+        """Run one completed bar through shadow and strategy engines."""
         timestamp = pd.Timestamp(bar_dict['timestamp'])
         if timestamp.tzinfo is None:
             timestamp = timestamp.tz_localize('UTC')
-        self.last_tick_time = timestamp.to_pydatetime()
-        self.tick_count += 1
+        else:
+            timestamp = timestamp.tz_convert('UTC')
+        bar_dt = timestamp.to_pydatetime()
 
-        # Accept the pre-built bar into the builder (handles gap-fill)
-        builder.accept_bar(bar_dict)
-
-        # Update shared confluence buffer (shadow engines first)
         shadow = self._shadow_engines.get(tf_seconds)
         if shadow and shadow.indicators._initialized:
             self._mtf_confluence[tf_seconds] = shadow.on_bar_close(bar_dict)
 
-        # Run all monitors for this timeframe
         for monitor in self.monitors.values():
             if monitor.tf_seconds != tf_seconds:
                 continue
-            if not _is_in_session(self.last_tick_time, monitor.session):
+            if not _is_in_session(bar_dt, monitor.session):
                 continue
 
             signals, audit_data = monitor.on_bar_close(
@@ -1104,10 +1165,10 @@ class SymbolHub:
             pos_state = audit_data.get('position_state', '?')
             trigger_bools = audit_data.get('trigger_booleans', {})
             active_triggers = [k for k, v in trigger_bools.items() if v]
-            logger.info("BAR_CLOSE(polygon) strat=%s bar=%d close=%.2f pos=%s "
-                        "signals=%d triggers=%s",
-                        monitor.strat_id, builder._bar_count,
-                        bar_dict['close'], pos_state,
+            logger.info("BAR_CLOSE(%s) strat=%s tf=%ss bar=%d close=%.2f "
+                        "pos=%s signals=%d triggers=%s",
+                        source, monitor.strat_id, tf_seconds,
+                        builder._bar_count, bar_dict['close'], pos_state,
                         len(signals) if signals else 0,
                         active_triggers if active_triggers else "none")
 
@@ -1122,17 +1183,55 @@ class SymbolHub:
                     indicator_values=audit_data['indicator_values'],
                     trigger_booleans=audit_data['trigger_booleans'],
                     interpreter_states=audit_data['interpreter_states'],
-                    positions={monitor.strat_id: audit_data['position_state']},
+                    positions={monitor.strat_id:
+                               audit_data['position_state']},
                 )
 
-        # Publish real monitor's confluence
+        # A real monitor can provide this timeframe's shared interpreter state
+        # when no dedicated shadow engine exists.
         if not self._shadow_engines.get(tf_seconds):
-            for m in self.monitors.values():
-                if m.tf_seconds == tf_seconds:
-                    own_records = {r for r in m._current_confluence
-                                   if not r.startswith('GEN-')}
-                    self._mtf_confluence[tf_seconds] = own_records
+            for monitor in self.monitors.values():
+                if monitor.tf_seconds == tf_seconds:
+                    self._mtf_confluence[tf_seconds] = {
+                        record for record in monitor._current_confluence
+                        if not record.startswith('GEN-')
+                    }
                     break
+
+    def on_polygon_bar(self, bar_dict: dict, tf_seconds: int,
+                        alert_callback: Callable = None,
+                        config: dict = None,
+                        auditor: 'FidelityAuditor' = None):
+        """Handle a pre-aggregated bar from Polygon WebSocket.
+
+        Polygon supplies one-minute bars. Route each completed source bar into
+        every registered equal/coarser builder so 2m/5m/15m/hour strategies
+        and MTF shadow engines close on the same boundaries as backtests.
+        """
+        timestamp = pd.Timestamp(bar_dict['timestamp'])
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize('UTC')
+        else:
+            timestamp = timestamp.tz_convert('UTC')
+        self.last_tick_time = timestamp.to_pydatetime()
+        self.tick_count += 1
+
+        target_tfs = [
+            target_tf for target_tf in sorted(self.builders)
+            if target_tf >= tf_seconds and target_tf % tf_seconds == 0
+        ]
+        for target_tf in target_tfs:
+            builder = self.builders[target_tf]
+            if target_tf == tf_seconds:
+                completed = builder.accept_bar(bar_dict)
+            else:
+                completed = builder.process_aggregate_bar(
+                    bar_dict, source_tf_seconds=tf_seconds)
+            if completed is not None:
+                self._dispatch_completed_bar(
+                    completed, target_tf, builder,
+                    alert_callback=alert_callback, config=config,
+                    auditor=auditor, source='polygon')
 
     def on_second_bar(self, bar_dict: dict,
                        alert_callback: Callable = None,
@@ -1150,12 +1249,9 @@ class SymbolHub:
         if not high or not low:
             return
 
-        # Find which TF's bar_count to use (use the primary 60s builder)
-        builder = self.builders.get(60)
-        if builder is None:
-            return
-        bar_count = builder._bar_count
-
+        # First evaluate the second's extremes against levels cached at the
+        # previous bar close. Only after that do we close any sub-minute bar
+        # containing this second; reversing the order introduces lookahead.
         for monitor in self.monitors.values():
             if not monitor.indicators._initialized:
                 continue
@@ -1164,6 +1260,11 @@ class SymbolHub:
                 monitor.session
             ):
                 continue
+
+            builder = self.builders.get(monitor.tf_seconds)
+            if builder is None:
+                continue
+            bar_count = builder._bar_count
 
             # Check high price (catches upward level crosses)
             signals_high = monitor.on_tick(high, ts, bar_count)
@@ -1177,6 +1278,18 @@ class SymbolHub:
             if signals_low and alert_callback:
                 for sig in signals_low:
                     alert_callback(sig, monitor.strategy, config)
+
+        # The A channel is authoritative for sub-minute strategies. Minute and
+        # higher builders are fed by AM bars, so do not double-count them here.
+        for target_tf in sorted(tf for tf in self.builders if tf < 60):
+            builder = self.builders[target_tf]
+            completed = builder.process_aggregate_bar(
+                bar_dict, source_tf_seconds=1)
+            if completed is not None:
+                self._dispatch_completed_bar(
+                    completed, target_tf, builder,
+                    alert_callback=alert_callback, config=config,
+                    source='polygon-second')
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1231,6 +1344,8 @@ class RalphEngine:
         self._last_reconcile = 0.0
         self._last_pickle_write = 0.0
         self._last_strategy_refresh = 0.0
+        self._last_status_write = 0.0
+        self._last_audit_flush = 0.0
         self._subscribed_symbols: List[str] = []
 
     def start(self, strategies: list, config: dict):
@@ -1345,6 +1460,12 @@ class RalphEngine:
             logger.error("Engine error: %s", e)
         finally:
             self._running = False
+            flush_audit = getattr(self.auditor, 'flush', None)
+            if callable(flush_audit):
+                try:
+                    flush_audit()
+                except Exception:
+                    pass
             self._save_all_positions()
             self._write_status(running=False)
             logger.info("Ralph engine stopped")
@@ -1393,6 +1514,15 @@ class RalphEngine:
                         df = load_market_data(
                             sym, days=7, timeframe=tf_str,
                             feed='sip', session=session)
+                        if df is not None and len(df) > 0:
+                            # REST endpoints may include the currently forming
+                            # bar. Warming indicators with it and then consuming
+                            # its final WebSocket version double-counts one bar.
+                            idx = pd.to_datetime(df.index, utc=True)
+                            completed_before = (
+                                pd.Timestamp.now(tz='UTC')
+                                - pd.Timedelta(seconds=tf_seconds))
+                            df = df.loc[idx <= completed_before]
                     except Exception as e:
                         logger.error("Warmup failed for %s/%s: %s",
                                      sym, tf_str, e)
@@ -1559,12 +1689,12 @@ class RalphEngine:
                 for sym in stock_symbols:
                     hub = self.hubs.get(sym)
                     if hub:
-                        has_ltype = any(
-                            any(t in _IB_L_TYPE_TRIGGERS
-                                for t in getattr(m, '_intrabar_triggers', set()))
-                            for m in hub.monitors.values()
+                        needs_seconds = (
+                            any(tf < 60 for tf in hub.builders)
+                            or any(bool(getattr(m, '_intrabar_triggers', set()))
+                                   for m in hub.monitors.values())
                         )
-                        if has_ltype:
+                        if needs_seconds:
                             stock_channels.append(f"A.{sym}")
 
                 all_channels = stock_channels + crypto_channels
@@ -2056,10 +2186,22 @@ class RalphEngine:
                     except Exception as e:
                         logger.debug("Hot-reload error: %s", e)
 
-                # Status file update
-                self._write_status(
-                    running=True,
-                    connected=self._ws_confirmed)
+                # Batch fidelity writes and throttle status heartbeats. The DB
+                # worker used to perform a write every two seconds per user.
+                if now - self._last_audit_flush >= AUDIT_FLUSH_INTERVAL:
+                    self._last_audit_flush = now
+                    flush_audit = getattr(self.auditor, 'flush', None)
+                    if callable(flush_audit):
+                        try:
+                            await loop.run_in_executor(None, flush_audit)
+                        except Exception as e:
+                            logger.debug("Audit flush error: %s", e)
+
+                if now - self._last_status_write >= STATUS_WRITE_INTERVAL:
+                    self._last_status_write = now
+                    self._write_status(
+                        running=True,
+                        connected=self._ws_confirmed)
         except asyncio.CancelledError:
             pass
         logger.info("Periodic tasks loop stopped")

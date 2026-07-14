@@ -1042,6 +1042,7 @@ def _process_inbound_webhook_signals(strat: dict, existing_stored: list):
         strat.get('stop_atr_mult', 1.5),
         strat.get('stop_config', {'method': 'atr', 'atr_mult': 1.5}),
         strat.get('target_config'),
+        session=strat.get('trading_session', 'RTH'),
     )
 
     if len(trades_df) > 0:
@@ -1156,6 +1157,7 @@ def _process_webhook_builder_data(
             signals, symbol, direction, data_days, data_seed,
             start_date, end_date, timeframe,
             risk_per_trade, stop_atr_mult, stop_config_dict, target_config_dict,
+            session=config.get('trading_session', 'RTH'),
         )
 
     # Return market data so drill-down tabs (TF, General, Stop, TP) can work
@@ -1167,6 +1169,7 @@ def _generate_webhook_backtest_trades(
     signals, symbol, direction, data_days, data_seed,
     start_date, end_date, timeframe,
     risk_per_trade, stop_atr_mult, stop_config, target_config,
+    session='RTH',
 ):
     """Generate trades from webhook backtest signals.
 
@@ -1212,7 +1215,7 @@ def _generate_webhook_backtest_trades(
                 symbol, seed=data_seed,
                 start_date=_sd, end_date=_ed,
                 timeframe=timeframe, data_feed=_get_data_feed(),
-                session=strat.get('trading_session', 'RTH'),
+                session=session,
             )
             if len(df_market) == 0:
                 df_market = None
@@ -2935,10 +2938,16 @@ def render_live_chart_tab(symbol: str, tf_seconds: int, strat: dict,
                     _sec_df = run_indicators_for_group(_sec_df, _cg)
                 _sec_df = run_all_interpreters(_sec_df)
                 _tf_label = get_tf_label(_sec_tf)
+                from unified_engine import TIMEFRAME_SECONDS as _LIVE_TF_SECONDS
+                _availability_offset = pd.Timedelta(
+                    seconds=_LIVE_TF_SECONDS.get(_sec_tf, 60))
                 for _ik in _interp_keys:
                     if _ik in _sec_df.columns:
                         _suffixed = f"{_ik}__{_tf_label}"
-                        df_for_trades[_suffixed] = _sec_df[_ik].reindex(
+                        _confirmed = _sec_df[_ik].copy()
+                        _confirmed.index = (
+                            _confirmed.index + _availability_offset)
+                        df_for_trades[_suffixed] = _confirmed.reindex(
                             df_for_trades.index, method='ffill')
             except Exception:
                 pass

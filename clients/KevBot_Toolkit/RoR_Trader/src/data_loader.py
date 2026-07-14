@@ -673,6 +673,14 @@ def resample_to_timeframe(df: pd.DataFrame, target_tf: str) -> pd.DataFrame:
         raise ValueError(f"Cannot resample to timeframe '{target_tf}'. "
                          f"Supported: {list(_RESAMPLE_RULES.keys())}")
 
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise TypeError("OHLCV data must use a DatetimeIndex")
+
+    source = df.copy()
+    source.index = pd.to_datetime(source.index, utc=True)
+    source = source.sort_index()
+    source = source[~source.index.duplicated(keep="last")]
+
     agg = {"open": "first", "high": "max", "low": "min", "close": "last"}
     if "volume" in df.columns:
         agg["volume"] = "sum"
@@ -682,7 +690,11 @@ def resample_to_timeframe(df: pd.DataFrame, target_tf: str) -> pd.DataFrame:
         # VWAP must be recomputed on the resampled data — skip here
         pass
 
-    resampled = df.resample(rule).agg(agg)
+    # The live BarBuilder aligns fixed-duration bars to Unix epoch boundaries.
+    # Make that contract explicit here so local timezone or pandas defaults
+    # cannot shift historical candles relative to live candles.
+    resampled = source.resample(
+        rule, origin="epoch", label="left", closed="left").agg(agg)
     return resampled.dropna(subset=["open"])
 
 

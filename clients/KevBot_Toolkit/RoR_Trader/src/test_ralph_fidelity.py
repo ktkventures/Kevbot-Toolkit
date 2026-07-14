@@ -682,6 +682,154 @@ def test_fidelity_auditor_writes_jsonl():
     print("PASS")
 
 
+def test_sparse_bar_builder_does_not_invent_candles():
+    """Live aggregation must mirror providers that omit empty intervals."""
+    print("Testing sparse bars do not create synthetic candles...", end=" ")
+    from ralph_engine import BarBuilder
+
+    builder = BarBuilder(60)
+    start = datetime(2025, 1, 6, 14, 30, tzinfo=timezone.utc)
+    assert builder.process_tick(100.0, 10, start) is None
+
+    completed = builder.process_tick(
+        101.0, 5, start + timedelta(minutes=5))
+    assert completed is not None
+    assert len(builder.history) == 1, (
+        f"Expected one real bar, got {len(builder.history)}")
+    assert builder._bar_count == 1
+    assert builder.partial_bar.bar_start == start + timedelta(minutes=5)
+
+    print("PASS")
+
+
+def test_completed_aggregate_rolls_up_ohlcv():
+    """Five one-minute provider bars must close one exact five-minute bar."""
+    print("Testing provider aggregate roll-up...", end=" ")
+    from ralph_engine import BarBuilder
+
+    builder = BarBuilder(300)
+    start = datetime(2025, 1, 6, 14, 30, tzinfo=timezone.utc)
+    completed = None
+    for minute in range(5):
+        price = 100.0 + minute
+        completed = builder.process_aggregate_bar({
+            'timestamp': (start + timedelta(minutes=minute)).isoformat(),
+            'open': price,
+            'high': price + 1.0,
+            'low': price - 1.0,
+            'close': price + 0.5,
+            'volume': 100 + minute,
+        }, source_tf_seconds=60)
+
+    assert completed is not None, "5m bar did not close on the fifth source bar"
+    assert pd.Timestamp(completed['timestamp']) == pd.Timestamp(start)
+    assert completed['open'] == 100.0
+    assert completed['high'] == 105.0
+    assert completed['low'] == 99.0
+    assert completed['close'] == 104.5
+    assert completed['volume'] == sum(100 + i for i in range(5))
+    assert len(builder.history) == 1
+    assert builder.partial_bar is None
+
+    print("PASS")
+
+
+def test_polygon_minute_bars_route_to_all_timeframes():
+    """AM bars must drive primary and MTF builders above one minute."""
+    print("Testing Polygon minute routing across timeframes...", end=" ")
+    from ralph_engine import BarBuilder, SymbolHub
+
+    hub = SymbolHub('SPY')
+    hub.builders = {
+        60: BarBuilder(60),
+        300: BarBuilder(300),
+        900: BarBuilder(900),
+    }
+    start = datetime(2025, 1, 6, 14, 30, tzinfo=timezone.utc)
+    for minute in range(15):
+        price = 100.0 + minute
+        hub.on_polygon_bar({
+            'timestamp': (start + timedelta(minutes=minute)).isoformat(),
+            'open': price,
+            'high': price + 0.5,
+            'low': price - 0.5,
+            'close': price + 0.25,
+            'volume': 100,
+        }, tf_seconds=60)
+
+    assert len(hub.builders[60].history) == 15
+    assert len(hub.builders[300].history) == 3
+    assert len(hub.builders[900].history) == 1
+    assert list(hub.builders[300].history.index) == [
+        pd.Timestamp(start),
+        pd.Timestamp(start + timedelta(minutes=5)),
+        pd.Timestamp(start + timedelta(minutes=10)),
+    ]
+
+    print("PASS")
+
+
+def test_session_gate_uses_completed_bar_timestamp():
+    """The 09:29 ET bar must not become RTH because the next tick is 09:30."""
+    print("Testing completed-bar session boundary...", end=" ")
+    from ralph_engine import BarBuilder, SymbolHub
+
+    class FakeMonitor:
+        strat_id = 998
+        tf_seconds = 60
+        session = 'RTH'
+        indicators = type('Indicators', (), {'_initialized': False})()
+        _current_confluence = set()
+
+        def __init__(self):
+            self.completed = []
+
+        def on_bar_close(self, bar, bar_count, mtf_confluence=None):
+            self.completed.append(pd.Timestamp(bar['timestamp']))
+            return [], {
+                'position_state': 'FLAT',
+                'trigger_booleans': {},
+                'indicator_values': {},
+                'interpreter_states': {},
+            }
+
+    hub = SymbolHub('SPY')
+    hub.builders = {60: BarBuilder(60)}
+    monitor = FakeMonitor()
+    hub.monitors = {monitor.strat_id: monitor}
+
+    premarket = datetime(2025, 1, 6, 14, 29, tzinfo=timezone.utc)
+    hub.on_tick(100.0, 1, premarket)
+    hub.on_tick(101.0, 1, premarket + timedelta(minutes=1))
+    assert monitor.completed == [], "09:29 ET bar was evaluated as RTH"
+
+    hub.on_tick(102.0, 1, premarket + timedelta(minutes=2))
+    assert monitor.completed == [pd.Timestamp('2025-01-06T14:30:00Z')]
+
+    print("PASS")
+
+
+def test_intrabar_strategy_declares_second_feed_requirement():
+    """Polygon A-channel subscription detection must not be a dead check."""
+    print("Testing intra-bar feed requirement detection...", end=" ")
+    from ralph_engine import StrategyMonitor
+
+    monitor = StrategyMonitor({
+        'id': 997,
+        'name': 'Intra-bar test',
+        'symbol': 'SPY',
+        'direction': 'LONG',
+        'timeframe': '1Min',
+        'entry_trigger': 'vwap_cross_above_ib',
+        'exit_triggers': ['vwap_cross_below_ib'],
+        'stop_config': {'method': 'atr', 'atr_mult': 1.5},
+    })
+    assert 'vwap_cross_above_ib' in monitor._intrabar_triggers
+    assert 'vwap_cross_below_ib' in monitor._intrabar_triggers
+
+    print("PASS")
+
+
 def main():
     print("=" * 60)
     print("Ralph Engine Fidelity Verification")
@@ -703,6 +851,11 @@ def main():
         test_strategy_monitor_warmup_and_bar_close,
         test_alert_dispatcher_builds_alert,
         test_fidelity_auditor_writes_jsonl,
+        test_sparse_bar_builder_does_not_invent_candles,
+        test_completed_aggregate_rolls_up_ohlcv,
+        test_polygon_minute_bars_route_to_all_timeframes,
+        test_session_gate_uses_completed_bar_timestamp,
+        test_intrabar_strategy_declares_second_feed_requirement,
     ]
 
     passed = 0
