@@ -21,7 +21,21 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-07-14
 
-- **⚠️ 19:20–19:33 UTC — OPS INCIDENT (self-inflicted, no deploy):** Supabase broken-pipe
+- **🚨 20:11 UTC (14:11 MT) — `RORT_PRIMARY_STATE_RESYNC_S=0` + `RORT_PRIMARY_STATE_RESYNC_APPLY=0`
+  (DISABLED) on Worker.** ROOT CAUSE of today's latency + missed entries: each resync cycle
+  full-warmup-replays ~50 strategies SEQUENTIALLY (~4s each → **~9.5-min cycle**, 18:39:32→
+  18:49:01) holding the GIL, repeating every 900s → the live engine was starved most of the
+  time. Damage: **fleet-wide alert dispatch lag 5–10 min** (fill 18:54:30 → saved 18:59:43,
+  ~13 sids; fill 19:06:00 → saved 19:16:41) and **MISSED live entries** — sid 333's 18:44:30
+  entry exists in BOTH backtest and algo lanes with gates open and byte-clean primary bars
+  (three-lane: algo==backtest, live absent → live-path stall). **Verified recovery after
+  disable: median alert lag 4s (was 320s+), BAR_CLOSE cadence normal.** Feature (the 340-class
+  primary-drift healer) needs redesign before re-arming — shared engine per (tf,session,
+  indicator-signature), chunked cycles, wall-clock cap. Memory:
+  `project_primary_resync_engine_starvation`. **NOTE: this CORRECTS the 19:20Z entry below —
+  the incident was NOT primarily caused by local DB load; the stall predates it.**
+- **⚠️ 19:20–19:33 UTC — OPS INCIDENT (originally mis-attributed to local DB load; see 20:11Z
+  entry above — the real cause was the PRIMARY-RESYNC stall):** Supabase broken-pipe
   burst on Worker (78 lines, 19:20–19:22Z) incl. **14 ALERT SAVE FAILED** (canary/PACKTEST
   sids — those alerts are LOST), plus **alert dispatch lag of 10–12 minutes** (fill_ts
   19:06:00 → saved 19:16:41; 19:21:30 → 19:33:20; normal is 3–5s). Cause: heavy LOCAL

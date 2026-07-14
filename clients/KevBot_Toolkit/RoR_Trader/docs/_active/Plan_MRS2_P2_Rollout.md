@@ -248,6 +248,23 @@ completion (recompute job records / batch-worker logs quiet 10+ min) → then sh
   SWING flips near boundaries. Poisoning class (yesterday's engine) = confirmed DEAD live:
   keys stable between boundaries all morning, refresher-backed, [FINE-DUP-SKIP] active.
 
+## 🚨 07-14 20:11Z — PRIMARY-RESYNC DISABLED (engine starvation; today's data invalidated)
+Post-close three-lane arbitration of 333's 18:44:30 miss (algo == backtest == fired, live
+absent, gates open on both lanes, primary bars byte-clean) traced to the LIVE ENGINE BEING
+STALLED: `resync_primary_states` full-warmup-replays EVERY monitor (~50 × ~4s = **~9.5-min
+cycle**) every 900s, GIL-held → no `BAR_CLOSE` processing for most of each cycle. Fleet-wide
+**alert dispatch lag 5–10 min** (fill 18:54:30 → saved 18:59:43 across ~13 sids) and missed
+entries. `RESYNC_S=0` + `APPLY=0` at 20:11Z → **median lag recovered 320s → 4s**.
+**Implications:** (1) ALL of today's live paired-% data is invalid for judging #61/#62/#65 —
+misses may be stalls, not divergence; the clean verdict comes from 07-15 with resync OFF.
+(2) The gate-state fixes remain independently proven (retro-replay + `changed=5` refresher
+cycles + correct keys). (3) The resync feature (340-class primary drift healer) must be
+redesigned before re-arming: shared engine per (tf, session, indicator-signature) instead of
+per-strategy replay, chunked cycles with a wall-clock cap, yields between strategies; add a
+tripwire on alert `timestamp − fill_ts` p95 > 30s. Memory:
+`project_primary_resync_engine_starvation`. **Meta-lesson: correctness validation (replay
+6/6) is NOT latency validation — cost at fleet scale must be measured before arming.**
+
 ## POST-ARM STATUS (07-14 ~19:50Z) — partial evidence, clean verdict deferred to 07-15
 **What the armed stack showed (17:52→19:05Z, the uncontaminated slice):**
 - Refresher is genuinely re-truing now: `[MTF-REFRESH] cycle … changed=5` (pre-#65 cycles
