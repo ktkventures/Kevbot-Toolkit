@@ -233,6 +233,7 @@ def replay(sid: int, since: datetime, until: datetime, sb,
     # vanish, which read as "the replay took no trades".)
     entries: list = []
     exits: list = []
+    bar_n = len(wdf)          # continue the warmup's bar count, like the builder
     next_refresh = since + timedelta(seconds=REFRESH_S)
 
     for close_ts, kind, key, bar in events:
@@ -273,11 +274,25 @@ def replay(sid: int, since: datetime, until: datetime, sb,
                   f"eff={hub._mtf_confluence_effective_from.get(_k)} "
                   f"prev={sorted(hub._mtf_confluence_prev.get(_k, []))}")
 
+        # bar_count must INCREMENT exactly as the live builder's does — the
+        # position/execution machinery reads it (reference bars, bars-in-trade).
+        # Feeding a constant 0 makes check_entry return None even when the
+        # trigger fired AND the gate passed: the trade silently never happens.
+        bar_n += 1
         signals, _ = monitor.on_bar_close(
-            bar, 0,
+            bar, bar_n,
             mtf_confluence=hub._mtf_confluence,
             mtf_prev=hub._mtf_confluence_prev,
             mtf_effective_from=hub._mtf_confluence_effective_from)
+        if os.getenv('RH_DEBUG') == '1' and signals:
+            print(f"    [dbg] SIGNALS at {str(close_ts)[11:19]}: "
+                  f"{[(s.get('type'), s.get('trigger') or s.get('reason')) for s in signals]}")
+        if os.getenv('RH_DEBUG') == '1':
+            _pos = getattr(monitor.position, 'state', None)
+            _st = getattr(_pos, 'status', '?') if _pos else '?'
+            if _st != 'FLAT':
+                print(f"    [dbg] position at {str(close_ts)[11:19]}: {_st}")
+
         for sig in signals or []:
             kind_s = (sig.get('type') or sig.get('side') or '').lower()
             fill = close_ts.to_pydatetime()  # C-type: fill at the deciding bar's close
