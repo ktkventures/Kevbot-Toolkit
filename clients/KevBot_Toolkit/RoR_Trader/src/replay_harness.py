@@ -231,6 +231,15 @@ def replay(sid: int, since: datetime, until: datetime, sb,
     # Count entries and exits INDEPENDENTLY — exactly like the alert lane does.
     # (v1 bug: recording only completed round-trips made every unpaired entry
     # vanish, which read as "the replay took no trades".)
+    # INTRA-BAR TICKS: live checks stops/targets every second (on_tick), so its
+    # exits land MID-BAR (backtest exits at 13:44:38, 14:41:25, 16:01:56 … are
+    # not on bar boundaries). A close-only replay defers every stop to the next
+    # boundary and reads as an exit-timing divergence that isn't real. Feed the
+    # 1Sec series through on_tick exactly as on_second_bar does.
+    sec1 = load_market_data(sym, start_date=since, end_date=until,
+                            timeframe='1Sec', feed='sip', session=session)
+    sec1 = sec1[OHLC] if sec1 is not None and len(sec1) else pd.DataFrame()
+
     entries: list = []
     exits: list = []
     bar_n = len(wdf)          # continue the warmup's bar count, like the builder
@@ -273,6 +282,21 @@ def replay(sid: int, since: datetime, until: datetime, sb,
                   f"gate={sorted(hub._mtf_confluence.get(_k, []))} "
                   f"eff={hub._mtf_confluence_effective_from.get(_k)} "
                   f"prev={sorted(hub._mtf_confluence_prev.get(_k, []))}")
+
+        # Intra-bar ticks for THIS primary bar, then its close (live's order:
+        # per-second on_tick checks stops/targets, then on_bar_close).
+        if len(sec1):
+            _b0 = pd.Timestamp(bar['timestamp'])
+            ticks = sec1[(sec1.index >= _b0) & (sec1.index < close_ts)]
+            for _tts, _trow in ticks.iterrows():
+                tsig = monitor.on_tick(float(_trow['close']),
+                                       _tts.isoformat(), bar_n)
+                for s in tsig or []:
+                    k = (s.get('type') or s.get('side') or '').lower()
+                    if 'entry' in k:
+                        entries.append(_tts.to_pydatetime())
+                    elif 'exit' in k:
+                        exits.append(_tts.to_pydatetime())
 
         # bar_count must INCREMENT exactly as the live builder's does — the
         # position/execution machinery reads it (reference bars, bars-in-trade).
