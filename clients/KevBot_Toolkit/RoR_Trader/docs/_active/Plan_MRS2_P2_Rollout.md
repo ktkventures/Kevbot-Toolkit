@@ -149,22 +149,31 @@ below. NOTE: 1Min PRIMARY warmup (340's boot injection) is NOT store-covered (st
    swapped), injected-MACD-drift detect+heal (the 340 mode), misalignment drop, grace-fire
    suppression, hub dry/apply staging. Ralph fidelity 13 pass. ARMING PLAN: dry-run meter
    first (RESYNC_S=900, no APPLY) → review fleet drift lines → flip APPLY.
-3. 🔥 **NEW #1 HUNT (found 07-13 ~23:45Z, telemetry-proven): MTF publish CLOBBER.** Multiple
-   interp-aware gate shadows (W2-5/PR #38 class) share one `_mtf_confluence[(tf, session)]`
-   key and REPLACE-publish it — last writer wins, and the clobbered set persists the whole
-   window. Measured 15:41→20:00Z RTH: narrow sets landed LAST in 33/33 tf=180 windows,
-   11/11 tf=900 (9/11 = MACD-only, 333's UT_BOT_V4 ABSENT; 1 EMPTY SET — the E-class
-   fail-open mechanism, seen in the wild), 43/83 tf=120 (EMA_PP-only, 327's SWING absent),
-   7/25 tf=300 (MACD-only, 327/328's SWING absent). Consequence: gates unsatisfiable in
-   those windows → fail-closed silent blocks now (tonight's bt-only residuals), fail-open
-   phantom fires before 15:41Z. UNIFIES much of autopsy class C + all of class E. NOTE:
-   unsetting FAIL_CLOSED does NOT help (non-empty narrow set fails the subset check either
-   way). FIX: `_publish_mtf` must MERGE per-interpreter (publisher replaces only records
-   whose interpreter it computes), preserving PB effective_from bookkeeping; also covers
-   refresher + seed paths (same chokepoint). Likely also the real face of old item 3
-   ("900s starvation" = the 15m key being clobbered, not starved).
-3b. (superseded by 3) 900s fan-out starvation root-cause — re-examine only if the merge fix
-   leaves a residue.
+3. ❌ **RETRACTED 07-14 ~00:20Z (overnight loop): the "MTF publish CLOBBER" was an ANALYSIS
+   ARTIFACT.** The 07-13 last-writer analysis grouped `bar_diagnostics` live_gate rows by
+   (tf, session) **across symbol hubs** — but each hub has its own `_mtf_confluence`; rows
+   are only comparable per strategy_id. The "narrow sets landing last" were other hubs'
+   legitimately-narrow keys interleaving: tf=900 MACD-only = sid 136 (SPY — the ONLY
+   15m-MACD_HISTOGRAM gate in the fleet), tf=120 EMA_PP-only = sid 194 (TSLL), tf=300
+   MACD_LINE-only = sid 271 (SPY). **Corrected per-hub scan (15:41→24:00Z, all 41 gated
+   sids): needed interpreters present in ~100% of each sid's own change-events** — 327/328/329
+   tf=300 SWING 47/47, 327 tf=120 SWING 116/116, 333 tf=900 UT_BOT 4/4, 333 tf=180 86/86.
+   No merge fix shipped (validation-gate rule: don't ship a fix whose target is disproven).
+   The Five's residuals are NOT gate-key starvation → weight shifts to the T2 counterfactual
+   audit. Old 3b ("900s starvation") stays closed — the 15m key is healthy per-hub.
+3'. 🔥 **REAL bug the corrected scan exposed (T1', building now): warmup/recompute drop the
+   prev-value chain → shift-based pack interpreters emit NOTHING on derive paths.**
+   Evidence: sid 285 (SPY 2m Extended gate) `MACD_HISTOGRAM_V2` in **0/204** events all day;
+   sid 136 (SPY 15m) key **EMPTY 5–20 min after every deploy** (7 boot-gaps 07-13 — the
+   class-E ungated fires pre-15:41Z, silent blocks post-FAIL_CLOSED). Mechanism (code):
+   `IncrementalIndicatorEngine.warmup()` never populates `state.prev_values`/`prev_macd_hist`/
+   `prev2_macd_hist` (only `update_bar` does); `recompute_from_history` full path = reset +
+   warmup → same. So `_derive_confluence_records` (warmup seed, non-RTH reload EVERY close,
+   600s refresher, rebroadcast recompute, gap-heal) hands prev={} to the user-pack dispatch →
+   1-row df → shift(1)=NaN → no record. Same family as the 04-29 sid-137 fix, one layer deeper.
+   FIX: `RORT_WARMUP_PREV_CHAIN=1` maintains the update_bar prelude inside warmup (flag OFF =
+   byte-identical). Acceptance = the fleet presence scan at 100% incl. 285/136 + no post-boot
+   empty windows.
 4. Grace-fire `_fired_bucket` suppression hole (ralph 2838/3846) — latent alert-drop, ticket.
 5. EOD + next clean day: re-measure the five @90%@10s on post-17:07Z windows.
 6. Housekeeping: SPY 10Sec re-true; 3 pre-existing test_unified_parity fails; frontend '1M'→'1m';
@@ -179,11 +188,11 @@ unset the var. Deploy log has times.
 While its jobs run: NO dev pushes / PR merges (redeploys orphan jobs), NO local lane writes,
 lane reads may be mid-rewrite. Build + replay-validate + prep PRs locally meanwhile; detect
 completion (recompute job records / batch-worker logs quiet 10+ min) → then ship the queue.
-**T1 — build first:** MTF publish CLOBBER fix (memory `project_mtf_publish_clobber` has full
-evidence + fix design; code = `_publish_mtf` in ralph_engine.py; verify `finalize_shadow_engines`
-multiplicity). Replay-validate → PR → merge → arm; acceptance = every gate's needed interpreter
-present in 100% of end-of-window `_mtf_confluence` sets, no-op byte-identity, PB effective_from
-intact.
+**T1 — SUPERSEDED 07-14 00:20Z:** clobber RETRACTED (see item 3 above — cross-hub aggregation
+artifact; per-hub scan = needed interps ~100% present; memory `project_mtf_publish_clobber`
+rewritten). T1' replacement = the warmup prev-chain fix (item 3'): `RORT_WARMUP_PREV_CHAIN`,
+same acceptance metric (fleet presence scan 100%, incl. sid 285 MACD_HISTOGRAM + sid 136
+post-boot), no-op byte-identity OFF, parity suite + ralph fidelity.
 **T2 — counterfactual audit:** today's 17:07-20:00Z unpaired events on 327/328/329/333 (16 events,
 listed by `bar_diagnostics` source='live_gate' analysis): ≥90% must be resolved-by-stack;
 any event in a supposedly-fixed class = live bug, fix tonight.
