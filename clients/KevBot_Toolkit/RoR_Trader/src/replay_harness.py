@@ -392,27 +392,41 @@ def main() -> int:
 
     for sid in [int(s) for s in args.sids.split(',')]:
         bt_e, bt_x, live_e, live_x = lanes(sb, sid, since, until)
-        runs = {}
-        for label, ce in (('REPLAY', False), ('REPLAY+FIX', True)):
-            try:
-                r = replay(sid, since, until, sb, canonical_edge=ce)
-                runs[label] = (r['entries'], r['exits'])
-            except Exception as e:  # noqa: BLE001
-                print(f"{sid:>4} {label} FAILED: {str(e)[:80]}")
+        try:
+            r = replay(sid, since, until, sb)
+        except Exception as e:  # noqa: BLE001
+            print(f"{sid:>4} REPLAY FAILED: {str(e)[:80]}")
+            continue
+        rep_e, rep_x = r['entries'], r['exits']
 
-        def row(label, e, x):
+        def row(label, e, x, vs_e, vs_x):
             cells = []
             for tol in TOLERANCES:
-                vals = [v for v in (combined_pct(e, bt_e, tol),
-                                    combined_pct(x, bt_x, tol)) if v == v]
+                vals = [v for v in (combined_pct(e, vs_e, tol),
+                                    combined_pct(x, vs_x, tol)) if v == v]
                 cells.append(f"{(sum(vals)/len(vals)):6.0f}%" if vals else "    n/a")
-            print(f"{sid:>4} {label:<10} {len(e):>3}/{len(x):<3} " + ' '.join(cells))
+            print(f"{sid:>4} {label:<9} {len(e):>3}/{len(x):<3} " + ' '.join(cells))
 
-        print(f"{sid:>4} {'BACKTEST':<10} {len(bt_e):>3}/{len(bt_x):<3}   (reference lane)")
-        row('LIVE', live_e, live_x)                      # what actually happened
-        for label in ('REPLAY', 'REPLAY+FIX'):
-            if label in runs:
-                row(label, *runs[label])                 # ceiling now / with the fix
+        print(f"{sid:>4} {'BACKTEST':<9} {len(bt_e):>3}/{len(bt_x):<3}   "
+              f"(reference lane; columns = combined % vs BACKTEST)")
+        row('LIVE', live_e, live_x, bt_e, bt_x)     # the Strategy Health number
+        row('REPLAY', rep_e, rep_x, bt_e, bt_x)     # achievable ceiling (no ops loss)
+
+        # THE SELF-CHECK / VALIDATION metric. On a CLEAN (un-stalled) day, REPLAY
+        # and LIVE should agree within the WS/REST floor — that agreement is what
+        # PROVES the harness faithful. A large gap = operational loss (stalls /
+        # lost alerts) on a day we know was contaminated, OR harness drift on a
+        # day we thought was clean. This is also the "why does it work here but
+        # not on my live model?" readout.
+        vals = [v for v in (combined_pct(rep_e, live_e, 10),
+                            combined_pct(rep_x, live_x, 10)) if v == v]
+        if vals:
+            agree = sum(vals) / len(vals)
+            verdict = ('≈ live — harness validated (or clean day)' if agree >= 90
+                       else 'GAP: ops loss (stalls/lost alerts) on a contaminated '
+                            'day, else harness drift — investigate')
+            print(f"{'':>4} {'':9}         → REPLAY vs LIVE @10s = {agree:3.0f}%  "
+                  f"[{verdict}]")
         print()
     return 0
 
