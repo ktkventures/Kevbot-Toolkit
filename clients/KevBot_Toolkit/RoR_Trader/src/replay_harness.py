@@ -106,6 +106,10 @@ assert pack_registry.get_registered_packs(), "pack registry empty — gates woul
 import ralph_engine as RE  # noqa: E402
 from ralph_engine import StrategyMonitor, SymbolHub, SECONDS_TO_TIMEFRAME  # noqa: E402
 from data_loader import load_market_data, resample_to_timeframe  # noqa: E402
+# Phase A (Plan_Measurement_Trust): score BOTH lanes through the dashboard's own
+# get_strategy_health, so the REPLAY ceiling `combined_pct` is byte-comparable to
+# the LIVE dashboard number (identical edges/coverage/pairing/TBD-exclusion).
+from api.routers import strategy_health as SH  # noqa: E402
 
 REFRESH_S = int(ARMED_FLAGS['RORT_MTF_STATE_REFRESH_S'])
 TOLERANCES = (5, 10, 60)
@@ -373,6 +377,22 @@ def lanes(sb, sid: int, since: datetime, until: datetime):
     return bt_e, bt_x, live_e, live_x
 
 
+def _health_scores(since: datetime, until: datetime, tol: float,
+                   replay_fills: dict | None) -> dict:
+    """Call the dashboard's own get_strategy_health at one tolerance, either
+    normally (LIVE) or with replay fills injected (REPLAY ceiling). Returns
+    {sid: combined_pct}. Byte-comparable to the Strategy Health page."""
+    SH._REPLAY_FILLS_OVERRIDE = replay_fills   # None → real alerts (LIVE)
+    try:
+        r = SH.get_strategy_health(
+            user=None, window_hours=3,
+            start=since.isoformat(), end=until.isoformat(),
+            tolerance_seconds=tol)
+    finally:
+        SH._REPLAY_FILLS_OVERRIDE = None
+    return {row['strategy_id']: row.get('combined_pct') for row in r['rows']}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--sids', required=True)
@@ -382,52 +402,57 @@ def main() -> int:
     since = datetime.fromisoformat(args.since.replace('Z', '+00:00'))
     until = datetime.fromisoformat(args.until.replace('Z', '+00:00'))
     sb = get_admin_client()
+    sids = [int(s) for s in args.sids.split(',')]
 
-    print(f"REPLAY HARNESS v1 — armed-stack replay of decision-time bars")
-    print(f"window {since:%Y-%m-%d %H:%M} → {until:%H:%M}Z\n")
-    hdr = (f"{'sid':>4} {'lane':<8} {'E/X':>7} "
-           + ' '.join(f"{'@'+str(t)+'s':>7}" for t in TOLERANCES))
-    print(hdr)
-    print('-' * len(hdr))
+    print("REPLAY HARNESS v2 — dashboard-scored (Plan_Measurement_Trust Phase A)")
+    print(f"window {since:%Y-%m-%d %H:%M} → {until:%H:%M}Z")
+    print("DASHBOARD-live and REPLAY-ceiling are BOTH scored by "
+          "get_strategy_health (identical pairing/coverage/TBD-exclusion).\n")
 
-    for sid in [int(s) for s in args.sids.split(',')]:
-        bt_e, bt_x, live_e, live_x = lanes(sb, sid, since, until)
+    # 1) Replay each sid → fills (entry+exit unix), plus keep raw lists for the
+    #    direct replay-vs-live self-check.
+    replay_fills: dict = {}
+    raw: dict = {}
+    for sid in sids:
         try:
             r = replay(sid, since, until, sb)
         except Exception as e:  # noqa: BLE001
             print(f"{sid:>4} REPLAY FAILED: {str(e)[:80]}")
             continue
-        rep_e, rep_x = r['entries'], r['exits']
+        fills = [t.timestamp() for t in r['entries']] + \
+                [t.timestamp() for t in r['exits']]
+        replay_fills[sid] = fills
+        raw[sid] = r
 
-        def row(label, e, x, vs_e, vs_x):
-            cells = []
-            for tol in TOLERANCES:
-                vals = [v for v in (combined_pct(e, vs_e, tol),
-                                    combined_pct(x, vs_x, tol)) if v == v]
-                cells.append(f"{(sum(vals)/len(vals)):6.0f}%" if vals else "    n/a")
-            print(f"{sid:>4} {label:<9} {len(e):>3}/{len(x):<3} " + ' '.join(cells))
+    # 2) Score LIVE and REPLAY via the dashboard code, at each tolerance.
+    live = {t: _health_scores(since, until, t, None) for t in TOLERANCES}
+    rep = {t: _health_scores(since, until, t, replay_fills) for t in TOLERANCES}
 
-        print(f"{sid:>4} {'BACKTEST':<9} {len(bt_e):>3}/{len(bt_x):<3}   "
-              f"(reference lane; columns = combined % vs BACKTEST)")
-        row('LIVE', live_e, live_x, bt_e, bt_x)     # the Strategy Health number
-        row('REPLAY', rep_e, rep_x, bt_e, bt_x)     # achievable ceiling (no ops loss)
-
-        # THE SELF-CHECK / VALIDATION metric. On a CLEAN (un-stalled) day, REPLAY
-        # and LIVE should agree within the WS/REST floor — that agreement is what
-        # PROVES the harness faithful. A large gap = operational loss (stalls /
-        # lost alerts) on a day we know was contaminated, OR harness drift on a
-        # day we thought was clean. This is also the "why does it work here but
-        # not on my live model?" readout.
-        vals = [v for v in (combined_pct(rep_e, live_e, 10),
-                            combined_pct(rep_x, live_x, 10)) if v == v]
-        if vals:
-            agree = sum(vals) / len(vals)
-            verdict = ('≈ live — harness validated (or clean day)' if agree >= 90
-                       else 'GAP: ops loss (stalls/lost alerts) on a contaminated '
-                            'day, else harness drift — investigate')
-            print(f"{'':>4} {'':9}         → REPLAY vs LIVE @10s = {agree:3.0f}%  "
-                  f"[{verdict}]")
-        print()
+    # 3) Report. DASHBOARD-live = the Strategy Health number; REPLAY-ceiling =
+    #    what the engine WOULD score with clean processing (decision-time bars).
+    def cell(v):
+        return f"{v:5.1f}%" if isinstance(v, (int, float)) else "  n/a"
+    hdr = (f"{'sid':>4}  {'DASHBOARD-live':>14}   {'REPLAY-ceiling':>14}   "
+           f"{'self-chk':>8}")
+    sub = (f"{'':>4}  {'@10s':>6} {'@60s':>6}   {'@10s':>6} {'@60s':>6}   "
+           f"{'r≈l@10s':>8}")
+    print(hdr)
+    print(sub)
+    print('-' * len(sub))
+    for sid in sids:
+        if sid not in raw:
+            continue
+        r = raw[sid]
+        # direct replay-vs-live self-check (unchanged from v1)
+        bt_e, bt_x, live_e, live_x = lanes(sb, sid, since, until)
+        vals = [v for v in (combined_pct(r['entries'], live_e, 10),
+                            combined_pct(r['exits'], live_x, 10)) if v == v]
+        selfchk = f"{(sum(vals)/len(vals)):5.0f}%" if vals else "  n/a"
+        print(f"{sid:>4}  {cell(live[10].get(sid))} {cell(live[60].get(sid))}   "
+              f"{cell(rep[10].get(sid))} {cell(rep[60].get(sid))}   {selfchk:>8}")
+    print("\nRead: DASHBOARD-live<REPLAY-ceiling ⇒ operational loss (recoverable); "
+          "REPLAY-ceiling itself low ⇒ real logic bug; self-chk<90% ⇒ replay "
+          "didn't reproduce live (ops-contaminated day or harness issue).")
     return 0
 
 

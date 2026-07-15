@@ -115,6 +115,18 @@ def _parse_iso_or_unix(s) -> datetime | None:
         return None
 
 
+# ── OFFLINE HARNESS HOOK (2026-07-15, Plan_Measurement_Trust Phase A) ──────────
+# When set to {strategy_id: [fill_unix, ...]}, get_strategy_health scores those
+# fills IN PLACE OF the real alerts for those sids — using the SAME backtest
+# edges, coverage cutoff, pairing and TBD-exclusion. This lets the replay harness
+# compute a REPLAY ceiling `combined_pct` that is byte-comparable to the dashboard
+# LIVE number (same code path), instead of a divergent re-implementation.
+# ALWAYS None in the deployed API (never touched by any request path) → the live
+# dashboard and HTTP route are byte-identical. Set/cleared only by an offline
+# caller (replay_harness). Not thread-safe by design — offline single-thread use.
+_REPLAY_FILLS_OVERRIDE: "Optional[Dict[int, List[float]]]" = None
+
+
 @router.get("")
 def get_strategy_health(
     user=Depends(get_current_user),
@@ -474,7 +486,13 @@ def get_strategy_health(
         # against an alert, so paired_count is in edges-per-window, not
         # trades-per-window (could be up to ~2× trade_count_backtest).
         edge_isos = agg["recent_edges"]
-        alert_unix_list = alerts_per_sid.get(sid, [])
+        # Harness hook (Phase A): score injected replay fills in place of the
+        # real alerts for this sid, when the offline override is active. Prod =
+        # None → always the real alerts. Same edges/coverage/pairing either way.
+        alert_unix_list = (
+            _REPLAY_FILLS_OVERRIDE.get(sid, [])
+            if _REPLAY_FILLS_OVERRIDE is not None
+            else alerts_per_sid.get(sid, []))
         phantom_count, missed_count, paired_count, _ = _pair_phantom_missed(
             edge_isos, alert_unix_list)
 
