@@ -1,57 +1,11 @@
 # Plan — M-RS2 Phase 2 Rollout: Resampled Bar Store → Both Lanes Serve From It
 
 ---
-## ▶▶ MEASUREMENT HARDENING PLAN (agreed with Kevin 07-15 ~16:30Z) — do this BEFORE hard bug-hunting
-**Why this is first:** the replay harness was validated (271=98%, 267=91%, 308=96%,
-333=94% REPLAY-vs-LIVE agreement — matches the Strategy Health dashboard within 1-2%
-where numbers were given). BUT the harness's own paired-% column is NOT computed the same
-way as the dashboard, so cross-metric comparison is not yet trustworthy. Fix the numbers
-first; then triangulate bugs.
-
-**The root discrepancy (confirmed 07-15):** the dashboard's `combined_pct`
-(`api/routers/strategy_health.py:578`) = `paired_cov / (paired_cov + phantom_cov +
-missed_cov)` with a `coverage_unix` cutoff that AUTO-EXCLUDES the unsettled tail as TBD.
-The harness uses `2·paired/(live+bt)` (symmetric F1-style) with NO coverage cutoff, so it
-penalizes recent-unsettled trades the dashboard excludes. Different formula → not
-apples-to-apples. Kevin's ruling (correct): the backtest "staleness" is NOT a blocker — the
-~15-min settle window is handled by TBD-exclusion; snapshot age ≠ lane staleness (310 had 8
-recent missed / 0 TBD → lane current despite a 19-day snapshot). We do NOT need to wait for
-a clean/settled reference; we need IDENTICAL calculation building blocks.
-
-**Phase A — Unify the pairing (the core fix; makes numbers comparable to the %):**
-- LIVE lane = call `get_strategy_health(user=None, ...)` directly (DONE — it IS the dashboard
-  number, by construction; reproduces the page within 1-2%). Use this as source of truth
-  going forward (same code the UI runs → no session-to-session drift, Kevin's concern).
-- REPLAY lane = score the replay's trades with the SAME `_pair_phantom_missed(edge_isos,
-  replay_unix_list, coverage_unix=<same cutoff>)` + `combined_pct = paired/(paired+phantom+
-  missed)`. TBD excluded on BOTH sides via the same coverage cutoff. Then dashboard-live and
-  replay-ceiling are computed by IDENTICAL code and directly comparable.
-- Report at BOTH 10s and 60s (10s is the honest bar — 308 drops 92%→76% at 10s; 60s hides
-  real timing divergence). Acceptance: on a healthy high-N strategy with no operational loss,
-  replay-ceiling ≈ dashboard-live within ~2%.
-
-**Phase B — Historical replay (leverage data we ALREADY have):**
-- The replay ceiling is immune to LIVE contamination (stalls, lost alerts, dispatch lag) —
-  it reconstructs from recorded `live_bars.first_*`. So it can run over ANY recorded window,
-  not just a clean live day. ⇒ we are DECOUPLED from waiting for pristine sessions; bug-hunt
-  retroactively on days already collected. (Only dependency: the backtest lane covers the
-  window — the coverage cutoff already tells us how far, and excludes the rest as TBD.)
-
-**Phase C — Add the triangulation signals (the actual bug-finding lens):**
-- Per strategy, at 10s + 60s: **Dashboard-live** (what's happening) × **Replay-ceiling**
-  (what's achievable with clean processing) × **Gate-parity %** (per-gate open% agreement,
-  live vs backtest — isolates bar/gate fidelity; different bars → different indicators →
-  different triggers). The three together classify each strategy's problem: live<ceiling =
-  operational; ceiling<dashboard-would-be = real logic bug; gate-parity low = bar/gate
-  construction. (Kevin: gate-parity as a 4th column is a good add.)
-
-**Phase D — Productize into the UI (the destination; deterministic, no session drift):**
-- Add a 10s-tolerance toggle to Strategy Health (currently 60s only).
-- Add replay-ceiling + gate-parity columns, run as a BACKGROUND job (the harness is a
-  multi-minute offline job — not inline). This is a real build, not a quick add.
-- Graduate the harness to its own skill (`/replay-check`) once Phase A validates.
-
-**Open question for Kevin (write here if blocked):** none currently — plan agreed.
+## ▶▶ MEASUREMENT HARDENING → see `docs/_active/Plan_Measurement_Trust.md` (SSOT)
+The measurement-trust / replay-triangulation plan (unify harness pairing on
+`get_strategy_health`; decision-time vs REST ceiling paradigm; historical replay;
+gate-parity triangulation; Strategy-Health fetch-on-Refresh QoL; UI productization) lives in
+its own doc so it can't drift. Do it BEFORE hard bug-hunting. Agreed Kevin ↔ Claude 07-15.
 
 ---
 ## ▶ ACTIVE WORK QUEUE (agreed with Kevin 07-14 — updated ~23:10Z)
