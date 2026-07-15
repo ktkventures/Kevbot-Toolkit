@@ -56,6 +56,25 @@ on REST looks very different from this hybrid.
   live day ⇒ DECOUPLED from waiting for pristine sessions; bug-hunt retroactively on collected
   days. Only dependency: backtest lane covers the window (coverage cutoff already reports how
   far; the rest is TBD-excluded).
+- **⭐ PREFER A NIGHTLY-RECOMPUTED SETTLED WINDOW as the reference (Kevin, 07-15).** TODAY's
+  stored lane is built incrementally (forward-test hook + settle sweeper) and mid-day it can
+  disagree with a full recompute. YESTERDAY (or any day already through the 00:20Z nightly
+  Update-All) has a settled, current-logic, full-flags stored lane = a KNOWN-GOOD reference.
+  Since the replay ceiling is immune to that day's live contamination, **replay-ceiling vs the
+  settled stored lane = a trustworthy fidelity read even on a stall-contaminated day** (the
+  self-check will read low for such a day — expected, not alarming). This sidesteps the
+  stored-lane-staleness question entirely instead of trying to adjudicate it.
+
+## ⚠️ Gate-parity caveats (learned 07-15 while using build_gate_parity_view)
+- Its THEORETICAL backtest (`gate_parity_harness`) has OFFLINE RESOLUTION LIMITS: it cannot
+  build some fine-TF secondary ribbons (e.g. 3m-STRAT_ASSISTANT, 3m-VWAP) over a short window
+  (NaN-shallow) → `resolved=False` and its `theoretical_bt` UNDER-counts for those strategies.
+  Do NOT treat its theoretical-bt as ground truth for 3m-gated sids (333, 340). Use per-gate
+  `cb_open_pct` + `divergent_gate` + `phantom_cb_fail` as the signal; get the true entry count
+  from the settled STORED lane.
+- MIRROR PROD OFFLINE FLAGS when running it (esp. `RORT_ENFORCE_1MIN_GATE=1`) or 1M-gated sids
+  are mis-scored (07-15: an un-mirrored run made 329 look like a 5-trade divergence; mirrored
+  it's 0-vs-1). Same flag-mirror trap as local-update hard rule 0.
 
 ## Phase C — Triangulation signals (the bug-finding lens)
 Per strategy, at 10s + 60s:
