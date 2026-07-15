@@ -1,4 +1,4 @@
-"""REPLAY HARNESS v1 — what would LIVE have traded, with no stalls and no lost alerts?
+"""REPLAY HARNESS v2 — what would LIVE have traded, with no stalls and no lost alerts?
 
 Replays the RECORDED DECISION-TIME bars (`live_bars.first_*` — the exact values the
 WS delivered at the moment the engine decided) back through the REAL live engine
@@ -42,15 +42,23 @@ Usage (run from src/, outside RTH per feedback_local_analysis_starves_live_worke
         --since 2026-07-14T13:30:00Z --until 2026-07-14T20:00:00Z
     RH_DEBUG=1 ... → per-primary-bar gate/eff/prev trace
 
-⚠️ STATUS (2026-07-14): the GATE lane is faithful — replayed secondary states match the
-canonical series bar-for-bar (verified 13:30→14:00). The PRIMARY lane is NOT yet faithful:
-the replay's primary trigger sequence does not reproduce live's (live took 11 entries on sid
-328; the replay takes 0 — at 13:41:30 the gate was correctly open but the primary
-`sw123_bull_c2` trigger never fired). **Do NOT trust the combined-% columns until the primary
-lane reproduces live.** Next step: align the primary lineage — live's monitor warms once at
-boot and evolves all day, while this replay warms as-of `since`; and confirm the 30Sec
-decision-time bars in live_bars are exactly what the monitor consumed (vs. bars the engine
-built from per-second data).
+✅ STATUS (2026-07-15): the primary lane is now FAITHFUL WITHIN ITS SCOPE and validated.
+`bar_count` increments like the live builder, intra-bar 1Sec ticks drive stops/targets, and the
+replay reproduces LIVE within 1-2% on clean days (self-check 271=98 / 267=91 / 308=96) AND the
+backtest lane trade-for-trade on settled days (328: 10-16 of 11-17 entries second-identical;
+the residual is CHARACTERIZED — one trade/day of session-open convergence + rapid re-entry —
+not mysterious). The combined-% columns ARE trustworthy: they are scored by the dashboard's own
+`get_strategy_health` (identical pairing / coverage / TBD-exclusion), NOT the local helpers.
+
+⚠️ SCOPE LIMIT (Brandon audit 2026-07-15 — read it honestly): this is a BAR/ENGINE replay, NOT
+a provider-event replay. It consumes the ALREADY-AGGREGATED `live_bars.first_*` rows and calls
+the monitor/shadow classes directly, so it BYPASSES WS parsing, WsAggMinute/BarBuilder
+construction, reconnect/dup/correction ordering, the flush-vs-fan-out race, and grace firing.
+It therefore certifies "the decision LOGIC is faithful GIVEN the recorded bars" — it does NOT
+certify the bars were CONSTRUCTED / ROUTED / grace-gated correctly. The live-path construction
+defects (P0 `>=60s` partial force-close, P1 default-model routing gap, P1 grace suppression)
+live BELOW this harness; catching them needs the provider-event replay upgrade. See
+docs/audits/Current_Dev_Candle_Parity_Audit_2026-07-15.md.
 
 WHAT IT HAS ALREADY PROVEN (worth keeping even at v1):
  * The engine's fan-out 5Min bar is BYTE-IDENTICAL to the canonical resample-from-1Min and
@@ -347,18 +355,22 @@ def replay(sid: int, since: datetime, until: datetime, sb,
 # ─────────────────────────────── pairing ─────────────────────────────────────
 
 def pair(a: list, b: list, tol: float) -> int:
-    """Greedy nearest-first 1:1 match within tol seconds."""
-    b = sorted(b)
-    n = 0
-    for x in sorted(a):
-        best, bd = None, None
-        for y in b:
-            d = abs((x - y).total_seconds())
-            if bd is None or d < bd:
-                best, bd = y, d
-        if best is not None and bd <= tol:
+    """Maximum 1:1 matches within tol seconds — optimal two-pointer over sorted
+    events, mirroring the dashboard's `_pair_phantom_missed`. NOT greedy
+    nearest-first, which UNDERSTATES parity (Brandon audit 07-15: a=[4,8],
+    b=[0,5], tol=5 admits a 2-match assignment; nearest-first finds only 1)."""
+    aa, bb = sorted(a), sorted(b)
+    i = j = n = 0
+    while i < len(aa) and j < len(bb):
+        diff = (bb[j] - aa[i]).total_seconds()
+        if abs(diff) <= tol:
             n += 1
-            b.remove(best)
+            i += 1
+            j += 1
+        elif diff < 0:   # bb[j] earlier than aa[i] and out of tol → unmatched
+            j += 1
+        else:            # aa[i] earlier than bb[j] and out of tol → unmatched
+            i += 1
     return n
 
 
@@ -369,18 +381,25 @@ def combined_pct(a: list, b: list, tol: float) -> float:
 
 
 def lanes(sb, sid: int, since: datetime, until: datetime):
-    bt = (sb.table('trades').select('entry_fill_ts,exit_fill_ts')
-          .eq('strategy_id', sid).eq('data_source', 'backtest_rest_hifi')
-          .gte('entry_fill_ts', since.isoformat())
-          .lte('entry_fill_ts', until.isoformat()).execute()).data
+    def _bt(col):
+        # Backtest rows windowed INDEPENDENTLY by `col`. Brandon audit 07-15:
+        # exits must be filtered by exit_fill_ts, NOT inherited from the
+        # entry-windowed rows — else an exit whose ENTRY preceded the window is
+        # wrongly dropped, and an exit AFTER the window is wrongly kept.
+        return (sb.table('trades').select('entry_fill_ts,exit_fill_ts')
+                .eq('strategy_id', sid).eq('data_source', 'backtest_rest_hifi')
+                .gte(col, since.isoformat())
+                .lte(col, until.isoformat()).execute()).data
+    P = lambda s: datetime.fromisoformat(s.replace('Z', '+00:00'))  # noqa: E731
+    bt_e = [P(t['entry_fill_ts']) for t in _bt('entry_fill_ts')
+            if t.get('entry_fill_ts')]
+    bt_x = [P(t['exit_fill_ts']) for t in _bt('exit_fill_ts')
+            if t.get('exit_fill_ts')]
     al = (sb.table('alerts').select('side,fill_ts')
           .eq('strategy_id', sid)
           .gte('timestamp', (since - timedelta(minutes=30)).isoformat())
           .lte('timestamp', (until + timedelta(minutes=30)).isoformat())
           .execute()).data
-    P = lambda s: datetime.fromisoformat(s.replace('Z', '+00:00'))  # noqa: E731
-    bt_e = [P(t['entry_fill_ts']) for t in bt]
-    bt_x = [P(t['exit_fill_ts']) for t in bt if t.get('exit_fill_ts')]
     live_e = [P(a['fill_ts']) for a in al
               if a['side'] == 'entry' and a['fill_ts']
               and since <= P(a['fill_ts']) <= until]

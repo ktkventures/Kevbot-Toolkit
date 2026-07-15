@@ -95,8 +95,37 @@ Per strategy, at 10s + 60s:
    BACKGROUND job (the harness is a multi-minute offline job — not inline). Real build.
 4. Graduate the harness to its own skill (`/replay-check`) once Phase A validates.
 
+## ✅ Non-circularity + robustness VALIDATED (07-15, answers Kevin's "too good to be true")
+Ran 327/328 decision-time + corrected across 3 settled days (07-08/09/10). The ceiling is
+NOT a trivial ~100%:
+- **327 ceiling = ~100% every day** (dtime==corr: 100/100/100 @60s) → logic-clean; its low
+  dashboard-live (43-71%) is 100% operational (recoverable by the fixes + resync-delete).
+- **328 ceiling = STABLE ~91% every day** (94.1 / 90.9 / 91.3 @60s), and dtime==corr EXACTLY
+  → the ~9% is NOT the WS/REST floor (correcting bars doesn't move it) and NOT operational →
+  a genuine live-engine-vs-backtest-engine residual. The harness DISCRIMINATES 327 from 328
+  under identical engine/refresher/day → it is not echoing the backtest.
+- Self-check (replay≈live) moves independently and CRATERS on contaminated days (07-09:
+  327=60% 328=38%) because the FIXED replay engine correctly refuses to reproduce that day's
+  broken pre-fix live. A circular harness can't do that.
+
+### 328's residual, characterized trade-by-trade (the honest ~9%)
+Every day, ALL entries are second-identical to the backtest EXCEPT exactly ONE, and it's one
+of two near-irreducible micro-causes (NOT a systemic bug):
+- **07-10:** first entry of the session 3.5 min late (bt 13:45:30 vs replay 13:49:00) —
+  session-open fine-TF gate convergence (replay seeds gates as-of 13:30; bt has continuous
+  full-history state). Same family as the coarse/fine session-boundary gate work.
+- **07-08 & 07-09:** one MISSED entry inside a RAPID RE-ENTRY cluster (bt enters twice 60-90s
+  apart — 18:06:00+18:07:30; 19:35:30+19:36:30 — replay takes only the second). Almost
+  certainly an exit-timing→re-entry-eligibility interaction (stop fires a bar apart, re-entry
+  still position-blocked when the trigger re-fires). NEXT DEEP-DIVE if 328 must clear 90%@10s.
+- Consequence: 328's ceiling straddles 90%@10s (88.6/90.9/91.3) — its best achievable is
+  borderline against the target; the rapid-re-entry class is the lever to lift it.
+
 ## Status / next
-- Phase A = next build (small). Validate acceptance on 308 + 271 (high-N healthy) first.
-- Then Phase C triangulation on the Five (327/328/329/333/340) + the day's real divergers
-  (269, 310 flagged 07-15).
-- Open question for Kevin (write here if blocked): none currently — plan agreed.
+- Phase A DONE (harness is dashboard-scored). Non-circularity + multi-day robustness DONE ✅.
+- IN FLIGHT: same corrected-splitter across 329/333/340 (07-09/10) → do the rest of the Five
+  carry a real logic residual or are they clean/floor like 327/328?
+- QUEUED (post-20:00Z close, RTH canary races before then): forward-check — recompute
+  328/308/327 fresh + measure TODAY's live (resync-deleted, post-fix) vs the fresh lane. If
+  today's live tracks the ceiling, the operational-fix is proven end-to-end on clean data.
+- Open question for Kevin (write here if blocked): none — validation is holding.
