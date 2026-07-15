@@ -135,8 +135,18 @@ def warmup_asof(sym: str, tf_s: int, session: str, end: datetime,
 
 
 def decision_time_bars(sb, sym: str, tf_s: int, since: datetime,
-                       until: datetime) -> pd.DataFrame:
-    """The bars the engine SAW: live_bars first-write values where recorded."""
+                       until: datetime, corrected: bool = False) -> pd.DataFrame:
+    """The bars the engine SAW.
+
+    corrected=False (default): live_bars first-write values (`first_*`) — the
+      decision-time WS view. The HONEST ceiling: what live could achieve with
+      the real-time data it actually had (WS-vs-REST tip included).
+    corrected=True: the LATEST/healed values (main OHLC columns) — REST-corrected,
+      convergent with the backtest's REST hi-fi bars. The floor-vs-logic
+      SPLITTER: a corrected ceiling that is STILL low ⇒ a real logic bug; a
+      corrected ceiling ≈ 100% while decision-time is lower ⇒ the gap is just
+      the irreducible WS/REST data-timing floor, not a bug.
+    """
     rows = (sb.table('live_bars')
             .select('bar_start,open,high,low,close,volume,'
                     'first_open,first_high,first_low,first_close,first_volume')
@@ -149,8 +159,11 @@ def decision_time_bars(sb, sym: str, tf_s: int, since: datetime,
     for r in rows:
         rec = {'timestamp': pd.Timestamp(r['bar_start'])}
         for c in ('open', 'high', 'low', 'close', 'volume'):
-            fv = r.get('first_' + c)
-            rec[c] = float(fv if fv is not None else r[c])
+            if corrected:
+                rec[c] = float(r[c])
+            else:
+                fv = r.get('first_' + c)
+                rec[c] = float(fv if fv is not None else r[c])
         recs.append(rec)
     return pd.DataFrame(recs).set_index('timestamp').sort_index()
 
@@ -164,7 +177,7 @@ def canonical_bars_asof(sym: str, tf_s: int, session: str,
 # ─────────────────────────────── replay ──────────────────────────────────────
 
 def replay(sid: int, since: datetime, until: datetime, sb,
-           canonical_edge: bool = False) -> list:
+           canonical_edge: bool = False, corrected: bool = False) -> list:
     """canonical_edge=False → replays the engine AS ARMED TODAY: fine-TF gate
     shadows advance on the FAN-OUT bar the live engine builds.
 
@@ -201,12 +214,12 @@ def replay(sid: int, since: datetime, until: datetime, sb,
 
     # Event stream: every bar CLOSE in the window, primary + secondaries.
     events = []   # (close_ts, kind, key, bar_dict)
-    prim = decision_time_bars(sb, sym, tf_s, since, until)
+    prim = decision_time_bars(sb, sym, tf_s, since, until, corrected=corrected)
     for ts, row in prim.iterrows():
         events.append((ts + pd.Timedelta(seconds=tf_s), 1, None,
                        {'timestamp': ts.isoformat(), **{c: float(row[c]) for c in OHLC}}))
     for (sec_tf, sec_sess), _sh in list(hub._shadow_engines.items()):
-        sdf = decision_time_bars(sb, sym, sec_tf, since, until)
+        sdf = decision_time_bars(sb, sym, sec_tf, since, until, corrected=corrected)
         for ts, row in sdf.iterrows():
             events.append((ts + pd.Timedelta(seconds=sec_tf), 2, (sec_tf, sec_sess),
                            {'timestamp': ts.isoformat(), **{c: float(row[c]) for c in OHLC}}))
@@ -220,7 +233,7 @@ def replay(sid: int, since: datetime, until: datetime, sb,
     # would be both glacial and a load risk (see
     # feedback_local_analysis_starves_live_worker).
     m1_warm = warmup_asof(sym, 60, session, since)
-    m1_live = decision_time_bars(sb, sym, 60, since, until)
+    m1_live = decision_time_bars(sb, sym, 60, since, until, corrected=corrected)
     m1 = pd.concat([m1_warm, m1_live])[OHLC]
     m1 = m1[~m1.index.duplicated(keep='last')].sort_index()
 
@@ -398,20 +411,25 @@ def main() -> int:
     ap.add_argument('--sids', required=True)
     ap.add_argument('--since', required=True)
     ap.add_argument('--until', required=True)
+    ap.add_argument('--corrected', action='store_true',
+                    help="ALSO compute the REST-corrected ceiling (floor-vs-logic "
+                         "splitter: corrected still low ⇒ real logic bug; "
+                         "corrected≈100% but decision-time lower ⇒ WS/REST floor). "
+                         "~2× the replay work.")
     args = ap.parse_args()
     since = datetime.fromisoformat(args.since.replace('Z', '+00:00'))
     until = datetime.fromisoformat(args.until.replace('Z', '+00:00'))
     sb = get_admin_client()
     sids = [int(s) for s in args.sids.split(',')]
 
-    print("REPLAY HARNESS v2 — dashboard-scored (Plan_Measurement_Trust Phase A)")
+    print("REPLAY HARNESS v2 — dashboard-scored (Plan_Measurement_Trust)")
     print(f"window {since:%Y-%m-%d %H:%M} → {until:%H:%M}Z")
-    print("DASHBOARD-live and REPLAY-ceiling are BOTH scored by "
+    print("DASHBOARD-live and every REPLAY ceiling are scored by the SAME "
           "get_strategy_health (identical pairing/coverage/TBD-exclusion).\n")
 
-    # 1) Replay each sid → fills (entry+exit unix), plus keep raw lists for the
-    #    direct replay-vs-live self-check.
+    # 1) Replay each sid (decision-time; and corrected if requested) → fills.
     replay_fills: dict = {}
+    corr_fills: dict = {}
     raw: dict = {}
     for sid in sids:
         try:
@@ -419,40 +437,54 @@ def main() -> int:
         except Exception as e:  # noqa: BLE001
             print(f"{sid:>4} REPLAY FAILED: {str(e)[:80]}")
             continue
-        fills = [t.timestamp() for t in r['entries']] + \
-                [t.timestamp() for t in r['exits']]
-        replay_fills[sid] = fills
+        replay_fills[sid] = ([t.timestamp() for t in r['entries']]
+                             + [t.timestamp() for t in r['exits']])
         raw[sid] = r
+        if args.corrected:
+            try:
+                rc = replay(sid, since, until, sb, corrected=True)
+                corr_fills[sid] = ([t.timestamp() for t in rc['entries']]
+                                   + [t.timestamp() for t in rc['exits']])
+            except Exception as e:  # noqa: BLE001
+                print(f"{sid:>4} CORRECTED REPLAY FAILED: {str(e)[:80]}")
 
-    # 2) Score LIVE and REPLAY via the dashboard code, at each tolerance.
+    # 2) Score every lane via the dashboard code, at each tolerance.
     live = {t: _health_scores(since, until, t, None) for t in TOLERANCES}
     rep = {t: _health_scores(since, until, t, replay_fills) for t in TOLERANCES}
+    corr = ({t: _health_scores(since, until, t, corr_fills) for t in TOLERANCES}
+            if args.corrected else None)
 
-    # 3) Report. DASHBOARD-live = the Strategy Health number; REPLAY-ceiling =
-    #    what the engine WOULD score with clean processing (decision-time bars).
+    # 3) Report.
     def cell(v):
         return f"{v:5.1f}%" if isinstance(v, (int, float)) else "  n/a"
-    hdr = (f"{'sid':>4}  {'DASHBOARD-live':>14}   {'REPLAY-ceiling':>14}   "
-           f"{'self-chk':>8}")
-    sub = (f"{'':>4}  {'@10s':>6} {'@60s':>6}   {'@10s':>6} {'@60s':>6}   "
-           f"{'r≈l@10s':>8}")
-    print(hdr)
-    print(sub)
-    print('-' * len(sub))
+    cols = f"{'sid':>4}  {'DASHBOARD-live':>13}   {'CEILING(dtime)':>13}"
+    subs = f"{'':>4}  {'@10s':>6} {'@60s':>6}   {'@10s':>6} {'@60s':>6}"
+    if args.corrected:
+        cols += f"   {'CEILING(corr)':>13}"
+        subs += f"   {'@10s':>6} {'@60s':>6}"
+    cols += f"   {'self':>5}"
+    subs += f"   {'r≈l':>5}"
+    print(cols)
+    print(subs)
+    print('-' * len(subs))
     for sid in sids:
         if sid not in raw:
             continue
         r = raw[sid]
-        # direct replay-vs-live self-check (unchanged from v1)
         bt_e, bt_x, live_e, live_x = lanes(sb, sid, since, until)
         vals = [v for v in (combined_pct(r['entries'], live_e, 10),
                             combined_pct(r['exits'], live_x, 10)) if v == v]
-        selfchk = f"{(sum(vals)/len(vals)):5.0f}%" if vals else "  n/a"
-        print(f"{sid:>4}  {cell(live[10].get(sid))} {cell(live[60].get(sid))}   "
-              f"{cell(rep[10].get(sid))} {cell(rep[60].get(sid))}   {selfchk:>8}")
-    print("\nRead: DASHBOARD-live<REPLAY-ceiling ⇒ operational loss (recoverable); "
-          "REPLAY-ceiling itself low ⇒ real logic bug; self-chk<90% ⇒ replay "
-          "didn't reproduce live (ops-contaminated day or harness issue).")
+        selfchk = f"{(sum(vals)/len(vals)):4.0f}%" if vals else " n/a"
+        line = (f"{sid:>4}  {cell(live[10].get(sid))} {cell(live[60].get(sid))}   "
+                f"{cell(rep[10].get(sid))} {cell(rep[60].get(sid))}")
+        if args.corrected:
+            line += f"   {cell(corr[10].get(sid))} {cell(corr[60].get(sid))}"
+        line += f"   {selfchk:>5}"
+        print(line)
+    print("\nRead: live < CEILING(dtime) ⇒ operational loss (recoverable). "
+          "CEILING(corr) high but CEILING(dtime) lower ⇒ WS/REST data-timing "
+          "floor. CEILING(corr) ALSO low ⇒ a REAL logic bug. self<90% ⇒ replay "
+          "didn't reproduce live (ops-contaminated window).")
     return 0
 
 
