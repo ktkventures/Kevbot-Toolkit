@@ -19,6 +19,21 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-07-15
+
+- **~21:23 UTC (15:23 MT)** — `206002b` feat(engine): RORT_CANONICAL_PRIMARY_CLOSE — `>=60s`
+  primary close/dispatch fix (Brandon audit P0+P1). **Flag default OFF → NO trading-path
+  behavior change on this deploy** — flag-OFF is byte-identical to baseline (stash-verified
+  twice). Single-sources the ws_agg-consumer set so a default-model (`ws_rest_spliced`) `>=60s`
+  primary gets canonical A-sub/1Min-dispatch/fan-out instead of an incomplete flush partial;
+  flush no longer drives `>=60s` strategy closes on partials. Bundles `7c1b651` (harness
+  pairing/windowing fixes), `5c06682` (Brandon audit doc+tests, cherry-picked), and the
+  `/replay-check` skill.
+  - Service(s) redeployed: Worker + api
+  - Observed cache gap: RTH closed (post-20:00Z) — no live bars to gap
+  - Notes: flag OFF; arming `RORT_CANONICAL_PRIMARY_CLOSE=1` on a single default-model 1Min+
+    canary is a later, announced, monitored step. Nightly 00:20Z is >3h out.
+
 ## 2026-07-14
 
 - **~20:55 UTC (14:55 MT)** — `5fdaeaa` (PR #66) feat(ops): engine liveness watchdogs.
