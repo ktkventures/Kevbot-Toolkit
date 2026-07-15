@@ -338,6 +338,32 @@ def is_valid_live_model(value: str) -> bool:
     return value in LIVE_MODELS
 
 
+# ── Live-model capability: consumes WS-aggregated completed bars ──────────
+# Single source of truth for the routing gates that decide whether a model's
+# engine fires on WS-aggregated (client-side per-second → close) bars: the
+# A.<symbol> subscription, the completed-1Min dispatch, and the >60s primary
+# fan-out. These three gates were duplicated across ralph_engine and DRIFTED:
+# `ws_rest_spliced` (the DEFAULT since 2026-05-28) and `ws_agg_reconciled` were
+# added to the polygon-skip site but NOT to the three eligibility gates, so a
+# standalone default-model 1Min+ primary got no A-sub / dispatch / fan-out and
+# fell back to the flush's incomplete partial (Brandon audit P0+P1, 2026-07-15).
+# The spec for both models states they "drive the live engine on ws_agg bars,
+# same as ws_agg_locked" — so they belong here. Consumed via ralph_engine's
+# flag-gated `_elig_ws_agg` (RORT_CANONICAL_PRIMARY_CLOSE) for a reversible roll.
+WS_AGG_CONSUMER_MODELS: frozenset = frozenset({
+    'ws_agg_locked',
+    'ws_agg_with_rest_backfill',
+    'ws_agg_reconciled',
+    'ws_rest_spliced',
+})
+
+
+def model_consumes_ws_agg(live_model: str) -> bool:
+    """True if this live model's engine fires on WS-aggregated completed bars
+    (so it needs the A-sub + 1Min dispatch + >60s fan-out routing)."""
+    return live_model in WS_AGG_CONSUMER_MODELS
+
+
 def get_model_status(model_id: str, kind: str) -> str:
     """Return one of 'available', 'coming_soon', 'unknown'.
 

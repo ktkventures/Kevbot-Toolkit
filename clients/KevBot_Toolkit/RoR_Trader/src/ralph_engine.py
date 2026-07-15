@@ -2416,6 +2416,32 @@ def _fine_incremental_authority() -> bool:
         "1", "true", "yes", "on")
 
 
+def _canonical_primary_close() -> bool:
+    """RORT_CANONICAL_PRIMARY_CLOSE (default OFF), 2026-07-15 — Brandon audit
+    P0+P1. Flag ON (1) single-sources the ws_agg-consumer capability set so the
+    DEFAULT live model (ws_rest_spliced) + ws_agg_reconciled get the A-sub /
+    1Min dispatch / >60s fan-out they consume per spec, and (2) stops
+    flush_stale_bars from driving a strategy close on an INCOMPLETE >=60s primary
+    chart-partial (the canonical completion owns that close). Read at runtime so
+    tests + the parity suite can toggle without a module reload."""
+    return os.getenv(
+        "RORT_CANONICAL_PRIMARY_CLOSE", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _elig_ws_agg(live_model: str) -> bool:
+    """Does this live model consume WS-aggregated completed bars (so it needs
+    the A-sub / 1Min dispatch / >60s primary fan-out routing)? Flag ON uses the
+    true single-sourced capability set (strategy_models.WS_AGG_CONSUMER_MODELS —
+    includes the DEFAULT ws_rest_spliced + ws_agg_reconciled, per their spec,
+    which the three gates historically omitted — Brandon P1). Flag OFF keeps the
+    legacy 2-model set for a reversible rollout."""
+    if _canonical_primary_close():
+        from strategy_models import model_consumes_ws_agg
+        return model_consumes_ws_agg(live_model)
+    return live_model in ('ws_agg_locked', 'ws_agg_with_rest_backfill')
+
+
 def _bar_close_in_session(bar: dict, arrival_ts: datetime,
                           monitor: 'StrategyMonitor') -> bool:
     """W2-2: session membership for a completed bar at bar-close dispatch.
@@ -3998,6 +4024,16 @@ class SymbolHub:
             for monitor in self.monitors.values():
                 if monitor.tf_seconds != tf_seconds:
                     continue
+                # Brandon P0 (RORT_CANONICAL_PRIMARY_CLOSE): a >=60s primary's
+                # flush `completed` is an INCOMPLETE per-second chart partial
+                # (close_on_boundary=False; its WRITE is already guarded above).
+                # Do NOT drive a strategy close on it — the canonical completed-
+                # minute fan-out (now reaching every model via _elig_ws_agg) owns
+                # this close with full OHLCV. Sub-minute primaries legitimately
+                # keep flush-close (per-second A events too sparse to always
+                # cross close_on_boundary=True at the right moment).
+                if _canonical_primary_close() and tf_seconds >= 60:
+                    continue
                 # W2-2: label-gated on flush too (flush fires the session-
                 # final bar's close AFTER the boundary — must still dispatch).
                 if not _bar_close_in_session(completed, now, monitor):
@@ -4504,16 +4540,13 @@ class SymbolHub:
         path). This helper's `last_was_duplicate` check handles the
         SYMMETRIC case (AM first, then ws_agg) by recomputing silently.
 
-        ⚠️ Volume caveat: the per-second loop in on_second_bar continues
-        to update the >60s primary's _partial with close_on_boundary=False
-        for chart-visual forming-bar publish. So during the forming period,
-        BOTH the per-second loop AND this fan-out (via the per-minute
-        accept_second_bar(close_on_boundary=True)) contribute to volume.
-        Closed history bars therefore reflect ~2x volume for the forming
-        period when ws_agg drives the close. Affects volume-based
-        interpreters (VWAP_V2, RVOL_V2) only. Price-based interpreters
-        (EMA, MACD, SWING_123, UT_BOT_V4) are unaffected. Future cleanup
-        would add a `skip_volume` param to BarBuilder.accept_second_bar.
+        Volume: the per-second loop in on_second_bar updates the >60s primary's
+        _partial (close_on_boundary=False) for chart-visual forming-bar publish,
+        but passes `skip_volume=True` (2026-06-12 volume-integrity fix) — so ONLY
+        this fan-out's per-minute accept_second_bar(close_on_boundary=True)
+        contributes volume. No double-count; the earlier ~2x-volume caveat is
+        RESOLVED (VWAP_V2 / RVOL_V2 no longer see inflated forming volume). Do
+        NOT add a second skip_volume — that would under-count.
         """
         primary_tfs = {m.tf_seconds for m in self.monitors.values()}
         for tf in primary_tfs:
@@ -4521,7 +4554,7 @@ class SymbolHub:
                 continue  # 1Min has its own Phase C path; sub-minute is per-second
             eligible_at_tf = any(
                 m.tf_seconds == tf
-                and m.live_model in ('ws_agg_locked', 'ws_agg_with_rest_backfill')
+                and _elig_ws_agg(m.live_model)   # Brandon P1: incl. default flag-ON
                 for m in self.monitors.values()
             )
             if not eligible_at_tf:
@@ -5420,7 +5453,7 @@ class SymbolHub:
                     # source_label='ws_agg' that all ws_with_corrections
                     # monitors would skip anyway) when nobody's listening.
                     eligible = any(
-                        m.live_model in ('ws_agg_locked', 'ws_agg_with_rest_backfill')
+                        _elig_ws_agg(m.live_model)   # Brandon P1: incl. default flag-ON
                         and m.tf_seconds == 60
                         for m in self.monitors.values()
                     )
@@ -6436,9 +6469,7 @@ class RalphEngine:
                     has_subminute = any(
                         m.tf_seconds < 60 for m in hub.monitors.values())
                     has_ws_agg = any(
-                        getattr(m, 'live_model', None) in (
-                            'ws_agg_locked', 'ws_agg_with_rest_backfill'
-                        )
+                        _elig_ws_agg(getattr(m, 'live_model', None))
                         for m in hub.monitors.values()
                     )
                     if has_ltype or has_subminute or has_ws_agg:
