@@ -125,6 +125,12 @@ def _parse_iso_or_unix(s) -> datetime | None:
 # dashboard and HTTP route are byte-identical. Set/cleared only by an offline
 # caller (replay_harness). Not thread-safe by design — offline single-thread use.
 _REPLAY_FILLS_OVERRIDE: "Optional[Dict[int, List[float]]]" = None
+# Companion offline hook: scope the (otherwise fleet-wide) strategies/trades/
+# alerts fetches to just these sids. The fleet-wide queries time out under load
+# when called repeatedly offline (the harness); scoping to a handful makes them
+# light. ALWAYS None in the deployed API → the page fetches the whole fleet as
+# before. Offline-only.
+_ONLY_SIDS: "Optional[List[int]]" = None
 
 
 @router.get("")
@@ -193,14 +199,17 @@ def get_strategy_health(
     # Pull every strategy with the columns we need. `config` is JSONB so
     # we reach into it for snapshot/recompute timestamps; the rest are
     # dedicated columns (Phase 40 + Strategy Health Badge migrations).
-    strat_resp = c.table("strategies").select(
+    _strat_q = c.table("strategies").select(
         "id,user_id,name,symbol,direction,timeframe,strategy_origin,"
         "forward_testing,forward_test_start,"
         "data_source,data_refreshed_at,"
         "kpis_computed_at,kpis_stale_since,"
         "parity_status,discrepancies,discrepancies_dismissed_at,"
         "config,updated_at,created_at"
-    ).order("id").execute()
+    ).order("id")
+    if _ONLY_SIDS is not None:
+        _strat_q = _strat_q.in_("id", _ONLY_SIDS)
+    strat_resp = _strat_q.execute()
     strats: List[Dict[str, Any]] = strat_resp.data or []
 
     # Aggregate trade-recency in a single pass: pull entry_fill_ts +
@@ -218,6 +227,8 @@ def get_strategy_health(
     trade_query = c.table("trades").select(
         "strategy_id,entry_fill_ts,exit_fill_ts,data_source,created_at"
     ).like("data_source", "backtest_%").order("strategy_id").order("id")
+    if _ONLY_SIDS is not None:
+        trade_query = trade_query.in_("strategy_id", _ONLY_SIDS)
     trades: List[Dict[str, Any]] = _paginated_fetch(trade_query)
 
     # Fetch the most-recent alert per strategy (for the "last alert
@@ -229,10 +240,12 @@ def get_strategy_health(
     last_alert_per_sid: Dict[int, str] = {}
     try:
         thirty_d_ago = (now - timedelta(days=30)).isoformat()
-        last_alert_resp = c.table("alerts").select(
+        _la_q = c.table("alerts").select(
             "strategy_id,timestamp"
-        ).gte("timestamp", thirty_d_ago).order(
-            "timestamp", desc=True).execute()
+        ).gte("timestamp", thirty_d_ago).order("timestamp", desc=True)
+        if _ONLY_SIDS is not None:
+            _la_q = _la_q.in_("strategy_id", _ONLY_SIDS)
+        last_alert_resp = _la_q.execute()
         for a in (last_alert_resp.data or []):
             sid_a = a.get("strategy_id")
             ts_a = a.get("timestamp")
@@ -314,10 +327,12 @@ def get_strategy_health(
     # Recent alerts per strategy. Keep the projection tight. Bound by
     # [window_start, window_end] — for custom mode end < now, otherwise
     # end == now and the upper bound is a no-op.
-    alert_resp = c.table("alerts").select(
+    _al_q = c.table("alerts").select(
         "strategy_id,fill_ts,trigger_ts,event_type"
-    ).gte("timestamp", window_cutoff_iso).lte(
-        "timestamp", window_end_iso).execute()
+    ).gte("timestamp", window_cutoff_iso).lte("timestamp", window_end_iso)
+    if _ONLY_SIDS is not None:
+        _al_q = _al_q.in_("strategy_id", _ONLY_SIDS)
+    alert_resp = _al_q.execute()
     alerts: List[Dict[str, Any]] = alert_resp.data or []
     alerts_per_sid: Dict[int, List[float]] = {}
     for a in alerts:

@@ -391,11 +391,14 @@ def lanes(sb, sid: int, since: datetime, until: datetime):
 
 
 def _health_scores(since: datetime, until: datetime, tol: float,
-                   replay_fills: dict | None) -> dict:
+                   replay_fills: dict | None, only_sids: list) -> dict:
     """Call the dashboard's own get_strategy_health at one tolerance, either
     normally (LIVE) or with replay fills injected (REPLAY ceiling). Returns
     {sid: combined_pct}. Byte-comparable to the Strategy Health page."""
     SH._REPLAY_FILLS_OVERRIDE = replay_fills   # None → real alerts (LIVE)
+    # Scope the fleet-wide fetches to just our targets, or get_strategy_health
+    # times out under load (the recurring Supabase statement-timeout).
+    SH._ONLY_SIDS = only_sids
     try:
         r = SH.get_strategy_health(
             user=None, window_hours=3,
@@ -403,6 +406,7 @@ def _health_scores(since: datetime, until: datetime, tol: float,
             tolerance_seconds=tol)
     finally:
         SH._REPLAY_FILLS_OVERRIDE = None
+        SH._ONLY_SIDS = None
     return {row['strategy_id']: row.get('combined_pct') for row in r['rows']}
 
 
@@ -449,10 +453,11 @@ def main() -> int:
                 print(f"{sid:>4} CORRECTED REPLAY FAILED: {str(e)[:80]}")
 
     # 2) Score every lane via the dashboard code, at each tolerance.
-    live = {t: _health_scores(since, until, t, None) for t in TOLERANCES}
-    rep = {t: _health_scores(since, until, t, replay_fills) for t in TOLERANCES}
-    corr = ({t: _health_scores(since, until, t, corr_fills) for t in TOLERANCES}
-            if args.corrected else None)
+    live = {t: _health_scores(since, until, t, None, sids) for t in TOLERANCES}
+    rep = {t: _health_scores(since, until, t, replay_fills, sids)
+           for t in TOLERANCES}
+    corr = ({t: _health_scores(since, until, t, corr_fills, sids)
+             for t in TOLERANCES} if args.corrected else None)
 
     # 3) Report.
     def cell(v):
