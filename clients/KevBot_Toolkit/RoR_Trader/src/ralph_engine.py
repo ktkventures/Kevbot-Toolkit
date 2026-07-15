@@ -2442,6 +2442,18 @@ def _elig_ws_agg(live_model: str) -> bool:
     return live_model in ('ws_agg_locked', 'ws_agg_with_rest_backfill')
 
 
+def _grace_final_close_eligible() -> bool:
+    """RORT_GRACE_FINAL_CLOSE_ELIGIBLE (default OFF), 2026-07-15 — Brandon audit
+    P1. Flag ON: a sub-minute grace evaluation that emits NO signal does NOT mark
+    the bucket fired, so a trigger that only becomes true in the FINAL seconds
+    still dispatches at the canonical close. Flag OFF: legacy (grace marks the
+    bucket fired unconditionally, silently suppressing that late signal). Read at
+    runtime so tests + the parity suite can toggle without a module reload."""
+    return os.getenv(
+        "RORT_GRACE_FINAL_CLOSE_ELIGIBLE", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def _bar_close_in_session(bar: dict, arrival_ts: datetime,
                           monitor: 'StrategyMonitor') -> bool:
     """W2-2: session membership for a completed bar at bar-close dispatch.
@@ -3138,7 +3150,12 @@ class SymbolHub:
                     "monitor will catch up at builder bar-close",
                     monitor.strat_id, tf_seconds, e)
                 continue
-            monitor._fired_bucket = bucket_start_epoch
+            # Brandon P1 (RORT_GRACE_FINAL_CLOSE_ELIGIBLE): mark the bucket FIRED
+            # only when grace actually dispatched a signal — else a signal that
+            # forms in the final seconds is suppressed at the canonical close.
+            # Flag OFF = legacy (mark unconditionally).
+            if signals or not _grace_final_close_eligible():
+                monitor._fired_bucket = bucket_start_epoch
             if signals and alert_callback:
                 logger.info(
                     "STRATEGY_GRACE_FIRE strat=%s tf=%ss grace=%ss bar=%s "

@@ -21,6 +21,18 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-07-15
 
+- **~22:15 UTC (16:15 MT)** — grace fix push: `RORT_GRACE_FINAL_CLOSE_ELIGIBLE`
+  (Brandon P1, no-signal-at-grace). Shipped **flag OFF** (byte-identical baseline). Then
+  ARMED overnight (var-set) so tomorrow's open runs it — narrow: only sub-minute
+  ws_rest_spliced/ws_agg_reconciled strategies whose grace emits no signal but the final
+  second forms one. All affected are RTH (no EH effect tonight); arming now avoids an
+  open-gap. Reversible: `railway variables --service Worker --set RORT_GRACE_FINAL_CLOSE_ELIGIBLE=0`.
+  - Service(s) redeployed: Worker (twice — code push + var-set arm)
+  - Observed cache gap: RTH closed / EH — no live bars to gap
+- **~21:58 UTC (15:58 MT)** — ARMED `RORT_CANONICAL_PRIMARY_CLOSE=1` on Worker (var-set
+  redeploy). Blast radius 8 live 1Min+ default-model strategies incl. 340. Worker came up
+  SUCCESS + healthy (engine warming normally, no stall/crash). Reversible:
+  `railway variables --service Worker --set RORT_CANONICAL_PRIMARY_CLOSE=0`.
 - **~21:23 UTC (15:23 MT)** — `206002b` feat(engine): RORT_CANONICAL_PRIMARY_CLOSE — `>=60s`
   primary close/dispatch fix (Brandon audit P0+P1). **Flag default OFF → NO trading-path
   behavior change on this deploy** — flag-OFF is byte-identical to baseline (stash-verified
