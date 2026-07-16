@@ -76,7 +76,19 @@ the gate change only makes the CHECK window historical; writes unchanged.
 **Acceptance:** run `--mode all --strategies <canary>` during RTH → smoke PASSES on the
 historical window; deliberately break the env (unset RORT flags) → still ABORTS.
 
-## 4. 329 under-firing (investigation, no code yet)
+## 4-RESOLVED (evening): 329 + 327 phantom — the Five's book CLOSED
+- **329 FIXED by M-RS5b** (shipped+armed ~19:15Z): root cause = 5M-SWING ribbon misalignment
+  (trigger fired 18×, 16 blocked by 5M=NEUTRAL); A/B exact (bt 1 / current 0 / 5b 1).
+- **328 FIXED by M-RS5b**: A/B 8/8 second-exact (rapid-re-entry residual gone).
+- **327 phantom (14:34:00) root-caused, ACCEPTED as data-basis floor**: swing-stop level
+  derives from decision-time lookback lows vs the backtest's settled lows → cents-level stop
+  gap → 13s breach-timing difference (14:31:31 bt vs 14:31:44 replay) → divergent post-exit
+  state paths → one re-trigger phantom. Appears in BOTH replay modes (not gates). ~1/day
+  class on fast-swing-stop strategies. Optional future mitigation: re-derive stop level from
+  healed bars post-entry (complexity vs ~1 trade/day — not scheduled).
+- **174@17:27 = Supabase-burst operational loss** (both replay modes take it), not logic.
+
+## 4-old. 329 under-firing (investigation, no code yet)
 
 0% on the settled morning window (0 live vs 2 bt entries) — NOT in the P0/P1 blast radius
 (329 isn't 1Min+ default-model), so pre-existing. 329 has a history (1M-gate flag-parity

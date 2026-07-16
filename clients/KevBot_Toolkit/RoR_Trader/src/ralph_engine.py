@@ -2472,6 +2472,28 @@ def _canonical_fine_tf_state() -> bool:
         "1", "true", "yes", "on")
 
 
+_FEED_MARKER_FILE = os.getenv("RORT_ENGINE_FEED_MARKER_FILE",
+                              "/tmp/engine_last_tick")
+_feed_marker_last_touch: float = 0.0
+
+
+def _touch_feed_marker() -> None:
+    """Brandon P2(b): record 'market data is actually arriving' — touched from
+    the per-second event path, throttled to ~5s so it costs nothing. INERT
+    unless RORT_HEALTHCHECK_FEED_FRESHNESS=1 (engine_health reads the mtime).
+    Never raises into the tick path."""
+    global _feed_marker_last_touch
+    now = time.time()
+    if now - _feed_marker_last_touch < 5.0:
+        return
+    _feed_marker_last_touch = now
+    try:
+        with open(_FEED_MARKER_FILE, "w") as f:
+            f.write(str(now))
+    except Exception:  # noqa: BLE001 — a marker write must never hurt ticks
+        pass
+
+
 def _bar_close_in_session(bar: dict, arrival_ts: datetime,
                           monitor: 'StrategyMonitor') -> bool:
     """W2-2: session membership for a completed bar at bar-close dispatch.
@@ -5607,6 +5629,11 @@ class SymbolHub:
                 self.last_tick_time = self.last_tick_time.replace(tzinfo=timezone.utc)
         except (ValueError, TypeError):
             self.last_tick_time = datetime.now(timezone.utc)
+        # Brandon P2(b) feed-freshness: touch the LAST-TICK marker (throttled
+        # ~5s). INERT by itself — engine_health reads it only when
+        # RORT_HEALTHCHECK_FEED_FRESHNESS=1, so a silently-dead WS feed stops
+        # looking Docker-healthy.
+        _touch_feed_marker()
 
         # Primary TF builders are driven by per-second bars below.
         # Secondary TF builders split by granularity:

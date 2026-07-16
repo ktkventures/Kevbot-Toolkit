@@ -45,6 +45,51 @@ def _bounded_boot() -> bool:
         "1", "true", "yes", "on")
 
 
+# Brandon P2(b) — feed freshness (2026-07-16): the engine heartbeat proves the
+# LOOP is alive, not that DATA is flowing; a silently-dead WS feed stays
+# Docker-healthy forever. Flag ON: when the engine is otherwise healthy, a
+# LAST-TICK marker (touched from the per-second path) must not be
+# [stale_s, cap_s] old during the enforcement window. HOLIDAY/RESTART-LOOP
+# SAFETY: enforce ONLY when the marker EXISTS and its age is INSIDE the band
+# (a closed day drifts past cap_s and stops alarming; a missing marker —
+# post-restart on a closed day — never alarms), and only inside 14:35-19:55
+# UTC Mon-Fri (inside RTH in BOTH DST regimes — no season bugs).
+FEED_STALE_S = float(os.getenv("RORT_FEED_STALE_S", "900"))
+FEED_STALE_CAP_S = float(os.getenv("RORT_FEED_STALE_CAP_S", "7200"))
+
+
+def _feed_freshness() -> bool:
+    return os.getenv(
+        "RORT_HEALTHCHECK_FEED_FRESHNESS", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _in_enforce_window(now: float) -> bool:
+    """Mon-Fri 14:35-19:55 UTC — strictly inside RTH under both EDT and EST."""
+    t = time.gmtime(now)
+    if t.tm_wday > 4:  # Sat/Sun
+        return False
+    minutes = t.tm_hour * 60 + t.tm_min
+    return (14 * 60 + 35) <= minutes <= (19 * 60 + 55)
+
+
+def _feed_check(now: float, feed_file: str,
+                stale_s: float, cap_s: float):
+    """None = no objection; (False, reason) = feed dead. Band + window rules
+    per the safety note above."""
+    if not _in_enforce_window(now):
+        return None
+    feed_age = _age(feed_file, now)
+    if feed_age is None:
+        return None  # marker absent (fresh boot on a closed day) — never alarm
+    if stale_s <= feed_age <= cap_s:
+        return False, (
+            f"FEED DEAD: engine loop alive but no market data for "
+            f"{feed_age:.0f}s during market hours (stale>{stale_s:.0f}s; "
+            f"WS feed / subscription likely down)")
+    return None
+
+
 def _age(path: str, now: float) -> float | None:
     """Seconds since `path` was last touched, or None if it doesn't exist."""
     try:
@@ -58,12 +103,26 @@ def check(now: float | None = None,
           manager_file: str = MANAGER_FILE,
           max_age_s: float = MAX_AGE_S,
           boot_marker_file: str | None = None,
-          boot_deadline_s: float | None = None) -> tuple[bool, str]:
+          boot_deadline_s: float | None = None,
+          feed_file: str | None = None) -> tuple[bool, str]:
     """(healthy, reason). Pure + injectable so it is unit-testable."""
     now = time.time() if now is None else now
     engine_age = _age(engine_file, now)
     if engine_age is not None:
         if engine_age < max_age_s:
+            # Brandon P2(b): loop-alive is not feed-alive. Flag ON: a dead
+            # market-data feed during market hours fails the check even with
+            # a fresh engine heartbeat.
+            if _feed_freshness():
+                if feed_file is None:
+                    feed_file = (os.getenv("RORT_ENGINE_FEED_MARKER_FILE")
+                                 or os.path.join(
+                                     os.path.dirname(engine_file) or ".",
+                                     "engine_last_tick"))
+                verdict = _feed_check(now, feed_file, FEED_STALE_S,
+                                      FEED_STALE_CAP_S)
+                if verdict is not None:
+                    return verdict
             return True, f"engine heartbeat {engine_age:.0f}s old"
         return False, (
             f"ENGINE STALLED: heartbeat {engine_age:.0f}s old "
