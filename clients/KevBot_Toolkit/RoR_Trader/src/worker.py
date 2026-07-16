@@ -81,6 +81,63 @@ ALGO_HISTORY_CRON_INTERVAL = int(
 
 
 # ============================================================
+# Hot-reload boot parity (Brandon audit P1-hot-reload, 2026-07-16)
+# ============================================================
+
+def _hotreload_boot_parity() -> bool:
+    """RORT_HOTRELOAD_BOOT_PARITY (default OFF). Flag ON: db_hot_reload warms
+    added/edited strategies exactly like a clean boot — the TF-scaled warmup
+    loader (ralph_engine._load_warmup_df, the Bug-5 path; a 1Day shadow gets
+    real depth instead of ~5 bars from the flat days=7 load) and a UI edit
+    that ADDS a secondary gate gets its shadow engine finalized + warmed
+    immediately (was: no shadow until the next restart). Flag OFF: legacy
+    behavior byte-identical. Read at runtime so tests toggle without reload."""
+    return os.environ.get(
+        'RORT_HOTRELOAD_BOOT_PARITY', '0').strip().lower() in (
+        '1', 'true', 'yes', 'on')
+
+
+def _hotreload_warmup_df(sym: str, tf_seconds: int, tf_str: str,
+                         session: str, feed: str):
+    """Warmup loader for the hot-reload path. Flag ON → the SAME TF-scaled
+    loader boot uses (_load_warmup_df); OFF → the legacy flat days=7 native
+    load, byte-identical to the pre-flag behavior."""
+    if _hotreload_boot_parity():
+        from ralph_engine import _load_warmup_df
+        return _load_warmup_df(sym, tf_seconds, session)
+    from data_loader import load_market_data
+    return load_market_data(sym, days=7, timeframe=tf_str, feed=feed,
+                            session=session)
+
+
+def _hotreload_finalize_new_shadows(hub, monitor, sym: str) -> int:
+    """Flag ON only: after a config-EDIT re-instantiation, finalize shadow
+    engines (idempotent — creates only MISSING ones, e.g. a gate the edit
+    just added) and boot-style warm any UNinitialized shadow. Bounded work:
+    ONE hub, NEW shadows only — never a fleet replay (PRIMARY-RESYNC lesson).
+    Returns the number of shadows warmed."""
+    if not _hotreload_boot_parity() or hub is None:
+        return 0
+    from ralph_engine import _load_warmup_df, MTF_SESSION_SHADOWS
+    hub.finalize_shadow_engines()
+    warmed = 0
+    for (sec_tf, sh_session), shadow in list(hub._shadow_engines.items()):
+        if shadow.indicators._initialized:
+            continue
+        _sess = sh_session if MTF_SESSION_SHADOWS else monitor.session
+        try:
+            sec_df = _load_warmup_df(sym, sec_tf, _sess)
+            if sec_df is not None and len(sec_df):
+                shadow.warmup(sec_df)
+                hub.seed_mtf_from_shadow(sec_tf, sh_session)
+                warmed += 1
+        except Exception as se:  # noqa: BLE001
+            logger.warning("hot-reload shadow warm failed %s tf=%ss: %s",
+                           sym, sec_tf, se)
+    return warmed
+
+
+# ============================================================
 # DB-backed AlertDispatcher
 # ============================================================
 
@@ -954,15 +1011,15 @@ class DBRalphEngine:
                     # Finalize shadow engines (idempotent — creates only new ones)
                     hub.finalize_shadow_engines()
 
-                    # Warmup new strategy + any new shadow engines
+                    # Warmup new strategy + any new shadow engines.
+                    # RORT_HOTRELOAD_BOOT_PARITY=1 → boot's TF-scaled loader
+                    # (Brandon P1-hot-reload); OFF → legacy flat days=7.
                     try:
-                        from data_loader import load_market_data
                         from ralph_engine import SECONDS_TO_TIMEFRAME
                         tf_str = strat.get('timeframe', '1Min')
-                        df = load_market_data(
-                            sym, days=7, timeframe=tf_str,
-                            feed=self.alpaca_keys.get('data_feed', 'sip'),
-                            session=monitor.session)
+                        df = _hotreload_warmup_df(
+                            sym, monitor.tf_seconds, tf_str, monitor.session,
+                            self.alpaca_keys.get('data_feed', 'sip'))
                         tf_seconds = monitor.tf_seconds
                         hub.seed_history(tf_seconds, df)
                         monitor.warmup(df)
@@ -983,21 +1040,19 @@ class DBRalphEngine:
                                 try:
                                     _sess = (sh_session if MTF_SESSION_SHADOWS
                                              else monitor.session)
-                                    sec_df = load_market_data(
-                                        sym, days=7, timeframe=sec_tf_str,
-                                        feed=self.alpaca_keys.get('data_feed', 'sip'),
-                                        session=_sess)
+                                    # RORT_HOTRELOAD_BOOT_PARITY=1 → the Bug-5
+                                    # TF-scaled loader (a 1Day shadow gets real
+                                    # depth, not ~5 bars); OFF → legacy days=7.
+                                    sec_df = _hotreload_warmup_df(
+                                        sym, sec_tf, sec_tf_str, _sess,
+                                        self.alpaca_keys.get('data_feed', 'sip'))
                                     if not MTF_SESSION_SHADOWS or \
                                             sh_session == 'RTH':
                                         hub.seed_history(sec_tf, sec_df)
                                     shadow.warmup(sec_df)
                                     # Publish warmed coarse-TF state into the
                                     # cross-TF gate dict (2026-06-26 fix — see
-                                    # SymbolHub.seed_mtf_from_shadow). NOTE: this
-                                    # hot-reload path still uses days=7, which
-                                    # starves a 1Day shadow (~5 bars) — startup
-                                    # _warmup_all uses the Bug-5 TF-scaled load;
-                                    # widening this is a follow-up.
+                                    # SymbolHub.seed_mtf_from_shadow).
                                     hub.seed_mtf_from_shadow(sec_tf, sh_session)
                                 except Exception as se:
                                     logger.warning("Shadow warmup failed for %s/%s: %s",
@@ -1060,6 +1115,22 @@ class DBRalphEngine:
                         logger.warning(
                             "Re-warmup from hub history failed for %d: %s",
                             sid, _we)
+                    # Brandon P1-hot-reload (RORT_HOTRELOAD_BOOT_PARITY): a UI
+                    # edit can ADD a secondary gate — flag ON finalizes
+                    # (idempotent) + boot-warms any NEW shadow now, instead of
+                    # leaving the gate shadow-less until the next restart.
+                    # Flag OFF: no-op (legacy).
+                    try:
+                        _n = _hotreload_finalize_new_shadows(
+                            hub, rebuilt_monitor, sym)
+                        if _n:
+                            logger.info(
+                                "hot-reload: finalized+warmed %d new shadow(s) "
+                                "for edited strategy %d", _n, sid)
+                    except Exception as _fs:
+                        logger.warning(
+                            "hot-reload finalize shadows failed for %d: %s",
+                            sid, _fs)
                     rebuilt += 1
 
                 self._config_updated_at = new_updated_at
@@ -1845,6 +1916,20 @@ def main():
     if os.environ.get("WORKER_DISABLED", "").strip().lower() in ("1", "true", "yes"):
         logger.warning("WORKER_DISABLED is set — exiting without starting engines.")
         sys.exit(0)
+
+    # Brandon P2: WRITE-ONCE-PER-BOOT marker. INERT by itself — engine_health
+    # reads it only when RORT_HEALTHCHECK_BOUNDED_BOOT=1, to BOUND the boot
+    # grace (an engine that never starts must eventually fail the healthcheck
+    # instead of hiding behind the ever-fresh manager heartbeat).
+    try:
+        _marker = os.environ.get("RORT_ENGINE_BOOT_MARKER_FILE",
+                                 "/tmp/engine_boot_marker")
+        with open(_marker, "w") as _bf:
+            _bf.write(str(time.time()))
+        logger.info("boot marker written: %s", _marker)
+    except Exception as _me:  # noqa: BLE001
+        logger.warning("boot marker write failed (bounded-boot healthcheck "
+                       "would go unhealthy if armed): %s", _me)
 
     from db import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:

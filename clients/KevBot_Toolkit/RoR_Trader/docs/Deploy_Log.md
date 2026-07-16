@@ -19,6 +19,21 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-07-16
+
+- **~16:52 UTC (10:52 MT)** — batched push (MID-RTH, Kevin-approved; trading dormant):
+  P1-hot-reload (`RORT_HOTRELOAD_BOOT_PARITY`, worker.py boot-parity warmup + edit-path
+  shadow finalize) + P2 bounded-boot healthcheck (`RORT_HEALTHCHECK_BOUNDED_BOOT`,
+  engine_health.py + write-once boot marker in worker.main; deadline default 1200s) +
+  smoke-canary historical window (local_update.py — validated live 16:46Z: hist 2014/2014
+  bit-perfect, lane_only=0 during RTH). Both new flags shipped **OFF** (byte-identical
+  baseline; 13 companion tests + Brandon's tests flag-flip-verified). Then ONE combined
+  arm (both flags in one var-set). **⚠️ For divergence analysis: bar-gap windows today =
+  this push + the arm (~16:52-17:05Z) + stalls 15:16:23Z (20.8s, cause unknown) and
+  16:48:18Z (15.3s — correlated with local smoke-recompute DB load, not flags).**
+  - Service(s) redeployed: Worker + api
+  - Reversible: `--set RORT_HOTRELOAD_BOOT_PARITY=0` / `--set RORT_HEALTHCHECK_BOUNDED_BOOT=0`
+
 ## 2026-07-15
 
 - **~22:15 UTC (16:15 MT)** — grace fix push: `RORT_GRACE_FINAL_CLOSE_ELIGIBLE`
