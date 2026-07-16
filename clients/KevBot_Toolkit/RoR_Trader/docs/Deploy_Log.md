@@ -21,6 +21,17 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-07-16
 
+- **~19:10 UTC (13:10 MT)** — M-RS5b push + arm (late-RTH, Kevin-approved aggressive tempo):
+  `RORT_CANONICAL_FINE_TF_STATE` — fine RTH gate state rebuilt from the canonical resample
+  of the hub's own 1Min history at EVERY close (one construction path; fail-loud, no silent
+  fallback). Armed together with `RORT_MTF_STATE_REFRESH_S=0` — **the 120s refresher is
+  RETIRED** (Kevin: full transition, loud failures). A/B acceptance GREEN: 329 0→1 exact,
+  328 7→8/8 second-exact, 327 4/5→5/5, no regressions (see Plan_MRS5_2026-07-16.md).
+  **⚠️ bar-gap windows: this push + arm ≈ 19:10-19:25Z** (last ~40 min of RTH — noted for
+  divergence reads; EH provides the clean 5b observation window).
+  - Service(s) redeployed: Worker + api (twice: push + var-set arm)
+  - Reversible: `--set RORT_CANONICAL_FINE_TF_STATE=0 --set RORT_MTF_STATE_REFRESH_S=120`
+
 - **~16:52 UTC (10:52 MT)** — batched push (MID-RTH, Kevin-approved; trading dormant):
   P1-hot-reload (`RORT_HOTRELOAD_BOOT_PARITY`, worker.py boot-parity warmup + edit-path
   shadow finalize) + P2 bounded-boot healthcheck (`RORT_HEALTHCHECK_BOUNDED_BOOT`,

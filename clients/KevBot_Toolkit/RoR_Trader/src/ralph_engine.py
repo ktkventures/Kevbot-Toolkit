@@ -2454,6 +2454,24 @@ def _grace_final_close_eligible() -> bool:
         "1", "true", "yes", "on")
 
 
+def _canonical_fine_tf_state() -> bool:
+    """RORT_CANONICAL_FINE_TF_STATE (default OFF), 2026-07-16 — M-RS5b.
+    Flag ON: at every FINE-TF (60s ≤ tf < coarse) RTH close, the shadow's
+    published gate records are REBUILT from the canonical resample of the
+    hub's OWN 1Min history (the construction the 07-14 canonical-edge A/B
+    proved byte-identical to REST), replacing the incremental fan-out state.
+    ONE construction path — no between-refresh drift window, the cascade/
+    poison/re-true bug class becomes structurally impossible, and the 120s
+    refresher (RORT_MTF_STATE_REFRESH_S) RETIRES (arm this =1 with
+    REFRESH_S=0 — Kevin ruling 07-16: full transition, fail LOUD, no
+    invisible backstop). On derive failure: ERROR log + HOLD previous
+    records — never a silent fallback to the incremental path.
+    Flag OFF: byte-identical legacy (incremental + refresher)."""
+    return os.getenv(
+        "RORT_CANONICAL_FINE_TF_STATE", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 def _bar_close_in_session(bar: dict, arrival_ts: datetime,
                           monitor: 'StrategyMonitor') -> bool:
     """W2-2: session membership for a completed bar at bar-close dispatch.
@@ -3297,6 +3315,24 @@ class SymbolHub:
                 "(%s) — keeping previous gate records",
                 self.symbol, tf_seconds, e)
 
+    def _canonical_fine_df(self, tf_seconds: int, close_ts) -> 'pd.DataFrame':
+        """M-RS5b: canonical fine-TF bars = resample of the hub's OWN 1Min
+        builder history, FULLY-CLOSED buckets only (no forming bucket, no
+        forming 1Min constituent). Mirrors the replay harness's canonical_upto
+        — the construction the 07-14 A/B proved byte-identical to REST. Pure
+        in-memory (zero DB). Returns empty df when underivable."""
+        from data_loader import resample_to_timeframe
+        b60 = self.builders.get(60)
+        if b60 is None or len(b60.history) == 0:
+            return pd.DataFrame()
+        m1 = b60.history
+        src = m1[m1.index + pd.Timedelta(seconds=60) <= close_ts]
+        if len(src) == 0:
+            return pd.DataFrame()
+        out = resample_to_timeframe(
+            src.copy(), SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min'))
+        return out[out.index + pd.Timedelta(seconds=tf_seconds) <= close_ts]
+
     def _close_shadow_with_bar(self, tf_seconds: int, session: str,
                                shadow: '_ShadowIndicatorEngine',
                                completed: dict) -> None:
@@ -3320,6 +3356,35 @@ class SymbolHub:
         if session == 'RTH':
             if self._coarse_rth_reload_active(tf_seconds):
                 self._reload_coarse_rth_shadow(tf_seconds, shadow)
+                return
+            # M-RS5b (RORT_CANONICAL_FINE_TF_STATE): FINE RTH shadows publish
+            # state REBUILT from the canonical resample of the hub's own 1Min
+            # history at every close — one construction path, refresher
+            # retired. FAIL LOUD (Kevin 07-16): derive failure = ERROR + hold
+            # previous records; NEVER a silent incremental fallback.
+            if (_canonical_fine_tf_state() and 60 <= tf_seconds
+                    < COARSE_SECONDARY_SECONDS):
+                try:
+                    _ts = completed.get('timestamp')
+                    _ts = pd.Timestamp(_ts) if not isinstance(
+                        _ts, pd.Timestamp) else _ts
+                    close_ts = _ts + pd.Timedelta(seconds=tf_seconds)
+                    cdf = self._canonical_fine_df(tf_seconds, close_ts)
+                    if cdf is None or len(cdf) == 0:
+                        logger.error(
+                            "[CANONICAL-FINE-STATE] %s tf=%ss: canonical "
+                            "derive EMPTY at close %s — HOLDING previous gate "
+                            "records (no incremental fallback; investigate)",
+                            self.symbol, tf_seconds, close_ts)
+                        return
+                    self._publish_mtf(key, shadow.recompute_confluence(cdf),
+                                      closed_bar_start_ts=cdf.index[-1])
+                except Exception as e:  # noqa: BLE001
+                    logger.error(
+                        "[CANONICAL-FINE-STATE] %s tf=%ss: canonical derive "
+                        "FAILED (%s) — HOLDING previous gate records (no "
+                        "incremental fallback; investigate)",
+                        self.symbol, tf_seconds, e)
                 return
             self._publish_mtf(key, shadow.on_bar_close(completed),
                               closed_bar_start_ts=completed.get('timestamp'))
