@@ -406,47 +406,16 @@ def prepare_data_with_indicators(
     # directly (skip the resample step) — supports cache-backed
     # secondary TFs.
     if secondary_tfs and len(df) > 0:
-        interp_keys = list(INTERPRETERS.keys())
-        for sec_tf in secondary_tfs:
-            try:
-                if secondary_tf_dfs is not None and sec_tf in secondary_tf_dfs:
-                    sec_df = secondary_tf_dfs[sec_tf].copy()
-                else:
-                    # CONSUMER #2 (M-RS2 Phase 2): serve the coarse (>=1Hour)
-                    # secondary from the canonical store instead of resampling the
-                    # primary here — but ONLY when byte-identical to this resample
-                    # (always-compare-and-fallback). No display change; the store can
-                    # only replace an identical value. Serves whatever window `df`
-                    # spans (deep when the caller warmed deep — the synergy that
-                    # later powers the correct-warmup ribbon). Inert/byte-identical
-                    # when RORT_RESAMPLED_STORE_READ is off.
-                    sec_df = _coarse_secondary_store_swap(strat, sec_tf, df, session)
-                    if sec_df is None:
-                        sec_df = resample_to_timeframe(
-                            df[['open', 'high', 'low', 'close', 'volume']].copy(),
-                            sec_tf)
-                if len(sec_df) == 0:
-                    continue
-                sec_df = run_all_indicators(sec_df)
-                for group in _scoped_groups:  # #21: same scoped set as primary
-                    sec_df = run_indicators_for_group(sec_df, group)
-                sec_df = run_all_interpreters(sec_df)
-
-                tf_label = get_tf_label(sec_tf)
-                from unified_engine import TIMEFRAME_SECONDS
-                period_seconds = TIMEFRAME_SECONDS.get(sec_tf, 60)
-                period_offset = pd.Timedelta(seconds=period_seconds)
-                for interp_col in interp_keys:
-                    if interp_col in sec_df.columns:
-                        suffixed = f"{interp_col}__{tf_label}"
-                        shifted = sec_df[interp_col].copy()
-                        shifted.index = shifted.index + period_offset
-                        df[suffixed] = shifted.reindex(df.index, method='ffill')
-                        # Speculative (unshifted) values for heatmap yellow detection
-                        df[f"_spec_{interp_col}__{tf_label}"] = sec_df[interp_col].reindex(
-                            df.index, method='ffill')
-            except Exception:
-                pass
+        # M-RS5a: the secondary block is factored into compute_secondary_columns() (above) so
+        # the resident frame (shadow_manager) builds byte-identical secondary columns from the
+        # same coarse series. Behavior here is unchanged (verbatim extraction) — the coarse
+        # store-swap (CONSUMER #2), the 1-period cross-TF shift, and the `_spec_` heatmap copy
+        # all live in the helper. Guarded by the fidelity parity suite.
+        _sec_cols = compute_secondary_columns(
+            strat, secondary_tfs, df, session, _scoped_groups,
+            secondary_tf_dfs=secondary_tf_dfs)
+        for _col, _series in _sec_cols.items():
+            df[_col] = _series
 
     # Cache the result for the REST path only. Injected DataFrames bypass
     # the cache (see use_injected above).
@@ -469,6 +438,64 @@ def get_secondary_tf_map(df: pd.DataFrame) -> dict:
                 tf_label = parts[1]
                 tf_map.setdefault(tf_label, []).append(col)
     return tf_map
+
+
+def compute_secondary_columns(strat, secondary_tfs, primary_df, session,
+                              scoped_groups, secondary_tf_dfs=None,
+                              target_index=None) -> dict:
+    """Compute the secondary-TF confluence columns (`{interp}__{tflabel}` + the `_spec_`
+    unshifted heatmap copy) and RETURN them as ``{col_name: Series}`` reindexed onto
+    ``target_index`` (defaults to ``primary_df.index``).
+
+    Extracted VERBATIM from ``prepare_data_with_indicators``'s secondary block so both the
+    batch prep AND the M-RS5a resident frame (`shadow_manager`) produce byte-identical
+    secondary columns from the same coarse series — DRY ⟹ no drift between the two paths.
+    For each secondary TF: obtain the coarse OHLCV (from an injected snapshot-extended df,
+    else the resampled-store swap, else a fresh resample of the primary), run indicators +
+    interpreters, then the 1-period cross-TF shift + forward-fill onto ``target_index``.
+
+    The resident frame passes ``secondary_tf_dfs`` (the cheap snapshot-extend coarse OHLCV)
+    and ``target_index`` = the NEW primary bars, so only the delta rows' secondary columns
+    are built — window-independent for a fixed right edge, hence byte-identical to the batch.
+    """
+    out: dict = {}
+    if not secondary_tfs or primary_df is None or len(primary_df) == 0:
+        return out
+    import pandas as _pd
+    from data_loader import resample_to_timeframe, get_tf_label
+    from unified_engine import TIMEFRAME_SECONDS
+    idx = primary_df.index if target_index is None else target_index
+    interp_keys = list(INTERPRETERS.keys())
+    for sec_tf in secondary_tfs:
+        try:
+            if secondary_tf_dfs is not None and sec_tf in secondary_tf_dfs:
+                sec_df = secondary_tf_dfs[sec_tf].copy()
+            else:
+                sec_df = _coarse_secondary_store_swap(strat, sec_tf, primary_df, session)
+                if sec_df is None:
+                    sec_df = resample_to_timeframe(
+                        primary_df[['open', 'high', 'low', 'close', 'volume']].copy(),
+                        sec_tf)
+            if len(sec_df) == 0:
+                continue
+            sec_df = run_all_indicators(sec_df)
+            for group in scoped_groups:  # #21: same scoped set as primary
+                sec_df = run_indicators_for_group(sec_df, group)
+            sec_df = run_all_interpreters(sec_df)
+
+            tf_label = get_tf_label(sec_tf)
+            period_offset = _pd.Timedelta(seconds=TIMEFRAME_SECONDS.get(sec_tf, 60))
+            for interp_col in interp_keys:
+                if interp_col in sec_df.columns:
+                    shifted = sec_df[interp_col].copy()
+                    shifted.index = shifted.index + period_offset
+                    out[f"{interp_col}__{tf_label}"] = shifted.reindex(idx, method='ffill')
+                    # Speculative (unshifted) values for heatmap yellow detection
+                    out[f"_spec_{interp_col}__{tf_label}"] = sec_df[interp_col].reindex(
+                        idx, method='ffill')
+        except Exception:
+            pass
+    return out
 
 
 # =============================================================================

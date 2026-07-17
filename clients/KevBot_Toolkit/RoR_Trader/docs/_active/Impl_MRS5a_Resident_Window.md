@@ -202,16 +202,87 @@ not vs a shallow from-cold reference:
   macd_line_v2, **rvol_v2**, bollinger_bands, rsi_zones_2): **frame == full-prep byte-identical**
   (added/removed/changed = 0), full-window AND settled-only, on BAR-ALIGNED **and** PARTIAL-BAR
   (`EDGE_OFFSET_S=7`, the live cadence) edges. 269 (1Min) also frame==from-cold directly.
-- ⚠️ **`VALIDATE_RESIDENT_FRAME` needs `DEEP_REF=1`** to be meaningful. With `DEEP_REF=0` the reference
-  is shallow same-edge and the MANAGER (both full-prep AND frame, equally) diverges from it
-  (263 changed=1, 290/rvol_v2 changed=119) — a warmup-convergence artifact, NOT the frame. The frame
-  adds NO divergence beyond full-prep (proven by the probe). TODO: one `DEEP_REF=1` confirmation run
-  on 1–2 sids AFTER the 20:00Z close (heavy 1Sec deep read → RTH-inappropriate) to close the from-cold
-  loop belt-and-suspenders; frame==from-cold is otherwise inherited transitively (frame==full-prep,
-  full-prep==from-cold via the existing gate).
+- **`DEEP_REF=1` from-cold confirmation (post-close 2026-07-17, settled window):** 269 (1Min)
+  **byte-identical** to deep from-cold (A=21 M=21, 0/0/0). 263/290 (10Sec) STILL diverge from deep
+  from-cold (263: 1/1/1; 290: 3/3/**119** float diffs) — BUT this is a **pre-existing sub-minute
+  MANAGER-vs-from-cold property, NOT the frame**: the frame reproduces the full-prep manager's EXACT
+  divergence (same 1/1/1 and 3/3/119 as the full-prep DEEP_REF run), and the probe proves frame ==
+  full-prep byte-identical (6 archetypes). So DEEP_REF=1 does NOT make 10Sec green because the
+  RESIDENT MANAGER approach itself (bootstrap + poll re-feed) has a small sub-minute divergence from a
+  single from-cold pass (the known append/forming-bar sub-minute class) — inherited from M-RS4, present
+  in production today, unchanged by M-RS5a.
+- **⟹ The correct M-RS5a acceptance = frame == FULL-PREP manager (probe, byte-identical), NOT frame ==
+  from-cold.** The frame adds ZERO divergence over the production path. **CONFIRMED: full-prep manager
+  DEEP_REF=1 shows the IDENTICAL divergence (263: 1/1/1, 290: 3/3/119 — exactly the frame's numbers)** ⟹
+  frame == full-prep proven via the validator too, not just the probe. For the arming decision: the frame
+  is as-correct-as the current shadow-worker; the sub-minute from-cold gap is a separate, pre-existing
+  concern (nightly from-cold recompute remains the backstop).
 
 **Remaining Phase 2c:** secondary-TF columns (41 slots) via `_secondary_snapshot_load_extend` + 1-period
 shift; REVISION RE-FEED. Everything still flag OFF; nothing armed.
+
+## PHASE 2c DESIGN (2026-07-17) — secondary-TF columns for the 41 secondary-gated slots
+**Confirmed:** the engine does NOT compute secondary-TF state internally (no coarse-TF resampling) —
+probe of secondary slot 267 OHLCV-only = **0 trades vs 91** (the secondary gate blocks everything).
+So secondary `__<tf>` columns genuinely come from the df. Unlike user packs, these MUST be supplied.
+
+**Machinery** (services.py:408-449, prepare_data_with_indicators secondary block): per secondary TF —
+coarse OHLCV (from `_secondary_snapshot_load_extend` cached+short-extend, else resample) → `run_all_
+indicators` + `run_indicators_for_group` + `run_all_interpreters` → **1-period shift** (services.py:438-444:
+`shifted.index = sec_df[interp].index + period_offset; df[f"{interp}__{tflabel}"] = shifted.reindex(
+df.index, method='ffill')`) + a `_spec_` unshifted copy (heatmap only). `_secondary_snapshot_load_extend`
+(services.py:979) is the cheap coarse path: loads `secondary_snapshot_b64` + a short `load_market_data`
+from the last cached coarse boundary → `until`; byte-identical to full resample by construction.
+
+**Design — reuse the cheap secondary pipeline per poll (byte-identical, window-independent for a fixed
+`until`, exactly like the primary delta-read):**
+1. Factor the inline secondary block (services.py:408-449) into a reusable helper
+   `compute_secondary_columns(strat, sec_tfs, coarse_inject, target_index, scoped_groups) -> {col: Series}`;
+   call it from BOTH prepare_data_with_indicators (refactor = byte-identical, guarded by parity gates) AND
+   the resident frame. DRY ⟹ byte-identity by construction.
+2. In `_advance_resident_frame`, for a secondary slot: delta-read new primary OHLCV (as today) →
+   `coarse = _secondary_snapshot_load_extend(strat, sec_tfs, until, primary_tf, session, feed,
+   no_backfill=True)` → `sec_cols = compute_secondary_columns(..., new_rows.index)` → attach `__<tf>` cols
+   to `new_rows` → `engine.feed(new_rows, sec_tf_map)` with the real sec_tf_map (the `__<tf>` names).
+   The frame stores OHLCV + `__<tf>` columns now (extend ResidentFrame.OHLCV → a per-slot column set).
+3. Eligibility: broaden to secondary slots whose `_secondary_snapshot_load_extend` returns non-None
+   (valid `secondary_snapshot_b64`); on None → stay full-prep (fail-safe). No user-pack-interp-gate
+   (fleet has 0). Bootstrap (full-prep) persists the snapshot, so it exists by the first warm poll.
+
+**Cost/refresh caveat:** the snapshot `last_ts` is from bootstrap; the extend's recent load grows as
+`until` advances over a session (from last cached coarse bar → until). Still FAR cheaper than the full
+PRIMARY warmup re-prep (the ~1000:1 waste, eliminated by the resident primary). v1 = accept the growing
+extend + periodic drop-frame→re-bootstrap (re-persists the snapshot, bounding the gap). v2 (optional) =
+maintain a RESIDENT coarse snapshot that advances per poll (append closed coarse bars in-frame). Ship v1.
+
+**Verify:** probe secondary slots (267 + a coarse-gated TSLA) frame-vs-full-prep on SETTLED windows,
+aligned + partial-bar edges; must be byte-identical before broadening eligibility. Dependency to check
+at impl: do the 41 secondary slots actually carry a valid `secondary_snapshot_b64`? (if not, they stay
+full-prep — safe, but no win until the append/bootstrap lane warms the snapshot.)
+
+## PHASE 2c BUILD — Step 1 DONE (2026-07-17): compute_secondary_columns helper
+Factored the inline secondary block (services.py:408-449) into `services.compute_secondary_columns(
+strat, secondary_tfs, primary_df, session, scoped_groups, secondary_tf_dfs=None, target_index=None)`
+returning `{col: Series}`; `prepare_data_with_indicators` now calls it. **Byte-identical verified**
+(`_verify_refactor.py`, git-stash before/after): sid 267 (2m sec) + 271 (5m sec) deep-window trade
+hashes IDENTICAL pre/post refactor. Compiles.
+
+**Step 2 approach (refined): DEEP resident primary + per-poll `compute_secondary_columns`.** The resident
+frame for a secondary slot keeps the primary at the BOOTSTRAP (binding-TF) warmup depth (deep enough for
+the coarse interpreter warmup — NOT the shallow WARMUP_BARS the trigger slots use). Per poll:
+`compute_secondary_columns(strat, sec_tfs, frame.df, session, scoped_groups, secondary_tf_dfs=None,
+target_index=new_rows.index)` → resamples the frame's primary→coarse (in-memory, byte-identical to
+full-prep, which also resamples primary→coarse for <1Hour secondaries; ≥1Hour uses the small store-swap),
+runs interpreters + 1-period shift + ffill onto the new bars → `__<tf>` cols → attach to `new_rows` →
+`engine.feed(new_rows, sec_tf_map)`. Chosen over the DB-snapshot path because it's self-contained (no
+per-poll `secondary_snapshot_b64` dependency, which the slot's in-memory strat may lack post-bootstrap).
+Still a big win: eliminates the deep-primary DB RE-READ + primary user-pack recompute; keeps only the
+in-memory coarse compute. Optimization (later): recompute coarse only when a new coarse bar closes.
+- Frame changes: capture `warmup_depth = len(bootstrap_df)` at build; trim to that (deep for secondary,
+  ~WARMUP_BARS for trigger). Keep OHLCV only (secondary cols recomputed per poll, not stored).
+- Eligibility: broaden to secondary slots too (drop the `not slot.sec_tfs` clause), gated by the probe.
+- MUST probe frame-vs-full-prep on SETTLED windows (267 2m + a 5m + a coarse ≥1Hour if any) byte-identical
+  BEFORE broadening. Watch: does the frame's shallow-vs-deep primary depth match full-prep's coarse warmup?
 
 ## Progress log
 - 2026-07-17: Orientation complete; branch cut. **Phase 1 code SHIPPED (uncommitted, flag OFF):**
