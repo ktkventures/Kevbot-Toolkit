@@ -442,23 +442,45 @@ class ResidentEngineManager:
             # cursor. Warm plain polls never reach here (they return via the fast path above).
             if RESIDENT_FRAME and slot.frame is None:
                 eng = slot.engine
-                # Frame-eligible (Phase 1) = the engine reads NOTHING fidelity-bearing from the
-                # df beyond OHLCV: no secondary-TF map AND no USER-PACK requirement. Built-in
-                # triggers/interpreters are recomputed inside process_bar from OHLCV and the df's
-                # trig_/interp values are IGNORED for them ("Don't override built-in",
-                # unified_engine.process_bar) — so `_user_trig_cols` (which also lists built-in
-                # trigger columns) must NOT disqualify. Only genuine user-pack interps/indicators
-                # or `_user_pack_*` indicator markers are df-dependent (→ Phase 2).
+                # ── M-RS5a frame-eligibility ──
+                # The resident engine computes user-pack indicators+triggers INTERNALLY via each
+                # pack's incremental_class (unified_engine._update_indicators:1609), byte-identical
+                # to the batch prep on settled bars (probe _frame_userpack_probe.py: 6 pack
+                # archetypes GREEN incl. rvol_v2). Built-in triggers/interps are likewise recomputed
+                # from OHLCV and their df values ignored ("Don't override built-in", process_bar).
+                # So a slot is frame-eligible (OHLCV-only feed, NO derived columns needed) when:
+                #   (1) no secondary-TF columns are needed (sec_tf_map empty), AND
+                #   (2) every required `_user_pack_*` marker maps to a pack that ships an
+                #       incremental_class (engine computes it live — no df needed), AND
+                #   (3) no confluence GATE leg references a USER-PACK (non-builtin) interpreter —
+                #       a gated user-pack interp STATE is NOT computed internally, so it would need
+                #       the df confluence record (fleet has 0 of these today; guard regardless).
+                # Secondary-gated slots stay on full-prep until the secondary-column path lands.
+                # Any classification error → NOT eligible (fail-safe to full-prep).
                 try:
-                    _req = getattr(getattr(eng, 'engine', None), 'indicators', None)
-                    _req = getattr(_req, 'required', ()) or ()
-                    _has_user_pack = any(
-                        isinstance(i, str) and i.startswith('_user_pack_') for i in _req)
+                    from shadow_engine import _BUILTIN_INTERPS as _BI
+                    import pack_registry as _pr
+                    us = getattr(eng, 'engine', None)
+                    _req = getattr(getattr(us, 'indicators', None), 'required', ()) or ()
+                    _markers = [i[len('_user_pack_'):] for i in _req
+                                if isinstance(i, str) and i.startswith('_user_pack_')]
+                    _packs_ok = all(
+                        (_pr.get_pack(s) is not None
+                         and _pr.get_pack(s).incremental_class is not None) for s in _markers)
+                    _nb = [ik for ik in getattr(getattr(us, 'trigger_eval', None),
+                                                'required_interpreters', ()) or ()
+                           if ik not in _BI]
+                    _conf = slot.strat.get('confluence') or []
+                    _gate_userpack = any(
+                        isinstance(leg, str) and not leg.startswith('GEN-')
+                        and any(nb in leg for nb in _nb) for leg in _conf)
+                    # Use the AUTHORITATIVE classified secondary TFs (slot.sec_tfs), NOT
+                    # get_secondary_tf_map(df): the latter matches any '__' and misreads
+                    # '__'-PREFIXED trigger columns (e.g. '__utv4_bull_flip') as bogus
+                    # secondaries, wrongly disqualifying no-secondary user-pack slots.
+                    plain = (not slot.sec_tfs and _packs_ok and not _gate_userpack)
                 except Exception:  # noqa: BLE001
-                    _has_user_pack = True   # unknown → fail-safe to full-prep
-                plain = (not sec_tf_map and not _has_user_pack
-                         and not getattr(eng, '_user_interp_cols', None)
-                         and not getattr(eng, '_user_indicator_cols', None))
+                    plain = False   # unknown → fail-safe to full-prep
                 slot.frame_eligible = plain
                 if plain and eng.last_bar_ts is not None:
                     try:

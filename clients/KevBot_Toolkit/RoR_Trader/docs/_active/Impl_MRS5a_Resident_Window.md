@@ -149,17 +149,69 @@ secondary TFs** — NOT the presence of `trig_*` columns. (Fixed in `advance()`'
    RESIDENT-INVALID guard — ready to certify trade-level byte-identity once a slot is frame-eligible
    (Phase 2 makes real slots eligible).
 
-## Phase 2 shape (next — where all real value is)
-Extend the resident frame to carry user-pack (+ secondary) columns for each new bar:
-- Per new bar, produce the user-pack interp/trigger/indicator columns the batch prep would have
-  (`pack.incremental_class.update_bar(bar)` — note the resident engine's `IncrementalIndicatorEngine`
-  may already drive user-pack indicator engines internally; must trace whether the resident path today
-  gets user-pack INTERP/TRIGGER states from the df vs computes them, unified_engine.py ~1604-1616 vs
-  process_bar 3536-3542 — resolve before coding).
-- Secondary `__<tf>` columns via `_secondary_snapshot_load_extend` honoring the 1-period shift.
-- REVISION RE-FEED. Then run `_shadow_manager_validate.py VALIDATE_RESIDENT_FRAME=1` on the real
-  archetypes — that is the trade-level byte-identity gate, and it becomes non-vacuous once slots are
-  frame-eligible.
+## 🎯 PHASE 2 REFRAMED (2026-07-17) — the engine is already self-sufficient for user-pack TRIGGERS
+**Trace result:** the resident engine is NOT OHLCV-limited for user packs. `IncrementalIndicatorEngine.
+_update_indicators` **drives each pack's `incremental_class.update_bar(bar)` internally** (unified_engine.py:
+1609-1613) and merges the returned indicator values + trigger booleans into `state.current`, which the
+`TriggerEvaluator` then reads. **All 10 fleet packs have `incremental_class=True`.** (`process_bar`:3523
+also overrides user-pack *indicator levels* with the df batch values when present, and :3536-3542 merges
+user-pack interp/trigger states from the df only `if not already computed` — so with OHLCV-only the
+internal incremental values are used.)
+
+**Probe (`_frame_userpack_probe.py`): force an OHLCV-only frame on a user-pack slot, compare vs full-prep
+(both bootstrap identically):**
+- sid 263 (ut_bot_v4, 10Sec, trigger-only, no secondary) on a **SETTLED** window (2026-07-15):
+  **FULL=137 FRAME=137, byte-identical (added/removed/changed = 0)**, full-window AND settled-only.
+- ⚠️ **Live-edge runs are non-deterministic** — anchoring on the latest trade puts the window on the
+  unsettled edge where `bar_cache` is revised BETWEEN the two sequential manager runs → phantom 1-trade
+  diffs. **Always probe on a settled pinned window (`PIN_T0`/`PIN_TEND`).** (This is why the first probe
+  runs showed a spurious +1 trade.)
+
+**⟹ OHLCV-only (existing Phase-1 code) already covers user-pack TRIGGER strategies.** Phase 2 is mostly
+about **broadening the eligibility detector**, not building a derived-column pipeline. Reframed scope:
+1. **Broaden eligibility** to slots that are (no secondary) AND (every required user pack has an
+   `incremental_class`) AND (no user-pack interp used as a GATE/confluence leg — see #2). Verify
+   byte-identity per PACK archetype first (ema_stack_v2/macd_line_v2/rvol_v2/bollinger/rsi_zones_2
+   probe RUNNING — rvol_v2 is the memory-flagged forming-bar risk to watch).
+2. **Interp-as-GATE case:** if a strategy gates on a user-pack interp (confluence leg), the interp STATE
+   must land in `interps` for the confluence record. Trace whether the resident engine builds user-pack
+   interp states internally (evaluate_bar_for_backtest) or needs the df `__`/interp column. If needed →
+   supply it (or exclude these from eligibility for now).
+3. **Secondary-TF strategies:** the `__<tf>` columns still come from the df → need
+   `_secondary_snapshot_load_extend` + 1-period shift (services.py:437-444). This is the only genuine
+   "derived column" build left, and it's scoped to secondary-gated slots.
+4. **REVISION RE-FEED** (settle-sweeper corrections to consumed bars) — needed regardless.
+
+Gate everything with `_shadow_manager_validate.py VALIDATE_RESIDENT_FRAME=1` on the real archetypes,
+ALWAYS on settled windows (`VALIDATE_T0`/`VALIDATE_TEND`), never the live edge.
+
+## ✅ PHASE 2b VALIDATED (2026-07-17) — user-pack TRIGGER strategies covered (28/69 slots)
+Broadened the `advance()` eligibility detector: a slot is frame-eligible when
+`(not slot.sec_tfs)` AND (every `_user_pack_*` marker's pack has an `incremental_class`) AND
+(no confluence gate leg references a non-builtin interpreter). Fleet split: **28 no-secondary
+user-pack trigger slots** (now eligible), **0** user-pack-interp-gate slots, **41** secondary-gated
+(Phase 2c). Two bugs fixed along the way:
+- **`sec_tf_map` vs `slot.sec_tfs`:** `get_secondary_tf_map(df)` matches ANY `__` and misreads
+  `__`-PREFIXED trigger columns (`__utv4_bull_flip`) as bogus secondaries → wrongly disqualified
+  every trigger slot. Fixed to use the authoritative `slot.sec_tfs` (from `classify`).
+- The plain-detector counted built-in trigger cols (fixed earlier in Phase 1).
+
+**Gate result — the correct comparison is frame-manager vs FULL-PREP manager** (the production path),
+not vs a shallow from-cold reference:
+- `_frame_userpack_probe.py` on SETTLED window 2026-07-15, 6 pack archetypes (ut_bot_v4, ema_stack_v2,
+  macd_line_v2, **rvol_v2**, bollinger_bands, rsi_zones_2): **frame == full-prep byte-identical**
+  (added/removed/changed = 0), full-window AND settled-only, on BAR-ALIGNED **and** PARTIAL-BAR
+  (`EDGE_OFFSET_S=7`, the live cadence) edges. 269 (1Min) also frame==from-cold directly.
+- ⚠️ **`VALIDATE_RESIDENT_FRAME` needs `DEEP_REF=1`** to be meaningful. With `DEEP_REF=0` the reference
+  is shallow same-edge and the MANAGER (both full-prep AND frame, equally) diverges from it
+  (263 changed=1, 290/rvol_v2 changed=119) — a warmup-convergence artifact, NOT the frame. The frame
+  adds NO divergence beyond full-prep (proven by the probe). TODO: one `DEEP_REF=1` confirmation run
+  on 1–2 sids AFTER the 20:00Z close (heavy 1Sec deep read → RTH-inappropriate) to close the from-cold
+  loop belt-and-suspenders; frame==from-cold is otherwise inherited transitively (frame==full-prep,
+  full-prep==from-cold via the existing gate).
+
+**Remaining Phase 2c:** secondary-TF columns (41 slots) via `_secondary_snapshot_load_extend` + 1-period
+shift; REVISION RE-FEED. Everything still flag OFF; nothing armed.
 
 ## Progress log
 - 2026-07-17: Orientation complete; branch cut. **Phase 1 code SHIPPED (uncommitted, flag OFF):**
