@@ -448,18 +448,22 @@ class ResidentEngineManager:
                 # to the batch prep on settled bars (probe _frame_userpack_probe.py: 6 pack
                 # archetypes GREEN incl. rvol_v2). Built-in triggers/interps are likewise recomputed
                 # from OHLCV and their df values ignored ("Don't override built-in", process_bar).
-                # So a slot is frame-eligible (OHLCV-only feed, NO derived columns needed) when:
-                #   (1) no secondary-TF columns are needed (sec_tf_map empty), AND
+                # So a slot is frame-eligible when:
+                #   (1) TRIGGER slot → no derived columns needed (engine computes user packs
+                #       internally); SECONDARY-gated slot → has a VALID coarse snapshot, so the
+                #       `__<tf>` columns can be served cheaply per poll (Phase 2c), AND
                 #   (2) every required `_user_pack_*` marker maps to a pack that ships an
                 #       incremental_class (engine computes it live — no df needed), AND
-                #   (3) no confluence GATE leg references a USER-PACK (non-builtin) interpreter —
-                #       a gated user-pack interp STATE is NOT computed internally, so it would need
-                #       the df confluence record (fleet has 0 of these today; guard regardless).
-                # Secondary-gated slots stay on full-prep until the secondary-column path lands.
+                #   (3) no PRIMARY-TF ('1M-' sentinel) gate on a USER-PACK (non-builtin) interp —
+                #       the primary interp STATE is NOT computed internally so it would need the df
+                #       confluence record (sids 136/329 → kept on full-prep). SECONDARY-TF
+                #       user-pack interp legs ('2m-…') ARE supplied by compute_secondary_columns,
+                #       so they do NOT disqualify.
                 # Any classification error → NOT eligible (fail-safe to full-prep).
                 try:
                     from shadow_engine import _BUILTIN_INTERPS as _BI
                     import pack_registry as _pr
+                    from services import _has_valid_secondary_snapshot
                     us = getattr(eng, 'engine', None)
                     _req = getattr(getattr(us, 'indicators', None), 'required', ()) or ()
                     _markers = [i[len('_user_pack_'):] for i in _req
@@ -472,13 +476,13 @@ class ResidentEngineManager:
                            if ik not in _BI]
                     _conf = slot.strat.get('confluence') or []
                     _gate_userpack = any(
-                        isinstance(leg, str) and not leg.startswith('GEN-')
+                        isinstance(leg, str) and leg.split('-', 1)[0] == '1M'
                         and any(nb in leg for nb in _nb) for leg in _conf)
-                    # Use the AUTHORITATIVE classified secondary TFs (slot.sec_tfs), NOT
-                    # get_secondary_tf_map(df): the latter matches any '__' and misreads
-                    # '__'-PREFIXED trigger columns (e.g. '__utv4_bull_flip') as bogus
-                    # secondaries, wrongly disqualifying no-secondary user-pack slots.
-                    plain = (not slot.sec_tfs and _packs_ok and not _gate_userpack)
+                    # Secondary-gated slots need a VALID coarse snapshot (served cheaply per poll
+                    # via _secondary_snapshot_load_extend); trigger slots need none.
+                    _sec_ok = (not slot.sec_tfs
+                               or _has_valid_secondary_snapshot(slot.strat, slot.bt_model))
+                    plain = (_sec_ok and _packs_ok and not _gate_userpack)
                 except Exception:  # noqa: BLE001
                     plain = False   # unknown → fail-safe to full-prep
                 slot.frame_eligible = plain
@@ -550,13 +554,27 @@ class ResidentEngineManager:
             delta.index = delta.index.tz_localize('UTC')
         elif delta.index.tz is not None and tail_ts.tz is None:
             tail_ts = tail_ts.tz_localize('UTC')
-        new_rows = delta[delta.index > tail_ts]
+        new_rows = delta[delta.index > tail_ts].copy()   # copy: secondary cols attached below
         if len(new_rows) == 0:
             return []                       # only the re-formed tail bucket returned
 
-        # Feed the new bars to the resident engine (plain slot → no secondary_tf_map), then
-        # extend + bound the frame and assert lockstep with the engine cursor.
-        new = slot.engine.feed(new_rows, None)
+        # M-RS5a Phase 2c: a SECONDARY-gated slot needs its `__<tf>` confluence columns for the
+        # new bars (the engine reads them via secondary_tf_map). Build them from the cheap
+        # snapshot-extended coarse series through the SAME compute_secondary_columns helper the
+        # batch prep uses (byte-identical). A trigger slot feeds OHLCV-only (no derived columns —
+        # the engine computes its user packs internally). A snapshot miss/error drops the frame
+        # → full-prep re-heal (fail-safe).
+        if slot.sec_tfs:
+            sec_map = self._attach_secondary_columns(slot, new_rows, until_dt)
+            if sec_map is None:
+                slot.frame = None
+                return None
+        else:
+            sec_map = None
+        # Feed the new bars to the resident engine, then extend + bound the frame and assert
+        # lockstep with the engine cursor. (frame.append keeps OHLCV only; the secondary columns
+        # live on new_rows for the feed, not in the resident frame.)
+        new = slot.engine.feed(new_rows, sec_map)
         frame.append(new_rows)
         frame.trim(WARMUP_BARS)
         eng_ts = slot.engine.last_bar_ts
@@ -575,6 +593,61 @@ class ResidentEngineManager:
         if cur is None or pd.Timestamp(eng_ts) > pd.Timestamp(cur):
             slot.last_processed_ts = eng_ts
         return [t for t in (new or []) if t.get('exit_fill_ts')]
+
+    def _attach_secondary_columns(self, slot: EngineSlot, new_rows, until_dt):
+        """M-RS5a Phase 2c: compute the secondary-TF confluence columns (`{interp}__{tflabel}`)
+        for the delta bars via the cheap snapshot-extended coarse series + the SHARED
+        `services.compute_secondary_columns` helper the batch prep uses (byte-identical,
+        window-independent for a fixed `until`). Attaches them to `new_rows` IN PLACE and
+        returns the secondary_tf_map. Returns None on a snapshot miss / error so the caller
+        drops the frame and re-heals via full-prep.
+
+        Every input mirrors `prepare_strategy_window_df` for byte-identity: the 1-minute-gate
+        normalization, the sec_tfs derived from the normalized confluence, the coarse from
+        `_secondary_snapshot_load_extend` (read-only), and the RORT_SCOPE_CONFLUENCE_GROUPS
+        scoping.
+        """
+        import os
+        from data_worker_engine import _UserContext
+        from data_loader import (normalize_1min_secondary_gate,
+                                  get_required_tfs_from_confluence, get_tf_from_label)
+        from services import (_secondary_snapshot_load_extend, compute_secondary_columns,
+                              get_secondary_tf_map, get_enabled_groups, load_confluence_groups)
+
+        _strat = slot.strat
+        _nc = normalize_1min_secondary_gate(_strat.get('confluence'), slot.timeframe)
+        if _nc is not _strat.get('confluence'):
+            _strat = {**_strat, 'confluence': _nc}
+        # sec_tfs derived exactly as prepare_strategy_window_df does (normalized confluence).
+        _req = get_required_tfs_from_confluence(_strat.get('confluence', []))
+        sec_tfs = tuple(sorted(get_tf_from_label(lbl) for lbl in _req))
+        if not sec_tfs:
+            return None
+        session = _strat.get('trading_session', 'RTH')
+        with _UserContext(slot.uid):
+            coarse = _secondary_snapshot_load_extend(
+                _strat, sec_tfs, until_dt, slot.timeframe, session, "sip",
+                slot.bt_model, no_backfill=READ_ONLY_BARS)
+            if not coarse:
+                return None                  # no snapshot → drop frame → full-prep re-heal
+            # scoped groups — replicate prepare's RORT_SCOPE_CONFLUENCE_GROUPS scoping so the
+            # produced `__<tf>` column SET matches the batch path exactly.
+            _enabled = get_enabled_groups(load_confluence_groups())
+            _scoped = _enabled
+            if os.getenv('RORT_SCOPE_CONFLUENCE_GROUPS', '1') == '1':
+                try:
+                    from unified_engine import resolve_required_confluence_groups
+                    _ids = resolve_required_confluence_groups(_strat, _enabled)
+                    if _ids is not None:
+                        _scoped = [g for g in _enabled if g.id in _ids]
+                except Exception:  # noqa: BLE001
+                    _scoped = _enabled
+            sec_cols = compute_secondary_columns(
+                _strat, sec_tfs, new_rows, session, _scoped,
+                secondary_tf_dfs=coarse, target_index=new_rows.index)
+        for _col, _series in sec_cols.items():
+            new_rows[_col] = _series
+        return get_secondary_tf_map(new_rows) or None
 
     def _filter_new(self, slot: EngineSlot, closed: List[dict]) -> List[dict]:
         """Closed trades whose entry is strictly newer than the DB anchor (idempotent

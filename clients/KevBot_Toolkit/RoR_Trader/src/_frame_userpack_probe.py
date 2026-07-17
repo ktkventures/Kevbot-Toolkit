@@ -8,7 +8,10 @@ resident frame needs NO user-pack derived columns for trigger-only strategies; e
 can broaden to incremental-pack slots (no secondary). Read-only, dry_run, no DB writes.
 """
 import os, sys
-os.environ.setdefault("RORT_SECONDARY_TF_SNAPSHOT", "0")
+# Match the shadow-worker: secondary-TF snapshot ON by default (do NOT force it off —
+# secondary slots resolve the coarse via the snapshot, so both the frame path and the
+# full-prep reference must use it consistently).
+os.environ.setdefault("RORT_SECONDARY_TF_SNAPSHOT", "1")
 os.environ["USE_DB"] = "true"
 from dotenv import load_dotenv
 load_dotenv(".env", override=True)

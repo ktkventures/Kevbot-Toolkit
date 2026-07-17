@@ -267,22 +267,66 @@ returning `{col: Series}`; `prepare_data_with_indicators` now calls it. **Byte-i
 (`_verify_refactor.py`, git-stash before/after): sid 267 (2m sec) + 271 (5m sec) deep-window trade
 hashes IDENTICAL pre/post refactor. Compiles.
 
-**Step 2 approach (refined): DEEP resident primary + per-poll `compute_secondary_columns`.** The resident
-frame for a secondary slot keeps the primary at the BOOTSTRAP (binding-TF) warmup depth (deep enough for
-the coarse interpreter warmup — NOT the shallow WARMUP_BARS the trigger slots use). Per poll:
-`compute_secondary_columns(strat, sec_tfs, frame.df, session, scoped_groups, secondary_tf_dfs=None,
-target_index=new_rows.index)` → resamples the frame's primary→coarse (in-memory, byte-identical to
-full-prep, which also resamples primary→coarse for <1Hour secondaries; ≥1Hour uses the small store-swap),
-runs interpreters + 1-period shift + ffill onto the new bars → `__<tf>` cols → attach to `new_rows` →
-`engine.feed(new_rows, sec_tf_map)`. Chosen over the DB-snapshot path because it's self-contained (no
-per-poll `secondary_snapshot_b64` dependency, which the slot's in-memory strat may lack post-bootstrap).
-Still a big win: eliminates the deep-primary DB RE-READ + primary user-pack recompute; keeps only the
-in-memory coarse compute. Optimization (later): recompute coarse only when a new coarse bar closes.
-- Frame changes: capture `warmup_depth = len(bootstrap_df)` at build; trim to that (deep for secondary,
-  ~WARMUP_BARS for trigger). Keep OHLCV only (secondary cols recomputed per poll, not stored).
-- Eligibility: broaden to secondary slots too (drop the `not slot.sec_tfs` clause), gated by the probe.
-- MUST probe frame-vs-full-prep on SETTLED windows (267 2m + a 5m + a coarse ≥1Hour if any) byte-identical
-  BEFORE broadening. Watch: does the frame's shallow-vs-deep primary depth match full-prep's coarse warmup?
+**Step 2 approach — RESOLVED = C (snapshot per poll). Approach B (resample frame primary→coarse) is
+WRONG:** verified all secondary slots (267/271/272/275…) run with `RORT_SECONDARY_TF_SNAPSHOT=1` and have
+a VALID `secondary_snapshot_b64`, so the full-prep bootstraps with a SHALLOW primary (~WARMUP_BARS) +
+snapshot-served coarse. The frame's shallow primary has no coarse warmup ⟹ can't resample it. Use the
+snapshot. Good news: **ResidentFrame needs NO change (stays OHLCV, shallow);** secondary cols are computed
+per poll and attached to `new_rows`, not stored in the frame.
+
+Per poll in `_advance_resident_frame`, for a secondary slot (after the OHLCV delta read):
+1. `coarse = _secondary_snapshot_load_extend(_eng_strat, sec_tfs, until_dt, slot.timeframe, session, "sip",
+   slot.bt_model, no_backfill=READ_ONLY_BARS)` — cheap cached coarse + short extend. None → drop-frame/full-prep.
+2. `sec_cols = compute_secondary_columns(_eng_strat, sec_tfs, new_rows, session, scoped_groups,
+   secondary_tf_dfs=coarse, target_index=new_rows.index)`; attach each to `new_rows`.
+3. `engine.feed(new_rows, get_secondary_tf_map(new_rows) or None)`.
+Win: eliminates the shallow-primary DB re-read + primary user-pack recompute; keeps only the short
+snapshot extend. Optimization (later): resident coarse snapshot advanced in-frame (no per-poll extend).
+
+**Delicate byte-identity pieces that MUST match the batch path (services.prepare_strategy_window_df) —
+this is why step 2 is a focused build, not a quick add:**
+- **scoped_groups**: replicate prepare's `RORT_SCOPE_CONFLUENCE_GROUPS` scoping
+  (`resolve_required_confluence_groups(strat, get_enabled_groups(load_confluence_groups()))`, services.py:
+  322-337/385-387) — else the frame produces a different `__<tf>` column set than full-prep.
+- **1-minute-gate normalization**: full-prep applies `normalize_1min_secondary_gate` inside
+  prepare_strategy_window_df; the frame must use the same `_eng_strat` for BOTH load_extend and
+  compute_secondary_columns (advance() already builds `_eng_strat` for the engine — pass it through).
+- **snapshot blob**: confirmed present in the slot's loaded strat (has_blob=True), so load_extend finds it.
+- Eligibility: broaden to secondary slots WITH a valid snapshot (`_has_valid_secondary_snapshot` /
+  load_extend non-None); else stay full-prep (fail-safe). ⚠️ **The `_gate_userpack` guard must be
+  REFINED for secondary slots:** a secondary leg (`2m-UT_BOT_V4-BULL`) references a non-builtin interp
+  but is HANDLED (compute_secondary_columns emits `UT_BOT_V4__2m` — confirmed in sec_cols output), so it
+  must NOT disqualify. Only a PRIMARY-TF gate on a user-pack interp is the open question (needs the
+  primary interp STATE in confluence_records — untested whether the engine computes user-pack interp
+  states internally; fleet B-class = 0 for no-secondary, but a secondary slot COULD also carry a primary
+  user-pack-interp leg). NEXT-ITER investigation: (a) scan the 41 secondary slots for primary-TF
+  user-pack-interp legs; (b) if any, test whether the engine emits the primary user-pack interp state
+  internally; refine the guard to flag only primary-TF non-builtin-interp legs. The probe is the backstop.
+- **PROBE `_frame_userpack_probe.py` on 267/271 (2m/5m) SETTLED, aligned + partial-bar edges, byte-identical
+  BEFORE broadening.** (Probe already forces a frame regardless of eligibility — extend it to attach
+  secondary cols on the frame path, mirroring _advance_resident_frame.)
+
+## PHASE 2c BUILD — Step 2 DONE + REVISION RE-FEED not needed (2026-07-17)
+**Secondary-column frame extension IMPLEMENTED** (shadow_manager.py): `_advance_resident_frame` branches
+on `slot.sec_tfs` → `_attach_secondary_columns` (normalized `_eng_strat`, sec_tfs derived like prepare,
+coarse via `_secondary_snapshot_load_extend` read-only, RORT_SCOPE_CONFLUENCE_GROUPS scoping,
+`compute_secondary_columns(secondary_tf_dfs=coarse, target_index=new_rows.index)`, attach, feed). Eligibility
+broadened: secondary slots with a valid snapshot are eligible; `_gate_userpack` refined to flag only
+PRIMARY-`1M-` user-pack-interp legs (sids 136/329 stay full-prep). ResidentFrame UNCHANGED (OHLCV-only;
+secondary cols live on new_rows for the feed, not stored). Probe fix: default `RORT_SECONDARY_TF_SNAPSHOT=1`
+(match shadow-worker) — with snapshot OFF, full-prep deep-resamples while the frame uses the snapshot →
+mismatch + frame drop. **Probe GREEN (snapshot ON, settled window): 267(2m) 91=91, 271(5m) 55=55,
+frame_survived=True, byte-identical full+settled.** Broader probe (267/272/327/340/312/325, offset edges)
+RUNNING.
+
+**REVISION RE-FEED — NOT NEEDED (and would be WRONG to add).** M-RS5a's acceptance = frame == FULL-PREP
+manager (the production path), NOT frame == canonical. Both paths feed only bars `> cursor` (read at the
+same poll time → identical) and both IGNORE revisions to already-consumed bars (full-prep re-reads them but
+the engine skips `index <= last_bar_ts`; the frame doesn't re-read them) — so the frame keeps the exact same
+consumed/partial values full-prep keeps. Adding re-feed would make the frame BETTER than full-prep = CHANGE
+outputs, violating M-RS5's "changes cost, not outputs" mandate. The sub-minute revision jitter is the
+pre-existing MANAGER-vs-canonical gap (affects full-prep equally; nightly from-cold recompute is the
+backstop). ⟹ Phase 2c is COMPLETE once the broader secondary probe is green.
 
 ## Progress log
 - 2026-07-17: Orientation complete; branch cut. **Phase 1 code SHIPPED (uncommitted, flag OFF):**
