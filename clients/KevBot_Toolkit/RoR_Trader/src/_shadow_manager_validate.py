@@ -34,6 +34,12 @@ Env:
   VALIDATE_T0 / VALIDATE_TEND  pin the window explicitly (ISO, e.g.
                              2026-07-06T13:30:00+00:00) — the Monday-after-
                              holiday case; skips the latest-trade anchor.
+  VALIDATE_RESIDENT_FRAME=1  M-RS5a PATH gate: run the manager's warm polls through
+                             the resident-frame fast path (delta read + feed, no full
+                             re-prep) and require byte-identity vs the full-prep from-cold
+                             reference. PLAIN slots only — a non-plain slot never builds a
+                             frame, so the fast path is never exercised and the run reports
+                             RESIDENT-INVALID (skipped), not a vacuous pass.
 
 Usage:  PYTHONPATH=. ../.venv/bin/python _shadow_manager_validate.py [SIDS] [DAYS]
 """
@@ -58,6 +64,11 @@ DEEP_REF = os.environ.get("VALIDATE_DEEP_REF", "1") == "1"
 DEEP_REF_DAYS = int(os.environ.get("VALIDATE_DEEP_REF_DAYS", "10"))
 PIN_T0 = os.environ.get("VALIDATE_T0")      # e.g. 2026-07-06T13:30:00+00:00
 PIN_TEND = os.environ.get("VALIDATE_TEND")  # e.g. 2026-07-06T20:00:00+00:00
+
+# M-RS5a resident-frame PATH gate (see module docstring). Scopes to PLAIN slots; a run that
+# never exercises the fast path is RESIDENT-INVALID (skipped), not green — the Phase-1 analog
+# of the DEEP-REF DEPTH-INVALID guard.
+RESIDENT_FRAME_MODE = os.environ.get("VALIDATE_RESIDENT_FRAME", "0") == "1"
 
 import db
 db.set_admin_user_context(ADMIN_USER)
@@ -201,6 +212,20 @@ def run_sid(sid):
     # Record every window the manager actually prepares (left edge = first bar
     # DELIVERED) so the deep-ref depth claim is MEASURED, not assumed.
     import shadow_manager as _sm
+    # M-RS5a: drive the manager's warm polls through the resident-frame fast path (or leave it
+    # OFF). Patch the module global (read at import) + count fast-path advances that actually
+    # HANDLED the poll (non-None return) so a non-plain slot (frame never built) is caught as
+    # RESIDENT-INVALID rather than passing vacuously.
+    _prev_rf = _sm.RESIDENT_FRAME
+    _sm.RESIDENT_FRAME = RESIDENT_FRAME_MODE
+    _rf_calls = [0]
+    _orig_rf = mgr._advance_resident_frame
+    def _rec_rf(*a, **kw):
+        r = _orig_rf(*a, **kw)
+        if r is not None:
+            _rf_calls[0] += 1
+        return r
+    mgr._advance_resident_frame = _rec_rf
     _mgr_left_edges = []
     _orig_prepare = _sm.prepare_window
     def _rec_prepare(*a, **kw):
@@ -226,10 +251,24 @@ def run_sid(sid):
                       flush=True)
     finally:
         _sm.prepare_window = _orig_prepare
+        _sm.RESIDENT_FRAME = _prev_rf
+        mgr._advance_resident_frame = _orig_rf
     M = keyed(pd.DataFrame(acc) if acc else pd.DataFrame(), after=T0_iso)
     tag = f"bootstrap+{POLLS}×" + (f", restart@{restart_poll}" if restart_poll else "")
+    if RESIDENT_FRAME_MODE:
+        tag += ", RESIDENT-FRAME"
     print(f"    MANAGER ({tag}): {len(M):4d} steady trades  {time.time()-t:5.1f}s",
           flush=True)
+
+    # M-RS5a RESIDENT-INVALID guard: certify the fast path was ACTUALLY exercised, else this
+    # run tests nothing (a non-plain slot silently falls back to full-prep = a vacuous pass).
+    if RESIDENT_FRAME_MODE:
+        if _rf_calls[0] == 0:
+            print("    RESIDENT-FRAME: fast path NEVER handled a poll (slot not plain / frame "
+                  "never built) — ⚠️ RESIDENT-INVALID (treating as skipped)", flush=True)
+            return None
+        print(f"    RESIDENT-FRAME: fast path handled {_rf_calls[0]}/{POLLS} polls "
+              f"(frame_eligible={slot.frame_eligible})", flush=True)
 
     # DEEP-REF PATH gate: certify the reference really sat >=2 TRADING days
     # deeper than the SHALLOWEST window the manager delivered — otherwise this
@@ -281,6 +320,8 @@ for sid in SIDS:
         results[sid] = None
 
 print("\n" + "=" * 64)
+if RESIDENT_FRAME_MODE:
+    print("MODE: M-RS5a RESIDENT-FRAME fast path (plain slots; delta-read == full-prep)")
 print("STEP C MANAGER GATE — settled trades == from-cold (live-poll simulation)")
 green = [s for s, r in results.items() if r is True]
 red = [s for s, r in results.items() if r is False]

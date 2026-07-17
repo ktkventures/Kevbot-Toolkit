@@ -129,6 +129,25 @@ EMPTY_PROBE = os.getenv("RORT_SHADOW_EMPTY_PROBE", "1").strip().lower() in (
 HEARTBEAT = os.getenv("RORT_SHADOW_HEARTBEAT", "1").strip().lower() in (
     "1", "true", "yes", "on")
 
+# ── M-RS5a — RESIDENT DATA WINDOW (cost/scale; default OFF, per-slot kill switch) ──
+# advance() today re-preps the full [cursor - WARMUP_BARS, until] window from the DB every
+# poll (services.prepare_strategy_window_df) just to feed the resident engine 1-5 new rows —
+# ~1000:1 waste for sub-minute TFs (Design_MRS5_Resident_Window §1; forced POLL_S=60 + a
+# compute upgrade + spend-cap disabled). With this flag ON, an ELIGIBLE slot keeps a resident
+# frame and each poll reads ONLY the delta source bars (frame_tail, bound], resampled through
+# the SAME load_market_data path the full prep uses (byte-identical: _filter_session is per-bar
+# and resample_to_timeframe is midnight-origin-bucketed — both window-independent), and feeds
+# just the new rows. The resident engine already holds all built-in indicator state, so a PLAIN
+# slot (no user-pack columns, no secondary TFs) needs only the new OHLCV — Phase 1 scope. User-
+# pack / secondary-gated slots stay on the full-prep path (frame_eligible=False, decided from the
+# bootstrap prep) until Phase 2 (incremental derived columns). Any error or a broken frame<->engine
+# cursor invariant DROPS the frame and falls through to full-prep — self-healing, byte-safe. The
+# nightly from-cold recompute remains the truth backstop. OFFLINE byte-identity gate
+# (_shadow_manager_validate PATH) must be GREEN before any live arm. Kill switch:
+# RORT_SHADOW_RESIDENT_FRAME=0 reverts a slot to full-prep instantly. Default OFF.
+RESIDENT_FRAME = os.getenv("RORT_SHADOW_RESIDENT_FRAME", "0").strip().lower() in (
+    "1", "true", "yes", "on")
+
 
 def _source_bars_exist(symbol: str, tf_seconds: int, after_dt, until_dt) -> bool:
     """ONE indexed row: does the symbol's SOURCE layer (1Sec for sub-minute
@@ -160,6 +179,46 @@ def prepare_window(strat: dict, model, since_dt: datetime, until_dt: datetime,
     )
 
 
+class ResidentFrame:
+    """M-RS5a — a per-slot RESIDENT prepared window: the engine-consumed columns kept in
+    memory and extended by the per-poll delta instead of re-prepared from the DB each poll.
+
+    Phase 1 (PLAIN slots): `df` carries OHLCV only — the only columns
+    `shadow_engine.ResidentStrategyEngine._build_inputs` reads for a plain strategy (built-in
+    indicators are recomputed by the resident engine itself; user-pack + secondary columns
+    arrive in Phase 2). `append` adds the new resampled primary bars, `trim` bounds the frame
+    to warmup depth, and `tail` (the last bar's ts) MUST equal the resident engine's
+    `last_bar_ts` every poll — the lockstep invariant. A mismatch drops the frame and lets the
+    full-prep path re-heal (byte-safe fail-back to today's behavior).
+    """
+
+    # OHLCV are the only Phase-1 engine-consumed columns (shadow_engine._build_inputs).
+    OHLCV = ("open", "high", "low", "close", "volume")
+
+    def __init__(self, df):
+        cols = [c for c in self.OHLCV if c in df.columns]
+        self.df = df[cols].copy()
+        self.tail = self.df.index[-1] if len(self.df) else None
+
+    def append(self, new_rows) -> None:
+        import pandas as pd
+        if new_rows is None or len(new_rows) == 0:
+            return
+        cols = [c for c in self.OHLCV if c in new_rows.columns]
+        self.df = pd.concat([self.df, new_rows[cols]])
+        # Defensive de-dup (keep latest) + sort; the caller only ever appends bars strictly
+        # after `tail`, so this is a no-op in the normal path.
+        self.df = self.df[~self.df.index.duplicated(keep="last")].sort_index()
+        self.tail = self.df.index[-1]
+
+    def trim(self, warmup_bars: int) -> None:
+        """Bound memory to warmup depth (head-trim never touches the tail or the resident
+        engine, which is already warm — the frame history is for Phase 2's incremental
+        columns + the invariant, not for feeding a plain slot)."""
+        if warmup_bars and len(self.df) > warmup_bars:
+            self.df = self.df.iloc[-warmup_bars:]
+
+
 class EngineSlot:
     """Per-strategy resident state: the live engine + bookkeeping. Classification
     (eligibility, model, secondary TFs, fingerprint) is derived via the data-worker's
@@ -178,6 +237,8 @@ class EngineSlot:
         self.last_kpi_at = None                 # monotonic stamp of last KPI recompute
         self.last_tick_at = None                # monotonic stamp of last poll (Fix 2a fairness)
         self.last_hb_at = None                  # monotonic stamp of last heartbeat (W2-0)
+        self.frame = None                       # ResidentFrame | None (M-RS5a resident window)
+        self.frame_eligible = None              # None=undecided; True=plain; False=full-prep only
         self.classify()
 
     def classify(self) -> None:
@@ -194,10 +255,14 @@ class EngineSlot:
         self.fingerprint = st.fingerprint
         self.eligible = st.streaming_eligible and st.bt_model in REST_BACKTEST_MODELS
         self.ineligible_reason = st.ineligible_reason
-        # A config edit (fingerprint change) invalidates the resident engine.
+        # A config edit (fingerprint change) invalidates the resident engine AND its frame
+        # (M-RS5a): a new fingerprint may add/remove user-pack or secondary columns, so both
+        # the warm engine and its resident window must be rebuilt from cold.
         if old_fp is not None and self.fingerprint != old_fp:
             self.engine = None
             self.last_processed_ts = None
+            self.frame = None
+            self.frame_eligible = None
 
 
 class ResidentEngineManager:
@@ -300,6 +365,26 @@ class ResidentEngineManager:
 
         from data_worker_engine import _UserContext
 
+        # ── M-RS5a resident-frame fast path (flag-gated, eligible PLAIN slots only) ──
+        # When the slot carries an active resident frame (built at bootstrap for an eligible
+        # plain strategy), skip the full warmup-window re-prep entirely: read only the delta
+        # source bars (frame.tail, until_dt], resample via the SAME load_market_data path the
+        # full prep uses, and feed just the new rows to the already-warm engine. Returns the
+        # new closed trades on success; returns None to signal "fall through to full-prep this
+        # poll" (invariant broke → self-heal). Only for normal warm polls (since_override is
+        # set only by bootstrap/restart, which must take the full-prep path).
+        if (RESIDENT_FRAME and slot.frame is not None and slot.engine is not None
+                and since_override is None):
+            try:
+                out = self._advance_resident_frame(slot, until_dt)
+                if out is not None:
+                    return out
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[shadow] sid=%s resident-frame advance failed (%s) — "
+                               "dropping frame, full-prep re-heal", slot.sid, e)
+                slot.frame = None
+            # fall through to full-prep (re-heals + rebuilds the frame below)
+
         since = since_override or slot.last_processed_ts
         if since is None:
             since = until_dt - timedelta(days=BOOTSTRAP_DAYS)
@@ -348,6 +433,45 @@ class ResidentEngineManager:
                                        slot.sid, e)
 
             new = slot.engine.feed(df, sec_tf_map)
+            # ── M-RS5a: decide frame-eligibility on this prep + (re)build the resident frame ──
+            # PLAIN = the engine reads ONLY OHLCV from the df (no user-pack columns detected on
+            # the first feed, no secondary-TF map). Those slots run the resident-frame fast path;
+            # user-pack / secondary-gated slots stay on full-prep until Phase 2. This block runs
+            # on the bootstrap prep AND on a full-prep re-heal poll (frame is None then) — a plain
+            # slot's frame is rebuilt from the freshly-prepped window, anchored to the engine
+            # cursor. Warm plain polls never reach here (they return via the fast path above).
+            if RESIDENT_FRAME and slot.frame is None:
+                eng = slot.engine
+                # Frame-eligible (Phase 1) = the engine reads NOTHING fidelity-bearing from the
+                # df beyond OHLCV: no secondary-TF map AND no USER-PACK requirement. Built-in
+                # triggers/interpreters are recomputed inside process_bar from OHLCV and the df's
+                # trig_/interp values are IGNORED for them ("Don't override built-in",
+                # unified_engine.process_bar) — so `_user_trig_cols` (which also lists built-in
+                # trigger columns) must NOT disqualify. Only genuine user-pack interps/indicators
+                # or `_user_pack_*` indicator markers are df-dependent (→ Phase 2).
+                try:
+                    _req = getattr(getattr(eng, 'engine', None), 'indicators', None)
+                    _req = getattr(_req, 'required', ()) or ()
+                    _has_user_pack = any(
+                        isinstance(i, str) and i.startswith('_user_pack_') for i in _req)
+                except Exception:  # noqa: BLE001
+                    _has_user_pack = True   # unknown → fail-safe to full-prep
+                plain = (not sec_tf_map and not _has_user_pack
+                         and not getattr(eng, '_user_interp_cols', None)
+                         and not getattr(eng, '_user_indicator_cols', None))
+                slot.frame_eligible = plain
+                if plain and eng.last_bar_ts is not None:
+                    try:
+                        f = ResidentFrame(df[df.index <= eng.last_bar_ts])
+                        f.trim(WARMUP_BARS)
+                        # Anchor the frame tail EXACTLY to the engine cursor, else stay full-prep.
+                        if f.tail is not None and pd.Timestamp(f.tail) == pd.Timestamp(
+                                eng.last_bar_ts):
+                            slot.frame = f
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("[shadow] sid=%s frame bootstrap failed (%s) — "
+                                       "full-prep", slot.sid, e)
+                        slot.frame = None
         # High-water mark: never move the cursor backwards. A window can be
         # non-empty yet feed nothing new (warmup context only), leaving the
         # engine's last_bar_ts at an older bar than a cursor a gap-skip already
@@ -356,6 +480,77 @@ class ResidentEngineManager:
         cur = slot.last_processed_ts
         if eng_ts is not None and (
                 cur is None or pd.Timestamp(eng_ts) > pd.Timestamp(cur)):
+            slot.last_processed_ts = eng_ts
+        return [t for t in (new or []) if t.get('exit_fill_ts')]
+
+    def _advance_resident_frame(self, slot: EngineSlot,
+                                until_dt: datetime) -> Optional[List[dict]]:
+        """M-RS5a warm-poll fast path for a PLAIN slot with an active resident frame.
+
+        Reads ONLY the delta primary bars (frame.tail, until_dt] via the trusted
+        `load_market_data` path — the SAME source-layer read + `_filter_session` +
+        `resample_to_timeframe` the full prep uses — so the new bars are byte-identical to a
+        full-window re-prep for every complete bucket past the tail (session filter is per-bar,
+        the resample is midnight-origin-bucketed; both are window-independent). Feeds the new
+        rows to the resident engine (which already holds all built-in indicator state), extends
+        + trims the frame, and asserts the frame<->engine cursor invariant.
+
+        Returns the new closed trades on success, [] when no new settled bar has formed, or
+        None to signal the caller to FALL THROUGH to full-prep (invariant broke → self-heal).
+        """
+        import pandas as pd
+        from data_loader import load_market_data
+        from data_worker_engine import _UserContext
+
+        frame = slot.frame
+        tail = frame.tail
+        if tail is None:
+            return None                     # no anchor — let full-prep rebuild the frame
+        tail_ts = pd.Timestamp(tail)
+
+        # Delta read: only (tail, until] of the PRIMARY TF, read-only cache (no Polygon /
+        # no cache write). Starting the read at the tail's bucket means every NEW bucket has
+        # its full source range present → byte-identical resample. _UserContext is harmless
+        # here (bar_cache is admin-scoped) and kept for parity with the full-prep path.
+        start = tail_ts.to_pydatetime()
+        with _UserContext(slot.uid):
+            delta = load_market_data(
+                slot.symbol, start_date=start, end_date=until_dt,
+                timeframe=slot.timeframe, feed="sip",
+                session=slot.strat.get('trading_session', 'RTH'),
+                no_backfill=READ_ONLY_BARS)
+        if delta is None or len(delta) == 0:
+            return []                       # cache holds no bars past the cursor yet
+
+        # tz-align the delta index to the frame/engine cursor, then keep strictly-after-tail
+        # bars (the re-formed tail bucket is dropped — the engine already consumed it).
+        if delta.index.tz is None and tail_ts.tz is not None:
+            delta.index = delta.index.tz_localize('UTC')
+        elif delta.index.tz is not None and tail_ts.tz is None:
+            tail_ts = tail_ts.tz_localize('UTC')
+        new_rows = delta[delta.index > tail_ts]
+        if len(new_rows) == 0:
+            return []                       # only the re-formed tail bucket returned
+
+        # Feed the new bars to the resident engine (plain slot → no secondary_tf_map), then
+        # extend + bound the frame and assert lockstep with the engine cursor.
+        new = slot.engine.feed(new_rows, None)
+        frame.append(new_rows)
+        frame.trim(WARMUP_BARS)
+        eng_ts = slot.engine.last_bar_ts
+        if eng_ts is None or frame.tail is None or \
+                pd.Timestamp(frame.tail) != pd.Timestamp(eng_ts):
+            # Frame<->engine cursor diverged (e.g. the engine skipped a bar it had already
+            # seen) — DROP the frame; the caller re-heals via full-prep this poll.
+            logger.warning("[shadow] sid=%s resident-frame INVARIANT broke "
+                           "(frame_tail=%s engine_ts=%s) — dropping frame",
+                           slot.sid, frame.tail, eng_ts)
+            slot.frame = None
+            return None
+
+        # High-water cursor advance (never backwards — mirror the full-prep path).
+        cur = slot.last_processed_ts
+        if cur is None or pd.Timestamp(eng_ts) > pd.Timestamp(cur):
             slot.last_processed_ts = eng_ts
         return [t for t in (new or []) if t.get('exit_fill_ts')]
 
