@@ -287,11 +287,38 @@ export default function StrategyHealthV1() {
   const customStartIso = mode === 'custom' ? localInputToIso(customStartInput) : null;
   const customEndIso = mode === 'custom' ? localInputToIso(customEndInput) : null;
 
+  // ── APPLIED filter state (Kevin, 07-20) ──────────────────────────────
+  // The health query key depends ONLY on these applied values, NOT on the
+  // live filter controls above — so editing a window chip or a custom date
+  // no longer re-fetches (which used to blank the whole page with "Loading
+  // strategy health…" and hit the DB on every keystroke). The draft/control
+  // state is committed into applied state ONLY when the user clicks Refresh.
+  const [appliedMode, setAppliedMode] = useState<'rolling' | 'custom'>('rolling');
+  const [appliedWindowHours, setAppliedWindowHours] = useState<number>(24);
+  const [appliedStartIso, setAppliedStartIso] = useState<string | null>(null);
+  const [appliedEndIso, setAppliedEndIso] = useState<string | null>(null);
+
+  // Commit the draft controls → applied. Changing an applied value changes
+  // the React Query key, which fetches the newly-selected window.
+  const applyFilters = () => {
+    setAppliedMode(mode);
+    setAppliedWindowHours(windowHours);
+    setAppliedStartIso(mode === 'custom' ? localInputToIso(customStartInput) : null);
+    setAppliedEndIso(mode === 'custom' ? localInputToIso(customEndInput) : null);
+  };
+
+  // Draft controls differ from what's currently applied/shown → prompt Apply.
+  const filtersDirty =
+    mode !== appliedMode ||
+    (mode === 'rolling' && windowHours !== appliedWindowHours) ||
+    (mode === 'custom' &&
+      (customStartIso !== appliedStartIso || customEndIso !== appliedEndIso));
+
   const { data, isLoading, error, dataUpdatedAt, refetch } =
     useStrategyHealth({
-      windowHours,
-      start: mode === 'custom' ? customStartIso : null,
-      end: mode === 'custom' ? customEndIso : null,
+      windowHours: appliedWindowHours,
+      start: appliedMode === 'custom' ? appliedStartIso : null,
+      end: appliedMode === 'custom' ? appliedEndIso : null,
     });
 
   // W2-6a — Bar Parity % (live_bars vs REST truth), computed server-side
@@ -394,7 +421,7 @@ export default function StrategyHealthV1() {
       <div>
         <h1 className="text-2xl font-semibold mb-1">Strategy Health</h1>
         <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-          Per-strategy freshness + red flags. Refreshes every 30s · last updated {lastUpdated} UTC.
+          Per-strategy freshness + red flags. Change filters, then click Apply to load · last updated {lastUpdated} UTC.
         </p>
       </div>
 
@@ -458,16 +485,20 @@ export default function StrategyHealthV1() {
               <span>include legacy</span>
             </label>
             <button
-              onClick={() => refetch()}
+              onClick={() => { if (filtersDirty) applyFilters(); else refetch(); }}
               className="px-3 py-0.5 rounded"
               style={{
-                background: 'var(--bg-input)',
-                border: '1px solid var(--border)',
-                color: 'var(--text-muted)',
+                background: filtersDirty ? 'var(--accent)' : 'var(--bg-input)',
+                border: filtersDirty ? 'none' : '1px solid var(--border)',
+                color: filtersDirty ? 'white' : 'var(--text-muted)',
                 cursor: 'pointer',
+                fontWeight: filtersDirty ? 600 : 400,
               }}
+              title={filtersDirty
+                ? 'Apply the selected window/dates and load them'
+                : 'Reload the current window'}
             >
-              Refresh
+              {filtersDirty ? 'Apply' : 'Refresh'}
             </button>
           </div>
         </div>

@@ -174,8 +174,8 @@ export function useStrategyHealth(args: StrategyHealthQueryArgs = {}) {
     queryFn: () =>
       apiFetch<StrategyHealthResponse>(`/api/admin/strategy-health${qs}`),
     staleTime: 25_000,
-    // Custom mode = frozen end → no auto-refetch. Rolling mode polls
-    // every 30s for live updates.
-    refetchInterval: isCustom ? false : 30_000,
+    // Purely Refresh-driven (Kevin, 07-20): no auto-poll in either mode.
+    // The page fetches only on mount and on an explicit Apply/Refresh click.
+    refetchInterval: false,
   });
 }
