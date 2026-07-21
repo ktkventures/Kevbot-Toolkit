@@ -81,6 +81,17 @@ logger = logging.getLogger(__name__)
 COARSE_TFS = ["2Min", "3Min", "5Min", "10Min", "15Min", "30Min",
               "1Hour", "2Hour", "4Hour", "1Day"]
 
+# Phase 2b (2026-07-21, Plan_SubMinute_Canonical_Source): the SUB-MINUTE store
+# layer — canonical 10Sec/30Sec bars resampled from the stored 1Sec base (the
+# `base_layer_for_tf` seam), so BOTH lanes read ONE sub-minute bar instead of
+# live WS-aggregating while the backtest resamples the PRIMARY df (an upsample
+# that yields a pseudo-series at primary cadence — the 339-class root). Scope =
+# only the sub-minute TFs strategies actually gate on or trade (10s gate + the
+# 30Sec primary; NOT speculative 1s/5s/15s). Gated by RORT_CANONICAL_SUBMIN_STATE
+# (default OFF) — with the flag off, no target list, no maintenance, no consumer
+# ever sees these TFs (byte-identical legacy).
+SUBMIN_STORE_TFS = ["10Sec", "30Sec"]
+
 # Sessions that are first-class store keys. RTH / Extended Hours / 24-7 are the
 # three the spec names; Pre-Market / After Hours are included because they're the
 # same filter machinery and cost nothing to key. '24/7' means "no session filter"
@@ -90,7 +101,11 @@ STORE_SESSIONS = ["RTH", "Extended Hours", "Pre-Market", "After Hours", "24/7"]
 
 OHLCV = ["open", "high", "low", "close", "volume"]
 
-# Extra store columns produced alongside OHLCV.
+# Extra store columns produced alongside OHLCV. NOTE (Phase 2b): for sub-minute
+# rows (timeframe_seconds < 60) the provenance hash in `source_1min_span_hash`
+# is computed over the 1SEC members of the bucket (the base layer per
+# `base_layer_for_tf`), not 1Min — the column name is historical; the semantic
+# is "hash of the base-layer rows that produced this bucket".
 _META_COLS = ["source_1min_span_hash"]
 
 
@@ -124,6 +139,22 @@ def read_enabled() -> bool:
         "1", "true", "yes", "on")
 
 
+def submin_enabled() -> bool:
+    """RORT_CANONICAL_SUBMIN_STATE (default OFF), 2026-07-21 — Phase 2b, the ONE
+    kill-switch for the whole sub-minute canonical source (store targets +
+    offline canonical secondary inject + live canonical state derive). When ON:
+      - `default_submin_targets()` becomes non-empty → the settle-sweeper
+        maintain hook (data-worker) keeps 10Sec/30Sec store layers fresh;
+      - services' offline prep builds sub-minute SECONDARY gates from the
+        canonical 1Sec-derived bars (store-served, 1Sec fallback) instead of
+        the pseudo resample-from-primary;
+      - ralph_engine derives sub-minute shadow gate state canonically at each
+        close (vect-equivalent full replay) instead of pure-incremental.
+    OFF = byte-identical legacy everywhere. Flip OFF to kill all three at once."""
+    return os.environ.get("RORT_CANONICAL_SUBMIN_STATE", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 # =============================================================================
 # TF helpers
 # =============================================================================
@@ -136,9 +167,20 @@ def tf_seconds(tf: str) -> int:
 
 
 def is_store_tf(tf: str) -> bool:
-    """True if `tf` is a coarse TF this store is responsible for (2Min..1Day)."""
+    """True if `tf` is a coarse TF this store is responsible for (2Min..1Day).
+    DELIBERATELY unchanged by Phase 2b: the coarse consumers (#1/#2/#3 +
+    _load_warmup_df serve) key off this and must never admit a sub-minute TF —
+    their head/edge splices are 1Min-based and would be wrong one octave down.
+    Sub-minute store membership is the SEPARATE `is_submin_store_tf`."""
     from data_loader import _RESAMPLE_RULES
     return tf in _RESAMPLE_RULES and tf_seconds(tf) >= 120
+
+
+def is_submin_store_tf(tf: str) -> bool:
+    """True if `tf` is a SUB-MINUTE TF the store serves under Phase 2b — i.e.
+    RORT_CANONICAL_SUBMIN_STATE is ON and tf ∈ SUBMIN_STORE_TFS. Flag OFF →
+    always False (no consumer, no target, byte-identical legacy)."""
+    return submin_enabled() and tf in SUBMIN_STORE_TFS
 
 
 def base_layer_for_tf(tf: str) -> str:
@@ -239,8 +281,8 @@ def build_window(symbol: str, tf: str, session: str, start, end,
     from data_loader import _filter_session, resample_to_timeframe, _RESAMPLE_RULES
     rule = _RESAMPLE_RULES.get(tf)
     if rule is None:
-        raise ValueError(f"resampled_bar_store: '{tf}' is not a resamplable coarse "
-                         f"TF. Store TFs: {COARSE_TFS}")
+        raise ValueError(f"resampled_bar_store: '{tf}' is not a resamplable "
+                         f"TF. Store TFs: {COARSE_TFS + SUBMIN_STORE_TFS}")
     if one_min_df is None:
         one_min_df = _load_base_readonly(symbol, tf, start, end)
     if one_min_df is None or len(one_min_df) == 0:
@@ -647,6 +689,112 @@ def default_coarse_targets() -> list:
     return [(s, tf, sess) for s in syms for tf in tfs for sess in SEED_SESSIONS]
 
 
+def submin_symbols() -> list:
+    """Symbol axis for the sub-minute layers: RORT_SUBMIN_STORE_SYMBOLS (comma
+    list, default 'TSLA'), INTERSECTED with the 1Sec capture authority (the
+    resample source must exist). Deliberately narrow — 1Sec density is ~20×
+    1Min and only TSLA carries a sub-minute-gated strategy today (339); widen
+    by env var when another symbol gains one (no code change). A listed symbol
+    without 1Sec capture is skipped LOUDLY, never silently built empty."""
+    raw = os.environ.get("RORT_SUBMIN_STORE_SYMBOLS", "TSLA")
+    wanted = [s.strip().upper() for s in raw.split(",") if s.strip()]
+    have = set(_capture_symbols_with_1sec())
+    out = []
+    for s in wanted:
+        if have and s not in have:
+            logger.warning("resampled_bar_store: submin symbol %s has no "
+                           "enabled 1Sec capture target — skipping (fix "
+                           "bar_cache_config or RORT_SUBMIN_STORE_SYMBOLS)", s)
+            continue
+        out.append(s)
+    return out or (wanted if not have else [])
+
+
+def default_submin_targets() -> list:
+    """Phase 2b target set = submin_symbols() × SUBMIN_STORE_TFS × SEED_SESSIONS,
+    EMPTY unless RORT_CANONICAL_SUBMIN_STATE is on (the sweeper maintain hook
+    calls through here, so flipping the flag on the data-worker is what starts
+    sub-minute maintenance — no code change, instantly reversible)."""
+    if not submin_enabled():
+        return []
+    return [(s, tf, sess) for s in submin_symbols() for tf in SUBMIN_STORE_TFS
+            for sess in SEED_SESSIONS]
+
+
+def _capture_symbols_with_1sec() -> list:
+    """Capture symbols whose 1Sec layer is itself an enabled capture target —
+    the base-layer requirement for sub-minute resampling (mirrors
+    _capture_symbols, which is layer-agnostic)."""
+    try:
+        from bar_cache import get_capture_targets
+        seen: list = []
+        for t in get_capture_targets(enabled_only=True):
+            if t.get("timeframe") == "1Sec":
+                s = t.get("symbol")
+                if s and s not in seen:
+                    seen.append(s)
+        return sorted(seen)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("resampled_bar_store: 1Sec capture-symbol discovery "
+                       "failed (%s) — falling back to %s", e, SEED_SYMBOLS)
+        return []
+
+
+def submin_seed_days() -> int:
+    """Seed depth for the sub-minute layers (RORT_SUBMIN_SEED_DAYS, default 130
+    calendar days). Deliberately NOT seed_days_for_tf (whose 90d floor targets
+    ribbon warmup): the sub-minute store must span the DEEPEST sub-minute
+    backtest window so a full recompute never falls back to a multi-minute raw
+    1Sec load (339's visible window = 108d as of 2026-07-21). Bounded by the
+    1Sec base layer's own depth."""
+    try:
+        return max(1, int(os.environ.get("RORT_SUBMIN_SEED_DAYS", "130")))
+    except ValueError:
+        return 130
+
+
+def submin_maintain_recent_days() -> int:
+    """Incremental maintenance window for sub-minute layers
+    (RORT_SUBMIN_MAINTAIN_RECENT_DAYS, default 2). Whole-UTC-day rebuilds from
+    1Sec; 2 days bounds the per-cycle 1Sec read while covering the settle
+    sweeper's revision horizon many times over."""
+    try:
+        return max(1, int(os.environ.get(
+            "RORT_SUBMIN_MAINTAIN_RECENT_DAYS", "2")))
+    except ValueError:
+        return 2
+
+
+def maintain_submin_symbol(symbol: str, *, recent_days: Optional[int] = None
+                           ) -> dict:
+    """Incremental sub-minute maintenance for ONE symbol: load the recent
+    1Sec base ONCE (raw all-hours) and WINDOW-REPLACE every (tf, session)
+    combination from that single read — 4 targets sharing one base read
+    instead of 4 independent multi-day 1Sec loads (the sub-minute cost rule:
+    the base layer is ~20× 1Min density, never re-read it per target).
+    Start floors to UTC midnight (whole-day rebuild — the 4th gotcha).
+    Gated RORT_RESAMPLED_STORE_WRITE + RORT_CANONICAL_SUBMIN_STATE."""
+    if not (writethrough_enabled() and submin_enabled()):
+        return {"skipped": "write or submin flag off"}
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    rd = submin_maintain_recent_days() if recent_days is None else recent_days
+    start = (now - timedelta(days=rd)).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    import bar_cache
+    base = bar_cache.read_bars(symbol, "1Sec", start, now)
+    if base is None or len(base) == 0:
+        return {"error": f"no 1Sec base for {symbol}", "rows": 0}
+    rows = 0
+    for tf in SUBMIN_STORE_TFS:
+        for sess in SEED_SESSIONS:
+            w = store_window(symbol, tf, sess, start, now, one_min_df=base)
+            if w.get("error") or w.get("skipped"):
+                raise RuntimeError(w.get("error") or w.get("skipped"))
+            rows += w.get("rows", 0)
+    return {"rows": rows, "targets": len(SUBMIN_STORE_TFS) * len(SEED_SESSIONS)}
+
+
 def seed_days_for_tf(tf: str, *, warmup_bars: int = 250, floor_days: int = 90,
                      cap_days: int = 400) -> int:
     """TF-adaptive seed depth: enough calendar days for ~warmup_bars of `tf`, floored
@@ -767,9 +915,16 @@ def maintain_coarse(symbol: str, tf: str, session: str, *,
 def maintain_all_coarse(targets: Optional[list] = None, *,
                         recent_days: int = 3) -> dict:
     """Cron entrypoint: incrementally maintain every target's recent window. Breaker
-    across targets. Gated. Returns {targets, rows, errors, aborted}."""
+    across targets. Gated. Returns {targets, rows, errors, aborted}.
+
+    Phase 2b: when RORT_CANONICAL_SUBMIN_STATE is armed (and targets weren't
+    explicitly passed), ALSO maintains the sub-minute layers via
+    `maintain_submin_symbol` (one shared 1Sec read per symbol) after the coarse
+    loop — so the existing settle-sweeper hook powers sub-minute freshness with
+    zero sweeper changes. Flag OFF → byte-identical legacy behavior."""
     if not writethrough_enabled():
         return {"skipped": "RORT_RESAMPLED_STORE_WRITE off"}
+    run_submin = targets is None and submin_enabled()
     targets = targets or default_coarse_targets()
     br = _Breaker(_BREAKER_MAX_FAIL)
     rows = 0
@@ -794,8 +949,30 @@ def maintain_all_coarse(targets: Optional[list] = None, *,
                 aborted = True
                 logger.error("maintain_all_coarse BREAKER OPEN after %d fails", br.fails)
                 break
-    return {"targets": len(targets), "rows": rows, "errors": errors,
-            "aborted": aborted}
+    submin_rows = 0
+    submin_errors = 0
+    if run_submin and not aborted:
+        for s in sorted({t[0] for t in default_submin_targets()}):
+            try:
+                w = maintain_submin_symbol(s)
+                if w.get("error") or w.get("skipped"):
+                    raise RuntimeError(w.get("error") or w.get("skipped"))
+                submin_rows += w.get("rows", 0)
+                br.ok()
+            except Exception as e:  # noqa: BLE001
+                submin_errors += 1
+                logger.warning("maintain submin %s: %s", s, e)
+                if br.fail():
+                    aborted = True
+                    logger.error("maintain submin BREAKER OPEN after %d fails",
+                                 br.fails)
+                    break
+    out = {"targets": len(targets), "rows": rows, "errors": errors,
+           "aborted": aborted}
+    if run_submin:
+        out["submin_rows"] = submin_rows
+        out["submin_errors"] = submin_errors
+    return out
 
 
 def shadow_compare_targets(targets: Optional[list] = None, *,

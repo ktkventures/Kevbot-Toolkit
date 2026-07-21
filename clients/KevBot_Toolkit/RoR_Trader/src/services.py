@@ -16,6 +16,7 @@ Usage:
 
 import logging
 logger = logging.getLogger(__name__)
+import os
 import pandas as pd
 import numpy as np
 import threading
@@ -79,6 +80,10 @@ def _prepare_cache_key(symbol, days, seed, start_date, end_date,
         str(end_date) if end_date is not None else None,
         timeframe, data_feed, session,
         tuple(secondary_tfs) if secondary_tfs else (),
+        # Phase 2b: the sub-minute canonical flag changes the secondary build —
+        # a same-process flag toggle (tests / parity legs) must never get a
+        # stale cross-flag cache hit.
+        os.environ.get('RORT_CANONICAL_SUBMIN_STATE', '').strip().lower(),
     )
 
 
@@ -233,6 +238,124 @@ def _coarse_secondary_store_swap(strat, sec_tf, df, session):
     except Exception as e:  # noqa: BLE001
         logger.warning("[ResampledStore#2] swap failed %s %s: %s → resample",
                        strat.get('symbol') if strat else '?', sec_tf, e)
+        return None
+
+
+def _submin_secondary_canonical(strat, sec_tf, df, session):
+    """Phase 2b (RORT_CANONICAL_SUBMIN_STATE, Plan_SubMinute_Canonical_Source):
+    build a SUB-MINUTE secondary's OHLCV from the CANONICAL 1Sec-derived bars
+    instead of resampling the primary `df`.
+
+    WHY: for a sub-minute gate on a coarser-or-equal primary (339: 10s gate on a
+    30Sec primary) the legacy `resample_to_timeframe(primary_df, '10Sec')` is an
+    UPSAMPLE — pandas just relabels each primary bar into its bin, yielding a
+    pseudo-'10s' series at PRIMARY cadence. The live engine meanwhile runs the
+    gate ribbon on true WS-aggregated 10s bars — the two lanes never computed on
+    the same bar set, which is the structural root of the 339-class divergence
+    (ceiling ~14% with corr ALSO ~14% ⇒ logic, not data). This mirrors the
+    RORT_ENFORCE_1MIN_GATE native-1Min-secondary fix one octave down.
+
+    SOURCE = per-UTC-day assembly (the store's own WINDOW-REPLACE unit):
+      - whole days come from `resampled_bar_cache` (Phase 2b sub-minute layers,
+        seeded+maintained from stored 1Sec) — one indexed read, no 1Sec scan;
+      - the FINAL day, days after the store's edge, and any gap days are derived
+        on the fly from cached 1Sec via the store's own canonical oracle
+        (`canonical_resampled` = resample(_filter_session(1Sec)) — identical
+        construction, so a gap changes cost, never bytes). Gap days are LOUD:
+        a deep fallback means the store isn't seeded for this window.
+    Returns an OHLCV DataFrame, or None ⇒ caller keeps byte-identical legacy
+    (flag off / not a sub-minute TF). If the canonical build fails entirely it
+    logs an ERROR and returns None — the legacy pseudo-resample then keeps the
+    strategy evaluable, but that line firing means the sub-minute source is
+    broken and must be investigated (never expected in normal operation)."""
+    try:
+        import resampled_bar_store as rbs
+        if not rbs.submin_enabled():
+            return None
+        tf_s = rbs.tf_seconds(sec_tf)
+        if tf_s >= 60:
+            return None
+        if strat is None or df is None or len(df) == 0:
+            return None
+        symbol = strat.get('symbol')
+        win_start = pd.Timestamp(df.index.min())
+        win_end = pd.Timestamp(df.index.max())
+        if win_start.tzinfo is None:
+            win_start = win_start.tz_localize('UTC')
+        if win_end.tzinfo is None:
+            win_end = win_end.tz_localize('UTC')
+        # cover through the end of the last primary bar
+        try:
+            from unified_engine import TIMEFRAME_SECONDS
+            win_end = win_end + pd.Timedelta(
+                seconds=int(TIMEFRAME_SECONDS.get(strat.get('timeframe'), 60)))
+        except Exception:
+            pass
+
+        stored = rbs.read_store(symbol, sec_tf, session, win_start, win_end)
+        by_day = {}
+        if stored is not None and len(stored) > 0:
+            for day, day_df in stored.groupby(stored.index.normalize()):
+                by_day[day] = day_df
+
+        # Day list to assemble; the FINAL calendar day is always re-derived from
+        # 1Sec (the store's tip lags the maintain cadence; the backtest needs
+        # bars to the window edge).
+        days = rbs._utc_days(win_start, win_end)
+        last_day = days[-1] if days else None
+        frames = []
+        fallback_spans = []   # contiguous day-spans to derive from 1Sec
+        run = None
+        for day in days:
+            if day in by_day and day != last_day:
+                if run is not None:
+                    fallback_spans.append(run)
+                    run = None
+                frames.append((day, by_day[day]))
+            else:
+                run = (run[0], day) if run is not None else (day, day)
+        if run is not None:
+            fallback_spans.append(run)
+
+        deep_fallback_days = sum(
+            int((b - a).days) + 1 for a, b in fallback_spans) - (
+            1 if fallback_spans and fallback_spans[-1][1] == last_day else 0)
+        if deep_fallback_days > 0:
+            logger.error(
+                "[SUBMIN-CANONICAL] %s %s %s: %d day(s) missing from the "
+                "sub-minute store in [%s..%s] — deriving from raw 1Sec (correct "
+                "but slow). Seed the store (maintain CLI --submin).",
+                symbol, sec_tf, session, deep_fallback_days,
+                win_start.date(), win_end.date())
+        for a, b in fallback_spans:
+            span_end = min(win_end, b + pd.Timedelta(days=1))
+            canon = rbs.canonical_resampled(
+                symbol, sec_tf, session, max(win_start, a), span_end)
+            if canon is not None and len(canon) > 0:
+                frames.append((a, canon))
+
+        if not frames:
+            logger.error(
+                "[SUBMIN-CANONICAL] %s %s %s: no canonical bars derivable in "
+                "[%s..%s] (store empty AND 1Sec underivable) — falling back to "
+                "the legacy pseudo-resample. INVESTIGATE: the sub-minute "
+                "canonical source is broken for this window.",
+                symbol, sec_tf, session, win_start.date(), win_end.date())
+            return None
+        out = pd.concat([f for _, f in sorted(frames, key=lambda x: x[0])])
+        out = out[~out.index.duplicated(keep='last')].sort_index()
+        out = out[(out.index >= win_start.floor(f'{tf_s}s'))
+                  & (out.index <= win_end)]
+        if len(out) == 0:
+            return None
+        logger.info("[SUBMIN-CANONICAL] %s %s %s: %d canonical bars "
+                    "(store days=%d, 1Sec spans=%d)", symbol, sec_tf, session,
+                    len(out), len(by_day), len(fallback_spans))
+        return out[['open', 'high', 'low', 'close', 'volume']].copy()
+    except Exception as e:  # noqa: BLE001
+        logger.error("[SUBMIN-CANONICAL] build failed %s %s: %s — falling back "
+                     "to legacy pseudo-resample (INVESTIGATE)",
+                     strat.get('symbol') if strat else '?', sec_tf, e)
         return None
 
 
@@ -421,6 +544,14 @@ def prepare_data_with_indicators(
                     # later powers the correct-warmup ribbon). Inert/byte-identical
                     # when RORT_RESAMPLED_STORE_READ is off.
                     sec_df = _coarse_secondary_store_swap(strat, sec_tf, df, session)
+                    if sec_df is None:
+                        # Phase 2b (RORT_CANONICAL_SUBMIN_STATE): a SUB-MINUTE
+                        # secondary is built from the canonical 1Sec-derived
+                        # bars (store-served), NOT by upsampling the primary
+                        # into a pseudo-series. None when the flag is off /
+                        # tf >= 60 → byte-identical legacy resample below.
+                        sec_df = _submin_secondary_canonical(
+                            strat, sec_tf, df, session)
                     if sec_df is None:
                         sec_df = resample_to_timeframe(
                             df[['open', 'high', 'low', 'close', 'volume']].copy(),
