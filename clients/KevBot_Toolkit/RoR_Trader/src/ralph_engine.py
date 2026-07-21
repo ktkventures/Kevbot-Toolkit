@@ -3999,10 +3999,18 @@ class SymbolHub:
                     # at once) → every gate's subset check passed
                     # → gates permanently open → the fleet-wide
                     # phantom-flood ladder of 2026-06-12.
-                    _lbl = SECONDS_TO_TIMEFRAME.get(
-                        tf_seconds, '1Min').replace(
-                        'Min', 'M').replace('Hour', 'H').replace(
-                        'Day', 'D').replace('Week', 'W')
+                    # RORT_TF_LABEL_SEC_FIX: the filter prefix must match
+                    # the emit namespace, or sub-minute own-records are
+                    # silently dropped from the hub (the publish leg of
+                    # the same label-drift class).
+                    if _tf_label_sec_fix():
+                        _lbl = _canonical_tf_short_label(
+                            SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min'))
+                    else:
+                        _lbl = SECONDS_TO_TIMEFRAME.get(
+                            tf_seconds, '1Min').replace(
+                            'Min', 'M').replace('Hour', 'H').replace(
+                            'Day', 'D').replace('Week', 'W')
                     own_records = {r for r in m._current_confluence
                                    if r.startswith(_lbl + '-')}
                     self._publish_mtf(
@@ -4252,10 +4260,15 @@ class SymbolHub:
                 _stored_sessions.add(_m_sess)
                 # B5 own-TF filter (2026-06-12) — see the
                 # on_polygon_bar site for the full story.
-                _lbl = SECONDS_TO_TIMEFRAME.get(
-                    tf_seconds, '1Min').replace(
-                    'Min', 'M').replace('Hour', 'H').replace(
-                    'Day', 'D').replace('Week', 'W')
+                # RORT_TF_LABEL_SEC_FIX: filter must match the emit namespace.
+                if _tf_label_sec_fix():
+                    _lbl = _canonical_tf_short_label(
+                        SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min'))
+                else:
+                    _lbl = SECONDS_TO_TIMEFRAME.get(
+                        tf_seconds, '1Min').replace(
+                        'Min', 'M').replace('Hour', 'H').replace(
+                        'Day', 'D').replace('Week', 'W')
                 own_records = {r for r in m._current_confluence
                                if r.startswith(_lbl + '-')}
                 self._publish_mtf(
@@ -4465,10 +4478,15 @@ class SymbolHub:
             _stored_sessions.add(_m_sess)
             # B5 own-TF filter (2026-06-12) — see the
             # on_polygon_bar site for the full story.
-            _lbl = SECONDS_TO_TIMEFRAME.get(
-                tf_seconds, '1Min').replace(
-                'Min', 'M').replace('Hour', 'H').replace(
-                'Day', 'D').replace('Week', 'W')
+            # RORT_TF_LABEL_SEC_FIX: filter must match the emit namespace.
+            if _tf_label_sec_fix():
+                _lbl = _canonical_tf_short_label(
+                    SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min'))
+            else:
+                _lbl = SECONDS_TO_TIMEFRAME.get(
+                    tf_seconds, '1Min').replace(
+                    'Min', 'M').replace('Hour', 'H').replace(
+                    'Day', 'D').replace('Week', 'W')
             own_records = {r for r in m._current_confluence
                            if r.startswith(_lbl + '-')}
             self._publish_mtf(
