@@ -190,6 +190,47 @@ def test_close_shadow_with_bar_submin_no_builder_is_loud_hold(monkeypatch,
     assert any("CANONICAL-SUBMIN-STATE" in r.message for r in caplog.records)
 
 
+def _pack_monitor(sid, tf, sess, conf, entry='utv4_bull_flip',
+                  exit_='utv4_bear_flip'):
+    strat = {'id': sid, 'symbol': 'TSLA', 'timeframe': tf,
+             'trading_session': sess, 'direction': 'long',
+             'confluence': conf, 'general_confluences': [], 'triggers': [],
+             'entry_trigger': entry, 'exit_trigger': exit_, 'config': {}}
+    return RE.StrategyMonitor(strat, None, general_packs=[])
+
+
+def test_finalize_creates_submin_shadow_despite_covering_monitor(monkeypatch):
+    """Live finding #2 (2026-07-21): 267/338 are utv4-TRIGGERED 10Sec monitors,
+    so the interp-aware suppression said 'real monitor covers UT_BOT_V4' and
+    never created the (10,'RTH') shadow — 339's gate consumed 267's
+    INCREMENTAL own-records, bypassing the canonical derive entirely. Under
+    the flag, a sub-minute key must ALWAYS get its dedicated shadow (the
+    canonical owner); OFF keeps legacy suppression."""
+    monkeypatch.setenv("USE_DB", "false")
+    import pack_registry
+    pack_registry.scan_and_load_all()
+
+    def _mk_hub():
+        hub = RE.SymbolHub("TSLA")
+        hub.add_monitor(_pack_monitor(267, '10Sec', 'RTH',
+                                      ['2m-SWING_123-NEUTRAL']))
+        hub.add_monitor(_pack_monitor(
+            339, '30Sec', 'RTH',
+            ['30m-BOLLINGER_BANDS-SQUEEZE_LOWER',
+             '10s-UT_BOT_V4-BULL_TREND']))
+        hub.finalize_shadow_engines()
+        return hub
+
+    monkeypatch.setenv(FLAG, "1")
+    assert (10, 'RTH') in _mk_hub()._shadow_engines, (
+        "flag ON: sub-minute key must get a dedicated canonical-owner shadow "
+        "even when a real monitor's pack covers the interp")
+
+    monkeypatch.delenv(FLAG, raising=False)
+    assert (10, 'RTH') not in _mk_hub()._shadow_engines, (
+        "flag OFF: legacy suppression byte-identical (real monitor covers)")
+
+
 def test_store_targets_empty_when_flag_off(monkeypatch):
     monkeypatch.delenv(FLAG, raising=False)
     import resampled_bar_store as rbs

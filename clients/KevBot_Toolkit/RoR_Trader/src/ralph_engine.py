@@ -3670,6 +3670,18 @@ class SymbolHub:
                     return False
                 if MTF_SESSION_SHADOWS and m.session != sh_session:
                     return False
+                # Phase 2b (RORT_CANONICAL_SUBMIN_STATE): a SUB-MINUTE key
+                # ALWAYS gets a dedicated shadow — it is the canonical owner
+                # of the key (per-close session-filtered full replay), and
+                # the own-records publish already defers to it. Without this,
+                # a real sub-minute monitor whose pack covers the needed
+                # interp (267/338 are utv4-TRIGGERED) suppresses the shadow
+                # and the gate consumes the monitor's INCREMENTAL own-records
+                # — the exact state-path divergence this flag exists to kill
+                # (found live 2026-07-21: no 10s shadow in the boot warmup
+                # list; 339's gate rode 267's own-records all along).
+                if _canonical_submin_state() and sec_tf < 60:
+                    return False
                 if not INTERP_AWARE_SHADOWS or not needed_interps:
                     return True  # legacy: any real monitor suppresses
                 # W2-5: only suppress when the monitor's own interp set
