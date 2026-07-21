@@ -19,6 +19,21 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-07-21
+
+- **~18:1x UTC (12:1x MT)** — PR `feat/submin-canonical-source` → dev: sub-minute canonical
+  bar+state source (Phase 2b, `Plan_SubMinute_Canonical_Source.md`). **Flag-OFF deploy —
+  `RORT_CANONICAL_SUBMIN_STATE` default OFF = byte-identical everywhere** (unit-gated:
+  19/19 canonical-state tests + 70/71 sweep, 1 pre-existing fail). Includes the harness
+  secondary-TF-gap port onto dev (GEN packs / sub-minute re-true / fail-loud UNRES).
+  - Service(s) redeployed: Worker / api / batch-worker / data-worker (dev auto-deploy)
+  - Observed cache gap: expect the usual ~1-2 min Worker warmup gap; mid-RTH push
+    (Kevin-approved "push and confirm").
+  - Notes: ARMING deferred to the post-close gate sequence (parity suite OFF/ON, harness
+    matrix, seed) — see `Impl_SubMinute_Canonical_Source.md`. ⚠️ When armed, the flag
+    CHANGES sub-minute-gated backtests (339) on next recompute — by design (one canonical
+    bar, both lanes). Kill switch: flip the one flag OFF.
+
 ## 2026-07-16
 
 - **~19:10 UTC (13:10 MT)** — M-RS5b push + arm (late-RTH, Kevin-approved aggressive tempo):
