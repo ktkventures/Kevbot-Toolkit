@@ -430,6 +430,26 @@ def replay(sid: int, since: datetime, until: datetime, sb,
                     hub._publish_mtf(key, shadow.recompute_confluence(cdf),
                                      closed_bar_start_ts=cdf.index[-1])
                     continue
+            if RE._canonical_submin_state() and sec_tf < 60:
+                # Phase 2b mirror (RORT_CANONICAL_SUBMIN_STATE): live rebuilds
+                # sub-minute shadow records by a session-filtered, tail-bounded
+                # full replay at every close (ralph_engine on_second_bar). Same
+                # here: the shadow's own seed+decision-time series, filtered to
+                # the key's session, tail(_submin_derive_bars). Fail-loud HOLD
+                # on empty (mirrors live; no incremental fallback).
+                src = canonical_upto(sec_tf, close_ts, key=key)
+                if len(src):
+                    if key[1] and key[1] != '24/7':
+                        from data_loader import _filter_session
+                        src = _filter_session(src, key[1])
+                    src = src.tail(RE._submin_derive_bars())
+                if len(src):
+                    hub._publish_mtf(key, shadow.recompute_confluence(src),
+                                     closed_bar_start_ts=src.index[-1])
+                else:
+                    print(f"    [diag] CANONICAL-SUBMIN empty derive at "
+                          f"{close_ts} key={key} — holding previous records")
+                continue
             hub._publish_mtf(key, shadow.on_bar_close(bar),
                              closed_bar_start_ts=bar['timestamp'])
             continue
