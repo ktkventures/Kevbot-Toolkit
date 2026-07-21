@@ -206,6 +206,36 @@ def _normalize_confluence_label(record: str) -> str:
     return prefix.upper() + record[dash:]
 
 
+def _tf_label_sec_fix() -> bool:
+    """RORT_TF_LABEL_SEC_FIX (default OFF), 2026-07-21 — the two live
+    record emitters (StrategyMonitor own-records, _ShadowIndicatorEngine)
+    shorten Min/Hour/Day(/Week) but NOT Sec, so a sub-minute engine emits
+    '10Sec-UT_BOT_V4-...' while _normalize_confluence_label normalizes the
+    strategy's required '10s-...' token to '10S-...'. The issubset gate can
+    therefore NEVER match → any confluence gate on a sub-minute TF is
+    silently dead live (fail-closed; the backtest evaluates its own
+    namespace and fires normally — sid 339's 0-live-alerts-ever signature,
+    found by the replay harness LABEL-DRIFT check,
+    Plan_Harness_Secondary_TF_Gap.md). Flag ON: both emit sites use the
+    canonical shortener incl. Sec→S and Week→W, so emitted prefixes land in
+    the normalized-requirement namespace. Flag OFF: byte-identical legacy.
+    Safe by construction: a normalized requirement prefix is always fully
+    uppercase, and the drifted emits ('10Sec-'/'1Week-') are mixed-case —
+    no currently-passing gate can depend on them, so ON can only revive
+    dead gates, never flip a passing one."""
+    return os.getenv(
+        "RORT_TF_LABEL_SEC_FIX", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _canonical_tf_short_label(tf_label: str) -> str:
+    """Canonical confluence prefix for a TIMEFRAME label — lands in the
+    _normalize_confluence_label(required-token) namespace for EVERY TF,
+    including sub-minute ('10Sec'→'10S') and weekly ('1Week'→'1W')."""
+    return tf_label.replace('Min', 'M').replace('Hour', 'H').replace(
+        'Day', 'D').replace('Week', 'W').replace('Sec', 'S')
+
+
 # Chart pickle defaults per timeframe
 CHART_BAR_COUNTS = {
     60: 300, 300: 200, 900: 150, 1800: 100, 3600: 100,
@@ -1350,8 +1380,11 @@ class StrategyMonitor:
         # 3. Build confluence records
         tf_label = SECONDS_TO_TIMEFRAME.get(self.tf_seconds, '1Min')
         # Shorten label for confluence format (1Min→1M, 5Min→5M, etc.)
-        short_label = tf_label.replace('Min', 'M').replace(
-            'Hour', 'H').replace('Day', 'D')
+        if _tf_label_sec_fix():
+            short_label = _canonical_tf_short_label(tf_label)
+        else:
+            short_label = tf_label.replace('Min', 'M').replace(
+                'Hour', 'H').replace('Day', 'D')
         self._current_confluence = set()
         for ikey, state_val in interps.items():
             self._current_confluence.add(
@@ -2584,9 +2617,12 @@ class _ShadowIndicatorEngine:
             req_interp, set(), params['ema_periods'])
 
         tf_label = SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min')
-        self._tf_short_label = tf_label.replace(
-            'Min', 'M').replace('Hour', 'H').replace(
-            'Day', 'D').replace('Week', 'W')
+        if _tf_label_sec_fix():
+            self._tf_short_label = _canonical_tf_short_label(tf_label)
+        else:
+            self._tf_short_label = tf_label.replace(
+                'Min', 'M').replace('Hour', 'H').replace(
+                'Day', 'D').replace('Week', 'W')
         self._current_confluence: Set[str] = set()
 
     def warmup(self, df: pd.DataFrame):
