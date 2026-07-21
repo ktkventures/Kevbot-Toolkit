@@ -1,6 +1,6 @@
 ---
 name: bug-hunt
-description: Autonomous batch divergence bug-hunt for RoR Trader. Scans Strategy Health for low paired-% strategies, diagnoses live↔backtest divergences, fixes + validates (byte-identical / kill-switched), publishes (reversibility-gated), monitors for regressions, and loops until all monitored GATED strategies are ≥90% paired (@≤10s, recent-activation window — Kevin's tradable bar). Use when the user wants to hunt/squash divergence bugs, drive paired-% up, or run a batch fidelity pass. Two modes — check-in (default) and aggressive.
+description: Autonomous batch divergence bug-hunt for RoR Trader. Scans Strategy Health for low paired-% strategies, diagnoses live↔backtest divergences, fixes + validates (byte-identical / kill-switched), publishes (reversibility-gated), monitors for regressions, and loops until all monitored GATED strategies are ≥90% paired (@≤10s, recent-activation window — Kevin's tradable bar). Use when the user wants to hunt/squash divergence bugs, drive paired-% up, or run a batch fidelity pass. Three modes — check-in (default), aggressive, and nightly (unattended daily routine: waits for the nightly recompute to settle, then hunts + auto-arms the fixes it can rigorously prove behind kill-switch flags + writes a morning brief).
 ---
 
 # RoR Trader — Bug-Hunt Loop (divergence hunting)
@@ -50,6 +50,38 @@ CHECK IN WITH THE USER FIRST (even in Mode 2) if the change is **irreversible**:
 4. **Replay-predict before ship.** Compute the *predicted* post-fix paired-% offline (what backtest/live WOULD produce with the fix) BEFORE deploying — so you know it'll work, not just hope. (No waiting days: the divergence is usually in data you already have.)
 5. **Kill-switch** present (default OFF, byte-identical when off) for any fidelity-touching change. Prove flag-OFF byte-identical explicitly.
 
+## 🌙 Nightly unattended mode (Kevin's daily routine) — Mode 3
+**Purpose:** Kevin launches this as he leaves for the day; it babysits itself. It **waits for the nightly Update-All to finish**, then runs the aggressive loop, **auto-arms only the fixes it can rigorously prove**, and leaves a **morning brief**. It is **Mode 2 (aggressive) + a front-loaded wait phase + the auto-ARM extension + a time-box**. Run `/bug-hunt nightly` for a single night, or wrap in `/loop` to repeat day-after-day. The two goal tiers: **Goal 1 = every monitored gated strategy ≥90%@10s** (the tradable bar); **Goal 2 = fills within ≤5s** (the ideal). Chase Goal 2 only once Goal 1 holds.
+
+### Phase 0 — WAIT FOR THE NIGHTLY, then verify it's clean (never hunt against a mid-recompute fleet)
+The reference the whole hunt trusts is the freshly-settled lane — start only once it's real.
+- **Expected window:** the batch-worker `RORT_NIGHTLY_RECOMPUTE` fires **00:20Z**; Kevin may tell you a different/expected time — honor it. The full-fleet recompute then runs for a while.
+- **Monitor for COMPLETION, not a clock.** ⚠️ `ScheduleWakeup` is unreliable in this env (dead across multiple sessions) — **drive the wait off a background `Bash` poll** (`run_in_background`, an `until`-loop that exits when the signal trips → its task-notification re-invokes you). NEVER foreground-sleep for hours.
+  - **Completion signal (any sufficient; prefer ≥2):** fleet `last_recompute_until_ts` / `data_refreshed_at` (query the strategy_health snapshot or `strategies`) advanced **past today's RTH close**; the shadow `bt_current_through` heartbeat advanced to today; the batch-worker log prints its nightly-complete line. Poll every ~10–15 min.
+  - **Verify it didn't ERROR:** confirm the nightly job SUCCEEDED (no partial/aborted recompute) before trusting the lanes — a half-finished recompute is worse than a stale one. If it errored → **diagnose-only, arm NOTHING, hold for Kevin.**
+- **Wait guardrails:** **max-wait cap** (~3h past expected) — if the nightly never lands, do NOT treat stale lanes as fresh: drop to **diagnose-only** with a LOUD caveat in the brief, or hold. **RTH safety:** the replay harness loads 1Sec data and can starve the live worker ([[feedback_local_analysis_starves_live_worker]]); the nightly runs post-close so this is naturally satisfied — but ASSERT you're outside RTH before any harness run.
+
+### Time-box
+Honor a budget (default ~3h wall-clock of hunting after Phase 0, or a token budget if Kevin passed one). Near the cutoff, STOP cleanly: finish/await any in-flight arm+validate, then write the brief. **Never leave a fix half-armed** (pushed but unproven) at cutoff — if you can't finish proving it, don't arm it.
+
+### Auto-ARM (flip the flag ON so the fix is live next session) — the 6 rails
+Normal Mode 2 pushes a fix **flag-OFF** (inert) and leaves arming to a human. Nightly mode **also flips the flag ON** — but ONLY under ALL six rails:
+1. **Default-OFF + byte-identical when OFF** already proven (validation gate #5). A wrong fix at OFF = zero change. Non-negotiable.
+2. **PROVEN, not plausible.** The fix must *demonstrably* raise the target's paired-% on the freshly-settled/replay data (gates #3 + #4), AND not regress canary 267 or any healthy strategy (re-scan), AND pass 18/18 (gate #2). **If the harness CAN'T prove it — coarse / sub-primary / short-window-fine gate classes, the known secondary-TF gap — do NOT auto-arm: diagnose + hold for Kevin.**
+3. **Per-fix kill switch** — each fix its own env flag, one-command revert; record that command in the brief.
+4. **Cap the arming:** at most **3 flags/night**, and **never more than ONE thing unproven-by-replay** (ideally zero — rail 2). A bad night must not arm a pile of untested flags.
+5. **Shadow-worker fixes need the FINGERPRINT SOP** (`railway up`, not var-set — see Deploy/ops). If you can't complete the fingerprint verification unattended, **hold the shadow-worker arm for Kevin**; auto-arm only api/batch/Worker (var-set) fixes.
+6. **Irreversible = never auto-arm** (schema / data-delete — check in). The live-trading pause makes now the safe window to build trust in this routine (armed fixes touch algo/alert lanes, not real money) — do NOT let that make the rails lax.
+
+### Morning brief (the artifact Kevin reads first)
+Prepend a dated section to `docs/_active/Divergence_Hunt_Log.md`. Keep it scannable:
+- **Fleet metric:** N/M monitored gated ≥90%@10s (Goal 1) and @5s (Goal 2); delta vs last night.
+- **Bugs found + CLASSIFIED** (LOGIC / PLUMBING / INFRA — see DIAGNOSE): sid, one-line symptom, class, root cause.
+- **ARMED last night:** per fix — flag, sid(s), before→after (predicted + observed paired-%), service(s) armed on, and the **exact one-line revert command**.
+- **Held for Kevin:** irreversible / unprovable (harness-gap classes) / ambiguous — with why.
+- **Outliers:** any individual trade >30s late even where the aggregate passed.
+- **Open / next.**
+
 ## The loop
 1. **SCAN** — get the **screen-faithful** combined % by calling the dashboard's exact code, NOT a replication and NOT the archived `compute_three_way_divergence`. Call `api.routers.strategy_health.get_strategy_health(user=None, window_hours=N, tolerance_seconds=T)` **offline** — it uses the admin client and queries ALL strategies (the `user` arg is just an auth guard), so it returns the whole fleet with the dashboard's real fields per row: **`combined_pct`** (THE metric), `phantom_count` / `missed_count` / `paired_count`, the lag-excluded **`*_fair`** / **`*_cov`** variants, and **`tbd_count`**. (The live endpoint is user-scoped — the QA JWT ≠ Kevin's user — so the offline function call is the reliable path.) It's a **2-way alert↔backtest match** (greedy 1:1 pair of alert `fill_ts` to backtest trade edges within ±tolerance). **Phantom** = alert-only, **Missed** = backtest-only (Kevin's locked terms). Dashboard default ±60s; also compute **5s and 10s** (Kevin's target) by passing `tolerance_seconds`. Rank by lowest `combined_pct` @5s.
    - **TBD ≠ phantom:** alerts that fired but whose Update-New hasn't populated the backtest counterpart yet land in `tbd_count` — do NOT count them as phantom. Use the `*_fair`/`*_cov` counts (lag-excluded) for the real divergence.
@@ -60,6 +92,8 @@ CHECK IN WITH THE USER FIRST (even in Mode 2) if the change is **irreversible**:
    - **Targeted diagnostic log** (pattern: `GATE_BLOCK_DIAG` / `XTF_BLOCK_DIAG` — log needed-vs-present state when an entry is suppressed). FIRST rule out **stale-lane noise** (run Update-New + re-check before calling it a bug).
    - **⭐ TRADE-BY-TRADE DRILL (don't trust only the aggregate %):** open the **Strategy Detail page** (or load the alert lane + backtest lane and walk them in time order) and compare trades **one by one** to find *where* it falls off. Look for: fills off by a few–10s; **gaps** (a run where live just stops pairing); **regime patterns** ("7 trades in a row way off, then 5–6 not firing, then it snaps back to accurate"). The *shape* of the divergence (which trades, which window, what magnitude) usually reveals the cause faster than the headline %. **Pull the ALGO lane too** (three-lane, above) — it arbitrates floor-vs-live-bug-vs-backtest-bug. **The Gate Parity panel** (Strategy Detail) shows per-gate open% and the divergent gate directly — use it; it was fixed 2026-07-09 to read the trigger from `entry_trigger_confluence_id` and iterate ALL gates.
    - **Gate-class specifics (recurring):** most divergences are CONFLUENCE-GATE bugs where live and backtest construct/serve a secondary-TF gate state via different paths. Known sub-classes: (a) COARSE-gate session contamination — the live coarse (≥1H) shadow eats session-unfiltered after-hours buckets and carries a stale state across the overnight boundary (fix: `RORT_MTF_COARSE_RTH_RELOAD`, reload session-correct); (b) interp-blind / incidental-coverage topology (a real monitor "covers" an interp only incidentally → no shadow / wrong-fidelity own_records); (c) TF-LABEL silent-drop (`'1M'` uppercase = primary sentinel offline but 1-minute live → gate silently dropped; fix: `RORT_ENFORCE_1MIN_GATE` primary-aware); (d) secondary-state FREEZE (shadow record stops updating; fix: state refresher). See `Design_Gate_Fidelity_Hardening.md` for the structural end-state (single canonical bar/gate source) that retires the whole class.
+   - **CLASSIFY every confirmed bug (Kevin's taxonomy) — from the replay / three-lane triangulation:** **LOGIC** (`REPLAY<BACKTEST` / corrected-ceiling low — engine reproduces the miss offline → a code fix); **PLUMBING** (`LIVE<REPLAY` — stalls, dispatch lag, lost alerts, and any individual trade >30s late even when the aggregate passes → operational/routing fix); **INFRA/FLOOR** (`algo≈live≠backtest` / decision-time<corrected only — WS≠REST, irreducible without infra like the canonical bar store → NOTE, don't "fix"). Put the class in the record + the brief.
+   - **Hunt OUTLIERS, not just the aggregate:** even at ≥90%, walk the trade-by-trade drill for individual fills >30s late. A handful of 30s-late fills in an otherwise-passing strategy is a PLUMBING signal worth a brief line — don't let the headline % hide them.
    Update the record with the confirmed cause.
 4. **BATCH FIX** — implement the confirmed batch (multiple at once is fine and more efficient than one-at-a-time, given the publish→UND→validate cycle). Kill-switch any fidelity-touching change.
 5. **VALIDATE** — run the validation gates on the batch.
@@ -102,7 +136,8 @@ If a fix needs a user-pack change (pack not firing / misfiring / bars/indicators
 
 ## Invocation
 - `/bug-hunt` → **Mode 1** (scan + diagnose, then check in) over all monitored strategies.
-- `/bug-hunt aggressive` → **Mode 2** (reversibility-gated auto-publish), loop to ≥95% paired.
+- `/bug-hunt aggressive` → **Mode 2** (reversibility-gated auto-publish), loop to the done criterion.
+- `/bug-hunt nightly` → **Mode 3** (unattended daily routine): Phase-0 wait-for-nightly → aggressive loop with **auto-ARM** (6 rails) → morning brief. Kevin launches it as he leaves. Optional args: expected nightly time, time-box / token budget, WIP-exclude list. Wrap in `/loop` to repeat day-after-day. See `docs/_active/Nightly_Bughunt_SOP.md`.
 - Optional args: a strategy list and/or threshold to scope a single run; a WIP-exclude list.
 
 ## First-run setup notes (verify once, then bake in)
