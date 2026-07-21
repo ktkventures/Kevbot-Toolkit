@@ -21,7 +21,23 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-07-21
 
-- **~18:1x UTC (12:1x MT)** — PR `feat/submin-canonical-source` → dev: sub-minute canonical
+- **~20:5x UTC (14:5x MT)** — submin-canonical FIX push: the (10,'RTH') shadow on the LIVE
+  TSLA hub closes via `_close_shadow_with_bar` (10s is ALSO a primary — 267/338 — and the
+  per-second secondary loop skips primary TFs), which the canonical branch didn't cover —
+  live stayed legacy-incremental while the single-monitor harness showed canonical (the
+  label-drift-class topology trap, caught by post-arm log verification). Derive factored
+  into `_canonical_submin_close`, owned by BOTH close sites; +3 topology regression tests
+  (22/22). Also: harness ARMED_FLAGS mirror (+RORT_CANONICAL_SUBMIN_STATE=1).
+  - Service(s) redeployed: Worker / api / batch-worker / Data Worker
+- **20:26 UTC (14:26 MT)** — **ARMED `RORT_CANONICAL_SUBMIN_STATE=1`** on Worker + api +
+  batch-worker + Data Worker (Kevin-directed; Claude flipped via railway CLI after
+  permission grant). Store seeded first: TSLA 10Sec/30Sec × RTH/Extended, 130d, 837,237
+  rows, 76 chunks, 0 comparator diffs. Gate 1 = 18/18 flag OFF AND ON (267: 301==301,
+  symdiff 0). Harness matrix: 314/340/267 ceilings unchanged ON vs OFF (92.3/100/100).
+  ⚠️ 339's backtest REBUILDS on true-10s bars at next recompute (by design).
+  NOT armed: shadow-worker (pinned snapshot; needs `railway up` + fingerprint SOP; its
+  4-sid set has no sub-minute-gated strategy, so no lane divergence while held).
+- **17:36 UTC (11:36 MT)** — PR `feat/submin-canonical-source` → dev: sub-minute canonical
   bar+state source (Phase 2b, `Plan_SubMinute_Canonical_Source.md`). **Flag-OFF deploy —
   `RORT_CANONICAL_SUBMIN_STATE` default OFF = byte-identical everywhere** (unit-gated:
   19/19 canonical-state tests + 70/71 sweep, 1 pre-existing fail). Includes the harness

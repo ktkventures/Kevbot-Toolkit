@@ -3450,6 +3450,18 @@ class SymbolHub:
         legacy)."""
         key = (tf_seconds, session)
         if session == 'RTH':
+            # Phase 2b (RORT_CANONICAL_SUBMIN_STATE): a SUB-MINUTE shadow on a
+            # hub where this TF is ALSO a primary closes through THIS
+            # chokepoint (on_second_bar's secondary loop skips primary TFs —
+            # "primary path handles it below" — and the primary pipeline calls
+            # here per session-shadow). Found live 2026-07-21: the TSLA hub
+            # has real 10Sec monitors (267/338), so 339's (10,'RTH') shadow
+            # rides this path, not _close_subminute_shadows. Same canonical
+            # derive, same fail-loud HOLD, via the shared helper.
+            if _canonical_submin_state() and tf_seconds < 60:
+                self._canonical_submin_close(
+                    tf_seconds, session, shadow, completed)
+                return
             if self._coarse_rth_reload_active(tf_seconds):
                 self._reload_coarse_rth_shadow(tf_seconds, shadow)
                 return
@@ -3502,6 +3514,50 @@ class SymbolHub:
                 "(%s) — keeping previous gate records",
                 self.symbol, tf_seconds, session, e)
 
+    def _canonical_submin_close(self, sec_tf: int, sess: str, shadow,
+                                completed: dict) -> None:
+        """Phase 2b (RORT_CANONICAL_SUBMIN_STATE): rebuild ONE sub-minute
+        session-shadow's records by a full clean replay over the TF builder's
+        own closed history, SESSION-FILTERED to the shadow's session,
+        TAIL-bounded (RORT_SUBMIN_DERIVE_BARS). The session filter is
+        load-bearing: sub-minute builders eat the RAW per-second stream (all
+        hours), but the offline lane computes this ribbon on session-filtered
+        bars — an RTH shadow's incremental state advancing on premarket bars
+        is itself a divergence source this derive removes. FAIL LOUD:
+        empty/failed derive = ERROR + HOLD previous records; NEVER a silent
+        incremental fallback. Shared by BOTH sub-minute shadow-close sites
+        (the per-second secondary loop AND _close_shadow_with_bar, which owns
+        the close when the TF is also a primary on this hub)."""
+        try:
+            b = self.builders.get(sec_tf)
+            cdf = b.history if b is not None else None
+            if cdf is not None and len(cdf) > 0 and sess and sess != '24/7':
+                from data_loader import _filter_session
+                cdf = _filter_session(cdf, sess)
+            if cdf is not None:
+                cdf = cdf.tail(_submin_derive_bars())
+            if cdf is None or len(cdf) == 0:
+                logger.error(
+                    "[CANONICAL-SUBMIN-STATE] %s tf=%ss sess=%s: canonical "
+                    "history EMPTY at close %s — HOLDING previous gate "
+                    "records (no incremental fallback; investigate)",
+                    self.symbol, sec_tf, sess, completed.get('timestamp'))
+                return
+            self._publish_mtf(
+                (sec_tf, sess), shadow.recompute_confluence(cdf),
+                closed_bar_start_ts=cdf.index[-1])
+            logger.info(
+                "shadow_close %s/%ss close=%.2f records=%s "
+                "[canonical-submin n=%d sess=%s]",
+                self.symbol, sec_tf, float(completed['close']),
+                self._mtf_confluence[(sec_tf, sess)], len(cdf), sess)
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                "[CANONICAL-SUBMIN-STATE] %s tf=%ss sess=%s: canonical "
+                "derive FAILED (%s) — HOLDING previous gate records (no "
+                "incremental fallback; investigate)",
+                self.symbol, sec_tf, sess, e)
+
     def _close_subminute_shadows(self, sec_tf: int, sec_builder,
                                  completed: dict, *, was_duplicate: bool,
                                  was_correction: bool) -> None:
@@ -3551,52 +3607,12 @@ class SymbolHub:
             return
 
         if _canonical_submin_state():
-            # Phase 2b (RORT_CANONICAL_SUBMIN_STATE): rebuild each
-            # session-shadow's records by a full clean replay over the
-            # builder's own closed history, SESSION-FILTERED to the shadow's
-            # session, TAIL-bounded (canonical construction — boot seed =
-            # 1Sec-derived resample; appended per close). The session filter
-            # is load-bearing: sub-minute builders eat the RAW per-second
-            # stream (all hours), but the offline lane computes this ribbon
-            # on session-filtered bars — an RTH shadow's incremental state
-            # advancing on premarket bars is itself a divergence source this
-            # derive removes. FAIL LOUD: empty/failed derive = ERROR + HOLD
-            # previous records; NEVER a silent incremental fallback.
-            _sess_cdf: Dict[str, Any] = {}
+            # Phase 2b (RORT_CANONICAL_SUBMIN_STATE): canonical per-close
+            # rebuild for every session-shadow — shared derive in
+            # _canonical_submin_close (fail-loud HOLD semantics live there).
             for _sh_sess, shadow in shadow_items:
-                try:
-                    cdf = _sess_cdf.get(_sh_sess)
-                    if cdf is None:
-                        cdf = sec_builder.history
-                        if _sh_sess and _sh_sess != '24/7':
-                            from data_loader import _filter_session
-                            cdf = _filter_session(cdf, _sh_sess)
-                        cdf = cdf.tail(_submin_derive_bars())
-                        _sess_cdf[_sh_sess] = cdf
-                    if cdf is None or len(cdf) == 0:
-                        logger.error(
-                            "[CANONICAL-SUBMIN-STATE] %s tf=%ss sess=%s: "
-                            "canonical history EMPTY at close %s — HOLDING "
-                            "previous gate records (no incremental fallback; "
-                            "investigate)", self.symbol, sec_tf, _sh_sess,
-                            completed.get('timestamp'))
-                        continue
-                    self._publish_mtf(
-                        (sec_tf, _sh_sess),
-                        shadow.recompute_confluence(cdf),
-                        closed_bar_start_ts=cdf.index[-1])
-                    logger.info(
-                        "shadow_close %s/%ss close=%.2f records=%s "
-                        "[canonical-submin n=%d sess=%s]",
-                        self.symbol, sec_tf, float(completed['close']),
-                        self._mtf_confluence[(sec_tf, _sh_sess)],
-                        len(cdf), _sh_sess)
-                except Exception as e:  # noqa: BLE001
-                    logger.error(
-                        "[CANONICAL-SUBMIN-STATE] %s tf=%ss sess=%s: "
-                        "canonical derive FAILED (%s) — HOLDING previous "
-                        "gate records (no incremental fallback; investigate)",
-                        self.symbol, sec_tf, _sh_sess, e)
+                self._canonical_submin_close(
+                    sec_tf, _sh_sess, shadow, completed)
             return
 
         for _sh_sess, shadow in shadow_items:

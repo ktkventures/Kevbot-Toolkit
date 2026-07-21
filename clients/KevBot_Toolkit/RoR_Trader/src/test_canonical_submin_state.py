@@ -58,6 +58,9 @@ def _hub_with_shadow(history, session="RTH"):
     shadow = _Shadow()
     hub._shadow_engines[(10, session)] = shadow
     builder = SimpleNamespace(history=history)
+    # The canonical derive reads self.builders (the single source of truth in
+    # BOTH close sites); register the builder as production does.
+    hub.builders[10] = builder
     return hub, shadow, builder
 
 
@@ -142,6 +145,49 @@ def test_flag_off_correction_rebroadcast_keeps_legacy(monkeypatch):
     hub._close_subminute_shadows(10, builder, _completed_10s_bar(),
                                  was_duplicate=True, was_correction=True)
     assert shadow.calls == [("history_recompute", 30)], shadow.calls
+
+
+def _hub_with_shadow_and_builder(history, session="RTH"):
+    """Variant registering the builder on the hub — the primary-TF topology
+    (_close_shadow_with_bar reads self.builders, not a passed-in builder)."""
+    hub, shadow, builder = _hub_with_shadow(history, session)
+    hub.builders[10] = builder
+    return hub, shadow, builder
+
+
+def test_close_shadow_with_bar_submin_flag_on_canonical(monkeypatch):
+    """The MULTI-MONITOR topology (found live 2026-07-21): when the sub-minute
+    TF is ALSO a primary on the hub (267/338 real 10Sec monitors), the shadow
+    closes via _close_shadow_with_bar — the canonical derive must own that
+    path too, or live silently stays incremental while the harness's
+    single-monitor hub shows canonical (the label-drift-class trap)."""
+    monkeypatch.setenv(FLAG, "1")
+    hub, shadow, _ = _hub_with_shadow_and_builder(_h10(T0, 30))
+    hub._close_shadow_with_bar(10, "RTH", shadow, _completed_10s_bar())
+    assert shadow.calls == [("canonical", 30)], shadow.calls
+    assert hub._mtf_confluence.get((10, "RTH")) == {"CANON_STATE"}
+
+
+def test_close_shadow_with_bar_submin_flag_off_legacy(monkeypatch):
+    monkeypatch.delenv(FLAG, raising=False)
+    hub, shadow, _ = _hub_with_shadow_and_builder(_h10(T0, 30))
+    hub._close_shadow_with_bar(10, "RTH", shadow, _completed_10s_bar())
+    assert shadow.calls and shadow.calls[0][0] == "incremental"
+    assert hub._mtf_confluence.get((10, "RTH")) == {"INC_STATE"}
+
+
+def test_close_shadow_with_bar_submin_no_builder_is_loud_hold(monkeypatch,
+                                                              caplog):
+    monkeypatch.setenv(FLAG, "1")
+    hub = RE.SymbolHub("TSLA")
+    shadow = _Shadow()
+    hub._shadow_engines[(10, "RTH")] = shadow
+    hub._mtf_confluence[(10, "RTH")] = {"PREVIOUS"}
+    with caplog.at_level("ERROR"):
+        hub._close_shadow_with_bar(10, "RTH", shadow, _completed_10s_bar())
+    assert shadow.calls == [], "no incremental fallback allowed (fail loud)"
+    assert hub._mtf_confluence[(10, "RTH")] == {"PREVIOUS"}
+    assert any("CANONICAL-SUBMIN-STATE" in r.message for r in caplog.records)
 
 
 def test_store_targets_empty_when_flag_off(monkeypatch):

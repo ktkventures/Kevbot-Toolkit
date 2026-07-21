@@ -73,13 +73,24 @@ the mrs5a checkout).
 - Gate 4 (XTF_BLOCK_DIAG present-sets, multi-leg) still REQUIRES live observation after
   arming — 339's GEN-TIME_OF_DAY window is 10:00–11:30 ET.
 
-## Gate status
+## Gate status (2026-07-21 evening)
 | Gate | Status |
 |---|---|
-| 1. parity suite 18/18 OFF and ON | pending (post-close — RTH edge drift causes false diffs) |
-| 2. harness: 339 → flag-ON backtest; 314/340/267 unchanged | pending (post-close) |
-| 3. pass time / cost | bench done (54–206ms); shadow-worker currently tracks ONLY sids 263/267/269/271 (339 not in set → zero added load until SIDS widens); grab `pass done in` lines post-close |
-| 4. live XTF_BLOCK_DIAG multi-leg | after arming (next RTH window 10:00–11:30 ET) |
+| 1. parity suite 18/18 OFF and ON | ✅ **PASS both legs** (267: 301==301 trades, symdiff 0, each leg) |
+| 2a. harness: 314/340/267 unchanged ON vs OFF | ✅ **PASS** (92.3/100/100 identical both legs; no UNRES/LABEL-DRIFT) |
+| 2b. 339 → flag-ON backtest pairing | vs STORED lane stays 14.3% (expected: that lane is the pseudo ribbon); flag-ON pairing + post-recompute live-vs-settled = the real measure |
+| 3. pass time / cost | bench 54–206ms/close; shadow-worker healthy (no PASS TIMEOUT, ~5.5min cadence, 4 slots, 339 not in set); seed clean (837,237 rows, 0 comparator diffs) |
+| 4. live XTF_BLOCK_DIAG multi-leg | **caught a real topology gap on first look** (below); re-verify canonical publishes post-fix + present-sets in the 10:00–11:30 ET window 07-22 |
+
+## ⚠️ Post-arm live finding (2026-07-21 20:4xZ) — the topology trap, again
+Armed 20:26Z; logs showed NO `[canonical-submin]` publishes. Root cause: on the LIVE TSLA
+hub, 10Sec is ALSO a PRIMARY TF (real monitors 267/338), and `on_second_bar`'s sub-minute
+secondary loop SKIPS primary TFs — the (10,'RTH') shadow closes through
+`_close_shadow_with_bar` (primary pipeline), whose canonical branch only covered ≥60s. The
+single-monitor harness hub can never see this (339 alone → 10s is not a primary there) —
+exactly the label-drift lesson: the publish/close topology only exists live. FIX: derive
+factored into `SymbolHub._canonical_submin_close`, owned by BOTH close sites; 3 topology
+regression tests added (22/22 green). Deployed same evening.
 
 ## Arming SOP (when gates 1–3 green)
 1. Seed: `_resampled_store_maintain.py seed --submin --yes` (post-20:00Z; ~130d TSLA

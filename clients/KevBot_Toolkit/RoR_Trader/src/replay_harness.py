@@ -117,6 +117,9 @@ ARMED_FLAGS = {
     'RORT_RIGHTSIZE_WARMUP': '1',
     'RORT_TF_LABEL_SEC_FIX': '1',  # armed 2026-07-21 14:52Z (PR #68): sub-minute
     #   confluence label drift — Sec→S/Week→W canonical emit at both record sites.
+    'RORT_CANONICAL_SUBMIN_STATE': '1',  # armed 2026-07-21 20:26Z (Phase 2b):
+    #   canonical sub-minute bar+state source — store layers + offline canonical
+    #   secondary + live per-close replay (session-filtered, tail-bounded).
 }
 for _k, _v in ARMED_FLAGS.items():
     os.environ[_k] = _v
