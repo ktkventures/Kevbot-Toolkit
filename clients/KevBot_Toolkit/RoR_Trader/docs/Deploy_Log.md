@@ -21,6 +21,15 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-07-21
 
+- **~21:07 UTC (15:07 MT)** — submin-canonical FIX #2 (`22c6b1f`): the (10,'RTH') shadow
+  was never CREATED live — 267/338 are utv4-triggered, so interp-aware suppression said
+  "real monitor covers UT_BOT_V4"; 339's gate had consumed 267's incremental own-records
+  all along. Under the flag, sub-minute keys now always get a dedicated canonical-owner
+  shadow. **VERIFIED LIVE 21:12Z**: 10s shadow warmed (11,700 bars) +
+  `[canonical-submin n=3000]` publishes flowing, 0 fail-loud errors. (Also 20:59Z:
+  `RORT_SUBMIN_DERIVE_BARS=3000` set explicitly on Worker — default value; documents the
+  knob + triggered the diagnostic restart.)
+  - Service(s) redeployed: Worker / api / batch-worker / Data Worker
 - **~20:5x UTC (14:5x MT)** — submin-canonical FIX push: the (10,'RTH') shadow on the LIVE
   TSLA hub closes via `_close_shadow_with_bar` (10s is ALSO a primary — 267/338 — and the
   per-second secondary loop skips primary TFs), which the canonical branch didn't cover —

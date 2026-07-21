@@ -82,15 +82,31 @@ the mrs5a checkout).
 | 3. pass time / cost | bench 54–206ms/close; shadow-worker healthy (no PASS TIMEOUT, ~5.5min cadence, 4 slots, 339 not in set); seed clean (837,237 rows, 0 comparator diffs) |
 | 4. live XTF_BLOCK_DIAG multi-leg | **caught a real topology gap on first look** (below); re-verify canonical publishes post-fix + present-sets in the 10:00–11:30 ET window 07-22 |
 
-## ⚠️ Post-arm live finding (2026-07-21 20:4xZ) — the topology trap, again
-Armed 20:26Z; logs showed NO `[canonical-submin]` publishes. Root cause: on the LIVE TSLA
-hub, 10Sec is ALSO a PRIMARY TF (real monitors 267/338), and `on_second_bar`'s sub-minute
-secondary loop SKIPS primary TFs — the (10,'RTH') shadow closes through
-`_close_shadow_with_bar` (primary pipeline), whose canonical branch only covered ≥60s. The
-single-monitor harness hub can never see this (339 alone → 10s is not a primary there) —
-exactly the label-drift lesson: the publish/close topology only exists live. FIX: derive
-factored into `SymbolHub._canonical_submin_close`, owned by BOTH close sites; 3 topology
-regression tests added (22/22 green). Deployed same evening.
+## ⚠️ Post-arm live findings (2026-07-21 evening) — the topology trap, TWICE
+Armed 20:26Z; logs showed NO `[canonical-submin]` publishes. TWO live-only causes, found
+and fixed the same evening (a single-monitor harness hub can never see either — the
+close/publish topology only exists live):
+
+**Finding #1 — wrong close site (`6ae7117`).** On the LIVE TSLA hub, 10Sec is ALSO a
+PRIMARY TF (real monitors 267/338), and `on_second_bar`'s sub-minute secondary loop SKIPS
+primary TFs — the (10,'RTH') shadow closes through `_close_shadow_with_bar` (primary
+pipeline), whose canonical branch only covered ≥60s. FIX: derive factored into
+`SymbolHub._canonical_submin_close`, owned by BOTH close sites.
+
+**Finding #2 — the shadow never existed (`22c6b1f`).** Still zero publishes after #1; the
+boot warmup list had NO tf=10s shadow. 267/338 are utv4-TRIGGERED, so interp-aware
+suppression concluded "real monitor covers UT_BOT_V4" and never created it — **339's 10s
+gate had been consuming 267's INCREMENTAL own-records all along** (own-records publish
+only defers when a shadow owns the key). FIX: under the flag, `_real_monitor_covers`
+returns False for sub-minute keys — the dedicated shadow is always created and owns the
+key canonically. Flag OFF = legacy suppression, byte-identical.
+
+**VERIFIED LIVE 21:12Z:** `Shadow warmup TSLA: tf=10s session=RTH bars=11700
+initialized=True` → `shadow_close TSLA/10s records={'10S-UT_BOT_V4-BEAR_TREND'}
+[canonical-submin n=3000 sess=RTH]` per close; 0 fail-loud errors. Gate-2b pairing:
+flag-OFF pinned-window backtest == stored settled lane EXACTLY (14:11/14:18/14:30);
+flag-ON backtest = {14:11:00, 14:19:30}; flag-ON decision-time replay entered 14:19:30
+SECOND-EXACT (14:11 residual = bar-data tip class). Tests 23/23.
 
 ## Arming SOP (when gates 1–3 green)
 1. Seed: `_resampled_store_maintain.py seed --submin --yes` (post-20:00Z; ~130d TSLA
