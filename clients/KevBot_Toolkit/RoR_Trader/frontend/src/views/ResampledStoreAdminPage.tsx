@@ -187,7 +187,11 @@ export default function ResampledStoreAdminPage() {
             Canonical session-keyed coarse bars (<code>resampled_bar_cache</code>, 2Min..1Day resampled
             from cached 1Min). Gate-TF bars both lanes are meant to read — per (symbol, TF, session):
             coverage span, freshness (last re-resample), and settled %. Read-only view; writes happen on
-            the data-worker&apos;s maintain cadence.
+            the data-worker&apos;s maintain cadence. Base layers (1Sec/1Min REST + WS) are on the{' '}
+            <a href="/admin/bar-cache" style={{ color: 'var(--blue)' }}>Bar Cache page</a>.
+            ⚠ <b>Floor = 2Min:</b> sub-minute TFs (10s/30s) have no canonical store yet — each lane
+            derives its own from 1Sec/WS, the root of the 339-class drift
+            (<code>Plan_SubMinute_Canonical_Source.md</code>).
           </div>
           <div style={{ display: 'flex', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
             <span style={pill(resp?.writeEnabled ? 'var(--green)' : 'var(--text-tertiary)')}>
