@@ -5,7 +5,27 @@ Standing record. Metric = Strategy Health `combined_pct` @5s (screen-faithful vi
 ≥95% @5s (or ≥95%@10s w/ note), OR root-caused + replay-validated fix. Ledger cross-ref:
 `Bug_Hunt_Wave1_2026-07-06.md`.
 
-## 📋 DAY LOG 2026-07-22 — shadow-lane freeze root-caused to CONTAINER MEMORY; fleet flip attempted + REVERTED
+## ⚡ CORRECTION 2026-07-22 21:3xZ — TRUE root cause: STALE-TARBALL VAR-SET REBUILDS (container-memory theory RETRACTED)
+
+The decisive A/B (post-close): **all three `railway up` boots streamed** (02:07, 16:15,
+21:24 — canaries healthy in ≤5 min); **all five var-set rebuilds were dead** (02:08-era
+wedge, 14:30, 15:41, 18:22, 20:04). Railway's var-set redeploy REBUILDS FROM A STALE
+PINNED SOURCE — the July-20-era upload, i.e. exactly the code vintage whose freeze bug
+started 07-20 19:19Z — not from the latest railway-up tarball. The RESIDENT-lane boot
+check stopped discriminating after the 03:24Z dev promotion (dev gained the resident
+code), which is how five same-day var-sets went unvalidated. The old SOP rule was
+literal: **EVERY shadow-worker var-set must be followed immediately by `railway up` +
+fingerprint verification.** Hardened SOP adopted.
+
+Consequences: (1) the 18:22Z "fleet flip failure" ran OLD code — current code never got
+a fleet attempt; the CONTAINER-MEMORY theory below is RETRACTED as unproven (V1.1's
+premise); (2) fleet re-attempt launched 21:32Z SOP-correct (SIDS=all var-set + immediate
+railway up, tracer aboard, fingerprint f4fd3ab24a5e) — outcome appended below;
+(3) the 7.4M-row NVDA KPI/HiFi load-once remains REAL and worth bounding (it is still
+the best explanation for the batch-worker 345 ×8-pool crashes), just not proven as the
+shadow-lane killer.
+
+## 📋 DAY LOG 2026-07-22 (superseded root-cause section — see CORRECTION above) — fleet flip attempted + REVERTED
 
 **Sequence:** soak RED at open (0/4 canaries advancing on the fresh merged boot) → cap
 removal (MAX_ADVANCE_S=0) didn't cure → serial polls (POLL_WORKERS=1) didn't cure →
