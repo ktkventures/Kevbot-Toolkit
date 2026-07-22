@@ -21,6 +21,27 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-07-22
 
+- **22:37 UTC (16:37 MT)** — `bf0d2cf` Merge PR #71 `feat/tasks-team-board` → dev:
+  /admin/tasks becomes the team board (Spec_Tasks_Team_Board.md Phase 1, board V2.4) —
+  vision/subtask hierarchy, role assignees (M/E/E2/F/P/R/kevin), `?assignee=` poll filter.
+  Tooling only (dev_tasks router / AdminTasksPage / additive migration); no trading
+  tables, no engine files, no flags. **Migration was pre-applied 07-22** (additive;
+  51 existing rows verified untouched), so deploy order was a non-issue.
+  - Service(s) redeployed: api / frontend (the touched pair); Worker / batch-worker /
+    Data Worker also rebuilt on the dev push (auto-deploy) — all 5 SUCCESS on `bf0d2cf`.
+    shadow-worker untouched (E-lane `railway up` only).
+  - Gates (R re-run pre-merge): only `f188b83` over dev ✓ · fidelity parity suite
+    18/18 PASS, exit 0 ✓ · frontend production build exit 0 ✓ · code review: no
+    confirmed blockers ✓. (GitHub "Fidelity Gate" check red = pre-existing
+    missing-`pytest` infra failure on every dev push since ≥07-16; the 31 CI parity
+    tests themselves pass before the import dies — not a regression of this PR.)
+  - Deploy watch: API + frontend SUCCESS by ~22:40Z; live verify = login → GET
+    `/api/dev-tasks` (51 rows, `parent_id`/`origin` on all, `?assignee=` filter exact,
+    28 legacy 'claude' rows intact) + deployed /admin/tasks chunk serves the new
+    "By vision" view. Backup branch: `backup/dev-pre-tasks-team-board`.
+  - Observed cache gap: post-close push (22:37Z) — usual ~1–2 min Worker warmup only,
+    no RTH impact.
+
 - **02:05–02:22 UTC (20:05–20:22 MT 07-21)** — **shadow-worker `railway up` from the MERGED
   tree** (`merge/mrs5a-plus-dev-0722` @ff1427b = mrs5a Ph1/2b/2c + dev's submin-canonical
   stack; only conflict = services.py secondary block, resolved by moving the Phase-2b
