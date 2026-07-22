@@ -5,6 +5,39 @@ Standing record. Metric = Strategy Health `combined_pct` @5s (screen-faithful vi
 ≥95% @5s (or ≥95%@10s w/ note), OR root-caused + replay-validated fix. Ledger cross-ref:
 `Bug_Hunt_Wave1_2026-07-06.md`.
 
+## 📋 DAY LOG 2026-07-22 — shadow-lane freeze root-caused to CONTAINER MEMORY; fleet flip attempted + REVERTED
+
+**Sequence:** soak RED at open (0/4 canaries advancing on the fresh merged boot) → cap
+removal (MAX_ADVANCE_S=0) didn't cure → serial polls (POLL_WORKERS=1) didn't cure →
+**local manager runs PROVED every code path healthy** (all paths 5-17s/slot vs prod state)
+→ bridge catch-up wrote canaries current (74 trades, board restored) → POLL-DBG tracer
+deployed → 16:15Z boot streamed cleanly → 2h soak GREEN → **fleet flip 18:22Z**
+(SIDS=all, 23 tracked) → **zero completed polls in 85 min** while the container churned
+7.4M-row NVDA whole-history Hi-Fi loads (same load TWICE, 7 min apart = warm cache
+evicted = memory pressure) → **REVERTED to canaries 20:02Z**.
+
+**Root cause (evidence-backed): container memory exhaustion → GC/swap thrash → poll
+thread starvation.** Local profile of ALL 23 slots: every poll ok, max 25.7s, no hangs —
+no poison slot. The differential is the box: fleet-scale resident engines + frames +
+pack objects + the KPI thread's whole-history Hi-Fi frames (NVDA ≈ 7.4M 1Sec rows) exceed
+the shadow-worker's RAM. The 4-canary set has no NVDA/365d slots → streams fine. This
+also unifies: (a) the 07-20→22 freeze era (born when M-RS5a arming-era config/KPI load
+patterns landed), (b) the batch-worker's 345 crash class (same NVDA Hi-Fi load-once under
+×8 pool = OOM), (c) why every cold boot caught up (bootstrap runs before KPI memory
+accumulates) then wedged.
+
+**Fixes to choose from (Kevin decision, tomorrow):** (1) resize the shadow-worker
+container (fastest, $); (2) bound the KPI/Hi-Fi load-once window (code fix — don't load
+whole-history 1Sec for KPI refinement; the right long-term cure); (3) interim: fleet flip
+EXCLUDING the heavy-KPI sids (NVDA 341/343/344/345 + 365d 340/342) until (2) lands.
+POLL-DBG tracer + `[HIFI] load-once` row counts are the observability for whichever path.
+
+**Also today:** Gate-4 GREEN for 339 (14:19:33 XTF_BLOCK_DIAG: canonical 10S leg + GEN
+in present-set, honest 3-leg block on 30m BB; canonical publishes flowing; no fires =
+likely honest abstention, settled pairing tonight). RORT_RECOMPUTE_PARALLELISM=6 armed
+for tonight's nightly (345 mitigation). Current state: canaries streaming, fleet flip
+HELD pending the memory decision. POLL_S=5 also held (moot until fleet is stable).
+
 ## 🌙 MORNING BRIEF — nightly bug-hunt 2026-07-21→22 (Mode 3)
 
 **Context first (read before the numbers):** 07-21 was operationally MESSY by design —
