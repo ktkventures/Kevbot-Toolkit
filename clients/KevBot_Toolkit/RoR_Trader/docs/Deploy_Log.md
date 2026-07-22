@@ -19,6 +19,27 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-07-22
+
+- **02:05–02:22 UTC (20:05–20:22 MT 07-21)** — **shadow-worker `railway up` from the MERGED
+  tree** (`merge/mrs5a-plus-dev-0722` @ff1427b = mrs5a Ph1/2b/2c + dev's submin-canonical
+  stack; only conflict = services.py secondary block, resolved by moving the Phase-2b
+  sub-minute hook INSIDE `compute_secondary_columns` so the resident frame shares it).
+  Gates before deploy: 30/30 unit, parity 16/16 (one SPY/10Sec transient isolated as
+  settle-sweep revision-edge — cache-path files byte-identical to dev), Step-C manager
+  byte-identity 263 (162==162) + 267 (103==103). FINGERPRINT SOP: up-boot printed
+  `code fingerprint=cf237aca9f39` == upload-tree hash ✓; then
+  `RORT_CANONICAL_SUBMIN_STATE=1` var-set (rebuild verified as the pinned upload via the
+  M-RS5a-only "RESIDENT lane active" boot line + digest exclusion of the old images).
+  ⚠️ Lesson: `railway up` must run from the REPO ROOT (service rootDirectory appends
+  `/clients/KevBot_Toolkit/RoR_Trader`); the first attempt from the subdir FAILED.
+  - **RESULT: shadow_heartbeats UNFROZE on the first pass** (02:07-08Z — all 4 canaries
+    caught up to 07-21 19:59:50 close; frozen since 07-20 19:19Z = wedged process, cleared
+    by the restart). Intraday board freshness restored for the canary SIDS set.
+  - Also tonight: `RORT_RECOMPUTE_PARALLELISM=6` on batch-worker (345 ×8-pool crash
+    mitigation; revert = same command with 8). Nightly bug-hunt brief prepended to
+    `Divergence_Hunt_Log.md` (nothing armed by the hunt).
+
 ## 2026-07-21
 
 - **~21:07 UTC (15:07 MT)** — submin-canonical FIX #2 (`22c6b1f`): the (10,'RTH') shadow
