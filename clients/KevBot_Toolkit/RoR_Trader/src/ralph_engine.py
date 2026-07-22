@@ -206,6 +206,36 @@ def _normalize_confluence_label(record: str) -> str:
     return prefix.upper() + record[dash:]
 
 
+def _tf_label_sec_fix() -> bool:
+    """RORT_TF_LABEL_SEC_FIX (default OFF), 2026-07-21 — the two live
+    record emitters (StrategyMonitor own-records, _ShadowIndicatorEngine)
+    shorten Min/Hour/Day(/Week) but NOT Sec, so a sub-minute engine emits
+    '10Sec-UT_BOT_V4-...' while _normalize_confluence_label normalizes the
+    strategy's required '10s-...' token to '10S-...'. The issubset gate can
+    therefore NEVER match → any confluence gate on a sub-minute TF is
+    silently dead live (fail-closed; the backtest evaluates its own
+    namespace and fires normally — sid 339's 0-live-alerts-ever signature,
+    found by the replay harness LABEL-DRIFT check,
+    Plan_Harness_Secondary_TF_Gap.md). Flag ON: both emit sites use the
+    canonical shortener incl. Sec→S and Week→W, so emitted prefixes land in
+    the normalized-requirement namespace. Flag OFF: byte-identical legacy.
+    Safe by construction: a normalized requirement prefix is always fully
+    uppercase, and the drifted emits ('10Sec-'/'1Week-') are mixed-case —
+    no currently-passing gate can depend on them, so ON can only revive
+    dead gates, never flip a passing one."""
+    return os.getenv(
+        "RORT_TF_LABEL_SEC_FIX", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _canonical_tf_short_label(tf_label: str) -> str:
+    """Canonical confluence prefix for a TIMEFRAME label — lands in the
+    _normalize_confluence_label(required-token) namespace for EVERY TF,
+    including sub-minute ('10Sec'→'10S') and weekly ('1Week'→'1W')."""
+    return tf_label.replace('Min', 'M').replace('Hour', 'H').replace(
+        'Day', 'D').replace('Week', 'W').replace('Sec', 'S')
+
+
 # Chart pickle defaults per timeframe
 CHART_BAR_COUNTS = {
     60: 300, 300: 200, 900: 150, 1800: 100, 3600: 100,
@@ -1350,8 +1380,11 @@ class StrategyMonitor:
         # 3. Build confluence records
         tf_label = SECONDS_TO_TIMEFRAME.get(self.tf_seconds, '1Min')
         # Shorten label for confluence format (1Min→1M, 5Min→5M, etc.)
-        short_label = tf_label.replace('Min', 'M').replace(
-            'Hour', 'H').replace('Day', 'D')
+        if _tf_label_sec_fix():
+            short_label = _canonical_tf_short_label(tf_label)
+        else:
+            short_label = tf_label.replace('Min', 'M').replace(
+                'Hour', 'H').replace('Day', 'D')
         self._current_confluence = set()
         for ikey, state_val in interps.items():
             self._current_confluence.add(
@@ -2472,6 +2505,44 @@ def _canonical_fine_tf_state() -> bool:
         "1", "true", "yes", "on")
 
 
+def _canonical_submin_state() -> bool:
+    """RORT_CANONICAL_SUBMIN_STATE (default OFF), 2026-07-21 — Phase 2b
+    (Plan_SubMinute_Canonical_Source): M-RS5b's canonical-state discipline ONE
+    OCTAVE DOWN. Flag ON: at every SUB-MINUTE (tf < 60s) secondary shadow
+    close, the published gate records are REBUILT by a full clean replay over
+    the builder's own closed sub-minute history (boot-seeded from the canonical
+    1Sec-derived resample, appended per close) instead of advancing the
+    incremental lineage bar-by-bar. This kills the 339-class state-path
+    divergence: a path-dependent ribbon (UT_BOT ATR trailing stop) derived
+    incrementally live vs vectorized offline flips on different bars; the
+    per-close replay pins live to the same construction the offline lane uses
+    (which, same flag, builds sub-minute secondaries from the SAME canonical
+    1Sec-derived bars — services._submin_secondary_canonical). On derive
+    failure: ERROR + HOLD previous records — never a silent incremental
+    fallback (Kevin ruling 07-16). Flag OFF: byte-identical legacy incremental.
+    Read at runtime so tests + the parity suite can toggle without reload."""
+    return os.getenv(
+        "RORT_CANONICAL_SUBMIN_STATE", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _submin_derive_bars() -> int:
+    """Replay depth (bars) for the canonical sub-minute derive
+    (RORT_SUBMIN_DERIVE_BARS, default 3000 ≈ 1.3 RTH days of 10s bars).
+    The derive replays the SESSION-FILTERED history TAIL, not the full 25k-bar
+    builder history: it runs at sub-minute cadence inside the per-second event
+    path, so per-close cost is budgeted — measured 2026-07-21 on the real
+    UT_BOT_V4 shadow pipeline: 1200 bars ≈ 54ms, 2340 ≈ 105ms, 4700 ≈ 206ms.
+    Path-dependence is safe to truncate: user-pack recursions (UT-Bot-v4 /
+    Wilder ATR) are measured bit-identical past ~1 trading day of warmup
+    (M-RS1 / PR #39), so any tail ≥ ~1 day converges to the same ribbon
+    regardless of start bar."""
+    try:
+        return max(600, int(os.getenv("RORT_SUBMIN_DERIVE_BARS", "3000")))
+    except ValueError:
+        return 3000
+
+
 _FEED_MARKER_FILE = os.getenv("RORT_ENGINE_FEED_MARKER_FILE",
                               "/tmp/engine_last_tick")
 _feed_marker_last_touch: float = 0.0
@@ -2584,9 +2655,12 @@ class _ShadowIndicatorEngine:
             req_interp, set(), params['ema_periods'])
 
         tf_label = SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min')
-        self._tf_short_label = tf_label.replace(
-            'Min', 'M').replace('Hour', 'H').replace(
-            'Day', 'D').replace('Week', 'W')
+        if _tf_label_sec_fix():
+            self._tf_short_label = _canonical_tf_short_label(tf_label)
+        else:
+            self._tf_short_label = tf_label.replace(
+                'Min', 'M').replace('Hour', 'H').replace(
+                'Day', 'D').replace('Week', 'W')
         self._current_confluence: Set[str] = set()
 
     def warmup(self, df: pd.DataFrame):
@@ -3376,6 +3450,18 @@ class SymbolHub:
         legacy)."""
         key = (tf_seconds, session)
         if session == 'RTH':
+            # Phase 2b (RORT_CANONICAL_SUBMIN_STATE): a SUB-MINUTE shadow on a
+            # hub where this TF is ALSO a primary closes through THIS
+            # chokepoint (on_second_bar's secondary loop skips primary TFs —
+            # "primary path handles it below" — and the primary pipeline calls
+            # here per session-shadow). Found live 2026-07-21: the TSLA hub
+            # has real 10Sec monitors (267/338), so 339's (10,'RTH') shadow
+            # rides this path, not _close_subminute_shadows. Same canonical
+            # derive, same fail-loud HOLD, via the shared helper.
+            if _canonical_submin_state() and tf_seconds < 60:
+                self._canonical_submin_close(
+                    tf_seconds, session, shadow, completed)
+                return
             if self._coarse_rth_reload_active(tf_seconds):
                 self._reload_coarse_rth_shadow(tf_seconds, shadow)
                 return
@@ -3428,6 +3514,120 @@ class SymbolHub:
                 "(%s) — keeping previous gate records",
                 self.symbol, tf_seconds, session, e)
 
+    def _canonical_submin_close(self, sec_tf: int, sess: str, shadow,
+                                completed: dict) -> None:
+        """Phase 2b (RORT_CANONICAL_SUBMIN_STATE): rebuild ONE sub-minute
+        session-shadow's records by a full clean replay over the TF builder's
+        own closed history, SESSION-FILTERED to the shadow's session,
+        TAIL-bounded (RORT_SUBMIN_DERIVE_BARS). The session filter is
+        load-bearing: sub-minute builders eat the RAW per-second stream (all
+        hours), but the offline lane computes this ribbon on session-filtered
+        bars — an RTH shadow's incremental state advancing on premarket bars
+        is itself a divergence source this derive removes. FAIL LOUD:
+        empty/failed derive = ERROR + HOLD previous records; NEVER a silent
+        incremental fallback. Shared by BOTH sub-minute shadow-close sites
+        (the per-second secondary loop AND _close_shadow_with_bar, which owns
+        the close when the TF is also a primary on this hub)."""
+        try:
+            b = self.builders.get(sec_tf)
+            cdf = b.history if b is not None else None
+            if cdf is not None and len(cdf) > 0 and sess and sess != '24/7':
+                from data_loader import _filter_session
+                cdf = _filter_session(cdf, sess)
+            if cdf is not None:
+                cdf = cdf.tail(_submin_derive_bars())
+            if cdf is None or len(cdf) == 0:
+                logger.error(
+                    "[CANONICAL-SUBMIN-STATE] %s tf=%ss sess=%s: canonical "
+                    "history EMPTY at close %s — HOLDING previous gate "
+                    "records (no incremental fallback; investigate)",
+                    self.symbol, sec_tf, sess, completed.get('timestamp'))
+                return
+            self._publish_mtf(
+                (sec_tf, sess), shadow.recompute_confluence(cdf),
+                closed_bar_start_ts=cdf.index[-1])
+            logger.info(
+                "shadow_close %s/%ss close=%.2f records=%s "
+                "[canonical-submin n=%d sess=%s]",
+                self.symbol, sec_tf, float(completed['close']),
+                self._mtf_confluence[(sec_tf, sess)], len(cdf), sess)
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                "[CANONICAL-SUBMIN-STATE] %s tf=%ss sess=%s: canonical "
+                "derive FAILED (%s) — HOLDING previous gate records (no "
+                "incremental fallback; investigate)",
+                self.symbol, sec_tf, sess, e)
+
+    def _close_subminute_shadows(self, sec_tf: int, sec_builder,
+                                 completed: dict, *, was_duplicate: bool,
+                                 was_correction: bool) -> None:
+        """Refresh every session-shadow of a SUB-MINUTE secondary TF on a
+        completed bucket (the per-second path's counterpart to
+        _close_shadow_with_bar — sub-minute shadows never ride the >=60s
+        fan-out). Extracted from on_second_bar (2026-07-21, Phase 2b) so the
+        canonical-state derive has the same testable seam the fine path has;
+        behavior byte-identical to the previous inline block.
+
+        Note: do NOT gate on shadow.indicators._initialized here.
+        shadow.on_bar_close → update_bar handles cold-start via the
+        incremental class's `_first` flag (2026-04-27). Sub-minute closes come
+        from RAW per-second data (valid for any session), so — unlike the
+        >=60s fan-out path — EVERY session-shadow eats the bar directly; no
+        per-close session reloads at this cadence (Bug Hunt Wave 1 #1)."""
+        shadow_items = self._shadow_items_for_tf(sec_tf)
+        if not shadow_items:
+            return
+
+        if was_duplicate:
+            # M8.7 (2026-05-02): Polygon per-second rebroadcast for the most
+            # recent sub-minute period. Recompute shadow indicator state from
+            # corrected history; skip on_bar_close to avoid emitting
+            # confluence records that already fired. Skip the recompute on a
+            # pure re-delivery (no value change) — the lag-spiral hot path
+            # (2026-05-19).
+            if was_correction:
+                if _canonical_submin_state():
+                    # Phase 2b: the canonical derive full-replays the builder
+                    # history at EVERY close, so the corrected history is
+                    # picked up ≤ one sub-minute period later anyway — the
+                    # legacy recompute here would just replay the same
+                    # history twice. Skip it.
+                    return
+                for _sh_sess, shadow in shadow_items:
+                    try:
+                        shadow.indicators.recompute_from_history(
+                            sec_builder.history)
+                        logger.info(
+                            "Rebroadcast cascade: shadow %s/%ss recomputed",
+                            self.symbol, sec_tf)
+                    except Exception as e:
+                        logger.warning(
+                            "shadow recompute_from_history failed (%ss): %s",
+                            sec_tf, e)
+            return
+
+        if _canonical_submin_state():
+            # Phase 2b (RORT_CANONICAL_SUBMIN_STATE): canonical per-close
+            # rebuild for every session-shadow — shared derive in
+            # _canonical_submin_close (fail-loud HOLD semantics live there).
+            for _sh_sess, shadow in shadow_items:
+                self._canonical_submin_close(
+                    sec_tf, _sh_sess, shadow, completed)
+            return
+
+        for _sh_sess, shadow in shadow_items:
+            try:
+                self._publish_mtf(
+                    (sec_tf, _sh_sess), shadow.on_bar_close(completed),
+                    closed_bar_start_ts=completed.get('timestamp'))
+                logger.info(
+                    "shadow_close %s/%ss close=%.2f records=%s",
+                    self.symbol, sec_tf, float(completed['close']),
+                    self._mtf_confluence[(sec_tf, _sh_sess)])
+            except Exception as e:
+                logger.warning(
+                    "shadow on_bar_close failed (%ss): %s", sec_tf, e)
+
     def finalize_shadow_engines(self):
         """Create shadow indicator engines for secondary TFs not covered by
         real monitors.  Call after all monitors have been added.  Idempotent.
@@ -3469,6 +3669,18 @@ class SymbolHub:
                 if m.tf_seconds != sec_tf:
                     return False
                 if MTF_SESSION_SHADOWS and m.session != sh_session:
+                    return False
+                # Phase 2b (RORT_CANONICAL_SUBMIN_STATE): a SUB-MINUTE key
+                # ALWAYS gets a dedicated shadow — it is the canonical owner
+                # of the key (per-close session-filtered full replay), and
+                # the own-records publish already defers to it. Without this,
+                # a real sub-minute monitor whose pack covers the needed
+                # interp (267/338 are utv4-TRIGGERED) suppresses the shadow
+                # and the gate consumes the monitor's INCREMENTAL own-records
+                # — the exact state-path divergence this flag exists to kill
+                # (found live 2026-07-21: no 10s shadow in the boot warmup
+                # list; 339's gate rode 267's own-records all along).
+                if _canonical_submin_state() and sec_tf < 60:
                     return False
                 if not INTERP_AWARE_SHADOWS or not needed_interps:
                     return True  # legacy: any real monitor suppresses
@@ -3963,10 +4175,18 @@ class SymbolHub:
                     # at once) → every gate's subset check passed
                     # → gates permanently open → the fleet-wide
                     # phantom-flood ladder of 2026-06-12.
-                    _lbl = SECONDS_TO_TIMEFRAME.get(
-                        tf_seconds, '1Min').replace(
-                        'Min', 'M').replace('Hour', 'H').replace(
-                        'Day', 'D').replace('Week', 'W')
+                    # RORT_TF_LABEL_SEC_FIX: the filter prefix must match
+                    # the emit namespace, or sub-minute own-records are
+                    # silently dropped from the hub (the publish leg of
+                    # the same label-drift class).
+                    if _tf_label_sec_fix():
+                        _lbl = _canonical_tf_short_label(
+                            SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min'))
+                    else:
+                        _lbl = SECONDS_TO_TIMEFRAME.get(
+                            tf_seconds, '1Min').replace(
+                            'Min', 'M').replace('Hour', 'H').replace(
+                            'Day', 'D').replace('Week', 'W')
                     own_records = {r for r in m._current_confluence
                                    if r.startswith(_lbl + '-')}
                     self._publish_mtf(
@@ -4216,10 +4436,15 @@ class SymbolHub:
                 _stored_sessions.add(_m_sess)
                 # B5 own-TF filter (2026-06-12) — see the
                 # on_polygon_bar site for the full story.
-                _lbl = SECONDS_TO_TIMEFRAME.get(
-                    tf_seconds, '1Min').replace(
-                    'Min', 'M').replace('Hour', 'H').replace(
-                    'Day', 'D').replace('Week', 'W')
+                # RORT_TF_LABEL_SEC_FIX: filter must match the emit namespace.
+                if _tf_label_sec_fix():
+                    _lbl = _canonical_tf_short_label(
+                        SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min'))
+                else:
+                    _lbl = SECONDS_TO_TIMEFRAME.get(
+                        tf_seconds, '1Min').replace(
+                        'Min', 'M').replace('Hour', 'H').replace(
+                        'Day', 'D').replace('Week', 'W')
                 own_records = {r for r in m._current_confluence
                                if r.startswith(_lbl + '-')}
                 self._publish_mtf(
@@ -4429,10 +4654,15 @@ class SymbolHub:
             _stored_sessions.add(_m_sess)
             # B5 own-TF filter (2026-06-12) — see the
             # on_polygon_bar site for the full story.
-            _lbl = SECONDS_TO_TIMEFRAME.get(
-                tf_seconds, '1Min').replace(
-                'Min', 'M').replace('Hour', 'H').replace(
-                'Day', 'D').replace('Week', 'W')
+            # RORT_TF_LABEL_SEC_FIX: filter must match the emit namespace.
+            if _tf_label_sec_fix():
+                _lbl = _canonical_tf_short_label(
+                    SECONDS_TO_TIMEFRAME.get(tf_seconds, '1Min'))
+            else:
+                _lbl = SECONDS_TO_TIMEFRAME.get(
+                    tf_seconds, '1Min').replace(
+                    'Min', 'M').replace('Hour', 'H').replace(
+                    'Day', 'D').replace('Week', 'W')
             own_records = {r for r in m._current_confluence
                            if r.startswith(_lbl + '-')}
             self._publish_mtf(
@@ -5677,57 +5907,10 @@ class SymbolHub:
                 _live_bars_write(self.symbol, sec_tf, completed, source='ws')
             except Exception:
                 pass
-            shadow_items = self._shadow_items_for_tf(sec_tf)
-            if not shadow_items:
-                continue
-
-            if sec_was_duplicate:
-                # M8.7 (2026-05-02): Polygon per-second rebroadcast for
-                # the most recent sub-minute period. Recompute shadow
-                # indicator state from corrected history; skip on_bar_close
-                # to avoid emitting confluence records that already fired.
-                # Skip the recompute on a pure re-delivery (no value change)
-                # — that is the lag-spiral hot path (2026-05-19).
-                # Bug Hunt Wave 1 #1: sub-minute builders are fed RAW
-                # per-second bars (not RTH-built fan-out), so every
-                # session-shadow of this TF consumed the same live stream
-                # — recompute all of them from the shared history.
-                if sec_was_correction:
-                    for _sh_sess, shadow in shadow_items:
-                        try:
-                            shadow.indicators.recompute_from_history(sec_builder.history)
-                            logger.info(
-                                "Rebroadcast cascade: shadow %s/%ss recomputed",
-                                self.symbol, sec_tf)
-                        except Exception as e:
-                            logger.warning(
-                                "shadow recompute_from_history failed (%ss): %s",
-                                sec_tf, e)
-                continue
-
-            # Note: do NOT gate on shadow.indicators._initialized here.
-            # shadow.on_bar_close → update_bar handles cold-start via the
-            # incremental class's `_first` flag, and skipping when not
-            # initialized would prevent the shadow from ever initializing
-            # via live data alone (chicken-and-egg). worker.py.warmup()
-            # is an optimization, not a hard requirement. Found while
-            # investigating Q4 data fidelity (2026-04-27).
-            # Bug Hunt Wave 1 #1: sub-minute closes come from RAW
-            # per-second data (valid for any session), so — unlike the
-            # >=60s fan-out path — EVERY session-shadow eats the bar
-            # directly; no per-close session reloads at this cadence.
-            for _sh_sess, shadow in shadow_items:
-                try:
-                    self._publish_mtf(
-                        (sec_tf, _sh_sess), shadow.on_bar_close(completed),
-                        closed_bar_start_ts=completed.get('timestamp'))
-                    logger.info(
-                        "shadow_close %s/%ss close=%.2f records=%s",
-                        self.symbol, sec_tf, float(completed['close']),
-                        self._mtf_confluence[(sec_tf, _sh_sess)])
-                except Exception as e:
-                    logger.warning(
-                        "shadow on_bar_close failed (%ss): %s", sec_tf, e)
+            self._close_subminute_shadows(
+                sec_tf, sec_builder, completed,
+                was_duplicate=sec_was_duplicate,
+                was_correction=sec_was_correction)
 
         for tf_seconds, b in self.builders.items():
             if tf_seconds not in primary_tfs:

@@ -42,6 +42,17 @@ Usage (run from src/, outside RTH per feedback_local_analysis_starves_live_worke
         --since 2026-07-14T13:30:00Z --until 2026-07-14T20:00:00Z
     RH_DEBUG=1 ... → per-primary-bar gate/eff/prev trace
 
+✅ STATUS (2026-07-21, Plan_Harness_Secondary_TF_Gap executed): the secondary-TF gap is
+CLOSED for coarse gates and fail-loud everywhere else. GEN- gates now evaluate (worker-mirror
+pack load); coarse (>=1h) refresher re-trues use a 60-day 1Min series (the 7-day one fed a 4h
+stoch ~11 bars -> NaN -> clobbered a good seed: sid 314 read 0 while live fired — now
+92.3%@10s vs its settled backtest); sub-minute re-trues use the shadow's own series (the 1Min
+upsample was garbage); and a ceiling the replay could not resolve prints UNRES (never a silent
+0) while a resolved-but-unmatchable ribbon prints a LABEL-DRIFT warning (sub-minute '10Sec-'
+vs required '10S-' — a LIVE-ENGINE bug suspect, e.g. 339, spun out; do not fix here).
+Validation canaries post-bulk-delete (327/328/333 are GONE from the DB): 314 coarse, 267
+fine (100%@10s, 91 bt entries 07-16), 340 short-fine (100%), 325 honest real-closed n/a.
+
 ✅ STATUS (2026-07-15): the primary lane is now FAITHFUL WITHIN ITS SCOPE and validated.
 `bar_count` increments like the live builder, intra-bar 1Sec ticks drive stops/targets, and the
 replay reproduces LIVE within 1-2% on clean days (self-check 271=98 / 267=91 / 308=96) AND the
@@ -96,10 +107,19 @@ ARMED_FLAGS = {
     'RORT_INTERP_AWARE_SHADOWS': '1',
     'RORT_RESAMPLED_STORE_READ': '1',
     'RORT_RESAMPLED_STORE_SERVE_LIVE': '1',
-    'RORT_MTF_STATE_REFRESH_S': '120',
+    'RORT_MTF_STATE_REFRESH_S': '120',     # refresher RE-ENABLED 2026-07-17: 5b's
+    #   canonical fine-TF derive does NOT cover slow-close gates (15Min UT_BOT) — its
+    #   staleness drove 333's 6 morning over-fires + 340's 14:01. Re-armed to 120 until
+    #   a proper slow-gate replacement lands. Mirrors prod Worker.
+    'RORT_CANONICAL_FINE_TF_STATE': '1',   # M-RS5b: canonical fine-TF gate state (kept)
     'RORT_ENFORCE_1MIN_GATE': '1',
     'RORT_COARSE_SECONDARY_FROM_1MIN': '1',
     'RORT_RIGHTSIZE_WARMUP': '1',
+    'RORT_TF_LABEL_SEC_FIX': '1',  # armed 2026-07-21 14:52Z (PR #68): sub-minute
+    #   confluence label drift — Sec→S/Week→W canonical emit at both record sites.
+    'RORT_CANONICAL_SUBMIN_STATE': '1',  # armed 2026-07-21 20:26Z (Phase 2b):
+    #   canonical sub-minute bar+state source — store layers + offline canonical
+    #   secondary + live per-close replay (session-filtered, tail-bounded).
 }
 for _k, _v in ARMED_FLAGS.items():
     os.environ[_k] = _v
@@ -185,8 +205,12 @@ def canonical_bars_asof(sym: str, tf_s: int, session: str,
 # ─────────────────────────────── replay ──────────────────────────────────────
 
 def replay(sid: int, since: datetime, until: datetime, sb,
-           canonical_edge: bool = False, corrected: bool = False) -> list:
-    """canonical_edge=False → replays the engine AS ARMED TODAY: fine-TF gate
+           canonical_edge: bool = True, corrected: bool = False) -> list:
+    """DEFAULT canonical_edge=True (2026-07-16): matches TODAY's live stack —
+    M-RS5b canonical fine-TF gate state, refresher retired. Pass
+    canonical_edge=False for the pre-5b incremental+refresher semantics (A/B).
+
+    canonical_edge=False → replays the engine AS ARMED TODAY: fine-TF gate
     shadows advance on the FAN-OUT bar the live engine builds.
 
     canonical_edge=True → replays the PROPOSED fix: at each fine-TF close the
@@ -200,25 +224,83 @@ def replay(sid: int, since: datetime, until: datetime, sb,
     which is exactly the state live held when it missed the 14:39 entries.
     """
     strat = get_strategy_by_id_admin(sid, ADMIN)
+    if not strat:
+        raise ValueError(f"strategy {sid} not found (deleted?)")
     sym = strat['symbol']
-    monitor = StrategyMonitor(strat, None, general_packs=[])
+    # GEN- gates: mirror the worker's startup admin-path pack load (the
+    # ralph_engine 2026-06-22 fix — same loader, same uid). general_packs=[]
+    # made every GEN- gated strategy's gate unsatisfiable IN THE REPLAY:
+    # confluence_set = confluence | general_confluences, and on_bar_close
+    # step 3b only emits GEN- records for packs present in this list — so
+    # e.g. 339 (GEN-TIME_OF_DAY) replayed as a silent 0 regardless of its
+    # secondary TFs. (Found in the 2026-07-20 secondary-TF-gap diagnosis.)
+    from db import load_general_packs_admin
+    from general_packs import _parse_pack_list, get_enabled_general_packs
+    gen_packs = get_enabled_general_packs(
+        _parse_pack_list(load_general_packs_admin(ADMIN)))
+    monitor = StrategyMonitor(strat, None, general_packs=gen_packs)
     tf_s = monitor.tf_seconds
     session = monitor.session
     hub = SymbolHub(sym)
     hub.add_monitor(monitor)
     hub.finalize_shadow_engines()
 
+    DBG = os.getenv('RH_DEBUG') == '1'
+    need = monitor.position.confluence_set or set()
+
+    # ── Step-0 diagnostics (Plan_Harness_Secondary_TF_Gap): track every
+    # _publish_mtf through a counting wrapper so the summary can say, per
+    # shadow key, how it advanced (seed / close events / refresher) and the
+    # UNION of every record it ever held — the evidence that separates
+    # "ribbon never resolved" (empty warmup / NaN indicator / label drift)
+    # from "resolved and legitimately closed". Instance-attribute patch:
+    # internal hub calls (seed_mtf_from_shadow) route through it too.
+    pub_n: dict = {}
+    pub_union: dict = {}
+    _last_pub: dict = {}
+    _now_ref = [since]           # sim-time for debug lines
+    _orig_publish = hub._publish_mtf
+
+    def _tracked_publish(key, records, closed_bar_start_ts=None):
+        pub_n[key] = pub_n.get(key, 0) + 1
+        pub_union.setdefault(key, set()).update(records or ())
+        if DBG and _last_pub.get(key) != set(records or ()):
+            print(f"    [diag] {_now_ref[0]} publish {key}: "
+                  f"{sorted(records or ())}")
+            _last_pub[key] = set(records or ())
+        return _orig_publish(key, records,
+                             closed_bar_start_ts=closed_bar_start_ts)
+    hub._publish_mtf = _tracked_publish
+
+    if DBG:
+        print(f"    [diag] sid={sid} required gate: {sorted(need)}")
+        print(f"    [diag] gen_packs loaded: {len(gen_packs)}")
+
     # Warmup (as-of `since`) — monitor + every shadow, then seed the gate dict.
     wdf = warmup_asof(sym, tf_s, session, since)
     if len(wdf) == 0:
-        return []
+        return {'entries': [], 'exits': [],
+                'diag': {'required': sorted(need), 'gen_packs': len(gen_packs),
+                         'n_closes': 0, 'gate_open_closes': 0, 'tok_hits': {},
+                         'keys': {}, 'unresolved': ['PRIMARY-WARMUP-EMPTY']}}
     monitor.warmup(wdf)
+    shadow_warm_rows: dict = {}
+    subminute_src: dict = {}     # key → seed-warmup df for sub-minute re-trues
     for (sec_tf, sec_sess), shadow in list(hub._shadow_engines.items()):
         sdf = warmup_asof(sym, sec_tf, sec_sess, since,
                           days=7 if sec_tf < 3600 else 60)
+        shadow_warm_rows[(sec_tf, sec_sess)] = len(sdf)
         if len(sdf):
             shadow.warmup(sdf)
             hub.seed_mtf_from_shadow(sec_tf, sec_sess)
+            if sec_tf < 60:
+                subminute_src[(sec_tf, sec_sess)] = sdf
+        if DBG:
+            span = (f"{sdf.index[0]} .. {sdf.index[-1]}"
+                    if len(sdf) else "EMPTY")
+            print(f"    [diag] shadow tf={sec_tf}s sess={sec_sess}: "
+                  f"warmup_rows={len(sdf)} span={span}")
+    seed_pubs = dict(pub_n)      # publishes so far = warmup seeds
 
     # Event stream: every bar CLOSE in the window, primary + secondaries.
     events = []   # (close_ts, kind, key, bar_dict)
@@ -228,6 +310,14 @@ def replay(sid: int, since: datetime, until: datetime, sb,
                        {'timestamp': ts.isoformat(), **{c: float(row[c]) for c in OHLC}}))
     for (sec_tf, sec_sess), _sh in list(hub._shadow_engines.items()):
         sdf = decision_time_bars(sb, sym, sec_tf, since, until, corrected=corrected)
+        if sec_tf < 60 and len(sdf):
+            # Sub-minute re-true source = seed warmup + decision-time bars
+            # (the exact series the shadow's close events consume).
+            _prev = subminute_src.get((sec_tf, sec_sess))
+            _cat = (pd.concat([_prev, sdf[OHLC]])
+                    if _prev is not None else sdf[OHLC])
+            subminute_src[(sec_tf, sec_sess)] = (
+                _cat[~_cat.index.duplicated(keep='last')].sort_index())
         for ts, row in sdf.iterrows():
             events.append((ts + pd.Timedelta(seconds=sec_tf), 2, (sec_tf, sec_sess),
                            {'timestamp': ts.isoformat(), **{c: float(row[c]) for c in OHLC}}))
@@ -245,9 +335,40 @@ def replay(sid: int, since: datetime, until: datetime, sb,
     m1 = pd.concat([m1_warm, m1_live])[OHLC]
     m1 = m1[~m1.index.duplicated(keep='last')].sort_index()
 
-    def canonical_upto(sec_tf: int, close_ts) -> pd.DataFrame:
-        """Canonical secondary bars (resample-from-1Min) fully closed by close_ts."""
-        src = m1[m1.index + pd.Timedelta(minutes=1) <= close_ts]
+    # COARSE re-true source (Plan_Harness_Secondary_TF_Gap Step 2b, sid-314
+    # lying-0): a 4h stochastic re-trued from the 7-day m1 gets ~11 bars →
+    # NaN → the 120s refresher clobbers a GOOD 60-day seed with an empty
+    # record set at its first tick, and the coarse gate stays shut all day.
+    # Live's refresher reloads per-TF rightsized depth; the as-of-safe
+    # equivalent is a deep 1Min series matching warmup_asof's coarse depth.
+    # Kept SEPARATE from m1 so the fine-TF (60s..<3600s) canonical path
+    # stays byte-identical to the validated 327/328 behavior.
+    coarse_keys = any(tf >= RE.COARSE_SECONDARY_SECONDS
+                      for tf, _s in hub._shadow_engines)
+    if coarse_keys:
+        m1_deep = pd.concat([warmup_asof(sym, 60, session, since, days=60),
+                             m1_live])[OHLC]
+        m1_deep = m1_deep[~m1_deep.index.duplicated(keep='last')].sort_index()
+    else:
+        m1_deep = m1
+
+    def canonical_upto(sec_tf: int, close_ts,
+                       key: tuple | None = None) -> pd.DataFrame:
+        """Canonical secondary bars fully closed by close_ts.
+
+        tf >= 60: resample-from-1Min (deep series for coarse TFs).
+        tf < 60: the 1Min resample would be an UPSAMPLE (minute OHLC
+        relabeled as sub-minute bars — garbage the live refresher, which
+        reloads native sub-minute REST bars, never sees). Serve the
+        shadow's own seed-warmup + decision-time series instead.
+        """
+        if sec_tf < 60:
+            src = subminute_src.get(key)
+            if src is None or len(src) == 0:
+                return pd.DataFrame()
+            return src[src.index + pd.Timedelta(seconds=sec_tf) <= close_ts]
+        base = (m1_deep if sec_tf >= RE.COARSE_SECONDARY_SECONDS else m1)
+        src = base[base.index + pd.Timedelta(minutes=1) <= close_ts]
         if len(src) == 0:
             return pd.DataFrame()
         out = resample_to_timeframe(src.copy(), SECONDS_TO_TIMEFRAME[sec_tf])
@@ -270,16 +391,31 @@ def replay(sid: int, since: datetime, until: datetime, sb,
     bar_n = len(wdf)          # continue the warmup's bar count, like the builder
     next_refresh = since + timedelta(seconds=REFRESH_S)
 
+    # Step-0 per-token gate telemetry: at each primary close, was each
+    # required record present in the monitor's MERGED confluence view (the
+    # exact set check_entry gated on)? tok_hits==0 for a token across the
+    # whole window + its interpreter absent from the shadow's publish union
+    # ⇒ the ribbon never RESOLVED (warmup/NaN/label drift) — a lying 0.
+    # tok_hits>0 for every token but never simultaneous ⇒ a REAL closed gate.
+    tok_hits = {t: 0 for t in need}
+    n_closes = 0
+    gate_open_closes = 0
+    _gate_state = [False]
+    refresh_rows: dict = {}      # key → rows in the LAST refresher rebuild
+
     for close_ts, kind, key, bar in events:
+        _now_ref[0] = close_ts
         # 120s force-full re-true (the armed RORT_SHADOW_RETRUE_FORCE_FULL path).
         # STRICTLY `>`: a refresh must never run BEFORE the incremental close of a
         # bar its own canonical df already contains — the re-true would seed the
         # state through bar B and the close would then apply B a SECOND time
         # (double-count → corrupted state; cost hours on 2026-07-14). Live is
         # immune because its re-true RESETS state after the close, never before.
-        while close_ts > next_refresh:
+        while REFRESH_S > 0 and close_ts > next_refresh:  # REFRESH_S=0 → retired
             for (sec_tf, sec_sess), shadow in list(hub._shadow_engines.items()):
-                cdf = canonical_upto(sec_tf, next_refresh)
+                cdf = canonical_upto(sec_tf, next_refresh,
+                                     key=(sec_tf, sec_sess))
+                refresh_rows[(sec_tf, sec_sess)] = len(cdf)
                 if len(cdf):
                     hub._publish_mtf((sec_tf, sec_sess),
                                      shadow.recompute_confluence(cdf),
@@ -292,21 +428,37 @@ def replay(sid: int, since: datetime, until: datetime, sb,
                 continue
             sec_tf = key[0]
             if canonical_edge and 60 <= sec_tf < RE.COARSE_SECONDARY_SECONDS:
-                cdf = canonical_upto(sec_tf, close_ts)
+                cdf = canonical_upto(sec_tf, close_ts, key=key)
                 if len(cdf):
                     hub._publish_mtf(key, shadow.recompute_confluence(cdf),
                                      closed_bar_start_ts=cdf.index[-1])
                     continue
+            if RE._canonical_submin_state() and sec_tf < 60:
+                # Phase 2b mirror (RORT_CANONICAL_SUBMIN_STATE): live rebuilds
+                # sub-minute shadow records by a session-filtered, tail-bounded
+                # full replay at every close (ralph_engine on_second_bar). Same
+                # here: the shadow's own seed+decision-time series, filtered to
+                # the key's session, tail(_submin_derive_bars). Fail-loud HOLD
+                # on empty (mirrors live; no incremental fallback).
+                src = canonical_upto(sec_tf, close_ts, key=key)
+                if len(src):
+                    if key[1] and key[1] != '24/7':
+                        from data_loader import _filter_session
+                        src = _filter_session(src, key[1])
+                    src = src.tail(RE._submin_derive_bars())
+                if len(src):
+                    hub._publish_mtf(key, shadow.recompute_confluence(src),
+                                     closed_bar_start_ts=src.index[-1])
+                else:
+                    print(f"    [diag] CANONICAL-SUBMIN empty derive at "
+                          f"{close_ts} key={key} — holding previous records")
+                continue
             hub._publish_mtf(key, shadow.on_bar_close(bar),
                              closed_bar_start_ts=bar['timestamp'])
             continue
 
-        if os.getenv('RH_DEBUG') == '1':
-            _k = next(iter(hub._shadow_engines), None)
-            print(f"    [dbg] primary close {str(close_ts)[11:19]} "
-                  f"gate={sorted(hub._mtf_confluence.get(_k, []))} "
-                  f"eff={hub._mtf_confluence_effective_from.get(_k)} "
-                  f"prev={sorted(hub._mtf_confluence_prev.get(_k, []))}")
+        # (the old first-shadow-only per-close dump is superseded by the
+        # publish wrapper's change-only prints + the per-token summary below)
 
         # Intra-bar ticks for THIS primary bar, then its close (live's order:
         # per-second on_tick checks stops/targets, then on_bar_close).
@@ -333,6 +485,18 @@ def replay(sid: int, since: datetime, until: datetime, sb,
             mtf_confluence=hub._mtf_confluence,
             mtf_prev=hub._mtf_confluence_prev,
             mtf_effective_from=hub._mtf_confluence_effective_from)
+        n_closes += 1
+        if need:
+            cur = monitor._current_confluence
+            for t in need:
+                if t in cur:
+                    tok_hits[t] += 1
+            _open = need.issubset(cur)
+            gate_open_closes += 1 if _open else 0
+            if DBG and _open != _gate_state[0]:
+                print(f"    [diag] GATE {'OPEN' if _open else 'CLOSED'} at "
+                      f"{close_ts} missing={sorted(need - cur)}")
+                _gate_state[0] = _open
         if os.getenv('RH_DEBUG') == '1' and signals:
             print(f"    [dbg] SIGNALS at {str(close_ts)[11:19]}: "
                   f"{[(s.get('type'), s.get('trigger') or s.get('reason')) for s in signals]}")
@@ -349,7 +513,103 @@ def replay(sid: int, since: datetime, until: datetime, sb,
                 entries.append(fill)
             elif 'exit' in kind_s:
                 exits.append(fill)
-    return {'entries': entries, 'exits': exits}
+
+    # ── Fail-loud classification (Step 1, Plan_Harness_Secondary_TF_Gap):
+    # a reported 0 must mean "the engine genuinely took no trades".
+    # UNRESOLVED = something prevented a required ribbon from resolving at
+    # all (empty warmup / all-NaN / missing shadow / missing GEN pack) —
+    # the ceiling is a lie and must not be printed as a number.
+    # LABEL-DRIFT = the ribbon RESOLVED but emits a tf-label namespace that
+    # can never intersect the required token (e.g. shadow '10Sec-…' vs
+    # required '10S-…'). The replay is faithfully reproducing LIVE's
+    # behavior (same classes), so the number stands as the live ceiling —
+    # but it flags a live-ENGINE bug suspect, never a quiet real-0.
+    own_sess = session if RE.MTF_SESSION_SHADOWS else 'RTH'
+    unresolved: list = []
+    label_drift: list = []
+    for t in sorted(need):
+        if t.startswith('GEN-'):
+            if not monitor._general_packs:
+                unresolved.append(f"{t}: GEN-PACK-MISSING")
+            continue
+        lbl, _, rest = t.partition('-')
+        ikey = rest.split('-', 1)[0]
+        tf_sec = (RE._LABEL_TO_TF_SECONDS.get(lbl)
+                  or RE._LABEL_TO_TF_SECONDS.get(lbl.lower()))
+        if not tf_sec:
+            unresolved.append(f"{t}: UNPARSEABLE-TF-LABEL")
+            continue
+        if tf_sec == tf_s:
+            continue                 # own-TF record, not a shadow ribbon
+        skey = (tf_sec, own_sess)
+        if skey not in hub._shadow_engines:
+            unresolved.append(f"{t}: NO-SHADOW-ENGINE")
+            continue
+        union = pub_union.get(skey, set())
+        same_interp = [r for r in union
+                       if len(r.split('-', 2)) == 3
+                       and r.split('-', 2)[1] == ikey]
+        if not same_interp:
+            why = ('EMPTY-WARMUP-NO-EVENTS'
+                   if (shadow_warm_rows.get(skey, 0) == 0
+                       and pub_n.get(skey, 0) == seed_pubs.get(skey, 0))
+                   else 'RIBBON-NEVER-RESOLVED')
+            unresolved.append(f"{t}: {why}")
+            continue
+        if not any(r.split('-', 2)[0].upper() == lbl.upper()
+                   for r in same_interp):
+            emitted = sorted({r.split('-', 2)[0] for r in same_interp})
+            label_drift.append(
+                f"{t}: ribbon resolved but shadow emits prefix "
+                f"{emitted} — required '{lbl}' can NEVER match "
+                f"(live-engine label drift suspect)")
+
+    diag = {
+        'required': sorted(need),
+        'gen_packs': len(gen_packs),
+        'n_closes': n_closes,
+        'gate_open_closes': gate_open_closes,
+        'tok_hits': dict(tok_hits),
+        'unresolved': unresolved,
+        'label_drift': label_drift,
+        'keys': {},
+    }
+    for key in hub._shadow_engines:
+        diag['keys'][key] = {
+            'seed_pubs': seed_pubs.get(key, 0),
+            'pubs': pub_n.get(key, 0),
+            'union': sorted(pub_union.get(key, set())),
+            'final': sorted(hub._mtf_confluence.get(key, set())),
+            'refresh_rows_last': refresh_rows.get(key),
+        }
+    if DBG:
+        print(f"    [diag] ===== sid={sid} summary =====")
+        print(f"    [diag] primary closes={n_closes} "
+              f"gate_open_closes={gate_open_closes} "
+              f"entries={len(entries)} exits={len(exits)}")
+        for u in unresolved:
+            print(f"    [diag] UNRESOLVED {u}")
+        for w in label_drift:
+            print(f"    [diag] LABEL-DRIFT {w}")
+        for t in sorted(need):
+            print(f"    [diag] token {t!r}: active at "
+                  f"{tok_hits[t]}/{n_closes} primary closes")
+        for key, d in diag['keys'].items():
+            print(f"    [diag] key {key}: pubs={d['pubs']} "
+                  f"(seed {d['seed_pubs']}) "
+                  f"refresh_rows_last={d['refresh_rows_last']}")
+            print(f"    [diag]   union: {d['union']}")
+        for key, sh in hub._shadow_engines.items():
+            try:
+                vals = sh.indicators.get_values()
+                nans = sorted(k for k, v in vals.items()
+                              if v is None or (isinstance(v, float)
+                                               and v != v))
+                print(f"    [diag] key {key} NaN-at-end: "
+                      f"{nans if nans else 'none'}")
+            except Exception as e:  # noqa: BLE001
+                print(f"    [diag] key {key} NaN census failed: {e}")
+    return {'entries': entries, 'exits': exits, 'diag': diag}
 
 
 # ─────────────────────────────── pairing ─────────────────────────────────────
@@ -491,24 +751,45 @@ def main() -> int:
     print(cols)
     print(subs)
     print('-' * len(subs))
+    footnotes: list = []
     for sid in sids:
         if sid not in raw:
             continue
         r = raw[sid]
+        d = r.get('diag') or {}
+        unres = d.get('unresolved') or []
+        drift = d.get('label_drift') or []
         bt_e, bt_x, live_e, live_x = lanes(sb, sid, since, until)
         vals = [v for v in (combined_pct(r['entries'], live_e, 10),
                             combined_pct(r['exits'], live_x, 10)) if v == v]
         selfchk = f"{(sum(vals)/len(vals)):4.0f}%" if vals else " n/a"
+        if unres:
+            # Step 1 fail-loud: never print a ceiling number the replay
+            # couldn't actually resolve — a silent 0 here is a lie.
+            ceil_cells = f"{'UNRES':>6} {'UNRES':>6}"
+            for u in unres:
+                footnotes.append(f"  {sid} UNRESOLVED — {u}")
+        else:
+            ceil_cells = f"{cell(rep[10].get(sid))} {cell(rep[60].get(sid))}"
+        for w in drift:
+            footnotes.append(f"  {sid} ⚠ LABEL-DRIFT — {w}")
         line = (f"{sid:>4}  {cell(live[10].get(sid))} {cell(live[60].get(sid))}   "
-                f"{cell(rep[10].get(sid))} {cell(rep[60].get(sid))}")
+                f"{ceil_cells}")
         if args.corrected:
             line += f"   {cell(corr[10].get(sid))} {cell(corr[60].get(sid))}"
         line += f"   {selfchk:>5}"
         print(line)
+    if footnotes:
+        print()
+        for f in footnotes:
+            print(f)
     print("\nRead: live < CEILING(dtime) ⇒ operational loss (recoverable). "
           "CEILING(corr) high but CEILING(dtime) lower ⇒ WS/REST data-timing "
           "floor. CEILING(corr) ALSO low ⇒ a REAL logic bug. self<90% ⇒ replay "
-          "didn't reproduce live (ops-contaminated window).")
+          "didn't reproduce live (ops-contaminated window). UNRES ⇒ the replay "
+          "could not resolve a required ribbon — fix the harness input, don't "
+          "trust a 0. LABEL-DRIFT ⇒ ribbon resolved but its record namespace "
+          "can never match the gate — live-engine bug suspect, spin out.")
     return 0
 
 

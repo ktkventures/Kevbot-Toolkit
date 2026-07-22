@@ -48,6 +48,20 @@ import resampled_bar_store as rbs  # noqa: E402
 
 
 def _targets(args) -> list:
+    if getattr(args, "submin", False):
+        # Phase 2b operator override: the sub-minute target set, buildable
+        # regardless of the env flag (an explicit CLI run IS the deliberate
+        # action; the flag gates the AUTOMATIC sweeper path). Symbols follow
+        # --symbols or the 1Sec capture authority.
+        if args.symbols:
+            syms = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+        else:
+            syms = rbs.submin_symbols() or list(rbs.SEED_SYMBOLS)
+        tfs = ([t.strip() for t in args.tfs.split(",") if t.strip()]
+               if args.tfs else list(rbs.SUBMIN_STORE_TFS))
+        sess = [s.strip() for s in (args.sessions or "RTH,Extended Hours").split(",")
+                if s.strip()]
+        return [(s, tf, se) for s in syms for tf in tfs for se in sess]
     if args.symbols or args.tfs or args.sessions:
         syms = [s.strip().upper() for s in (args.symbols or "TSLA").split(",") if s.strip()]
         # Unspecified axes follow the SAME config-derived defaults as
@@ -68,6 +82,12 @@ def _warm_base(symbol, tf, start, end, session):
     try:
         from data_loader import load_market_data
         base = rbs.base_layer_for_tf(tf)
+        if base == "1Sec":
+            # Sub-minute: the 1Sec base is continuously captured by the
+            # data-worker; a whole-span warm would read the full seed depth
+            # of 1Sec purely as a side effect. build_window reads the base
+            # per chunk anyway — skip the warm.
+            return
         load_market_data(symbol, start_date=start, end_date=end, timeframe=base,
                          session=session)
     except Exception as e:  # noqa: BLE001
@@ -145,11 +165,17 @@ def cmd_seed(args):
     end = now_utc
     total = {"chunks": 0, "rows": 0, "diff_chunks": 0, "aborted": 0}
     for (s, tf, sess) in targets:
-        depth = args.days or rbs.seed_days_for_tf(tf)
+        _is_submin = tf in rbs.SUBMIN_STORE_TFS
+        depth = args.days or (rbs.submin_seed_days() if _is_submin
+                              else rbs.seed_days_for_tf(tf))
         start = end - timedelta(days=depth)
         # warm the base layer for the whole span first (chunked delta-fetch by bar_cache)
         _warm_base(s, tf, start, end, sess)
-        r = rbs.backfill_coarse(s, tf, sess, start, end, chunk_days=args.chunk_days,
+        # Sub-minute chunks default smaller: a chunk reads its span of raw 1Sec
+        # (~20k rows/day), so 7d chunks keep each read bounded like bar_cache's
+        # own 1Sec backfill chunking.
+        chunk = args.chunk_days if not (_is_submin and args.chunk_days == 30) else 7
+        r = rbs.backfill_coarse(s, tf, sess, start, end, chunk_days=chunk,
                                 compare=not args.no_compare, pause_s=args.pause_s)
         print(f"  {s}/{tf}/{sess}: depth={depth}d {r}")
         if r.get("aborted") or r.get("last_error"):
@@ -178,6 +204,9 @@ def main() -> int:
         p.add_argument("--symbols", default="")
         p.add_argument("--tfs", default="")
         p.add_argument("--sessions", default="")
+        p.add_argument("--submin", action="store_true",
+                       help="Phase 2b: target the SUB-MINUTE layers "
+                            "(SUBMIN_STORE_TFS x sessions; 1Sec-capture symbols)")
         if name == "shadow":
             p.add_argument("--days", type=int, default=5)
             p.add_argument("--settled", action="store_true",

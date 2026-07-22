@@ -1650,17 +1650,52 @@ def bulk_delete(
     strategy_ids: list[int] = Body(...),
     user=Depends(get_current_user),
 ):
-    """Delete multiple strategies at once."""
+    """Delete multiple strategies (+ their ON DELETE CASCADE deps) for the
+    current user.
+
+    Uses a DIRECT Postgres connection (SUPABASE_CONNECTION_STRING) so the
+    cascade (trades, bar_diagnostics) runs server-side. The old PostgREST path
+    500'd two ways (2026-07-20): (a) the cascade of a large trades lane exceeds
+    the statement timeout, and (b) `bar_diagnostics.values` / `trades.r_multiple`
+    can hold NaN/Inf that PostgREST cannot serialize into the returned rows
+    ("JSON could not be generated"). A raw DELETE returns nothing and sets a
+    generous statement_timeout → beats both. Scoped to the caller's OWN
+    strategies (ownership guard the old path lacked); resilient per-sid.
+    """
+    import os
     from db import USE_DB
     if not USE_DB:
         raise HTTPException(status_code=501, detail="Bulk delete requires DB mode")
 
-    from db import delete_strategy_db
-    deleted = 0
-    for sid in strategy_ids:
-        if delete_strategy_db(sid):
-            deleted += 1
-    return {"status": "deleted", "count": deleted}
+    uid = user["id"] if isinstance(user, dict) else getattr(user, "id", None)
+    dsn = os.environ.get("SUPABASE_CONNECTION_STRING")
+    if not dsn or not uid:
+        # Fallback: legacy per-row path (works for small / clean-data strategies).
+        from db import delete_strategy_db
+        deleted = sum(1 for sid in strategy_ids if delete_strategy_db(sid))
+        return {"status": "deleted", "count": deleted}
+
+    import psycopg
+    ok: list[int] = []
+    failed: list[dict] = []
+    # dbname="postgres" explicit — some pooler DSNs don't parse the db from the
+    # URL; harmless when they do. 5-min timeout covers large cascade deletes.
+    with psycopg.connect(dsn, connect_timeout=15, dbname="postgres",
+                         autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SET statement_timeout='300000'")
+            for sid in strategy_ids:
+                try:
+                    cur.execute(
+                        "DELETE FROM strategies WHERE id = %s AND user_id = %s",
+                        (sid, uid))
+                    if cur.rowcount > 0:
+                        ok.append(sid)
+                    else:
+                        failed.append({"id": sid, "reason": "not found or not owned"})
+                except Exception as e:  # noqa: BLE001
+                    failed.append({"id": sid, "reason": str(e)[:120]})
+    return {"status": "deleted", "count": len(ok), "deleted": ok, "failed": failed}
 
 
 @router.patch("/{strategy_id}/forward-test-start")

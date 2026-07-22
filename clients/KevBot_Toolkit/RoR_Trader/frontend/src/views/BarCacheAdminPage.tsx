@@ -242,6 +242,20 @@ export default function BarCacheAdminPage() {
             write-through into <code>bar_cache</code>; strategies read it as their primary source. Symbols come
             from the catalog (every strategy, all accounts) — set a start date per layer to backfill its history.
           </div>
+          {/* Three-layer bar architecture, so "where are the coarse bars?" has an
+              on-page answer (2026-07-21: the canonical store was invisible from here). */}
+          <div style={{
+            fontSize: 12, color: 'var(--text-tertiary)', marginBottom: 12, padding: '8px 10px',
+            border: '1px solid var(--border)', borderRadius: 8, lineHeight: 1.6,
+          }}>
+            <b>Where each timeframe lives:</b> this page holds the two <b>base</b> layers only —
+            REST <code>bar_cache</code> (1Sec + 1Min) and WS <code>live_bars</code> (all TFs,
+            decision-time). Coarse canonical bars (<b>2Min…1Day</b>, resampled from 1Min, read by
+            BOTH lanes) live in <code>resampled_bar_cache</code> —{' '}
+            <a href="/admin/resampled-store" style={{ color: 'var(--blue)' }}>Resampled Store page</a>.
+            Sub-minute (10s/30s) has <b>no canonical store yet</b> (each lane derives its own — see
+            <code> Plan_SubMinute_Canonical_Source.md</code>).
+          </div>
           <div style={{ display: 'flex', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
             <span style={pill(streamActive ? 'var(--green)' : 'var(--red)')}>
               write-through stream: {streamActive ? 'ACTIVE (writing)' : 'quiet / stale'}
