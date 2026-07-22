@@ -861,6 +861,17 @@ class ResidentEngineManager:
             return {'status': 'ineligible', 'reason': slot.ineligible_reason}
         now = now or datetime.now(timezone.utc)
         settled_until = now - timedelta(minutes=LAG_MINUTES)
+        # RORT_SHADOW_POLL_DEBUG=1 (2026-07-22): temporary stage tracer for the
+        # deployed-only freeze (polls no-op in the container but work locally —
+        # every remote theory eliminated; this pins WHERE poll exits). WARNING
+        # level so httpx spam can't swamp it in the Railway log fetch. Remove
+        # once the freeze is root-caused.
+        _pdbg = os.getenv('RORT_SHADOW_POLL_DEBUG', '0') == '1'
+        if _pdbg:
+            logger.warning("[POLL-DBG] sid=%s ENTER cursor=%s settled_until=%s "
+                           "engine=%s frame=%s", slot.sid, slot.last_processed_ts,
+                           settled_until, slot.engine is not None,
+                           slot.frame is not None)
 
         import pandas as pd
         new_settled_bar = slot.engine is None or slot.last_processed_ts is None
@@ -907,7 +918,17 @@ class ResidentEngineManager:
                 except Exception as e:  # noqa: BLE001
                     logger.debug("[shadow] sid=%s empty-probe failed (%s) — "
                                  "full advance", slot.sid, e)
+            if _pdbg:
+                logger.warning("[POLL-DBG] sid=%s PRE-ADVANCE new_settled=%s "
+                               "skip_advance=%s advance_until=%s capped=%s",
+                               slot.sid, new_settled_bar, skip_advance,
+                               advance_until, capped)
             closed = [] if skip_advance else self.advance(slot, advance_until)
+            if _pdbg:
+                logger.warning("[POLL-DBG] sid=%s POST-ADVANCE closed=%s "
+                               "cursor=%s", slot.sid,
+                               (len(closed) if closed is not None else 'None'),
+                               slot.last_processed_ts)
             if (GAP_SKIP and capped and prev_cursor is not None
                     and slot.last_processed_ts == prev_cursor):
                 # Capped window had no new bars → bar-free (or session-filtered,
@@ -921,6 +942,9 @@ class ResidentEngineManager:
                             "cursor %s -> %s", slot.sid, prev_cursor, advance_until)
             new = self._filter_new(slot, closed)
             inserted = self.commit(slot, new)
+            if _pdbg:
+                logger.warning("[POLL-DBG] sid=%s POST-COMMIT new=%d inserted=%d",
+                               slot.sid, len(new or []), inserted)
             if inserted > 0:
                 slot.has_traded_since_kpi = True
 
