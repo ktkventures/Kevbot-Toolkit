@@ -2,73 +2,28 @@
  * Dev Task Tracker — the multi-session team's board (Spec_Tasks_Team_Board.md).
  *
  * Vision items (top-level tasks tagged 'vision') group their subtasks in the
- * default "By vision" view — title + n/m done rollup — so rabbit-hole fixes
- * stay visibly parented under the big-picture item that spawned them
- * (origin 'discovered' renders the 🔍 chip). One nesting level only; the API
- * rejects deeper trees. "Flat" toggle keeps the original priority-sorted table.
+ * default "By vision" view — title + n/m done rollup, collapsible via a
+ * chevron (persisted in localStorage) — so rabbit-hole fixes stay visibly
+ * parented under the big-picture item that spawned them (origin 'discovered'
+ * renders the 🔍 chip). One nesting level only; the API rejects deeper trees.
+ * "Flat" toggle keeps the original priority-sorted table.
  *
  * Priority = phase.seq, sorted ascending so 1.1 ("do next") is at top.
  * Urgent is a tag, not a priority. impacts_live / needs_live_validation are
  * badges so the "does this touch trading?" question is visible at a glance.
- * Click a task → modal with description + comments. Talks to /api/dev-tasks.
+ * Click a task → three-panel detail modal (TaskDetailModal). Status/assignee
+ * changes send `actor` so the API can log system activity entries.
  */
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Card from '@/components/Card';
 import { apiFetch } from '@/lib/api/client';
-
-interface Task {
-  id: number;
-  title: string;
-  description: string;
-  status: string;
-  priority_phase: number;
-  priority_seq: number;
-  is_urgent: boolean;
-  impacts_live: boolean;
-  needs_live_validation: boolean;
-  area: string;
-  assignee: string | null;
-  blocked_by: number[];
-  tags: string[];
-  notes: string;
-  parent_id: number | null;
-  origin: string;
-  updated_at: string;
-}
-interface Comment { id: number; author: string; body: string; created_at: string; }
-
-const STATUSES = ['Backlog', 'Todo', 'In Progress', 'Blocked', 'Done'];
-const AREAS = ['engine', 'backtest', 'frontend', 'infra', 'data', 'docs', 'other'];
-// Team roles per Session_Charters.md §1 — adding a role is one line here.
-// Legacy values ('claude', …) still render: selects append any unknown current
-// value as an extra option instead of blanking it.
-const ASSIGNEES = ['', 'M', 'E', 'E2', 'F', 'P', 'R', 'kevin'];
-const ORIGINS = ['planned', 'discovered', 'kevin'];
-const AUTHOR_LS_KEY = 'ror_task_comment_author';
-const STATUS_COLOR: Record<string, string> = {
-  'Backlog': 'var(--text-tertiary)', 'Todo': 'var(--blue)',
-  'In Progress': 'var(--amber, #d98c00)', 'Blocked': 'var(--red)', 'Done': 'var(--green)',
-};
-
-const withLegacy = (list: string[], current: string) =>
-  list.includes(current) ? list : [...list, current];
-
-const cell: React.CSSProperties = { padding: '7px 8px', verticalAlign: 'middle', fontSize: 13 };
-const input: React.CSSProperties = {
-  background: 'var(--bg-input)', color: 'var(--text-primary)',
-  border: '1px solid var(--border)', borderRadius: 6, padding: '4px 6px', fontSize: 13,
-};
-const badge = (bg: string): React.CSSProperties => ({
-  display: 'inline-block', padding: '1px 6px', borderRadius: 10, fontSize: 11,
-  fontWeight: 600, background: bg, color: '#fff', marginRight: 4, whiteSpace: 'nowrap',
-});
-const tagChip: React.CSSProperties = {
-  display: 'inline-block', padding: '0px 6px', borderRadius: 8, fontSize: 10.5,
-  border: '1px solid var(--border)', color: 'var(--text-secondary)',
-  marginLeft: 4, whiteSpace: 'nowrap', verticalAlign: 'middle',
-};
+import TaskDetailModal from './TaskDetailModal';
+import {
+  Task, STATUSES, AREAS, ASSIGNEES, ORIGINS, STATUS_COLOR, AUTHOR_LS_KEY,
+  COLLAPSED_LS_KEY, withLegacy, cell, input, badge, tagChip,
+} from './taskBoardShared';
 
 export default function AdminTasksPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -80,9 +35,8 @@ export default function AdminTasksPage() {
   const [areaFilter, setAreaFilter] = useState('');
   const [assigneeFilter, setAssigneeFilter] = useState('');
   const [modalId, setModalId] = useState<number | null>(null);
-  const [comments, setComments] = useState<Record<number, Comment[]>>({});
-  const [draftComment, setDraftComment] = useState('');
   const [commentAuthor, setCommentAuthor] = useState('kevin');
+  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
   const [nt, setNt] = useState({
     title: '', priority_phase: 1, priority_seq: 99, area: 'other',
     assignee: '', impacts_live: false,
@@ -102,12 +56,30 @@ export default function AdminTasksPage() {
   useEffect(() => {
     const saved = localStorage.getItem(AUTHOR_LS_KEY);
     if (saved) setCommentAuthor(saved);
+    try {
+      const c = JSON.parse(localStorage.getItem(COLLAPSED_LS_KEY) || '[]');
+      if (Array.isArray(c)) setCollapsed(new Set(c.filter((n) => typeof n === 'number')));
+    } catch { /* ignore */ }
   }, []);
 
+  const toggleCollapsed = (id: number) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      localStorage.setItem(COLLAPSED_LS_KEY, JSON.stringify(Array.from(next)));
+      return next;
+    });
+  };
+
+  // `actor` rides along on every PATCH (not a task column) so the API can
+  // write "status: Todo → In Progress (by F)" system entries.
   const patch = async (id: number, fields: Partial<Task>) => {
     setTasks((t) => t.map((x) => (x.id === id ? { ...x, ...fields } : x)));
     try {
-      await apiFetch(`/api/dev-tasks/${id}`, { method: 'PATCH', body: JSON.stringify(fields) });
+      await apiFetch(`/api/dev-tasks/${id}`, {
+        method: 'PATCH', body: JSON.stringify({ ...fields, actor: commentAuthor }),
+      });
+      if ('status' in fields || 'assignee' in fields) load();
     } catch (e) { setErr(String(e)); load(); }
   };
   const createTask = async () => {
@@ -128,24 +100,6 @@ export default function AdminTasksPage() {
     try { await apiFetch(`/api/dev-tasks/${id}`, { method: 'DELETE' }); }
     catch (e) { setErr(String(e)); load(); }
   };
-  const openModal = async (id: number) => {
-    setModalId(id); setDraftComment('');
-    try {
-      const cs = await apiFetch<Comment[]>(`/api/dev-tasks/${id}/comments`);
-      setComments((m) => ({ ...m, [id]: cs || [] }));
-    } catch { /* ignore */ }
-  };
-  const addComment = async (id: number) => {
-    if (!draftComment.trim()) return;
-    try {
-      await apiFetch(`/api/dev-tasks/${id}/comments`, {
-        method: 'POST', body: JSON.stringify({ body: draftComment, author: commentAuthor }),
-      });
-      const cs = await apiFetch<Comment[]>(`/api/dev-tasks/${id}/comments`);
-      setComments((m) => ({ ...m, [id]: cs || [] }));
-      setDraftComment('');
-    } catch (e) { setErr(String(e)); }
-  };
   const pickAuthor = (a: string) => {
     setCommentAuthor(a);
     localStorage.setItem(AUTHOR_LS_KEY, a);
@@ -155,10 +109,6 @@ export default function AdminTasksPage() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
     titleRef.current?.focus();
   };
-  const parseIds = (s: string): number[] =>
-    s.split(',').map((x) => parseInt(x.trim(), 10)).filter((n) => Number.isFinite(n));
-  const parseTags = (s: string): string[] =>
-    s.split(',').map((x) => x.trim()).filter(Boolean);
 
   const matches = (t: Task) =>
     (!hideDone || t.status !== 'Done') &&
@@ -230,7 +180,14 @@ export default function AdminTasksPage() {
       <td style={{ ...cell, color: 'var(--text-tertiary)', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>#{t.id}</td>
       <td style={cell}><PriCell t={t} /></td>
       <td style={{ ...cell, cursor: 'pointer', fontWeight: rollup ? 600 : 500, paddingLeft: indent ? 28 : cell.padding }}
-        onClick={() => openModal(t.id)}>
+        onClick={() => setModalId(t.id)}>
+        {rollup && (
+          <span style={{ cursor: 'pointer', marginRight: 6, color: 'var(--text-tertiary)', fontSize: 12 }}
+            title={collapsed.has(t.id) ? 'expand subtasks' : 'collapse subtasks'}
+            onClick={(e) => { e.stopPropagation(); toggleCollapsed(t.id); }}>
+            {collapsed.has(t.id) ? '▸' : '▾'}
+          </span>
+        )}
         {indent && <span style={{ color: 'var(--text-tertiary)' }}>↳ </span>}
         {t.title}
         {rollup && (
@@ -289,7 +246,9 @@ export default function AdminTasksPage() {
       groupedRows.push(
         <TaskRow key={v.id} t={v}
           rollup={{ done: kids.filter((k) => k.status === 'Done').length, total: kids.length }} />);
-      shownKids.forEach((k) => groupedRows.push(<TaskRow key={k.id} t={k} indent />));
+      if (!collapsed.has(v.id)) {
+        shownKids.forEach((k) => groupedRows.push(<TaskRow key={k.id} t={k} indent />));
+      }
     });
     const shownLoose = looseTasks.filter(matches);
     if (shownLoose.length > 0) {
@@ -394,113 +353,13 @@ export default function AdminTasksPage() {
         </Card>
       )}
 
-      {/* ── Task modal ─────────────────────────────────────────────── */}
       {modalTask && (
-        <div onClick={() => setModalId(null)} style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 1000,
-          display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '6vh 16px',
-        }}>
-          <div onClick={(e) => e.stopPropagation()} style={{
-            background: 'var(--bg-card, var(--bg-input))', border: '1px solid var(--border)',
-            borderRadius: 10, width: '100%', maxWidth: 720, maxHeight: '82vh', overflowY: 'auto',
-            padding: 20, boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
-              <input style={{ ...input, fontSize: 17, fontWeight: 600, flex: 1, padding: '6px 8px' }}
-                value={modalTask.title}
-                onChange={(e) => patch(modalTask.id, { title: e.target.value })} />
-              <button style={{ ...input, cursor: 'pointer' }} onClick={() => setModalId(null)}>✕ close</button>
-            </div>
-
-            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center', margin: '12px 0' }}>
-              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Priority</span>
-              <PriCell t={modalTask} />
-              <select style={{ ...input, color: STATUS_COLOR[modalTask.status] }} value={modalTask.status}
-                onChange={(e) => patch(modalTask.id, { status: e.target.value })}>
-                {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
-              <select style={input} value={modalTask.area} onChange={(e) => patch(modalTask.id, { area: e.target.value })}>
-                {AREAS.map((a) => <option key={a} value={a}>{a}</option>)}
-              </select>
-              <select style={input} value={modalTask.assignee || ''} onChange={(e) => patch(modalTask.id, { assignee: e.target.value })}>
-                {withLegacy(ASSIGNEES, modalTask.assignee || '').map((a) => <option key={a} value={a}>@{a || '—'}</option>)}
-              </select>
-              <label style={{ fontSize: 12 }}><input type="checkbox" checked={modalTask.impacts_live}
-                onChange={(e) => patch(modalTask.id, { impacts_live: e.target.checked })} /> 🔴 live</label>
-              <label style={{ fontSize: 12 }}><input type="checkbox" checked={modalTask.needs_live_validation}
-                onChange={(e) => patch(modalTask.id, { needs_live_validation: e.target.checked })} /> ⏳ validate</label>
-              <label style={{ fontSize: 12 }}><input type="checkbox" checked={modalTask.is_urgent}
-                onChange={(e) => patch(modalTask.id, { is_urgent: e.target.checked })} /> ⚡ urgent</label>
-            </div>
-
-            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center', margin: '0 0 12px' }}>
-              <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Parent</span>
-              <select style={input} value={modalTask.parent_id ?? ''}
-                onChange={(e) => patch(modalTask.id, { parent_id: e.target.value ? +e.target.value : null })}>
-                <option value="">— none (vision item) —</option>
-                {visionItems.filter((v) => v.id !== modalTask.id).map((v) =>
-                  <option key={v.id} value={v.id}>#{v.id} {v.title.slice(0, 40)}</option>)}
-              </select>
-              {modalTask.parent_id != null && (
-                <>
-                  <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Origin</span>
-                  <select style={input} value={modalTask.origin || 'planned'}
-                    onChange={(e) => patch(modalTask.id, { origin: e.target.value })}>
-                    {ORIGINS.map((o) => <option key={o} value={o}>{o === 'discovered' ? '🔍 discovered' : o}</option>)}
-                  </select>
-                </>
-              )}
-            </div>
-
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '0 0 12px' }}>
-              <label style={{ fontSize: 12, flex: 1, minWidth: 220 }}>tags (comma-separated)
-                <input key={`tags-${modalTask.id}`} style={{ ...input, width: '100%', marginTop: 2 }}
-                  defaultValue={(modalTask.tags || []).join(', ')}
-                  onBlur={(e) => {
-                    const tags = parseTags(e.target.value);
-                    if (tags.join('|') !== (modalTask.tags || []).join('|')) patch(modalTask.id, { tags });
-                  }} />
-              </label>
-              <label style={{ fontSize: 12, flex: 1, minWidth: 160 }}>⛔ blocked by (task ids)
-                <input key={`blk-${modalTask.id}`} style={{ ...input, width: '100%', marginTop: 2 }}
-                  defaultValue={(modalTask.blocked_by || []).join(', ')}
-                  onBlur={(e) => {
-                    const ids = parseIds(e.target.value);
-                    if (ids.join('|') !== (modalTask.blocked_by || []).join('|')) patch(modalTask.id, { blocked_by: ids });
-                  }} />
-              </label>
-            </div>
-
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>Description</div>
-            <textarea key={`desc-${modalTask.id}`} style={{ ...input, width: '100%', minHeight: 90 }} placeholder="description…"
-              defaultValue={modalTask.description}
-              onBlur={(e) => e.target.value !== modalTask.description && patch(modalTask.id, { description: e.target.value })} />
-
-            <div style={{ fontSize: 12, fontWeight: 600, margin: '14px 0 6px' }}>Comments</div>
-            {(comments[modalTask.id] || []).map((cm) => (
-              <div key={cm.id} style={{ fontSize: 13, margin: '5px 0', paddingBottom: 5, borderBottom: '1px solid var(--border)' }}>
-                <b>{cm.author}</b> <span style={{ color: 'var(--text-tertiary)', fontSize: 11 }}>{cm.created_at?.slice(0, 16).replace('T', ' ')}</span>
-                <div>{cm.body}</div>
-              </div>
-            ))}
-            {(comments[modalTask.id] || []).length === 0 && <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>No comments yet.</div>}
-            <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-              <select style={input} title="comment as" value={commentAuthor}
-                onChange={(e) => pickAuthor(e.target.value)}>
-                {withLegacy(ASSIGNEES.filter(Boolean), commentAuthor).map((a) => <option key={a} value={a}>@{a}</option>)}
-              </select>
-              <input style={{ ...input, flex: 1 }} placeholder="add a comment…" value={draftComment}
-                onChange={(e) => setDraftComment(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && addComment(modalTask.id)} />
-              <button style={{ ...input, cursor: 'pointer', background: 'var(--blue)', color: '#fff' }}
-                onClick={() => addComment(modalTask.id)}>Comment</button>
-            </div>
-
-            <div style={{ marginTop: 16, textAlign: 'right' }}>
-              <button style={{ ...input, cursor: 'pointer', color: 'var(--red)' }} onClick={() => del(modalTask.id)}>Delete task</button>
-            </div>
-          </div>
-        </div>
+        <TaskDetailModal key={modalTask.id}
+          task={modalTask} allTasks={tasks} visionOptions={visionItems}
+          patch={patch} del={del}
+          onClose={() => setModalId(null)}
+          onOpenTask={(id) => setModalId(id)}
+          commentAuthor={commentAuthor} onPickAuthor={pickAuthor} />
       )}
     </div>
   );

@@ -17,6 +17,7 @@ _EDITABLE = {
     "title", "description", "status", "priority_phase", "priority_seq",
     "is_urgent", "impacts_live", "needs_live_validation", "area",
     "assignee", "blocked_by", "tags", "notes", "parent_id", "origin",
+    "checklist",
 }
 
 # 'discovered' marks rabbit-hole work found mid-task, parented under the
@@ -34,6 +35,20 @@ def _validate_team_fields(c, row: dict, task_id: Optional[int] = None):
         raise HTTPException(
             status_code=400,
             detail=f"origin must be one of {sorted(_ORIGINS)}")
+    if "checklist" in row:
+        cl = row["checklist"]
+        ok = isinstance(cl, list) and all(
+            isinstance(s, dict)
+            and isinstance(s.get("text"), str)
+            and isinstance(s.get("done"), bool)
+            and (s.get("role") is None or isinstance(s.get("role"), str))
+            for s in cl)
+        if not ok:
+            raise HTTPException(
+                status_code=400,
+                detail='checklist must be a list of '
+                       '{"text": str, "done": bool, "role": str|null} '
+                       '(send the WHOLE array — JSONB is replaced, not merged)')
     parent_id = row.get("parent_id")
     if parent_id is None:
         return
@@ -100,12 +115,36 @@ def create_task(payload: dict = Body(...), user=Depends(get_current_user)):
 @router.patch("/{task_id}")
 def update_task(task_id: int, payload: dict = Body(...),
                 user=Depends(get_current_user)):
-    """Partial update — only whitelisted fields. Empty patch is a no-op read."""
+    """Partial update — only whitelisted fields. Empty patch is a no-op read.
+
+    Status/assignee changes auto-log a system activity entry on the comment
+    thread ("status: Todo → In Progress (by F)") so handoffs stay traceable.
+    The optional `actor` field names who made the change; it is not a task
+    column and never lands on the row.
+    """
     row = {k: v for k, v in payload.items() if k in _EDITABLE}
     c = _admin()
     if row:
         _validate_team_fields(c, row, task_id=task_id)
+        tracked = {k: row[k] for k in ("status", "assignee") if k in row}
+        prev = None
+        if tracked:
+            prev_rows = c.table("dev_tasks").select("status,assignee") \
+                .eq("id", task_id).execute().data
+            if not prev_rows:
+                raise HTTPException(status_code=404, detail="task not found")
+            prev = prev_rows[0]
         c.table("dev_tasks").update(row).eq("id", task_id).execute()
+        if prev:
+            actor = payload.get("actor")
+            by = f" (by {actor})" if actor else ""
+            for field, new in tracked.items():
+                old = prev.get(field)
+                if (old or None) != (new or None):
+                    c.table("dev_task_comments").insert({
+                        "task_id": task_id, "author": "system",
+                        "body": f"{field}: {old or '—'} → {new or '—'}{by}",
+                    }).execute()
     res = c.table("dev_tasks").select("*").eq("id", task_id).execute().data
     if not res:
         raise HTTPException(status_code=404, detail="task not found")
