@@ -5,6 +5,72 @@ Standing record. Metric = Strategy Health `combined_pct` @5s (screen-faithful vi
 ≥95% @5s (or ≥95%@10s w/ note), OR root-caused + replay-validated fix. Ledger cross-ref:
 `Bug_Hunt_Wave1_2026-07-06.md`.
 
+## 🌙 MORNING BRIEF — nightly bug-hunt 2026-07-21→22 (Mode 3)
+
+**Context first (read before the numbers):** 07-21 was operationally MESSY by design —
+two mid-RTH Worker restarts (14:52Z label-fix arm, 17:42Z submin-canonical deploy), the
+sub-minute canonical source armed post-close (its full record:
+`Impl_SubMinute_Canonical_Source.md`), and the shadow-worker's continuous lane FROZEN all
+day (below). Today's paired-% reads carry that noise; tomorrow (07-22) is the first clean
+scorecard. Nightly recompute: fired 00:20Z, completed 00:59Z, 22/23 refreshed (345 crashed
+in the ×8 pool — 3rd time today; its lane is fresh from a 23:50Z solo retry that passed).
+
+**Fleet metric (clean window 17:44–20:00Z, @10s):** gated strategies with activity:
+3/9 ≥90% — 338 (100), 314 (98.6), 271 (97.2→100 by window). Below: 341/343/344 (40),
+310 (55.6), 136 (60, n=5), 267 (70.8). Gated but silent today: 340 (bt entered 15:11,
+live silent), 312/313/325/330/331 (no activity either lane), 339 (canonical validation =
+today's 10:00–11:30 ET window). Non-gated (263/269/321) 100% — ignored per SOP.
+
+**Bugs found + CLASSIFIED (three-lane + harness with corrected leg, all verdicts tool-backed):**
+- **267 (LooseConf canary) — PLUMBING.** 70.8% live vs CEILING 97.1/97.1 (dtime==corr ⇒ not
+  floor, not logic). 13 phantoms spread evenly 18:10→19:33 then trade-for-trade clean
+  19:50→20:00. Dispatch healthy (lag p50 3.3s / max 6.2s ⇒ no stall — live *decided* the
+  extras). Live=47 vs algo=33 ≈ bt=35 entries. Mechanism hypothesis: in-memory state
+  diverged from canonical after the 17:42Z mid-RTH boot (path-dependent utv4 primary state
+  / 2m-SWING gate seeded differently at boot than a clean warmup) — drip starts ~26 min
+  post-boot. NOT auto-armable; prevention = avoid mid-RTH restarts; cure direction =
+  primary-state canonical heal (the deleted PRIMARY-RESYNC's safe successor).
+- **341/343/344 (NVDA 1Min trio) — PLUMBING.** 40% vs CEILING 100/100. All three missed
+  ONLY the 19:58:00 entry (fired 19:56 ✓ and 20:00 ✓, FLAT at the time — live exited 19:57
+  like bt). Bars byte-identical WS==healed==REST 19:55–19:59; algo lane fired 19:58; coarse
+  gates (1h/2h/4h) constant in that span ⇒ a one-bar live close-dispatch/evaluation gap at
+  19:57→19:58. Logs rolled; mechanism unconfirmed.
+- **310 (5m-RVOL + 1d-SUPERTREND) — PLUMBING.** 63.6% vs CEILING 100/100.
+- **340 (5m-BB + 3m-VWAP, 1Min primary) — PLUMBING.** Live fired NOTHING all day; bt + replay
+  both take the 15:11:00 entry (CEILING 100). 15:11 = 19 min after the 14:52Z restart —
+  same boot-state-divergence signature as 267.
+- **309 (2m-BB + 3m-VWAP on a 15Sec primary) — LOGIC (known class) + ops on top.** LIVE 25%
+  but CEILING itself only 42.9/42.9 (corr==dtime ⇒ engine reproduces the miss offline).
+  This is the DOCUMENTED volume-gate trap: fine-TF VWAP/RVOL gates on a SUB-MINUTE primary
+  are structurally divergent (offline 3m VWAP sums Σsub-minute volume; live 3m shadow
+  builds from 1Min — 1Min ≠ Σsub-minute). See `project_fine_tf_construction_falsified` +
+  consumer-#2's volume nuance. Structural cure = volume-consistent canonical fine-TF
+  construction (same family as the sub-minute store, one octave up). Held — design item.
+- **345 (NVDA 1Min) — INFRA.** Crashes the ×8 recompute pool (3× today: fleet run, nightly,
+  reproducible), passes solo (298 trades, 700s). Mitigation available:
+  `railway variables --set "RORT_RECOMPUTE_PARALLELISM=6" -s batch-worker` (revert: same
+  command with 8). HELD — unproven until a night runs it; costs ~33% nightly duration.
+- **Shadow-worker continuous lane FROZEN — INFRA (pre-existing).** `shadow_heartbeats`
+  cursors all stopped 07-20 ~19:19Z (the M-RS5a arming evening); polls run ("tracking 4"),
+  writes don't. This is why the Strategy Health board showed only-TBDs all day 07-21 until
+  the manual Update-All. First item of the mrs5a-merge + shadow-worker `railway up` task.
+
+**ARMED by the hunt: NOTHING.** All findings are live-runtime/ops or known-structural
+classes — none clear rail 2 (provable by replay tonight). (`RORT_CANONICAL_SUBMIN_STATE`
+was armed pre-hunt at 20:26Z by Kevin's direction — separate record, all gates green,
+339's lane rebuilt canonical: 07-16 = {14:11:00, 14:19:30}, replay pairs 14:19:30 exact.)
+
+**Outliers:** none beyond the classified items (267 max dispatch lag 6.2s — fine).
+
+**Open / next:**
+1. 339 gate-4: XTF_BLOCK_DIAG present-sets + first canonical live trades, 10:00–11:30 ET
+   today, scored vs the NEW canonical lane.
+2. mrs5a-branch merge → shadow-worker `railway up` + fingerprint + flag (also unfreezes the
+   continuous lane = intraday board freshness returns).
+3. 309 volume-gate class: RH_DEBUG drill + design the volume-consistent fine-TF construction.
+4. Decide 345 pool width (one-liner above) before tonight's nightly.
+5. Watch 267/340 on a clean no-restart day before deeper surgery on the boot-state class.
+
 ## SCAN 2026-07-09 ~13:20Z (post-nightly 69/69 clean) — @5s, 24h window
 THE STRUCTURAL FINDING: the 21 split by **backtest coverage cutoff** (`fair_cutoff_ts`), not by
 strategy quality. Nightly recompute RAN for all (last_recompute=07-09 01:1x) but coverage frozen
