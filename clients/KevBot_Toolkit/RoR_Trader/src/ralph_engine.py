@@ -236,6 +236,29 @@ def _canonical_tf_short_label(tf_label: str) -> str:
         'Day', 'D').replace('Week', 'W').replace('Sec', 'S')
 
 
+def _bar_dup_guard() -> bool:
+    """RORT_BAR_DUP_GUARD (default OFF), 2026-07-23 — BarBuilder can append a
+    DUPLICATE history row for an already-closed period and over-increment
+    _bar_count: after a period's authoritative close (accept_bar AM authority,
+    or a force-close) leaves _partial=None, a late out-of-order tick/sub-bar
+    stamped inside that period re-opens a partial for it, and the next rollover
+    closes it as a second history row (+1 bar_count). Consequences: bars_held
+    over-counts (sid 136's max_hold_bars exits fired exactly one 1Min bar early
+    — live 16:59/17:32 vs backtest+algo 17:00/17:33, 2026-07-22; -60s ×7 /
+    -120s ×2 over 10 days), the duplicate row (stale partial OHLC) pollutes the
+    incremental indicator stream, and monitors receive a spurious extra
+    bar-close dispatch. Flag ON: drop late ticks/sub-bars targeting a period at
+    or before the last closed history row, and refuse to close a stale partial
+    (no append, no increment, no dispatch) — matches backtest semantics, where
+    each period exists exactly once and the provider aggregate already contains
+    those late prints. Flag OFF: byte-identical legacy behavior. Detection logs
+    a BAR_DUP_GUARD warning in BOTH modes (the tripwire that measures the
+    class's real-world frequency), rate-limited to once per period."""
+    return os.getenv(
+        "RORT_BAR_DUP_GUARD", "0").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
 # Chart pickle defaults per timeframe
 CHART_BAR_COUNTS = {
     60: 300, 300: 200, 900: 150, 1800: 100, 3600: 100,
@@ -405,6 +428,9 @@ class BarBuilder:
         self._closed_min_subbar_ts: Optional[pd.Timestamp] = None
         self._closed_max_subbar_ts: Optional[pd.Timestamp] = None
         self._closed_period_start: Optional[pd.Timestamp] = None
+        # RORT_BAR_DUP_GUARD tripwire rate-limit: one warning per stale
+        # period per builder (late deliveries arrive in bursts).
+        self._dup_guard_warned_period: Optional[pd.Timestamp] = None
 
     def seed_history(self, df: pd.DataFrame):
         """Seed builder history from a DataFrame.
@@ -492,6 +518,13 @@ class BarBuilder:
 
         period_start = self._align_to_period(timestamp)
         if self._partial is None:
+            # RORT_BAR_DUP_GUARD: a late out-of-order tick for a period whose
+            # bar already closed (AM authority / force-close cleared the
+            # partial) must not re-open that period — the next rollover would
+            # append a duplicate history row and over-increment _bar_count.
+            # The provider's aggregate already contains this print.
+            if self._dup_guard_check(period_start, 'tick-open'):
+                return None
             self._partial = PartialBar(price, period_start, self.tf_seconds)
             self._partial.update(price, volume,
                                  update_ohlc=update_ohlc,
@@ -728,6 +761,15 @@ class BarBuilder:
             completed = None
             if self._partial is not None and close_on_boundary:
                 completed = self._close_bar()
+            # RORT_BAR_DUP_GUARD (canonical sub-minute path only): a late
+            # out-of-order sub-bar for a period at/before the last closed row
+            # must not re-open that period — the == last-row case was already
+            # merged above as a rebroadcast; anything reaching here is older.
+            if close_on_boundary and self._dup_guard_check(
+                    period_start, 'secbar-open'):
+                self._partial = None
+                self.last_was_duplicate = False
+                return completed
             # else: discard prior partial (chart-visual mode for 1Min+)
             self._partial = PartialBar(
                 sec_open, period_start, self.tf_seconds)
@@ -809,8 +851,47 @@ class BarBuilder:
         aligned = epoch - (epoch % self.tf_seconds)
         return datetime.fromtimestamp(aligned, tz=timezone.utc)
 
-    def _close_bar(self) -> dict:
+    def _last_closed_period(self) -> Optional[pd.Timestamp]:
+        """Timestamp (tz-aware) of the last CLOSED history row, or None."""
+        if len(self.history) == 0:
+            return None
+        last_ts = self.history.index[-1]
+        if last_ts.tzinfo is None:
+            last_ts = last_ts.tz_localize('UTC')
+        return last_ts
+
+    def _dup_guard_check(self, period_start, source: str) -> bool:
+        """Detect activity targeting a period at or before the last CLOSED
+        history row — the duplicate-row / bar-count-inflation class (see
+        _bar_dup_guard). Logs the tripwire warning in both flag modes.
+        Returns True when the caller must DROP (flag ON and period stale)."""
+        last_ts = self._last_closed_period()
+        if last_ts is None:
+            return False
+        _p = pd.Timestamp(period_start)
+        if _p.tzinfo is None:
+            _p = _p.tz_localize('UTC')
+        if _p > last_ts:
+            return False
+        guard_on = _bar_dup_guard()
+        if self._dup_guard_warned_period != _p:
+            self._dup_guard_warned_period = _p
+            logger.warning(
+                "BAR_DUP_GUARD tf=%ss source=%s stale period=%s "
+                "last_closed=%s action=%s",
+                self.tf_seconds, source, _p, last_ts,
+                "drop" if guard_on else "pass-through(flag-off)")
+        return guard_on
+
+    def _close_bar(self) -> Optional[dict]:
         bar = self._partial.to_dict()
+        if self._dup_guard_check(self._partial.bar_start, 'close-bar'):
+            # Stale partial for an already-closed period — discard it whole:
+            # no history append, no bar-count increment, no downstream
+            # dispatch (returning None means callers see "no completed bar").
+            # The _closed_* bookkeeping stays on the last REAL close.
+            self._partial = None
+            return None
         self._append_to_history(bar)
         self._bar_count += 1
         # Retain constituent bookkeeping so late sub-bar deliveries for
