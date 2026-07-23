@@ -102,13 +102,28 @@ export function nextActor(t: Task, subtasks: Task[]): { next: string | null; han
   return { next, handoff };
 }
 
-/** Small colored role chip (activity authors, owner chips). */
+/**
+ * Circular role avatar (ClickUp-style) — letters for now; the circle is the
+ * slot a profile picture can fill later. Used for activity authors, owner
+ * chips, and as the RolePicker trigger/options.
+ */
 export const RoleChip = ({ role, title }: { role: string; title?: string }) => (
   <span title={title || role} style={{
-    display: 'inline-block', minWidth: 18, textAlign: 'center', padding: '1px 5px',
-    borderRadius: 9, fontSize: 10, fontWeight: 700, color: '#fff',
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    width: 20, height: 20, borderRadius: '50%', flex: 'none',
+    fontSize: 9, fontWeight: 700, letterSpacing: -0.3, color: '#fff',
     background: roleColor(role), whiteSpace: 'nowrap', verticalAlign: 'middle',
   }}>{roleAbbrev(role)}</span>
+);
+
+/** Dashed empty avatar circle (unassigned / "none" option in pickers). */
+export const EmptyRoleCircle = ({ label = '＠' }: { label?: string }) => (
+  <span style={{
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    width: 20, height: 20, borderRadius: '50%', flex: 'none', fontSize: 10,
+    border: '1px dashed var(--border)', color: 'var(--text-secondary)',
+    verticalAlign: 'middle',
+  }}>{label}</span>
 );
 
 /**
@@ -131,7 +146,7 @@ export const RolePicker = ({ value, options, onPick, allowEmpty = false, pickTit
       <button title={`${pickTitle}: ${value || '—'} — click to change`} style={bare}
         onClick={() => setOpen(!open)}>
         {value ? <RoleChip role={value} title={`${pickTitle}: ${value} — click to change`} />
-          : <span style={{ ...tagChip, marginLeft: 0, borderStyle: 'dashed' }}>＠</span>}
+          : <EmptyRoleCircle />}
       </button>
       {open && (
         <>
@@ -144,7 +159,7 @@ export const RolePicker = ({ value, options, onPick, allowEmpty = false, pickTit
           }}>
             {allowEmpty && (
               <button title="pick none" style={bare} onClick={() => { onPick(''); setOpen(false); }}>
-                <span style={{ ...tagChip, marginLeft: 0, borderStyle: 'dashed' }}>—</span>
+                <EmptyRoleCircle label="—" />
               </button>
             )}
             {options.map((r) => (
