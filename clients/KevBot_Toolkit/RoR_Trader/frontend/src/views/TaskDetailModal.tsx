@@ -66,6 +66,7 @@ interface Props {
   task: Task;
   allTasks: Task[];
   visionOptions: Task[];
+  roles?: string[];
   initialSelected?: number;
   patch: (id: number, fields: Partial<Task>) => Promise<void> | void;
   del: (id: number) => void;
@@ -76,7 +77,7 @@ interface Props {
 }
 
 export default function TaskDetailModal({
-  task, allTasks, visionOptions, initialSelected, patch, del, onClose, onOpenTask,
+  task, allTasks, visionOptions, roles = ASSIGNEES, initialSelected, patch, del, onClose, onOpenTask,
   commentAuthor, onPickAuthor,
 }: Props) {
   const subtasks = useMemo(
@@ -237,7 +238,7 @@ export default function TaskDetailModal({
             {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
           <RolePicker value={task.assignee} pickTitle="assignee" allowEmpty
-            options={withLegacy(ASSIGNEES, task.assignee || '').filter(Boolean)}
+            options={withLegacy(roles, task.assignee || '').filter(Boolean)}
             onPick={(r) => patchTracked({ assignee: r })} />
           <NextChip t={task} subtasks={subtasks} />
           <ProgressBar done={doneCount} total={totalCount} />
@@ -315,7 +316,7 @@ export default function TaskDetailModal({
                           textDecoration: s.done ? 'line-through' : 'none', opacity: s.done ? 0.6 : 1,
                         }}>{s.text}</span>
                         <RolePicker value={s.role} pickTitle="step owner" allowEmpty
-                          options={ASSIGNEES.filter(Boolean)}
+                          options={roles.filter(Boolean)}
                           onPick={(r) => setSteps(steps.map((x, j) => j === i ? { ...x, role: r || null } : x))} />
                         <span style={{ cursor: 'pointer', opacity: 0.6 }} title="move up" onClick={() => moveStep(i, -1)}>↑</span>
                         <span style={{ cursor: 'pointer', opacity: 0.6 }} title="move down" onClick={() => moveStep(i, 1)}>↓</span>
@@ -489,7 +490,7 @@ export default function TaskDetailModal({
             </div>
             <div style={{ display: 'flex', gap: 8, padding: 10, borderTop: '1px solid var(--border)', alignItems: 'center' }}>
               <RolePicker value={commentAuthor} pickTitle="comment as" up
-                options={withLegacy(ASSIGNEES.filter(Boolean), commentAuthor)}
+                options={withLegacy(roles.filter(Boolean), commentAuthor)}
                 onPick={onPickAuthor} />
               <input style={{ ...input, flex: 1, minWidth: 0 }} placeholder="comment…" value={draftComment}
                 onChange={(e) => setDraftComment(e.target.value)}

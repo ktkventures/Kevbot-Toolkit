@@ -114,6 +114,7 @@ const navItems: NavItem[] = [
       { href: '/admin/resampled-store', label: 'Resampled Store' },
       { href: '/admin/trade-snapshots', label: 'Trade Snapshots' },
       { href: '/admin/tasks', label: 'Tasks' },
+      { href: '/admin/agents', label: 'Agents' },
     ],
   },
   {
