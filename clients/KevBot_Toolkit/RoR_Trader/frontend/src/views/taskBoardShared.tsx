@@ -111,6 +111,55 @@ export const RoleChip = ({ role, title }: { role: string; title?: string }) => (
   }}>{roleAbbrev(role)}</span>
 );
 
+/**
+ * Avatar-style role picker: the current role renders as a clickable chip;
+ * clicking opens a popover row of role chips to pick from (Kevin 07-22 —
+ * replaces the @ dropdowns in the modal header, composer, and step owners).
+ */
+export const RolePicker = ({ value, options, onPick, allowEmpty = false, pickTitle, up = false }: {
+  value: string | null | undefined;
+  options: string[];
+  onPick: (role: string) => void;
+  allowEmpty?: boolean;
+  pickTitle: string;
+  up?: boolean;
+}) => {
+  const [open, setOpen] = React.useState(false);
+  const bare: React.CSSProperties = { background: 'none', border: 'none', padding: 0, cursor: 'pointer', lineHeight: 1 };
+  return (
+    <span style={{ position: 'relative', display: 'inline-block', verticalAlign: 'middle' }}>
+      <button title={`${pickTitle}: ${value || '—'} — click to change`} style={bare}
+        onClick={() => setOpen(!open)}>
+        {value ? <RoleChip role={value} title={`${pickTitle}: ${value} — click to change`} />
+          : <span style={{ ...tagChip, marginLeft: 0, borderStyle: 'dashed' }}>＠</span>}
+      </button>
+      {open && (
+        <>
+          <span onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 1500 }} />
+          <span style={{
+            position: 'absolute', ...(up ? { bottom: '120%' } : { top: '120%' }), left: 0, zIndex: 1600,
+            display: 'flex', gap: 5, padding: '6px 8px', borderRadius: 8,
+            border: '1px solid var(--border)', background: 'var(--bg-card, var(--bg-input))',
+            boxShadow: '0 6px 20px rgba(0,0,0,0.4)',
+          }}>
+            {allowEmpty && (
+              <button title="pick none" style={bare} onClick={() => { onPick(''); setOpen(false); }}>
+                <span style={{ ...tagChip, marginLeft: 0, borderStyle: 'dashed' }}>—</span>
+              </button>
+            )}
+            {options.map((r) => (
+              <button key={r} title={`pick ${r}`} style={bare}
+                onClick={() => { onPick(r); setOpen(false); }}>
+                <RoleChip role={r} />
+              </button>
+            ))}
+          </span>
+        </>
+      )}
+    </span>
+  );
+};
+
 /** Next-actor chip: quiet when next == assignee, alert-styled when a handoff is due. */
 export const NextChip = ({ t, subtasks }: { t: Task; subtasks: Task[] }) => {
   const { next, handoff } = nextActor(t, subtasks);

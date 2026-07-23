@@ -29,7 +29,7 @@ import { apiFetch } from '@/lib/api/client';
 import {
   Task, Comment, ChecklistStep, STATUSES, AREAS, ASSIGNEES, ORIGINS,
   STATUS_COLOR, withLegacy, input, tagChip, relTime,
-  RoleChip, NextChip, ProgressBar,
+  RoleChip, NextChip, ProgressBar, RolePicker,
 } from './taskBoardShared';
 
 // Default GitHub-style sanitize schema, plus data: image URIs (spec allows
@@ -236,9 +236,9 @@ export default function TaskDetailModal({
             onChange={(e) => patchTracked({ status: e.target.value })}>
             {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
-          <select style={input} value={task.assignee || ''} onChange={(e) => patchTracked({ assignee: e.target.value })}>
-            {withLegacy(ASSIGNEES, task.assignee || '').map((a) => <option key={a} value={a}>@{a || '—'}</option>)}
-          </select>
+          <RolePicker value={task.assignee} pickTitle="assignee" allowEmpty
+            options={withLegacy(ASSIGNEES, task.assignee || '').filter(Boolean)}
+            onPick={(r) => patchTracked({ assignee: r })} />
           <NextChip t={task} subtasks={subtasks} />
           <ProgressBar done={doneCount} total={totalCount} />
           <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }} title="priority phase.seq (edit in Config)">
@@ -314,12 +314,9 @@ export default function TaskDetailModal({
                           flex: 1, minWidth: 0,
                           textDecoration: s.done ? 'line-through' : 'none', opacity: s.done ? 0.6 : 1,
                         }}>{s.text}</span>
-                        {s.role && <RoleChip role={s.role} title={`step owner: ${s.role}`} />}
-                        <select style={{ ...input, fontSize: 11, padding: '1px 4px' }} title="step owner"
-                          value={s.role || ''}
-                          onChange={(e) => setSteps(steps.map((x, j) => j === i ? { ...x, role: e.target.value || null } : x))}>
-                          {ASSIGNEES.map((a) => <option key={a} value={a}>{a || '—'}</option>)}
-                        </select>
+                        <RolePicker value={s.role} pickTitle="step owner" allowEmpty
+                          options={ASSIGNEES.filter(Boolean)}
+                          onPick={(r) => setSteps(steps.map((x, j) => j === i ? { ...x, role: r || null } : x))} />
                         <span style={{ cursor: 'pointer', opacity: 0.6 }} title="move up" onClick={() => moveStep(i, -1)}>↑</span>
                         <span style={{ cursor: 'pointer', opacity: 0.6 }} title="move down" onClick={() => moveStep(i, 1)}>↓</span>
                         <span style={{ cursor: 'pointer', color: 'var(--red)' }} title="delete step"
@@ -490,11 +487,10 @@ export default function TaskDetailModal({
                 </div>
               ))}
             </div>
-            <div style={{ display: 'flex', gap: 6, padding: 10, borderTop: '1px solid var(--border)' }}>
-              <select style={input} title="comment as" value={commentAuthor}
-                onChange={(e) => onPickAuthor(e.target.value)}>
-                {withLegacy(ASSIGNEES.filter(Boolean), commentAuthor).map((a) => <option key={a} value={a}>@{a}</option>)}
-              </select>
+            <div style={{ display: 'flex', gap: 8, padding: 10, borderTop: '1px solid var(--border)', alignItems: 'center' }}>
+              <RolePicker value={commentAuthor} pickTitle="comment as" up
+                options={withLegacy(ASSIGNEES.filter(Boolean), commentAuthor)}
+                onPick={onPickAuthor} />
               <input style={{ ...input, flex: 1, minWidth: 0 }} placeholder="comment…" value={draftComment}
                 onChange={(e) => setDraftComment(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && postComment()} />
