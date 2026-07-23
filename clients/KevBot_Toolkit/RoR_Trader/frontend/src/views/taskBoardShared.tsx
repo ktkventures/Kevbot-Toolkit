@@ -37,6 +37,9 @@ export const AREAS = ['engine', 'backtest', 'frontend', 'infra', 'data', 'docs',
 export const ASSIGNEES = ['', 'M', 'E', 'E2', 'F', 'P', 'R', 'kevin'];
 export const ORIGINS = ['planned', 'discovered', 'kevin'];
 export const AUTHOR_LS_KEY = 'ror_task_comment_author';
+// Tag convention: work is finished and waiting on a human — agents skip these,
+// Kevin filters to them. Rendered as a distinct chip, toggled like ⚡urgent.
+export const NEEDS_REVIEW_TAG = 'needs-review';
 export const COLLAPSED_LS_KEY = 'ror_board_collapsed_visions';
 export const STATUS_COLOR: Record<string, string> = {
   'Backlog': 'var(--text-tertiary)', 'Todo': 'var(--blue)',
