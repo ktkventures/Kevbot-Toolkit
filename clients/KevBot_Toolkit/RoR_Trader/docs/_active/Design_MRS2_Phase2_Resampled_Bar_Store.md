@@ -9,7 +9,7 @@ differently. Read `Design_Gate_Fidelity_Hardening.md` first (the "why").
 > **STATUS (2026-07-10):** BUILT + MERGED (PRs #52/#53/#54) with a stronger-than-spec safety model
 > (verify-first: flag ON runs the same output code as OFF; the store is byte-verified against the
 > engine's own builds on the settled/aligned zone). Flags armed Fri 21:46Z. **The living rollout
-> tracker is `Plan_MRS2_P2_Rollout.md`** — phases, evidence gates, serve-cutover criteria.
+> tracker is `docs/_archive/2026-07_completed-rollouts/Plan_MRS2_P2_Rollout.md`** (archived complete, V4.4 sweep 07-23) — phases, evidence gates, serve-cutover criteria.
 
 ---
 
