@@ -5,6 +5,116 @@ Standing record. Metric = Strategy Health `combined_pct` @5s (screen-faithful vi
 ≥95% @5s (or ≥95%@10s w/ note), OR root-caused + replay-validated fix. Ledger cross-ref:
 `Bug_Hunt_Wave1_2026-07-06.md`.
 
+## 🌙 MORNING BRIEF — nightly bug-hunt 2026-07-23 (Mode 3; E successor abe9f5c3, first act)
+
+**Headline: a NEW live-engine bug was found, repro'd, and fixed tonight — `BarBuilder`
+DUPLICATE-PERIOD rows + `_bar_count` inflation (the mechanism behind 136's one-bar-early
+max-hold exits, and a candidate feeder of the fleet-wide live-process-state divergence
+class). Fix is on dev flag-OFF (`RORT_BAR_DUP_GUARD`, PR #73, dev @`ef447bd`, deployed
+03:12:50Z); the ARM is HELD per rail 2, with an always-on tripwire already measuring the
+class live. Everything else tonight classified PLUMBING with proven ceilings 99–100 — no
+new logic bugs in the gated laggards.**
+
+### Phase 0 — nightly recompute: CLEAN ✅
+Job `d0a3d991` fired 00:20:01Z → completed 00:52:25Z: **23/23 strategies, 0 failed,
+0 skipped, 33,310 rows.** Fleet `data_refreshed_at` 00:20–00:50Z; shadow heartbeats
+streaming (fleet 23/23 @POLL_S=60 — E2's V1.2 flip held overnight). Batch container is
+new (`ad8b9078…` vs `cfb4f2bb…`) — expected after the 21:39Z V4.5 rebuild, not an anomaly.
+
+### Fleet SCAN (07-22 RTH 13:30–20:00Z, post-recompute; combined-% identical @5s and @10s)
+**Goal-1 (gated) PASS:** 338=100 · 344=100 · 314=97.5 · 341/343/345=100 (NVDA note below).
+**Goal-1 FAIL:** 267=81.0 · 271=83.3 · 310=55.0 · 136=33.3 · 194=50.0 · 309=0.
+**Non-gated (deprioritized):** 263=100 · 321=100 · 269=98.1.
+**Goal-1 read: 6/12 active gated ≥90%@10s.**
+- **NVDA trio dashboard 85.7/85.7/80 = window-boundary ARTIFACT; true read 100:** every
+  edge pairs exactly, incl. a 20:00:00Z entry BOTH lanes took — the "missed" edge is that
+  open trade, whose live alert dispatches seconds past the window end bound. Not a bug.
+- Quiet both lanes (legitimately inactive): 312/313/325/330/331/342/340/339. 339's
+  live-vs-NEW-settled pairing still awaits live alerts in its 10:00–11:30 ET GEN window
+  (board V1.6) — none tonight, as expected.
+
+### 🔥 NEW BUG — BarBuilder duplicate-period rows / `_bar_count` inflation (found → repro'd → fixed)
+- **Exposing symptom:** 136 (SPY 1Min, `max_hold_bars: 4`): live max-hold exits fire
+  exactly ONE bar early — 16:59/17:32 live vs 17:00/17:33 backtest+algo, entries paired to
+  the second. 10-day exit-delta histogram: **+0s ×5, −60s ×7, −120s ×2, −180s, −356s** ⇒
+  variable count DRIFT, not a fencepost (retires yesterday's dispatch-lag theory for 136).
+- **Mechanism (repro'd against the real class — `src/test_ralph_bar_dup_guard.py`):** the
+  AM authority bar closes period P and clears the partial → a late out-of-order tick
+  stamped inside P re-opens a partial (`process_tick` has no history check) → next
+  rollover closes it: a SECOND P row appends and `_bar_count` increments again.
+  `bars_held = bar_count − entry_bar_count` over-counts ⇒ early max-hold exit. Beyond 136:
+  the dup row (stale partial OHLC) **feeds the incremental indicator stream**, and
+  monitors get a **spurious extra bar-close dispatch** — exactly the shape of the
+  live-process-state class in tonight's table. `accept_second_bar` has the same hole in a
+  narrower window (post-force-close late sub-bar older than the last row).
+- **Class:** LOGIC (live real-time path). Blast radius: 136 is the only `max_hold_bars`
+  strategy (fleet audit tonight), but dup-row/extra-dispatch side effects touch every builder.
+- **Fix (dev @`ef447bd`, flag-OFF):** `RORT_BAR_DUP_GUARD` — drop late ticks/sub-bars
+  targeting a period ≤ the last closed row; `_close_bar` refuses stale-partial closes (no
+  append, no increment, no dispatch). Matches backtest semantics (each period exists once;
+  the provider aggregate already contains late prints). **Tripwire `BAR_DUP_GUARD` WARN
+  logs in BOTH modes** (rate-limited 1/period/builder) — today's RTH quantifies the class
+  fleet-wide BEFORE any arm.
+- **Validation:** repro tests 4/4 (OFF locks legacy dup; ON drops at both choke points);
+  ralph suites (no-gapfill 4/4, subminute parity 6/6, gap-heal 23/23); fidelity parity
+  suite **18/18 AND full `--coarse --writethrough` 29/29 — each run flag OFF and flag ON**
+  (canary 267 byte-identical).
+- **ARMED: NO — held per rail 2.** The dup never lands in recorded lanes (`live_bars`
+  upserts per period), so replay cannot predict the paired-% gain ⇒ harness can't prove it
+  ⇒ no auto-arm. Proof plan: today's tripwire counts (grep Worker logs for `BAR_DUP_GUARD`)
+  correlated with any 136-style early exit.
+  **Arm:** `railway variables --set "RORT_BAR_DUP_GUARD=1" --service Worker` · revert: set `0`.
+
+### Bugs found + CLASSIFIED (replay-harness + three-lane arbitrated)
+| sid | live@10s | ceiling dtime/corr | self r≈l | class | evidence |
+|-----|---------|--------------------|-----------|-------|----------|
+| 267 | 81.0 | 99.0 / 99.0 | 89% | **PLUMBING/process-state** | 19 phantom entries spread 13:42–19:50 (not deploy-clustered), all dispatch-lag ~3.3s; **algo↔bt = 100% (97/97)**; clean replay of recorded decision-time bars ≈ backtest ⇒ live's accumulated in-process state, not bars, not logic |
+| 310 | 55.0 | 100 / 100 | 71% | **PLUMBING** | live quiet 17:46–17:57 while BOTH offline lanes fired (5 missed, 4 algo-agreed) + 2 tip phantoms |
+| 271 | 83.3 | 100 / 100 | 91% | **PLUMBING** (+algo note) | all 6 phantoms shared with algo, 0 missed; separate: the ALGO lane itself over-fires settled bt by 25 entries today (10Sec SPY, decision-time vs settled) — doesn't touch the health metric but matters when the algo lane arbitrates |
+| 194 | 50.0 | 100 / 100 | 67% | **PLUMBING/state** | tiny N: live missed a 1-bar bt round-trip 14:01→14:02 (utv4 flip); algo lane empty for the day |
+| 309 | 0 | (known 42.9, corr==dtime) | — | **LOGIC — KNOWN structural** | fine-TF VWAP/RVOL volume-gate trap on sub-min primary; 2 phantoms 13:39:30/13:58:45 fit the class; not a whack-a-mole target |
+| 136 | 33.3 | 100 / 100 | 50% | **LOGIC → FIXED (above)** | note: its ALGO lane also took 3 extra trades (14:39–17:41) vs bt — small separate algo-lane divergence, same family as 271's note |
+
+**Common thread:** every laggard's ceiling is 99–100 at BOTH decision-time and corrected
+bars — the offline engine is faithful; the residual lives in accumulated live-process
+state. Structural cure = the canonical-serving / state re-true direction (M-RS5 resident
+window family), not per-sid patches. The dup-row bug fixed tonight is a plausible
+contributor — the tripwire will show how much.
+
+### ARMED last night: **NOTHING** (0/3 flag budget; live behavior untouched)
+The fix shipped **flag-OFF (inert)** — dev merge @03:12:50Z rebuilt api/Worker/batch/
+frontend (Worker back up 03:14:36Z after one transient "Server disconnected" during
+switchover; warmups clean). **Expected overnight rebuilds: (1) mine @03:12Z ✓, (2) this
+docs push, (3) V2.5 tasks-page merge (F lane, after the hunt per Kevin). Anything beyond
+those is off-script — flag it.**
+
+### Held for Kevin
+1. **Arm decision — `RORT_BAR_DUP_GUARD=1` on Worker** after today's tripwire evidence.
+   Rec: if `BAR_DUP_GUARD` warns appear during RTH (esp. SPY 1Min / sub-minute builders),
+   arm tomorrow evening. Zero-risk revert (flag to 0).
+2. **267/310/271/194 process-state class** — no offline-armable fix exists by construction
+   (replay cannot reproduce live's accumulated state). Structural options: (a) canonical
+   live serving (M-RS5 resident-window direction), (b) periodic live-state re-true from
+   canonical bars (refresher family). Worth a design slot after the fleet promotion.
+3. **Pre-existing test failure (NOT from tonight's change):**
+   `test_ralph_fidelity.py::test_strategy_monitor_warmup_and_bar_close` "Missing ema_8" —
+   fails identically on clean `origin/dev`; stale test vs current indicator set.
+
+### Outliers
+- 136's −60s exits (the bug above) were the only systematic >30s-class offsets tonight;
+  no >30s-late fills inside passing strategies.
+
+### Open / next
+- **Tripwire watch (today RTH):** count `BAR_DUP_GUARD` warns per symbol/TF in Worker
+  logs; correlate with any 136 early exit → that's the arm evidence.
+- V1.6: 339 live-vs-settled pairing in the 10:00–11:30 ET GEN window.
+- 310's 17:46–17:57 live-quiet window: if it recurs, check WS feed continuity /
+  monitor state at those minutes (engine-stall telemetry is aboard).
+- Fuller fix option (later): rebroadcast-style MERGE for late ticks on the == last-row
+  period in `process_tick` (guard drops them; AM authority already corrects closed rows,
+  so drop ≈ merge in practice for 1Min+).
+- Board: V4.6 folded into PR #73 (session-handoff skill now tracked) → done.
+
 ## 🌙 MORNING BRIEF — nightly bug-hunt 2026-07-21→22 (Mode 3)
 
 **Context first (read before the numbers):** 07-21 was operationally MESSY by design —

@@ -19,6 +19,25 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-07-23
+
+- **03:12 UTC (21:12 MT 07-22)** — `ef447bd` fix(engine): BAR_DUP_GUARD — duplicate-period
+  rows / bar-count inflation in BarBuilder (PR #73, flag `RORT_BAR_DUP_GUARD` default OFF)
+  - Service(s) redeployed: Worker, api, batch-worker, frontend (dev auto-deploy; **flag OFF —
+    inert**; shadow-worker untouched by design)
+  - Found by the 07-23 nightly bug-hunt: late out-of-order tick re-opens an already-closed
+    period → duplicate history row + `_bar_count` over-increment → 136's max-hold exits fire
+    one bar early; dup row also feeds incremental indicators + a spurious bar-close dispatch.
+  - Always-on `BAR_DUP_GUARD` tripwire WARN (rate-limited 1/period/builder) ships with this —
+    today's RTH logs quantify the class BEFORE any arm. **Arm held for Kevin** (nightly rail 2):
+    `railway variables --set "RORT_BAR_DUP_GUARD=1" --service Worker`; revert = set `0`.
+  - Validation: new `test_ralph_bar_dup_guard.py` 4/4; ralph suites 4/4+6/6+23/23;
+    fidelity_parity_suite 18/18 AND full `--coarse --writethrough` 29/29 — each flag OFF and ON.
+  - Boot: one transient "Server disconnected" engine crash 03:14:15 during switchover
+    (supervisor restarted; warmups clean from 03:14:36). Observed cache gap: none expected
+    (overnight, no session).
+  - Also folds in board V4.6 (`.claude/skills/session-handoff/` now tracked in git).
+
 ## 2026-07-22
 
 - **22:37 UTC (16:37 MT)** — `bf0d2cf` Merge PR #71 `feat/tasks-team-board` → dev:
