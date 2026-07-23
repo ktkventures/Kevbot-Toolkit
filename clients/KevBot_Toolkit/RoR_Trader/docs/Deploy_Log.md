@@ -21,6 +21,41 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-07-23
 
+- **20:41 UTC (14:41 MT)** — `9a45898` Merge PR #74 `feat/agents-registry` → dev:
+  Spec_Agents_Registry.md Phase 1 (board #99, V2.6) — additive `agents` table + touch
+  trigger + RLS + idempotent 7-row seed (scope/boundaries verbatim from charter §1;
+  charter stays SSOT until the V4.9 dispatcher inverts authority), agents CRUD router
+  (fail-loud enums) + main.py registration, read-only /admin/agents department-grouped
+  roster cards (letter avatars, status chips, expandable scope/boundaries, worktrees,
+  context docs, live queue from the board), registry-driven assignee/comment-author
+  dropdowns with the ASSIGNEES const as fallback. Tooling only (no trading tables, no
+  engine files); no flags. **agents migration+seed pre-applied 07-23** (additive; inert
+  under old code — deploy order was a non-issue).
+  - Service(s) redeployed: api / frontend (the touched pair); Worker / batch-worker /
+    Data Worker also rebuilt on the dev push (auto-deploy) — all 5 SUCCESS on `9a45898`
+    (deploys created 20:41:02–05Z). shadow-worker untouched (E-lane `railway up` only).
+  - Gates (R re-run on `cda2f3d` pre-merge): only the 1 branch commit over dev ✓ ·
+    fidelity parity suite 18/18 PASS, 0 FAIL — SPY/10Sec cache-parity green, so the
+    board #103 revision-drift class did NOT recur (transient gate RED during the build
+    resolved as #103: bar_cache revision drift on SPY 07-20, Polygon post-capture
+    revision; E re-trued and closed ~20:00Z; unrelated to this branch) ✓ · frontend
+    production build exit 0 ✓ · code review: 0 confirmed blockers (2 minors, both
+    unreachable under enum validation: duplicate-letter POST surfaces as raw 500 not
+    clean 400; unknown-department cards wouldn't render) ✓. GitHub "Fidelity Gate" red =
+    same pre-existing missing-`pytest` CI infra failure as every dev push (board backlog
+    item "CI: add pytest to the synthetic-parity workflow").
+  - Deploy watch: API SUCCESS 20:41:40Z, boot clean (startup complete; only the two
+    pre-existing FastAPI `regex=` deprecation warnings); frontend SUCCESS 20:43:23Z.
+    Playwright spot-checks on the deployed pages: /admin/agents renders all 7 roster
+    cards grouped under DEV with live queue counts (F card "11 open" = API count);
+    sidebar shows Agents next to Tasks; tasks-page assignee select loads registry
+    letters incl. E2 — E2 exists only in the DB, proving the registry round-trip is
+    live, not the const fallback. Timing precondition honored: merged 20:41Z (post
+    20:00Z close) with board #100 re-confirmed Done in the DB. Observed cache gap:
+    Worker restart window ~20:41–43Z, outside RTH — none expected.
+  - Backup branch: `backup/dev-pre-agents-registry` (fde9d28). Rollback = `git revert
+    -m 1 9a45898` (agents table additive — no DB rollback needed).
+
 - **04:08 UTC (22:08 MT 07-22)** — `ed4a0b6` Merge PR #72 `feat/task-detail-panels` → dev:
   Spec_Tasks_Team_Board.md Phase 3 + 07-22 amendments (board task #84, V2.5) — three-panel
   task modal (Context tabs re-scope to the selected pipeline item, Activity thread, vision
