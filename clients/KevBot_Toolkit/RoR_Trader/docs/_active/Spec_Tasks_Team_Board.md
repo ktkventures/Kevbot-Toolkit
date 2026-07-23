@@ -91,3 +91,83 @@ Real-time updates, drag-and-drop ordering, auth-role hardening (endpoint stays
 - `AdminTasksPage.tsx` is a single 309-line file — keep it one file if it stays readable,
   split view components only if the grouped view pushes it past ~500 lines
   (per `feedback_keep_modules_visible`).
+
+---
+
+# Phase 3 — Task detail: three-panel modal + hierarchy UX (V2.5, Kevin feedback 07-22)
+
+**Origin:** Kevin's UI feedback after Phase 1 shipped (PR #71), with a reference
+screenshot from his other project (task-coach UI): wide task view with a Context panel
+(rich SOP-style content, tabs) on the left, an Activity/comment thread on the right,
+and a Summary + process checklist strip along the bottom, each checklist row having an
+owner chip and sign-off state. ClickUp is the shared mental model.
+
+## 3A — Subtask carets in the grouped view
+- Vision header rows get a chevron (▸/▾) to expand/collapse their subtask block,
+  ClickUp-style. Default expanded; persist the collapsed-set in localStorage.
+- Rollup counts (n/m done) stay visible on the header when collapsed.
+
+## 3B — Three-panel task modal
+Replace the current single-column detail modal with a wide layout (~90vw, max ~1200px):
+left column (≈2/3) = **Context** on top + **Summary/Checklist** below (collapsible);
+right column (≈1/3) = **Activity**, full height, comment input pinned at bottom.
+
+**Interaction model (clarified by Kevin 07-22 w/ reference screenshots — the checklist
+strip is a SELECTOR, not just a list):** selecting a checklist row re-scopes BOTH the
+Context panel AND the Activity panel to that item; a "Summary" control (first position,
+visually distinct) selects the task itself. Concretely:
+- **Vision modal:** checklist rows = its live subtasks (real tasks). Select one →
+  Context = that subtask's description, Activity = that subtask's comment thread, and a
+  posted comment lands on the SELECTED subtask. Summary = the vision's own
+  description/thread. Inline re-scoping replaces open-another-modal (keep a small
+  "open full task" affordance on the selected row).
+- **Leaf modal:** checklist rows = the JSONB steps — checkboxes with optional role chip,
+  NO per-step context/thread; selecting only highlights, panels stay on the task itself.
+  A step that needs its own thread/SOP gets PROMOTED to a real subtask instead (the
+  one-level nesting rule holds).
+
+**Context panel** — `description` rendered as Markdown WITH sanitized inline HTML
+(tables, images, layout allowed; sanitize — no scripts/handlers). Edit mode = textarea
++ live preview toggle. DEFAULT DECISION (Kevin may veto): storage stays TEXT holding
+markdown/HTML source; images referenced by URL or pasted data-URI. File/image UPLOAD is
+a non-goal this phase (needs a storage bucket — later phase).
+
+**Activity panel** — the existing comment thread, upgraded to an activity log:
+- Comment author = role selector (M/E/E2/F/P/R/kevin), persisted in localStorage
+  (replaces hardcoded 'kevin').
+- DEFAULT DECISION: the API PATCH handler auto-inserts system entries on status or
+  assignee change (`author='system'`, body e.g. "status: Todo → In Progress (by F)") so
+  handoffs/reassignments are traceable without discipline.
+- Chronological, newest at bottom; relative timestamps.
+
+**Summary / process checklist panel** —
+- Vision items (`tags` contains `vision`): live subtask list (title, assignee chip,
+  status), click-through to that subtask's modal. This IS the checklist for visions.
+- Leaf tasks: DEFAULT DECISION: new additive column `checklist JSONB NOT NULL DEFAULT
+  '[]'` — array of `{"text": str, "done": bool, "role": str|null}`. Add / toggle /
+  reorder / delete in the modal. ⚠ JSONB updates must send the WHOLE array every PATCH
+  (see memory: partial dicts wipe). API: add `checklist` to the editable whitelist.
+
+## Acceptance (gate before release-brief)
+1. Grouped view: collapse V1 → subtasks hidden, rollup still shown; state survives
+   reload; expand restores.
+2. Modal on a leaf task: three panels render; description with a markdown table + an
+   image URL + an HTML `<table>` renders sanitized (a `<script>` tag is stripped).
+3. Checklist: add 3 steps, toggle 2 done, reload → persisted; PATCH payload carries the
+   full array.
+4. Status change via modal writes a system activity entry; comment as role 'F' shows
+   author chip 'F'.
+5. Vision modal: selecting a subtask in the checklist switches Context to its
+   description AND Activity to its thread; a comment posted while it's selected lands on
+   THAT subtask (verify via GET /api/dev-tasks/{subtask_id}/comments); Summary switches
+   back to the vision's own description/thread.
+6. Existing flat view, filters, and Phase-1 behavior unregressed; parity suite all green.
+
+## Notes for F
+- Branch: `feat/task-detail-panels` off LATEST `origin/dev` (fetch first — dev moved
+  past your merge: bf0d2cf + R's log commit). New branch, not the merged one.
+- Migration: additive only, same rules as Phase 1 (apply to dev_tasks tooling table OK).
+- Markdown rendering: prefer whatever md/sanitize libs are already in package.json
+  before adding deps; if adding, react-markdown + rehype-raw + rehype-sanitize (or
+  DOMPurify) — keep bundle impact minimal.
+- V2.2 (health-overview) moves to AFTER this ships — Kevin's call 07-22.
