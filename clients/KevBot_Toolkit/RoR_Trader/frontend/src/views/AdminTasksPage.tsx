@@ -38,6 +38,9 @@ export default function AdminTasksPage() {
   const [modal, setModal] = useState<{ id: number; sel?: number } | null>(null);
   const [commentAuthor, setCommentAuthor] = useState('kevin');
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
+  // Assignee/author options come from the agents registry; the const is the
+  // fallback so selects never break if the fetch fails (spec §4).
+  const [roles, setRoles] = useState<string[]>(ASSIGNEES);
   const [nt, setNt] = useState({
     title: '', priority_phase: 1, priority_seq: 99, area: 'other',
     assignee: '', impacts_live: false,
@@ -54,6 +57,14 @@ export default function AdminTasksPage() {
     finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    apiFetch<{ letter: string }[]>('/api/agents?active=true')
+      .then((rows) => {
+        const letters = (rows || []).map((a) => a.letter).filter(Boolean);
+        if (letters.length) setRoles(['', ...letters]);
+      })
+      .catch(() => { /* keep ASSIGNEES fallback */ });
+  }, []);
   useEffect(() => {
     const saved = localStorage.getItem(AUTHOR_LS_KEY);
     if (saved) setCommentAuthor(saved);
@@ -137,11 +148,11 @@ export default function AdminTasksPage() {
   [tasks, byParent]);
 
   const assigneeOptions = useMemo(() => {
-    const known = ASSIGNEES.filter(Boolean);
+    const known = roles.filter(Boolean);
     const legacy = Array.from(new Set(tasks.map((t) => t.assignee).filter(Boolean) as string[]))
       .filter((a) => !known.includes(a));
     return [...known, ...legacy];
-  }, [tasks]);
+  }, [tasks, roles]);
 
   const visible = useMemo(() => tasks.filter(matches),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -233,7 +244,7 @@ export default function AdminTasksPage() {
       </td>
       <td style={cell}>
         <select style={input} value={t.assignee || ''} onChange={(e) => patch(t.id, { assignee: e.target.value })}>
-          {withLegacy(ASSIGNEES, t.assignee || '').map((a) => <option key={a} value={a}>{a || '—'}</option>)}
+          {withLegacy(roles, t.assignee || '').map((a) => <option key={a} value={a}>{a || '—'}</option>)}
         </select>
       </td>
       <td style={cell}><span style={{ cursor: 'pointer', color: 'var(--red)' }} onClick={() => del(t.id)}>✕</span></td>
@@ -307,7 +318,7 @@ export default function AdminTasksPage() {
             {AREAS.map((a) => <option key={a} value={a}>{a}</option>)}
           </select>
           <select style={input} value={nt.assignee} onChange={(e) => setNt({ ...nt, assignee: e.target.value })}>
-            {ASSIGNEES.map((a) => <option key={a} value={a}>{a || '—'}</option>)}
+            {roles.map((a) => <option key={a} value={a}>{a || '—'}</option>)}
           </select>
           <label style={{ fontSize: 12 }}><input type="checkbox" checked={nt.impacts_live}
             onChange={(e) => setNt({ ...nt, impacts_live: e.target.checked })} /> 🔴 live</label>
@@ -360,6 +371,7 @@ export default function AdminTasksPage() {
         <TaskDetailModal key={`${modalTask.id}:${modal?.sel ?? ''}`}
           task={modalTask} allTasks={tasks} visionOptions={visionItems}
           initialSelected={modal?.sel}
+          roles={roles}
           patch={patch} del={del}
           onClose={() => setModal(null)}
           onOpenTask={(id, sel) => setModal({ id, sel })}
