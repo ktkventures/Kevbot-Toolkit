@@ -21,6 +21,34 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-07-23
 
+- **04:08 UTC (22:08 MT 07-22)** — `ed4a0b6` Merge PR #72 `feat/task-detail-panels` → dev:
+  Spec_Tasks_Team_Board.md Phase 3 + 07-22 amendments (board task #84, V2.5) — three-panel
+  task modal (Context tabs re-scope to the selected pipeline item, Activity thread, vision
+  pipeline strip), subtask carets, handoff-pipeline checklists driving the Next-actor chip,
+  circular role avatars + avatar-click pickers replacing the @ dropdowns. Tooling only
+  (dev_tasks router / task views / md-render deps); no trading tables, no engine files, no
+  flags. **checklist migration pre-applied 07-22** (additive; inert under old code); Kevin
+  sign-off on local 07-22 (four review rounds).
+  - Service(s) redeployed: api / frontend (the touched pair); Worker / batch-worker /
+    Data Worker also rebuilt on the dev push (auto-deploy) — all 5 SUCCESS on `ed4a0b6`
+    (deploys created 04:08:33Z). shadow-worker untouched (E-lane `railway up` only).
+  - Gates (R re-run on `7a75c15` pre-merge): only the 5 branch commits over dev ✓ ·
+    fidelity parity suite 18/18 PASS, exit 0 ✓ · frontend production build exit 0 ✓ ·
+    code review: 0 confirmed blockers (2 minors: unsaved-description draft discarded on
+    pipeline-selection switch without dirty-check; duplicate comment on held Enter —
+    pre-existing pattern) ✓. GitHub "Fidelity Gate" red = same pre-existing
+    missing-`pytest` CI infra failure as every dev push since ≥07-16.
+  - Deploy watch: API switchover blip 04:24:24Z (single 000, then healthy). Playwright
+    spot-checks on deployed /admin/tasks 10/10 PASS: Next chips render; vision modal
+    above sidebar (full-viewport fixed overlay z-1000); pipeline-strip selection
+    re-scopes Context tabs + Activity header to the selected subtask; avatar-click
+    role-picker popover (8 role circles); PATCH invalid-`checklist` → new 400 validation
+    message (new API code confirmed live); 28 legacy 'claude' rows intact via API.
+    Worker boot clean (warmups serving from ResampledStore, no errors). Observed cache
+    gap: none expected (overnight, no session).
+  - Backup branch: `backup/dev-pre-task-detail-panels`. Rollback = `git revert -m 1
+    ed4a0b6` (checklist column additive — no DB rollback needed).
+
 - **03:12 UTC (21:12 MT 07-22)** — `ef447bd` fix(engine): BAR_DUP_GUARD — duplicate-period
   rows / bar-count inflation in BarBuilder (PR #73, flag `RORT_BAR_DUP_GUARD` default OFF)
   - Service(s) redeployed: Worker, api, batch-worker, frontend (dev auto-deploy; **flag OFF —
