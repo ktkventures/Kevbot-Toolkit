@@ -19,6 +19,23 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-07-23
+
+- **17:02 UTC (11:02 MT)** — shadow-worker: `RORT_SUPPRESS_EOD_REENTRY=1` var-set +
+  immediate `railway up` (hardened SOP). Boot 17:04:26Z `up id=ddf53b14e6c6:1 poll=5s`,
+  fingerprint `f4fd3ab24a5e` ✓, RESIDENT lane active; fleet re-bootstrapped 23/23 by
+  17:09:46Z. Purpose: close the lane divergence — main Worker has had the flag =1 while
+  the shadow/backtest lane still ran legacy EOD re-entry churn (E's V1.9 stuck-open
+  20:00:43Z lead). Flag is runtime-read (`unified_engine.py:37`), no code change.
+  Board row #102 (E2).
+- **16:22 UTC (10:22 MT)** — shadow-worker: **V1.5 POLL_S 60→5 restore**
+  (`SHADOW_WORKER_POLL_S=5` var-set + immediate `railway up`, hardened SOP). Pre-flip
+  open soak: 23/23 fresh, 20m cursor lag (nominal), 0 errors, ~3h into RTH. Boot
+  16:26:40Z `poll=5s`, fingerprint `f4fd3ab24a5e` ✓. 30-min watch @5s: 6/6 readings
+  23/23 fresh, newest heartbeat 2–70s (240s debounce), oldest cursor lag 18.2–19.7m
+  (settle-horizon-bound). One-knob-per-day rollout COMPLETE: fleet flip @60s 07-22 →
+  overnight+open soak → 5s. Board row #65 / V1.5 (E2).
+
 ## 2026-07-22
 
 - **02:05–02:22 UTC (20:05–20:22 MT 07-21)** — **shadow-worker `railway up` from the MERGED
