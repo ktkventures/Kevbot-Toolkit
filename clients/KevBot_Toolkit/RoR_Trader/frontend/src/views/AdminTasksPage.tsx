@@ -23,6 +23,7 @@ import TaskDetailModal from './TaskDetailModal';
 import {
   Task, STATUSES, AREAS, ASSIGNEES, ORIGINS, STATUS_COLOR, AUTHOR_LS_KEY,
   COLLAPSED_LS_KEY, withLegacy, cell, input, badge, tagChip,
+  NextChip, ProgressBar,
 } from './taskBoardShared';
 
 export default function AdminTasksPage() {
@@ -34,7 +35,7 @@ export default function AdminTasksPage() {
   const [liveOnly, setLiveOnly] = useState(false);
   const [areaFilter, setAreaFilter] = useState('');
   const [assigneeFilter, setAssigneeFilter] = useState('');
-  const [modalId, setModalId] = useState<number | null>(null);
+  const [modal, setModal] = useState<{ id: number; sel?: number } | null>(null);
   const [commentAuthor, setCommentAuthor] = useState('kevin');
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
   const [nt, setNt] = useState({
@@ -96,7 +97,7 @@ export default function AdminTasksPage() {
   const del = async (id: number) => {
     if (!confirm('Delete this task? Subtasks are deleted with their vision item.')) return;
     setTasks((t) => t.filter((x) => x.id !== id));
-    if (modalId === id) setModalId(null);
+    if (modal?.id === id) setModal(null);
     try { await apiFetch(`/api/dev-tasks/${id}`, { method: 'DELETE' }); }
     catch (e) { setErr(String(e)); load(); }
   };
@@ -148,7 +149,7 @@ export default function AdminTasksPage() {
 
   const openCount = tasks.filter((t) => t.status !== 'Done').length;
   const liveCount = tasks.filter((t) => t.impacts_live && t.status !== 'Done').length;
-  const modalTask = tasks.find((t) => t.id === modalId) || null;
+  const modalTask = (modal && tasks.find((t) => t.id === modal.id)) || null;
   const ntParent = nt.parent_id != null ? tasks.find((t) => t.id === nt.parent_id) : null;
 
   const PriCell = ({ t }: { t: Task }) => (
@@ -180,7 +181,7 @@ export default function AdminTasksPage() {
       <td style={{ ...cell, color: 'var(--text-tertiary)', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>#{t.id}</td>
       <td style={cell}><PriCell t={t} /></td>
       <td style={{ ...cell, cursor: 'pointer', fontWeight: rollup ? 600 : 500, paddingLeft: indent ? 28 : cell.padding }}
-        onClick={() => setModalId(t.id)}>
+        onClick={() => setModal({ id: t.id })}>
         {rollup && (
           <span style={{ cursor: 'pointer', marginRight: 6, color: 'var(--text-tertiary)', fontSize: 12 }}
             title={collapsed.has(t.id) ? 'expand subtasks' : 'collapse subtasks'}
@@ -201,6 +202,8 @@ export default function AdminTasksPage() {
         {view === 'flat' && t.parent_id != null &&
           <span style={{ ...tagChip, marginLeft: 6 }} title="subtask of this vision item">↳ #{t.parent_id}</span>}
         <TagChips t={t} />
+        <NextChip t={t} subtasks={byParent.get(t.id) || []} />
+        {rollup && <span style={{ marginLeft: 6 }}><ProgressBar done={rollup.done} total={rollup.total} mini /></span>}
         {(t.blocked_by?.length > 0) && <span style={{ color: 'var(--red)', fontSize: 11 }}> ⛔{t.blocked_by.join(',')}</span>}
         {rollup && (
           <button style={{ ...input, cursor: 'pointer', fontSize: 11, padding: '1px 6px', marginLeft: 8 }}
@@ -354,11 +357,12 @@ export default function AdminTasksPage() {
       )}
 
       {modalTask && (
-        <TaskDetailModal key={modalTask.id}
+        <TaskDetailModal key={`${modalTask.id}:${modal?.sel ?? ''}`}
           task={modalTask} allTasks={tasks} visionOptions={visionItems}
+          initialSelected={modal?.sel}
           patch={patch} del={del}
-          onClose={() => setModalId(null)}
-          onOpenTask={(id) => setModalId(id)}
+          onClose={() => setModal(null)}
+          onOpenTask={(id, sel) => setModal({ id, sel })}
           commentAuthor={commentAuthor} onPickAuthor={pickAuthor} />
       )}
     </div>
