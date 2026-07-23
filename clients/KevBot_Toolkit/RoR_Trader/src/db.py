@@ -1293,24 +1293,52 @@ def delete_trades_for_strategy_admin(strategy_id: int) -> int:
     return len(result.data) if result.data else 0
 
 
-def delete_trade_placeholder_admin(strategy_id: int, entry_fill_ts) -> int:
+def delete_trade_placeholder_admin(strategy_id: int, entry_fill_ts,
+                                   data_source_like: str | None = None) -> int:
     """Delete any open-position placeholder row for (strategy, entry_fill_ts).
 
     forward_test_service may emit a row with exit_fill_ts IS NULL while a
     position is still held. Once the exit fires, the worker wants to
     replace that placeholder with the closed trade rather than leave
     both in place. Returns deleted row count.
+
+    data_source_like (2026-07-23, board #101): optional lane scope
+    ('backtest_%' / 'cache_%'). The append writers supersede open rows in
+    THEIR OWN lane only — the unscoped legacy form (live worker close path)
+    would otherwise let a backtest append delete a live-lane placeholder
+    that shares the same entry_fill_ts (the lane-collision family).
     """
     if entry_fill_ts is None or entry_fill_ts == '':
         return 0
     client = get_admin_client()
-    result = client.table('trades') \
+    q = client.table('trades') \
         .delete() \
         .eq('strategy_id', strategy_id) \
         .eq('entry_fill_ts', entry_fill_ts) \
+        .is_('exit_fill_ts', 'null')
+    if data_source_like:
+        q = q.like('data_source', data_source_like)
+    result = q.execute()
+    return len(result.data) if result.data else 0
+
+
+def get_open_trade_entries_admin(strategy_id: int,
+                                 data_source_like: str) -> set:
+    """entry_fill_ts (ISO strings) of open rows (exit IS NULL) in a lane.
+
+    Used by the append supersession guard (board #101) so the cron append's
+    entry-position gate can let a CLOSED version of a known-open entry
+    through instead of skipping it (which left 'open' rows stale forever).
+    """
+    client = get_admin_client()
+    result = client.table('trades') \
+        .select('entry_fill_ts') \
+        .eq('strategy_id', strategy_id) \
+        .like('data_source', data_source_like) \
         .is_('exit_fill_ts', 'null') \
         .execute()
-    return len(result.data) if result.data else 0
+    return {r['entry_fill_ts'] for r in (result.data or [])
+            if r.get('entry_fill_ts')}
 
 
 def replace_trades_admin(
