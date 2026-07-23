@@ -140,9 +140,10 @@ export default function TaskDetailModal({
     setCtxEdit(false); setCtxPreview(false);
   };
 
-  // Checklist ops (leaf only) — ALWAYS send the whole array (JSONB replace).
-  const steps: ChecklistStep[] = task.checklist || [];
-  const setSteps = (next: ChecklistStep[]) => patch(task.id, { checklist: next });
+  // Checklist ops operate on the SCOPED item (the selected pipeline row, or
+  // the task itself) — ALWAYS send the whole array (JSONB replace).
+  const steps: ChecklistStep[] = scoped.checklist || [];
+  const setSteps = (next: ChecklistStep[]) => patch(scoped.id, { checklist: next });
   const addStep = () => {
     if (!newStep.trim()) return;
     setSteps([...steps, { text: newStep.trim(), done: false, role: null }]);
@@ -169,13 +170,20 @@ export default function TaskDetailModal({
     </div>
   );
 
+  // Header-level counts describe the MODAL task; the Process tab describes
+  // the scoped item (a selected subtask is always a leaf — one-level rule).
   const doneCount = vision
     ? subtasks.filter((s) => s.status === 'Done').length
-    : steps.filter((s) => s.done).length;
-  const totalCount = vision ? subtasks.length : steps.length;
+    : (task.checklist || []).filter((s) => s.done).length;
+  const totalCount = vision ? subtasks.length : (task.checklist || []).length;
   const stripRows = vision ? subtasks : [];
 
-  const selectRow = (id: number) => { setSelected(id); setTab('summary'); };
+  const scopedIsLeaf = scoped.id === task.id ? !vision : true;
+  const scopedDone = steps.filter((s) => s.done).length;
+  // Process tab is invalid when the scope is the vision itself — fall back.
+  const effTab: Tab = tab === 'process' && !scopedIsLeaf ? 'summary' : tab;
+
+  const selectRow = (id: number) => setSelected(id);
 
   return createPortal(
     <div onClick={onClose} style={{
@@ -256,17 +264,17 @@ export default function TaskDetailModal({
             <div style={{ ...panel, flex: 1 }}>
               <div style={panelHead}>
                 <span>Context · {scoped.id === task.id ? 'what to do' : `subtask #${scoped.id}`}</span>
-                <button style={chipBtn(tab === 'summary')} onClick={() => setTab('summary')}>summary</button>
-                {!vision && (
-                  <button style={chipBtn(tab === 'process')} onClick={() => setTab('process')}>
-                    process {totalCount > 0 ? `${doneCount}/${totalCount}` : ''}
+                <button style={chipBtn(effTab === 'summary')} onClick={() => setTab('summary')}>summary</button>
+                {scopedIsLeaf && (
+                  <button style={chipBtn(effTab === 'process')} onClick={() => setTab('process')}>
+                    process {steps.length > 0 ? `${scopedDone}/${steps.length}` : ''}
                   </button>
                 )}
-                <button style={chipBtn(tab === 'config')} onClick={() => setTab('config')}>config</button>
+                <button style={chipBtn(effTab === 'config')} onClick={() => setTab('config')}>config</button>
                 <span style={{ flex: 1 }} />
-                {tab === 'summary' && !ctxEdit &&
+                {effTab === 'summary' && !ctxEdit &&
                   <button style={chipBtn(true)} onClick={() => setCtxEdit(true)}>edit</button>}
-                {tab === 'summary' && ctxEdit && (
+                {effTab === 'summary' && ctxEdit && (
                   <>
                     <button style={chipBtn(!ctxPreview)} onClick={() => setCtxPreview(false)}>write</button>
                     <button style={chipBtn(ctxPreview)} onClick={() => setCtxPreview(true)}>preview</button>
@@ -276,7 +284,7 @@ export default function TaskDetailModal({
                 )}
               </div>
               <div style={{ padding: 12, overflowY: 'auto', flex: 1 }}>
-                {tab === 'summary' && (
+                {effTab === 'summary' && (
                   <>
                     <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{scoped.title}</div>
                     {!ctxEdit && <Md text={scoped.description} />}
@@ -289,7 +297,7 @@ export default function TaskDetailModal({
                   </>
                 )}
 
-                {tab === 'process' && !vision && (
+                {effTab === 'process' && scopedIsLeaf && (
                   <>
                     <div style={{ ...cfgHint, marginBottom: 8 }}>
                       Handoff pipeline — each step&apos;s chip is its owner; reassign the task at each
@@ -329,40 +337,40 @@ export default function TaskDetailModal({
                   </>
                 )}
 
-                {tab === 'config' && (
+                {effTab === 'config' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 560 }}>
                     <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
                       <label style={cfgLabel}>priority (phase . seq)
                         <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: 2 }}>
-                          <input style={{ ...input, width: 44 }} type="number" value={task.priority_phase}
-                            onChange={(e) => patch(task.id, { priority_phase: +e.target.value })} />
+                          <input style={{ ...input, width: 44 }} type="number" value={scoped.priority_phase}
+                            onChange={(e) => patch(scoped.id, { priority_phase: +e.target.value })} />
                           <span>.</span>
-                          <input style={{ ...input, width: 64 }} type="number" step="0.05" value={task.priority_seq}
-                            onChange={(e) => patch(task.id, { priority_seq: +e.target.value })} />
+                          <input style={{ ...input, width: 64 }} type="number" step="0.05" value={scoped.priority_seq}
+                            onChange={(e) => patch(scoped.id, { priority_seq: +e.target.value })} />
                         </div>
                       </label>
                       <label style={cfgLabel}>area
                         <div style={{ marginTop: 2 }}>
-                          <select style={input} value={task.area} onChange={(e) => patch(task.id, { area: e.target.value })}>
+                          <select style={input} value={scoped.area} onChange={(e) => patch(scoped.id, { area: e.target.value })}>
                             {AREAS.map((a) => <option key={a} value={a}>{a}</option>)}
                           </select>
                         </div>
                       </label>
                       <label style={cfgLabel}>parent vision
                         <div style={{ marginTop: 2 }}>
-                          <select style={input} value={task.parent_id ?? ''}
-                            onChange={(e) => patch(task.id, { parent_id: e.target.value ? +e.target.value : null })}>
+                          <select style={input} value={scoped.parent_id ?? ''}
+                            onChange={(e) => patch(scoped.id, { parent_id: e.target.value ? +e.target.value : null })}>
                             <option value="">— none (vision) —</option>
-                            {visionOptions.filter((v) => v.id !== task.id).map((v) =>
+                            {visionOptions.filter((v) => v.id !== scoped.id).map((v) =>
                               <option key={v.id} value={v.id}>#{v.id} {v.title.slice(0, 32)}</option>)}
                           </select>
                         </div>
                       </label>
-                      {task.parent_id != null && (
+                      {scoped.parent_id != null && (
                         <label style={cfgLabel}>origin
                           <div style={{ marginTop: 2 }}>
-                            <select style={input} value={task.origin || 'planned'}
-                              onChange={(e) => patch(task.id, { origin: e.target.value })}>
+                            <select style={input} value={scoped.origin || 'planned'}
+                              onChange={(e) => patch(scoped.id, { origin: e.target.value })}>
                               {ORIGINS.map((o) => <option key={o} value={o}>{o === 'discovered' ? '🔍 discovered' : o}</option>)}
                             </select>
                           </div>
@@ -370,35 +378,35 @@ export default function TaskDetailModal({
                       )}
                     </div>
                     <label style={cfgLabel}>tags (comma-separated)
-                      <input key={`tags-${task.id}`} style={{ ...input, width: '100%', marginTop: 2 }}
-                        defaultValue={(task.tags || []).join(', ')}
+                      <input key={`tags-${scoped.id}`} style={{ ...input, width: '100%', marginTop: 2 }}
+                        defaultValue={(scoped.tags || []).join(', ')}
                         onBlur={(e) => {
                           const tags = parseTags(e.target.value);
-                          if (tags.join('|') !== (task.tags || []).join('|')) patch(task.id, { tags });
+                          if (tags.join('|') !== (scoped.tags || []).join('|')) patch(scoped.id, { tags });
                         }} />
                     </label>
                     <label style={cfgLabel}>⛔ blocked by (task ids, comma-separated)
-                      <input key={`blk-${task.id}`} style={{ ...input, width: '100%', marginTop: 2 }}
-                        defaultValue={(task.blocked_by || []).join(', ')}
+                      <input key={`blk-${scoped.id}`} style={{ ...input, width: '100%', marginTop: 2 }}
+                        defaultValue={(scoped.blocked_by || []).join(', ')}
                         onBlur={(e) => {
                           const ids = parseIds(e.target.value);
-                          if (ids.join('|') !== (task.blocked_by || []).join('|')) patch(task.id, { blocked_by: ids });
+                          if (ids.join('|') !== (scoped.blocked_by || []).join('|')) patch(scoped.id, { blocked_by: ids });
                         }} />
                     </label>
                     <div>
                       <label style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>
-                        <input type="checkbox" checked={task.impacts_live}
-                          onChange={(e) => patch(task.id, { impacts_live: e.target.checked })} /> 🔴 live
+                        <input type="checkbox" checked={scoped.impacts_live}
+                          onChange={(e) => patch(scoped.id, { impacts_live: e.target.checked })} /> 🔴 live
                         <span style={cfgHint}> — touches the live engine/trading code, deploy carefully</span>
                       </label>
                       <label style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>
-                        <input type="checkbox" checked={task.needs_live_validation}
-                          onChange={(e) => patch(task.id, { needs_live_validation: e.target.checked })} /> ⏳ validate
+                        <input type="checkbox" checked={scoped.needs_live_validation}
+                          onChange={(e) => patch(scoped.id, { needs_live_validation: e.target.checked })} /> ⏳ validate
                         <span style={cfgHint}> — needs live-market data to confirm</span>
                       </label>
                       <label style={{ fontSize: 13, display: 'block' }}>
-                        <input type="checkbox" checked={task.is_urgent}
-                          onChange={(e) => patch(task.id, { is_urgent: e.target.checked })} /> ⚡ urgent
+                        <input type="checkbox" checked={scoped.is_urgent}
+                          onChange={(e) => patch(scoped.id, { is_urgent: e.target.checked })} /> ⚡ urgent
                         <span style={cfgHint}> — jump the queue (a tag, not a priority)</span>
                       </label>
                     </div>
@@ -441,6 +449,8 @@ export default function TaskDetailModal({
                         {s.title}
                         {s.origin === 'discovered' && <span style={{ ...tagChip, marginLeft: 6 }}>🔍</span>}
                       </span>
+                      <ProgressBar done={(s.checklist || []).filter((x) => x.done).length}
+                        total={(s.checklist || []).length} mini />
                       <span style={{ fontSize: 11, color: STATUS_COLOR[s.status] }}>{s.status}</span>
                       {s.assignee && <RoleChip role={s.assignee} title={`assigned to ${s.assignee}`} />}
                       {selected === s.id && (
