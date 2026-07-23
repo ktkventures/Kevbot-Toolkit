@@ -33,6 +33,41 @@ logger = logging.getLogger(__name__)
 _PARITY_BG_SEM = threading.Semaphore(1)
 
 
+def _supersede_open_flag() -> bool:
+    """RORT_APPEND_SUPERSEDE_OPEN (default OFF), 2026-07-23 — board #101.
+    The append writers are insert-only: a full recompute can leave an open
+    row (exit_fill_ts IS NULL) that a later append closes, and the unique
+    index treats (entry, NULL) vs (entry, exit_ts) as distinct rows — the
+    windowed writer then DUPLICATES the trade (07-23: sids 341/343/345,
+    one 'open' + one stop_loss row for the same 20:00 entry), while the
+    cron writer's entry-position gate SKIPS the closed version entirely
+    (open row stale forever). Flag ON: before inserting a CLOSED record,
+    delete same-lane open placeholder rows for that entry
+    (delete_trade_placeholder_admin, lane-scoped), and let the cron gate
+    pass closed versions of known-open entries. Flag OFF: legacy insert-only."""
+    return os.getenv('RORT_APPEND_SUPERSEDE_OPEN', '0') == '1'
+
+
+def _supersede_open_rows(strategy_id: int, rec: dict, lane_like: str,
+                         tag: str) -> None:
+    """Best-effort lane-scoped open-placeholder delete before a closed insert."""
+    if not rec.get('exit_fill_ts'):
+        return  # record itself is open — nothing to supersede
+    try:
+        from db import delete_trade_placeholder_admin
+        deleted = delete_trade_placeholder_admin(
+            strategy_id, rec.get('entry_fill_ts'),
+            data_source_like=lane_like)
+        if deleted:
+            logger.info(
+                "[%s] sid=%s superseded %d open placeholder(s) "
+                "entry=%s lane=%s", tag, strategy_id, deleted,
+                rec.get('entry_fill_ts'), lane_like)
+    except Exception as e:  # noqa: BLE001 — never block the insert
+        logger.warning("[%s] sid=%s supersede failed (insert continues): %s",
+                       tag, strategy_id, e)
+
+
 def _auto_parity_enabled() -> bool:
     """Allow ops to globally disable auto-parity via env var without a
     redeploy of code. Useful when running mass refreshes / mass-builder
@@ -1496,6 +1531,9 @@ def append_new_trades_for_strategy(
         for rec in new_serialized:
             try:
                 rec['data_source'] = ds_tag
+                if _supersede_open_flag():
+                    _supersede_open_rows(strategy_id, rec, 'cache_%',
+                                         'ALGO-APPEND')
                 if insert_trade(strategy_id, user_id, rec):
                     inserted += 1
             except Exception as e:
@@ -2009,6 +2047,21 @@ def append_new_backtest_trades_for_strategy(
         # index will reject re-inserts naturally (insert_trade_admin
         # returns None on unique violation) but we filter explicitly to
         # avoid the wasted attempts.
+        # Board #101: closed versions of entries the DB still holds OPEN
+        # (exit IS NULL) must pass the entry-position gate — the open row's
+        # entry ts IS the anchor, so `ek <= latest_ts_iso` silently skipped
+        # the close forever. Lane-scoped; flag-gated (legacy = empty set).
+        _open_entries: set = set()
+        if _supersede_open_flag():
+            try:
+                from db import get_open_trade_entries_admin
+                _open_entries = get_open_trade_entries_admin(
+                    strategy_id, 'backtest_%')
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[BT-APPEND] sid=%s open-entries fetch failed "
+                    "(gate stays legacy): %s", strategy_id, e)
+
         new_records = []
         for _, row in closed.iterrows():
             ek_raw = row.get('entry_fill_ts')
@@ -2016,7 +2069,7 @@ def append_new_backtest_trades_for_strategy(
             if pd.isna(ek_raw) or pd.isna(xk_raw):
                 continue
             ek = ek_raw.isoformat() if hasattr(ek_raw, 'isoformat') else str(ek_raw)
-            if ek <= latest_ts_iso:
+            if ek <= latest_ts_iso and ek not in _open_entries:
                 continue  # already in DB (boundary or older)
             if _do_band_bt and bt_band_replaced >= 0 and ek >= edge_start_iso:
                 continue  # band owned by the edge-band replace (it succeeded)
@@ -2045,6 +2098,9 @@ def append_new_backtest_trades_for_strategy(
             rec_copy = dict(rec)
             rec_copy['data_source'] = ds_tag
             try:
+                if _supersede_open_flag():
+                    _supersede_open_rows(strategy_id, rec_copy,
+                                         'backtest_%', 'BT-APPEND')
                 row_saved = insert_trade_admin(
                     strategy_id, user_id, rec_copy)
                 if row_saved is not None:
@@ -2437,6 +2493,9 @@ def append_windowed_backtest_trades_for_strategy(
             rec_copy = dict(rec)
             rec_copy['data_source'] = ds_tag
             try:
+                if _supersede_open_flag():
+                    _supersede_open_rows(strategy_id, rec_copy,
+                                         'backtest_%', 'BT-APPEND-WIN')
                 row_saved = insert_trade_admin(strategy_id, user_id, rec_copy)
                 if row_saved is not None:
                     inserted += 1

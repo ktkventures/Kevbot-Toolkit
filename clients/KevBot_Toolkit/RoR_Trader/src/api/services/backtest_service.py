@@ -22,6 +22,31 @@ from api.schemas.backtest import BacktestRequest, BacktestResponse
 logger = logging.getLogger(__name__)
 
 
+def _hifi_no_prebar_fill() -> bool:
+    """RORT_HIFI_NO_PREBAR_FILL (default OFF), 2026-07-23 — board #101.
+    The Hi-Fi 1s entry/exit refiners fetch [bar_start, bar_end] with 1-5s
+    of PADDING and fetch_1s_bars_for_window applies no session filter, so
+    the walker can fill on a second BEFORE the bar the coarse engine
+    resolved the fill to — e.g. a stop_loss stamped 13:29:55Z (premarket)
+    for an exit the 1Min RTH lane decided on the 13:30 bar (sids
+    341/343/345, 07-23). Live can never act on pre-bar data. Flag ON:
+    clamp the walked bars to ts >= bar_start (left pad dropped; right pad
+    kept for late prints). Flag OFF: legacy padded walk."""
+    import os as _os
+    return _os.getenv('RORT_HIFI_NO_PREBAR_FILL', '0') == '1'
+
+
+def _clamp_prebar(bars, window_start):
+    """Drop 1s bars earlier than the resolving bar's start when the
+    RORT_HIFI_NO_PREBAR_FILL flag is ON. No-op (legacy) when OFF."""
+    if bars is None or len(bars) == 0 or not _hifi_no_prebar_fill():
+        return bars
+    try:
+        return bars[bars.index >= window_start]
+    except Exception:  # noqa: BLE001 — never break the refiner
+        return bars
+
+
 def run_backtest(req: BacktestRequest) -> BacktestResponse:
     """Execute a full backtest and return serialized results."""
 
@@ -693,6 +718,8 @@ def _hifi_resolve_trades(
                         bars_1s_entry = fetch_1s_bars_for_window(
                             symbol, e_window_start, e_window_end,
                             padding_seconds=1)
+                        bars_1s_entry = _clamp_prebar(
+                            bars_1s_entry, e_window_start)
                         if bars_1s_entry is not None and len(bars_1s_entry) > 0:
                             # Find first per-second where the entry level was crossed
                             crossed_at = None
@@ -793,6 +820,7 @@ def _hifi_resolve_trades(
                             bars_1s = fetch_1s_bars_for_window(
                                 symbol, window_start, window_end,
                                 padding_seconds=2)
+                            bars_1s = _clamp_prebar(bars_1s, window_start)
                             if bars_1s is not None and len(bars_1s) > 0:
                                 resolved = _walk_1s_for_level_cross(
                                     bars_1s, level_val,
@@ -866,6 +894,7 @@ def _hifi_resolve_trades(
             window_start = exit_dt
             window_end = exit_dt + timedelta(seconds=tf_seconds)
             bars_1s = fetch_1s_bars_for_window(symbol, window_start, window_end, padding_seconds=5)
+            bars_1s = _clamp_prebar(bars_1s, window_start)
 
             if bars_1s is None or len(bars_1s) == 0:
                 continue
