@@ -177,6 +177,23 @@ def _nightly_fire(datestr: str, dry_run: bool = False) -> "list[str]":
     return jids
 
 
+def _nightly_settled_retrue() -> None:
+    """#108 (V1.10): before the nightly recompute reads bar_cache, re-true the
+    parity suite's settled-day pointer for every maintained symbol so a Polygon
+    T+3 revision can't red the suite (the #103/#116 daily tax). Flag-gated
+    (RORT_NIGHTLY_SETTLE_RETRUE, default OFF); NEVER blocks the recompute — a
+    retrue failure is logged and swallowed so the hole-backstop still fires."""
+    import settle_sweeper
+    if not settle_sweeper.nightly_settle_retrue_enabled():
+        return
+    try:
+        r = settle_sweeper.run_nightly_settled_retrue()
+        logger.info("[NIGHTLY] settled-day retrue done: day=%s symbols=%d",
+                    r.get("day"), len(r.get("symbols") or {}))
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[NIGHTLY] settled-day retrue failed (non-fatal): %s", e)
+
+
 def _start_nightly_thread(stop_evt: threading.Event) -> "threading.Thread | None":
     if not _nightly_enabled():
         logger.info("[NIGHTLY] disabled (RORT_NIGHTLY_RECOMPUTE unset) — the "
@@ -206,6 +223,8 @@ def _start_nightly_thread(stop_evt: threading.Event) -> "threading.Thread | None
                 if _nightly_already_enqueued(datestr):
                     logger.info("[NIGHTLY] %s already enqueued — skip", datestr)
                 else:
+                    _nightly_settled_retrue()  # #108: heal the parity suite's
+                    #   settled-day pointer before the recompute reads bar_cache.
                     _nightly_fire(datestr)
             except Exception as e:  # noqa: BLE001
                 logger.exception("[NIGHTLY] fire failed: %s", e)

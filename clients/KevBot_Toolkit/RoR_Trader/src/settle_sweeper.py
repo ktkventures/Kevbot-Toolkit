@@ -236,6 +236,72 @@ def retrue_range(symbol: str, start_day: datetime, end_day: datetime,
     return total
 
 
+# ── #108 (V1.10): nightly settled-day retrue ────────────────────────────────
+# The parity suite compares bar_cache vs a fresh Polygon pull on a SETTLED day
+# (fidelity_parity_suite._settled_test_day = first weekday >= 3 days back with
+# TSLA 1Sec coverage). Polygon can revise bars past T+3, so when the suite's
+# settled-day pointer rolls onto a day whose cache fossilized pre-revision the
+# suite reds spuriously (#103 on 07-20, #116 on 07-21 — the same class two days
+# running). The 600s settle-sweeper loop only guards a ~60-min trailing window,
+# so it never heals a T+3 revision. This nightly pass re-trues exactly the
+# suite's settled-day pointer for every maintained symbol, killing the recurring
+# false-red. Idempotent (same op as the manual --retrue); flag-gated, default OFF.
+
+def nightly_settle_retrue_enabled() -> bool:
+    return os.environ.get("RORT_NIGHTLY_SETTLE_RETRUE", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _settled_pointer_day() -> "datetime | None":
+    """The settled day the parity suite tests. MIRRORS
+    fidelity_parity_suite._settled_test_day (keep in sync): the first weekday
+    >= 3 days back with substantial TSLA 1Sec cache coverage (proves it's a
+    real trading day with data, not a weekend/holiday). Returns a UTC-midnight
+    datetime, or None if no settled day with data is found in the last 25."""
+    import bar_cache as bc
+    today = datetime.now(timezone.utc).date()
+    for back in range(3, 25):
+        d = today - timedelta(days=back)
+        if d.weekday() >= 5:  # Sat/Sun
+            continue
+        s = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+        try:
+            df = bc.read_bars("TSLA", "1Sec", s, s + timedelta(days=1))
+        except Exception:  # noqa: BLE001
+            continue
+        if df is not None and len(df) > 10000:
+            return s
+    return None
+
+
+def run_nightly_settled_retrue(symbols: "list[str] | None" = None) -> dict:
+    """Re-true the parity suite's settled-day pointer for every maintained
+    symbol so Polygon's T+3 revisions can't red the suite (#108 / V1.10).
+    Idempotent — the same operation as the manual `--retrue` heal, scoped to
+    the ONE settled day the suite compares. `symbols` defaults to the enabled
+    bar-cache capture targets (what the suite's cache is built from). Returns
+    {'day': iso|None, 'symbols': {sym: retrue_range_result}}."""
+    os.environ.setdefault("RORT_BARCACHE_WRITETHROUGH", "1")  # same as --retrue
+    day = _settled_pointer_day()
+    if day is None:
+        logger.warning("[NIGHTLY-RETRUE] no settled pointer day with cache data "
+                       "— nothing to heal")
+        return {"day": None, "symbols": {}}
+    syms = symbols if symbols is not None else _target_symbols()
+    out: dict = {}
+    for sym in syms:
+        try:
+            out[sym] = retrue_range(sym, day, day)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[NIGHTLY-RETRUE] %s %s failed: %s", sym,
+                           day.date(), e)
+            out[sym] = {"error": str(e)}
+    healed = sum(1 for v in out.values() if "error" not in v)
+    logger.info("[NIGHTLY-RETRUE] settled-day %s: healed %d/%d symbol(s)",
+                day.date(), healed, len(syms))
+    return {"day": day.date().isoformat(), "symbols": out}
+
+
 def _main() -> None:
     import argparse
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
