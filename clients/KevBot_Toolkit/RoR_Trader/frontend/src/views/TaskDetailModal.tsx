@@ -28,7 +28,7 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { apiFetch } from '@/lib/api/client';
 import {
   Task, Comment, ChecklistStep, STATUSES, AREAS, ASSIGNEES, ORIGINS,
-  STATUS_COLOR, withLegacy, input, tagChip, relTime,
+  STATUS_COLOR, STATUS_DEF, withLegacy, input, tagChip, relTime,
   RoleChip, NextChip, ProgressBar, RolePicker,
 } from './taskBoardShared';
 
@@ -234,8 +234,9 @@ export default function TaskDetailModal({
                progress · pri · set-flags · 🔍 · (vision) n/m ─────── */}
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', margin: '8px 0' }}>
           <select style={{ ...input, color: STATUS_COLOR[task.status] }} value={task.status}
+            title={STATUS_DEF[task.status] || ''}
             onChange={(e) => patchTracked({ status: e.target.value })}>
-            {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+            {STATUSES.map((s) => <option key={s} value={s} title={STATUS_DEF[s]}>{s}</option>)}
           </select>
           <RolePicker value={task.assignee} pickTitle="assignee" allowEmpty
             options={withLegacy(roles, task.assignee || '').filter(Boolean)}

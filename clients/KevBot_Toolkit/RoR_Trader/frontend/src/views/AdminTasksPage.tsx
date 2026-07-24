@@ -22,7 +22,7 @@ import { apiFetch } from '@/lib/api/client';
 import TaskDetailModal from './TaskDetailModal';
 import {
   Task, STATUSES, AREAS, ASSIGNEES, ORIGINS, STATUS_COLOR, AUTHOR_LS_KEY,
-  COLLAPSED_LS_KEY, NEEDS_REVIEW_TAG, withLegacy, cell, input, badge, tagChip,
+  COLLAPSED_LS_KEY, NEEDS_REVIEW_TAG, STATUS_DEF, withLegacy, cell, input, badge, tagChip,
   NextChip, ProgressBar,
 } from './taskBoardShared';
 
@@ -221,7 +221,7 @@ export default function AdminTasksPage() {
       {(t.tags || []).includes(NEEDS_REVIEW_TAG) &&
         <span style={{ ...tagChip, borderColor: 'var(--amber, #d98c00)', color: 'var(--amber, #d98c00)', fontWeight: 700 }}
           title="finished — waiting on human review">👀 review</span>}
-      {(t.tags || []).filter((tag) => tag !== 'vision' && tag !== NEEDS_REVIEW_TAG).map((tag) => (
+      {(t.tags || []).filter((tag) => tag !== NEEDS_REVIEW_TAG).map((tag) => (
         <span key={tag} style={tagChip}>{tag}</span>
       ))}
     </>
@@ -270,8 +270,9 @@ export default function AdminTasksPage() {
       </td>
       <td style={cell}>
         <select style={{ ...input, color: STATUS_COLOR[t.status] }} value={t.status}
+          title={STATUS_DEF[t.status] || ''}
           onChange={(e) => patch(t.id, { status: e.target.value })}>
-          {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+          {STATUSES.map((s) => <option key={s} value={s} title={STATUS_DEF[s]}>{s}</option>)}
         </select>
       </td>
       <td style={cell}>
