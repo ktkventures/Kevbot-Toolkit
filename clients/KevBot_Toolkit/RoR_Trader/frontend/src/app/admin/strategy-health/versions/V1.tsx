@@ -16,8 +16,10 @@
  * header to re-sort. Filter chips at the top scope to a single flag.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Card from '@/components/Card';
+import { apiFetch } from '@/lib/api/client';
+import Last10PairingModal from '@/views/Last10PairingModal';
 import {
   useStrategyHealth,
   type StrategyHealthFlag,
@@ -131,7 +133,11 @@ type SortKey =
   | 'flags' | 'name' | 'symbol' | 'timeframe'
   | 'btCurrent' | 'kpis' | 'lastTrade' | 'trades'
   | 'lastBt' | 'lastAlert' | 'barParity'
-  | 'combined' | 'paired' | 'phantom' | 'missed' | 'tbd';
+  | 'combined' | 'paired' | 'phantom' | 'missed' | 'tbd'
+  | 'sid' | 'last10';
+
+/** Last-10 score shape from /api/strategy-health-last10 (board #70). */
+type Last10Score = { points: number; denom: number };
 
 /** Join key between StrategyHealthRow and BarParityPair — parity is
  *  computed per unique (symbol, timeframe), shared across strategies. */
@@ -143,9 +149,16 @@ function rowSortValue(
   r: StrategyHealthRow,
   key: SortKey,
   parityByPair?: Map<string, BarParityPair>,
+  last10?: Map<number, Last10Score>,
 ): number | string {
   switch (key) {
     case 'flags':     return -r.red_flags.length; // most flags first by default asc
+    case 'sid':       return r.strategy_id;
+    case 'last10': {
+      const s10 = last10?.get(r.strategy_id);
+      // best ratio first on asc; no-data rows sort last
+      return s10 && s10.denom > 0 ? -(s10.points / s10.denom) : 1;
+    }
     case 'name':      return r.name ?? '';
     case 'symbol':    return r.symbol ?? '';
     case 'timeframe': return r.timeframe ?? '';
@@ -334,6 +347,17 @@ export default function StrategyHealthV1() {
     return m;
   }, [barParity.data]);
 
+  // Last-10 health scores (board #70) — independent fetch so a slow score
+  // computation never blocks the main table; cells show '—' until it lands.
+  const [last10, setLast10] = useState<Map<number, Last10Score>>(new Map());
+  const [last10Sid, setLast10Sid] = useState<{ sid: number; name: string } | null>(null);
+  useEffect(() => {
+    apiFetch<{ scores: Record<string, Last10Score> }>('/api/strategy-health-last10')
+      .then((d) => setLast10(new Map(
+        Object.entries(d.scores || {}).map(([k, v]) => [Number(k), v]))))
+      .catch(() => { /* keep '—' cells */ });
+  }, []);
+
   const [sortKey, setSortKey] = useState<SortKey>('flags');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [activeFlag, setActiveFlag] = useState<StrategyHealthFlag | null>(null);
@@ -353,15 +377,15 @@ export default function StrategyHealthV1() {
       rows = rows.filter(r => r.red_flags.includes(activeFlag));
     }
     const sorted = [...rows].sort((a, b) => {
-      const av = rowSortValue(a, sortKey, parityByPair);
-      const bv = rowSortValue(b, sortKey, parityByPair);
+      const av = rowSortValue(a, sortKey, parityByPair, last10);
+      const bv = rowSortValue(b, sortKey, parityByPair, last10);
       const cmp = typeof av === 'number' && typeof bv === 'number'
         ? av - bv
         : String(av).localeCompare(String(bv));
       return sortDir === 'asc' ? cmp : -cmp;
     });
     return sorted;
-  }, [data, sortKey, sortDir, activeFlag, includeLegacy, parityByPair]);
+  }, [data, sortKey, sortDir, activeFlag, includeLegacy, parityByPair, last10]);
 
   // Summary: counts by flag, scoped to non-legacy strategies.
   const summary = useMemo(() => {
@@ -599,6 +623,7 @@ export default function StrategyHealthV1() {
           <table style={{ width: '100%', fontSize: 13, borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ color: 'var(--text-muted)', fontSize: 11, textAlign: 'left' }}>
+                <Th onClick={() => toggleSort('sid')}       label={`SID${arrow('sid')}`} align="right" />
                 <Th onClick={() => toggleSort('name')}      label={`Strategy${arrow('name')}`} />
                 <Th onClick={() => toggleSort('symbol')}    label={`Symbol${arrow('symbol')}`} />
                 <Th onClick={() => toggleSort('timeframe')} label={`TF${arrow('timeframe')}`} />
@@ -610,6 +635,7 @@ export default function StrategyHealthV1() {
                 <Th onClick={() => toggleSort('lastAlert')} label={`Last alert${arrow('lastAlert')}`} />
                 <Th onClick={() => toggleSort('trades')}    label={`Trades${arrow('trades')}`} align="right" />
                 <Th onClick={() => toggleSort('combined')}  label={`Combined %${arrow('combined')}`} align="right" />
+                <Th onClick={() => toggleSort('last10')}    label={`Last 10${arrow('last10')}`} align="right" />
                 <Th onClick={() => toggleSort('paired')}    label={`Paired ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('paired')}`} align="right" />
                 <Th onClick={() => toggleSort('phantom')}   label={`Phantom ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('phantom')}`} align="right" />
                 <Th onClick={() => toggleSort('missed')}    label={`Missed ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('missed')}`} align="right" />
@@ -627,9 +653,20 @@ export default function StrategyHealthV1() {
                 // strategies sharing a pair show the same number.
                 const parity = parityByPair.get(
                   parityKey(r.symbol, r.timeframe));
+                const l10 = last10.get(r.strategy_id);
+                const l10Ratio = l10 && l10.denom > 0 ? l10.points / l10.denom : null;
                 return (
                 <tr key={`${r.user_id}:${r.strategy_id}`}
                     style={{ borderTop: '1px solid var(--border)' }}>
+                  <td style={{ padding: '6px 8px', textAlign: 'right',
+                               fontVariantNumeric: 'tabular-nums' }}>
+                    <a href={`/strategies/${r.strategy_id}`} target="_blank"
+                       rel="noopener noreferrer"
+                       title="open strategy detail in a new tab"
+                       style={{ color: 'var(--blue)', textDecoration: 'none' }}>
+                      {r.strategy_id}
+                    </a>
+                  </td>
                   <td style={{ padding: '6px 8px' }}>
                     <div style={{ color: 'var(--text-primary)' }}>
                       {r.name || `sid ${r.strategy_id}`}
@@ -726,6 +763,26 @@ export default function StrategyHealthV1() {
                         + `Excludes ${r.tbd_count} TBD (lane not yet caught up).`}>
                     {r.combined_pct === null ? '—' : `${r.combined_pct.toFixed(1)}%`}
                   </td>
+                  {/* Last-10 score (board #70): thresholds are the RATIO
+                       equivalents of Kevin's n/20 bands (18/20=90%, 14/20=70%)
+                       so shrunk denominators color consistently. */}
+                  <td style={{ padding: '6px 8px', textAlign: 'right' }}
+                      title="Last-10 completed backtest trades: 1 pt per entry/exit pairing to a live alert within ±10s. Click for per-trade detail.">
+                    {l10Ratio == null
+                      ? <span style={{ color: 'var(--text-muted)' }}>—</span>
+                      : <button
+                          onClick={() => setLast10Sid({
+                            sid: r.strategy_id,
+                            name: r.name || `sid ${r.strategy_id}` })}
+                          style={{ background: 'transparent', border: 'none',
+                                   cursor: 'pointer', padding: 0, fontSize: 13,
+                                   fontWeight: 600,
+                                   fontVariantNumeric: 'tabular-nums',
+                                   color: l10Ratio >= 0.9 ? '#66bb6a'
+                                     : l10Ratio >= 0.7 ? '#ffc107' : '#ef5350' }}>
+                          {l10!.points}/{l10!.denom}
+                        </button>}
+                  </td>
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',
                                color: r.paired_count_cov > 0
@@ -802,6 +859,11 @@ export default function StrategyHealthV1() {
           </table>
         </div>
       </Card>
+
+      {last10Sid && (
+        <Last10PairingModal sid={last10Sid.sid} name={last10Sid.name}
+          onClose={() => setLast10Sid(null)} />
+      )}
     </div>
   );
 }
