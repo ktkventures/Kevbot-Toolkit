@@ -24,6 +24,11 @@ _EDITABLE = {
 # vision item that spawned it (Team Board convention).
 _ORIGINS = {"planned", "discovered", "kevin"}
 
+# Board #109 (Registry Phase 2): the Run button is DECLARATIVE — this tag is
+# the request; the LOCAL dispatcher polls for it and executes (Railway cannot
+# reach Kevin's machine). Cleared by the dispatcher on claim.
+RUN_REQUESTED_TAG = "run-requested"
+
 
 def _validate_team_fields(c, row: dict, task_id: Optional[int] = None):
     """Enforce origin values and ONE nesting level (vision → subtask).
@@ -162,6 +167,57 @@ def update_task(task_id: int, payload: dict = Body(...),
 def delete_task(task_id: int, user=Depends(get_current_user)):
     _admin().table("dev_tasks").delete().eq("id", task_id).execute()
     return {"status": "deleted", "id": task_id}
+
+
+@router.post("/{task_id}/run-request")
+def request_run(task_id: int, payload: dict = Body(default={}),
+                user=Depends(get_current_user)):
+    """Request a dispatcher run of this task (board #109, Registry Phase 2).
+
+    Declarative: adds the 'run-requested' tag + a system comment + a
+    run_history row (outcome='requested'). The local dispatcher's --loop
+    treats the tag as a priority-jump, re-gates eligibility at claim time,
+    and owns the rest of the run lifecycle. 409 if a run is already
+    requested or the task is already In Progress.
+    """
+    author = (payload.get("author") or "kevin").strip() or "kevin"
+    c = _admin()
+    rows = c.table("dev_tasks").select("*").eq("id", task_id).execute().data
+    if not rows:
+        raise HTTPException(status_code=404, detail="task not found")
+    t = rows[0]
+    tags = t.get("tags") or []
+    if RUN_REQUESTED_TAG in tags:
+        raise HTTPException(status_code=409, detail="run already requested")
+    if t.get("status") == "In Progress":
+        raise HTTPException(
+            status_code=409, detail="task is already In Progress")
+    if t.get("status") == "Done":
+        raise HTTPException(status_code=400, detail="task is Done")
+    # The button overrides queue ORDER, never "not workable yet" (M, #109
+    # review) — mirror of the dispatcher's run_requested() refusals.
+    if t.get("status") == "Scoping":
+        raise HTTPException(
+            status_code=400, detail="task is Scoping — not workable yet")
+    if "needs-scoping" in tags:
+        raise HTTPException(
+            status_code=400,
+            detail="tagged needs-scoping — not workable yet")
+    if not (t.get("description") or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="task has no description — never dispatch unscoped work")
+    if not (t.get("assignee") or "").strip():
+        raise HTTPException(status_code=400, detail="task has no assignee")
+    c.table("dev_tasks").update(
+        {"tags": tags + [RUN_REQUESTED_TAG]}).eq("id", task_id).execute()
+    c.table("dev_task_comments").insert({
+        "task_id": task_id, "author": "system",
+        "body": f"run requested by {author}"}).execute()
+    res = c.table("run_history").insert({
+        "task_id": task_id, "agent_letter": t["assignee"],
+        "requested_by": author, "outcome": "requested"}).execute()
+    return res.data[0] if res.data else {"status": "requested"}
 
 
 @router.get("/{task_id}/comments")

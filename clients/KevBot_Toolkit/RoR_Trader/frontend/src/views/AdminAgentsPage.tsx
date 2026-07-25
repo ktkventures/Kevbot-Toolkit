@@ -1,13 +1,16 @@
 /**
- * Agents Registry — /admin/agents (Spec_Agents_Registry.md Phase 1).
+ * Agents Registry — /admin/agents (Spec_Agents_Registry.md Phase 1 + the
+ * board-#109 Phase 2 additions).
  *
  * The WHO leg of the hub (Tasks = what · Roadmap = why · Agents = who):
- * read-only roster cards grouped by department — letter avatar, status chip,
- * scope/boundaries (expandable), worktree, context docs, and the agent's
- * live queue (open tasks joined client-side from /api/dev-tasks). No
- * dispatch, no editing this phase; M manages rows via the CRUD API.
+ * roster cards grouped by department — letter avatar, status DROPDOWN
+ * (dormant/live-session/headless; the headless enrollment flip stays M-only
+ * by convention), scope/boundaries (expandable), prompt-template editor
+ * (the dispatcher identity prompt, PATCHed in place), recent dispatcher
+ * runs (run_history), worktree, context docs, and the agent's live queue
+ * (open tasks joined client-side from /api/dev-tasks).
  * Until the V4.9 dispatcher ships, Session_Charters.md §1 stays the SSOT
- * and this registry mirrors it.
+ * for scope/boundaries and this registry mirrors it.
  */
 'use client';
 
@@ -15,7 +18,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import Card from '@/components/Card';
 import { apiFetch } from '@/lib/api/client';
-import { Task, RoleChip, roleColor, tagChip, badge } from './taskBoardShared';
+import { Task, RunRow, RoleChip, roleColor, tagChip, badge, input, OutcomeChip, relTime } from './taskBoardShared';
 
 export interface Agent {
   id: number;
@@ -38,27 +41,63 @@ const STATUS_BG: Record<string, string> = {
   'retired': '#8a3038', 'ephemeral': '#2aa8a0',
 };
 const DEPARTMENTS = ['dev', 'builder', 'marketing', 'ops'];
+// The operational flips (board #109). Other statuses (retired/ephemeral)
+// still render as the current value; they're just not offered as targets.
+const STATUS_CHOICES = ['dormant', 'live-session', 'headless'];
 
 export default function AdminAgentsPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [runs, setRuns] = useState<RunRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  // Prompt-template editor state (board #109): open cards + unsaved drafts.
+  const [tplOpen, setTplOpen] = useState<Set<number>>(new Set());
+  const [tplDraft, setTplDraft] = useState<Record<number, string>>({});
+  const [saving, setSaving] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     try {
       setErr(null);
-      const [ag, ts] = await Promise.all([
+      const [ag, ts, rh] = await Promise.all([
         apiFetch<Agent[]>('/api/agents'),
         apiFetch<Task[]>('/api/dev-tasks?include_done=false'),
+        apiFetch<RunRow[]>('/api/run-history?limit=300').catch(() => [] as RunRow[]),
       ]);
       setAgents(ag || []);
       setTasks(ts || []);
+      setRuns(rh || []);
     } catch (e) { setErr(String(e)); }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  const patchAgent = async (id: number, fields: Partial<Agent>) => {
+    try {
+      await apiFetch(`/api/agents/${id}`, {
+        method: 'PATCH', body: JSON.stringify(fields),
+      });
+    } catch (e) { setErr(String(e)); }
+    await load();
+  };
+  const saveTpl = async (a: Agent) => {
+    const draft = tplDraft[a.id] ?? (a.prompt_template || '');
+    setSaving(a.id);
+    await patchAgent(a.id, { prompt_template: draft });
+    setSaving(null);
+  };
+  const toggleTpl = (id: number) => setTplOpen((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const runsByAgent = useMemo(() => {
+    const m = new Map<string, RunRow[]>();
+    runs.forEach((r) => m.set(r.agent_letter, [...(m.get(r.agent_letter) || []), r]));
+    return m;  // API order is newest-first
+  }, [runs]);
 
   const queues = useMemo(() => {
     const m = new Map<string, Task[]>();
@@ -87,8 +126,9 @@ export default function AdminAgentsPage() {
       <h1 style={{ fontSize: 22, marginBottom: 4 }}>Agents</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
         The team roster — who owns what, what they must not touch, and what each agent is
-        working on right now (live from the task board). Read-only; scope changes go
-        through the charter. Statuses: live-session · headless · dormant · retired · ephemeral.
+        working on right now (live from the task board). Scope changes go through the
+        charter; status + prompt template edit here (the &apos;headless&apos; flip is M-only by
+        convention). Statuses: live-session · headless · dormant · retired · ephemeral.
       </p>
 
       {err && <Card><div style={{ color: 'var(--red)', fontSize: 13 }}>⚠ {err}</div></Card>}
@@ -120,7 +160,23 @@ export default function AdminAgentsPage() {
                       </span>
                       {a.kind === 'human' &&
                         <span style={{ ...tagChip, borderColor: roleColor('kevin'), color: roleColor('kevin') }}>human</span>}
-                      <span style={badge(STATUS_BG[a.status] || '#555f6b')}>{a.status}</span>
+                      {a.kind === 'human'
+                        ? <span style={badge(STATUS_BG[a.status] || '#555f6b')}>{a.status}</span>
+                        : (
+                          <select value={a.status}
+                            title="registry status — 'headless' enrolls the agent for dispatcher runs; that flip stays M-only by convention"
+                            style={{
+                              border: 'none', borderRadius: 10, padding: '1px 4px',
+                              fontSize: 11, fontWeight: 600, color: '#fff', cursor: 'pointer',
+                              background: STATUS_BG[a.status] || '#555f6b',
+                            }}
+                            onChange={(e) => patchAgent(a.id, { status: e.target.value })}>
+                            {(STATUS_CHOICES.includes(a.status)
+                              ? STATUS_CHOICES : [...STATUS_CHOICES, a.status]).map((s) => (
+                              <option key={s} value={s} style={{ color: 'var(--text-primary)', background: 'var(--bg-input)' }}>{s}</option>
+                            ))}
+                          </select>
+                        )}
                     </div>
 
                     <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
@@ -141,6 +197,56 @@ export default function AdminAgentsPage() {
                         </div>
                       )}
                     </div>
+
+                    {/* Prompt template (board #109) — the dispatcher identity prompt */}
+                    {a.kind !== 'human' && (
+                      <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+                        <span style={{ cursor: 'pointer' }} onClick={() => toggleTpl(a.id)}
+                          title="identity prompt the dispatcher builds headless runs from (Phase 2)">
+                          {tplOpen.has(a.id) ? '▾' : '▸'} prompt template
+                          {!a.prompt_template && <span style={{ color: 'var(--text-tertiary)' }}> (none)</span>}
+                        </span>
+                        {tplOpen.has(a.id) && (
+                          <div style={{ marginTop: 6 }}>
+                            <textarea
+                              style={{ ...input, width: '100%', minHeight: 120, fontFamily: 'monospace', fontSize: 11.5 }}
+                              placeholder="identity prompt the dispatcher prepends for this agent's headless runs…"
+                              value={tplDraft[a.id] ?? (a.prompt_template || '')}
+                              onChange={(e) => setTplDraft((d) => ({ ...d, [a.id]: e.target.value }))} />
+                            <div style={{ display: 'flex', gap: 8, marginTop: 4, alignItems: 'center' }}>
+                              <button
+                                style={{ ...input, cursor: 'pointer', background: 'var(--blue)', color: '#fff', fontSize: 12 }}
+                                disabled={saving === a.id}
+                                onClick={() => saveTpl(a)}>
+                                {saving === a.id ? 'saving…' : 'save template'}
+                              </button>
+                              {(tplDraft[a.id] ?? (a.prompt_template || '')) !== (a.prompt_template || '') &&
+                                <span style={{ fontSize: 11, color: 'var(--amber, #d98c00)' }}>unsaved</span>}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Recent dispatcher runs (run_history, board #109) */}
+                    {(runsByAgent.get(a.letter) || []).length > 0 && (
+                      <div style={{ fontSize: 11.5 }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.6, color: 'var(--text-tertiary)', marginBottom: 2 }}>
+                          RECENT RUNS
+                        </div>
+                        {(runsByAgent.get(a.letter) || []).slice(0, 5).map((r) => (
+                          <div key={r.id} style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '1px 0' }}>
+                            <OutcomeChip outcome={r.outcome} />
+                            <Link href={`/admin/tasks?task=${r.task_id}`}
+                              style={{ color: 'inherit', fontVariantNumeric: 'tabular-nums' }}>#{r.task_id}</Link>
+                            <span style={{ color: 'var(--text-tertiary)' }}>
+                              {relTime(r.finished_at || r.started_at || r.requested_at)}
+                              {r.requested_by ? ` · by ${r.requested_by}` : ''}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
 
                     {a.worktree && (
                       <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)', fontFamily: 'monospace' }}
