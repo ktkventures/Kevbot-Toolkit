@@ -21,6 +21,36 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-07-25
 
+- **05:17 UTC (23:17 MT 07-24)** — `a0785db6` Merge PR #78 `feat/health-phase-a` → dev:
+  Strategy Health last-10 pairing score + Phase B notes/bug-chips (board task #70,
+  Phases A+B + Kevin's 4-item local-review round; approved on local, released 07-25).
+  New READ-ONLY routers `health_last10.py` (last-10 backtest-trade → live-alert pairing,
+  dual fired/theo basis, ±10s greedy 1:1 port of `_pair_phantom_missed`) and
+  `strategy_notes.py`; `affected_sids` whitelist + validation on `dev_tasks`. Frontend:
+  Last-10 score column (between Sub and Context) + sortable SID column + Context column
+  (📝 notes / 🐛 affecting-task chips, replacing the old Flags chip column) + two portal
+  modals (Last10Pairing, StrategyNotes). No flags; no engine paths touched.
+  - **Migrations: `strategy_notes` table + `dev_tasks.affected_sids` column were
+    pre-applied by M 07-24 — additive, already live, inert under old code.** No DB
+    change in this deploy; nothing to roll back on the DB side.
+  - Service(s) redeployed: frontend / api (the relevant pair); Worker / batch-worker /
+    Data Worker / Streamlit / flat-file-cron also rebuilt on the dev push (auto-deploy).
+    shadow-worker untouched (E-lane `railway up` only). api + frontend builds SUCCESS
+    (images created 05:17:38Z / 05:18:53Z); api booted clean — new routes live and
+    auth-gated (`/api/strategy-health-last10` → 401 unauth, not 404).
+  - Observed cache gap: standard ~1–2 min Worker restart window ~05:17–05:19Z (every dev
+    push restarts Worker); this change touches no Worker/engine code, so no data-logic
+    impact expected.
+  - Notes: gates all green on rebased `1b276a58` — fidelity_parity_suite 18/18, frontend
+    build clean, code-review no CONFIRMED blockers, E semantics sign-off APPROVED (greedy
+    port faithful; fired-vs-theo divergence intentional per Kevin's fired-ts ruling).
+    Deploy-verified vs prod DB via the real `_score_sid` logic: 344 fired 12/20 · theo
+    12/20 with blanks-not-garbage (16 blank nearest-alert cells), sid-310 M seed note
+    present, sid 310 → task #3 chip. Backup: `backup/dev-pre-health-phase-a` @ `338a1fbb`.
+    Non-blocking follow-ups: E's `_greedy_pair` count-by-index nit (max +1/20; fast-
+    follow) and the pre-existing `synthetic-parity` CI red (workflow missing `pytest` —
+    board infra item, not this PR; dev's own runs fail identically).
+
 - **03:26 UTC (21:26 MT 07-24)** — `66ec9ea3` Merge PR #76 `feat/board-qol` → dev:
   Board QoL (board task #106, V2.7 — both rounds; Kevin approved local preview 07-24
   17:25Z, released 07-25 pre-open). Round 1: `needs-review` tag convention (amber 👀 chip,
