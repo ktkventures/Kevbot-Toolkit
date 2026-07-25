@@ -27,9 +27,9 @@ import rehypeRaw from 'rehype-raw';
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { apiFetch } from '@/lib/api/client';
 import {
-  Task, Comment, ChecklistStep, STATUSES, AREAS, ASSIGNEES, ORIGINS,
+  Task, Comment, ChecklistStep, RunRow, STATUSES, AREAS, ASSIGNEES, ORIGINS,
   STATUS_COLOR, STATUS_DEF, withLegacy, input, tagChip, relTime,
-  RoleChip, NextChip, ProgressBar, RolePicker,
+  RoleChip, NextChip, ProgressBar, RolePicker, RunButton, OutcomeChip,
 } from './taskBoardShared';
 
 // Default GitHub-style sanitize schema, plus data: image URIs (spec allows
@@ -74,11 +74,15 @@ interface Props {
   onOpenTask: (id: number, selectedSubtask?: number) => void;
   commentAuthor: string;
   onPickAuthor: (a: string) => void;
+  /** Registry letters that are headless-enrolled (board #109 Run button). */
+  headless?: Set<string>;
+  /** Board refresh hook after a run request lands (tags changed server-side). */
+  onRunRequested?: () => void;
 }
 
 export default function TaskDetailModal({
   task, allTasks, visionOptions, roles = ASSIGNEES, initialSelected, patch, del, onClose, onOpenTask,
-  commentAuthor, onPickAuthor,
+  commentAuthor, onPickAuthor, headless = new Set(['M']), onRunRequested,
 }: Props) {
   const subtasks = useMemo(
     () => allTasks.filter((t) => t.parent_id === task.id), [allTasks, task.id]);
@@ -111,7 +115,29 @@ export default function TaskDetailModal({
     } catch { /* ignore */ }
   }, []);
 
-  useEffect(() => { loadThread(scoped.id); setCtxEdit(false); setCtxPreview(false); }, [scoped.id, loadThread]);
+  // Dispatcher run history (board #109) — per-task, newest first; keyed like
+  // threads so the vision/subtask selector re-scopes it too.
+  const [runsMap, setRunsMap] = useState<Record<number, RunRow[]>>({});
+  const [runErr, setRunErr] = useState<string | null>(null);
+  const loadRuns = useCallback(async (id: number) => {
+    try {
+      const rs = await apiFetch<RunRow[]>(`/api/run-history?task_id=${id}&limit=50`);
+      setRunsMap((m) => ({ ...m, [id]: rs || [] }));
+    } catch { /* panel just stays empty */ }
+  }, []);
+  useEffect(() => { loadRuns(task.id); }, [task.id, loadRuns]);
+  const requestRun = async (id: number) => {
+    setRunErr(null);
+    try {
+      await apiFetch(`/api/dev-tasks/${id}/run-request`, {
+        method: 'POST', body: JSON.stringify({ author: commentAuthor }),
+      });
+    } catch (e) { setRunErr(String(e)); }
+    loadRuns(id); loadThread(id);
+    onRunRequested?.();
+  };
+
+  useEffect(() => { loadThread(scoped.id); loadRuns(scoped.id); setCtxEdit(false); setCtxPreview(false); }, [scoped.id, loadThread, loadRuns]);
   useEffect(() => { setDraftDesc(scoped.description || ''); }, [scoped.id, scoped.description]);
   const thread = threads[scoped.id] || [];
   useEffect(() => {
@@ -256,6 +282,10 @@ export default function TaskDetailModal({
             <span title="discovered mid-work (rabbit-hole fix)" style={{ fontSize: 13 }}>🔍</span>}
           {vision && totalCount > 0 &&
             <span style={tagChip} title="subtasks done / total">{doneCount}/{totalCount}</span>}
+          <span style={{ flex: 1 }} />
+          <RunButton task={task} allTasks={allTasks} headless={headless}
+            latestRun={(runsMap[task.id] || [])[0]} onRequest={requestRun} />
+          {runErr && <span style={{ color: 'var(--red)', fontSize: 11, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={runErr}>{runErr}</span>}
         </div>
 
         {/* ── Body: left (context [+ vision strip]) · right (activity) ── */}
@@ -408,6 +438,45 @@ export default function TaskDetailModal({
                           onChange={(e) => patch(scoped.id, { is_urgent: e.target.checked })} /> ⚡ urgent
                         <span style={cfgHint}> — jump the queue (a tag, not a priority)</span>
                       </label>
+                    </div>
+
+                    {/* Run history (board #109) — dispatcher runs of the scoped item */}
+                    <div>
+                      <div style={{ ...cfgLabel, fontWeight: 600 }}>
+                        run history
+                        <span style={cfgHint}> — dispatcher runs of this task (newest first)</span>
+                      </div>
+                      {(runsMap[scoped.id] || []).length === 0 &&
+                        <div style={cfgHint}>No dispatcher runs yet.</div>}
+                      {(runsMap[scoped.id] || []).map((r) => (
+                        <div key={r.id} style={{
+                          border: '1px solid var(--border)', borderRadius: 8,
+                          padding: '6px 8px', marginBottom: 6, fontSize: 12,
+                        }}>
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <OutcomeChip outcome={r.outcome} />
+                            <RoleChip role={r.agent_letter} title={`${r.agent_letter}·auto`} />
+                            {r.run_id &&
+                              <span style={{ fontFamily: 'monospace', fontSize: 11, color: 'var(--text-tertiary)' }}>{r.run_id}</span>}
+                            <span style={cfgHint}>
+                              {r.requested_by
+                                ? `requested by ${r.requested_by} ${relTime(r.requested_at)}`
+                                : `queue dispatch ${relTime(r.requested_at)}`}
+                              {r.started_at ? ` · started ${relTime(r.started_at)}` : ''}
+                              {r.finished_at ? ` · finished ${relTime(r.finished_at)}` : ''}
+                            </span>
+                          </div>
+                          {r.log_tail && (
+                            <details style={{ marginTop: 4 }}>
+                              <summary style={{ cursor: 'pointer', fontSize: 11, color: 'var(--text-secondary)' }}>log tail</summary>
+                              <pre style={{
+                                fontSize: 11, whiteSpace: 'pre-wrap', maxHeight: 180, overflowY: 'auto',
+                                background: 'var(--bg-input)', padding: 6, borderRadius: 6, margin: '4px 0 0',
+                              }}>{r.log_tail}</pre>
+                            </details>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}

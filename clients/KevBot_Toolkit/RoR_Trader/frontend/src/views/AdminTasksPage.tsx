@@ -21,9 +21,9 @@ import Card from '@/components/Card';
 import { apiFetch } from '@/lib/api/client';
 import TaskDetailModal from './TaskDetailModal';
 import {
-  Task, STATUSES, AREAS, ASSIGNEES, ORIGINS, STATUS_COLOR, AUTHOR_LS_KEY,
-  COLLAPSED_LS_KEY, NEEDS_REVIEW_TAG, STATUS_DEF, withLegacy, cell, input, badge, tagChip,
-  NextChip, ProgressBar,
+  Task, RunRow, STATUSES, AREAS, ASSIGNEES, ORIGINS, STATUS_COLOR, AUTHOR_LS_KEY,
+  COLLAPSED_LS_KEY, NEEDS_REVIEW_TAG, RUN_REQUESTED_TAG, STATUS_DEF, withLegacy,
+  cell, input, badge, tagChip, NextChip, ProgressBar, RunButton,
 } from './taskBoardShared';
 
 export default function AdminTasksPage() {
@@ -45,6 +45,10 @@ export default function AdminTasksPage() {
   // Assignee/author options come from the agents registry; the const is the
   // fallback so selects never break if the fetch fails (spec §4).
   const [roles, setRoles] = useState<string[]>(ASSIGNEES);
+  // Run button state (board #109): registry statuses decide who is
+  // headless-enrolled; run_history rows carry requested/running/last-outcome.
+  const [agents, setAgents] = useState<{ letter: string; status: string }[]>([]);
+  const [runs, setRuns] = useState<RunRow[]>([]);
   const [nt, setNt] = useState({
     title: '', priority_phase: 1, priority_seq: 99, area: 'other',
     assignee: '', impacts_live: false,
@@ -62,13 +66,39 @@ export default function AdminTasksPage() {
   }, []);
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    apiFetch<{ letter: string }[]>('/api/agents?active=true')
+    apiFetch<{ letter: string; status: string }[]>('/api/agents?active=true')
       .then((rows) => {
+        setAgents(rows || []);
         const letters = (rows || []).map((a) => a.letter).filter(Boolean);
         if (letters.length) setRoles(['', ...letters]);
       })
       .catch(() => { /* keep ASSIGNEES fallback */ });
   }, []);
+  const loadRuns = useCallback(async () => {
+    try { setRuns(await apiFetch<RunRow[]>('/api/run-history?limit=300') || []); }
+    catch { /* run states just don't render */ }
+  }, []);
+  useEffect(() => { loadRuns(); }, [loadRuns]);
+  // Mirrors the dispatcher's enrollment rule: registry rows with
+  // status='headless'; when there are none, its stub fallback is M (docs lane).
+  const headless = useMemo(() => {
+    const h = new Set(agents.filter((a) => a.status === 'headless').map((a) => a.letter));
+    if (h.size === 0) h.add('M');
+    return h;
+  }, [agents]);
+  const latestRunByTask = useMemo(() => {
+    const m = new Map<number, RunRow>();
+    runs.forEach((r) => { if (!m.has(r.task_id)) m.set(r.task_id, r); }); // rows arrive newest-first
+    return m;
+  }, [runs]);
+  const requestRun = async (id: number) => {
+    try {
+      await apiFetch(`/api/dev-tasks/${id}/run-request`, {
+        method: 'POST', body: JSON.stringify({ author: commentAuthor }),
+      });
+    } catch (e) { setErr(String(e)); }
+    load(); loadRuns();
+  };
   useEffect(() => {
     const id = parseInt(new URLSearchParams(window.location.search).get('task') || '', 10);
     if (Number.isFinite(id)) setModal({ id });
@@ -221,7 +251,8 @@ export default function AdminTasksPage() {
       {(t.tags || []).includes(NEEDS_REVIEW_TAG) &&
         <span style={{ ...tagChip, borderColor: 'var(--amber, #d98c00)', color: 'var(--amber, #d98c00)', fontWeight: 700 }}
           title="finished — waiting on human review">👀 review</span>}
-      {(t.tags || []).filter((tag) => tag !== NEEDS_REVIEW_TAG).map((tag) => (
+      {/* run-requested renders as the Run button's ⏳ state, not a raw chip */}
+      {(t.tags || []).filter((tag) => tag !== NEEDS_REVIEW_TAG && tag !== RUN_REQUESTED_TAG).map((tag) => (
         <span key={tag} style={tagChip}>{tag}</span>
       ))}
     </>
@@ -298,6 +329,10 @@ export default function AdminTasksPage() {
           {withLegacy(roles, t.assignee || '').map((a) => <option key={a} value={a}>{a || '—'}</option>)}
         </select>
       </td>
+      <td style={cell}>
+        <RunButton task={t} allTasks={tasks} headless={headless}
+          latestRun={latestRunByTask.get(t.id)} onRequest={requestRun} compact />
+      </td>
       <td style={cell}><span style={{ cursor: 'pointer', color: 'var(--red)' }} onClick={() => del(t.id)}>✕</span></td>
     </tr>
   );
@@ -319,7 +354,7 @@ export default function AdminTasksPage() {
     if (shownLoose.length > 0) {
       groupedRows.push(
         <tr key="loose-header">
-          <td colSpan={8} style={{ ...cell, color: 'var(--text-tertiary)', fontSize: 11, paddingTop: 14 }}>
+          <td colSpan={9} style={{ ...cell, color: 'var(--text-tertiary)', fontSize: 11, paddingTop: 14 }}>
             ungrouped — tasks without a vision parent
           </td>
         </tr>);
@@ -413,12 +448,15 @@ export default function AdminTasksPage() {
                     <th style={{ ...cell, width: 200 }}>Flags</th>
                     <th style={{ ...cell, width: 110, cursor: 'pointer' }} title="sort" onClick={() => clickSort('area')}>Area{sortMark('area')}</th>
                     <th style={{ ...cell, width: 100, cursor: 'pointer' }} title="sort" onClick={() => clickSort('who')}>Who{sortMark('who')}</th>
+                    <th style={{ ...cell, width: 78 }} title="dispatch this task to its agent (local dispatcher)">Run</th>
                     <th style={{ ...cell, width: 32 }}></th>
                   </>
                 ) : (
                   <>
                     <th style={{ ...cell, width: 44 }}>ID</th><th style={{ ...cell, width: 96 }}>Pri</th><th style={cell}>Task</th><th style={{ ...cell, width: 130 }}>Status</th>
-                    <th style={{ ...cell, width: 200 }}>Flags</th><th style={{ ...cell, width: 110 }}>Area</th><th style={{ ...cell, width: 100 }}>Who</th><th style={{ ...cell, width: 32 }}></th>
+                    <th style={{ ...cell, width: 200 }}>Flags</th><th style={{ ...cell, width: 110 }}>Area</th><th style={{ ...cell, width: 100 }}>Who</th>
+                    <th style={{ ...cell, width: 78 }} title="dispatch this task to its agent (local dispatcher)">Run</th>
+                    <th style={{ ...cell, width: 32 }}></th>
                   </>
                 )}
               </tr>
@@ -428,7 +466,7 @@ export default function AdminTasksPage() {
                 ? sortedVisible.map((t) => <TaskRow key={t.id} t={t} />)
                 : groupedRows}
               {((view === 'flat' && visible.length === 0) || (view === 'grouped' && groupedRows.length === 0)) &&
-                <tr><td colSpan={8} style={{ ...cell, color: 'var(--text-tertiary)' }}>No tasks match the filters.</td></tr>}
+                <tr><td colSpan={9} style={{ ...cell, color: 'var(--text-tertiary)' }}>No tasks match the filters.</td></tr>}
             </tbody>
           </table>
         </Card>
@@ -442,7 +480,8 @@ export default function AdminTasksPage() {
           patch={patch} del={del}
           onClose={() => setModal(null)}
           onOpenTask={(id, sel) => setModal({ id, sel })}
-          commentAuthor={commentAuthor} onPickAuthor={pickAuthor} />
+          commentAuthor={commentAuthor} onPickAuthor={pickAuthor}
+          headless={headless} onRunRequested={() => { load(); loadRuns(); }} />
       )}
     </div>
   );

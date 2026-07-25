@@ -31,6 +31,20 @@ export interface Task {
 
 export interface Comment { id: number; author: string; body: string; created_at: string; }
 
+/** One dispatcher run of a board task (run_history table, board #109). */
+export interface RunRow {
+  id: number;
+  task_id: number;
+  agent_letter: string;
+  run_id: string | null;
+  requested_by: string | null;   // null = organic queue dispatch (no button)
+  requested_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  outcome: string;               // requested | running | ok | error | lease-expired | ignored
+  log_tail: string | null;
+}
+
 export const STATUSES = ['Backlog', 'Scoping', 'Todo', 'In Progress', 'Blocked', 'Done'];
 // One-liners VERBATIM from Session_Charters.md §7 (Kevin+M, 07-23) — shown as
 // tooltips on every status select.
@@ -51,6 +65,10 @@ export const AUTHOR_LS_KEY = 'ror_task_comment_author';
 // Tag convention: work is finished and waiting on a human — agents skip these,
 // Kevin filters to them. Rendered as a distinct chip, toggled like ⚡urgent.
 export const NEEDS_REVIEW_TAG = 'needs-review';
+// Board #109: the Run button is DECLARATIVE — this tag is the request; the
+// LOCAL dispatcher --loop polls for it and executes (Railway cannot reach
+// Kevin's machine). Cleared by the dispatcher on claim.
+export const RUN_REQUESTED_TAG = 'run-requested';
 export const COLLAPSED_LS_KEY = 'ror_board_collapsed_visions';
 export const STATUS_COLOR: Record<string, string> = {
   'Backlog': 'var(--text-tertiary)', 'Scoping': '#a855f7', 'Todo': 'var(--blue)',
@@ -204,6 +222,103 @@ export const NextChip = ({ t, subtasks }: { t: Task; subtasks: Task[] }) => {
     <span title={`first open item is owned by ${next} but the task is assigned to ${t.assignee} — reassign at the handoff point`} style={{
       ...tagChip, border: `1px solid ${roleColor(next)}`, color: roleColor(next), fontWeight: 700,
     }}>handoff due → {roleAbbrev(next)}</span>
+  );
+};
+
+/* ── Run button + run history (board #109, Registry Phase 2) ──────────── */
+
+export const OUTCOME_STYLE: Record<string, { color: string; icon: string; label: string }> = {
+  'requested': { color: 'var(--amber, #d98c00)', icon: '⏳', label: 'requested' },
+  'running': { color: 'var(--blue)', icon: '⚙', label: 'running' },
+  'ok': { color: 'var(--green)', icon: '✓', label: 'ok' },
+  'error': { color: 'var(--red)', icon: '✗', label: 'error' },
+  'lease-expired': { color: 'var(--red)', icon: '⏰', label: 'lease-expired' },
+  'ignored': { color: 'var(--text-tertiary)', icon: '∅', label: 'ignored' },
+};
+
+/** Small outcome chip for run rows / last-run state. */
+export const OutcomeChip = ({ outcome, title }: { outcome: string; title?: string }) => {
+  const s = OUTCOME_STYLE[outcome] || { color: 'var(--text-tertiary)', icon: '?', label: outcome };
+  return (
+    <span title={title || `run ${s.label}`} style={{
+      ...tagChip, borderColor: s.color, color: s.color, fontWeight: 600,
+    }}>{s.icon} {s.label}</span>
+  );
+};
+
+/**
+ * Why a task can't be dispatched right now, or null when it can. Mirrors the
+ * dispatcher's run-request gates (dispatcher.py run_requested): description
+ * non-empty, not blocked, assignee headless-enrolled OR stub, and not
+ * already In Progress / Done / Blocked. The dispatcher re-gates at claim
+ * time — this is a courtesy mirror so the button disables with a reason.
+ */
+export function runIneligibleReason(
+  t: Task, allTasks: Task[], headless: Set<string>,
+): string | null {
+  if (t.status === 'In Progress') return 'already In Progress';
+  if (t.status === 'Done') return 'task is Done';
+  if (t.status === 'Blocked') return 'task is Blocked';
+  if (!(t.description || '').trim()) return 'no description — never dispatch unscoped work';
+  if (!(t.assignee || '').trim()) return 'no assignee';
+  if (!headless.has(t.assignee!)) return `${t.assignee} is not headless-enrolled`;
+  const open = (t.blocked_by || []).filter((b) =>
+    allTasks.find((x) => x.id === b)?.status !== 'Done');
+  if (open.length > 0) return `blocked by #${open.join(', #')}`;
+  return null;
+}
+
+/**
+ * The Run button. States (from run_history + tags):
+ *   run-requested tag → "⏳ requested" (disabled; dispatcher will claim)
+ *   latest run running → "⚙ running…" (disabled)
+ *   eligible → enabled "▶ Run"; ineligible → disabled with the reason as
+ *   tooltip. A terminal latest run renders as a small outcome chip alongside
+ *   (compact mode folds it into the button title instead).
+ */
+export const RunButton = ({ task, allTasks, headless, latestRun, onRequest, compact = false }: {
+  task: Task;
+  allTasks: Task[];
+  headless: Set<string>;
+  latestRun?: RunRow;
+  onRequest: (id: number) => void;
+  compact?: boolean;
+}) => {
+  const requested = (task.tags || []).includes(RUN_REQUESTED_TAG)
+    || latestRun?.outcome === 'requested';
+  const running = latestRun?.outcome === 'running';
+  const reason = runIneligibleReason(task, allTasks, headless);
+  const last = latestRun && !['requested', 'running'].includes(latestRun.outcome)
+    ? latestRun : null;
+  const lastTitle = last
+    ? `last run ${last.outcome} ${relTime(last.finished_at || last.requested_at)}`
+      + (last.requested_by ? ` (requested by ${last.requested_by})` : ' (queue dispatch)')
+    : '';
+
+  const base: React.CSSProperties = {
+    ...input, cursor: 'pointer', fontSize: compact ? 11 : 12, fontWeight: 600,
+    padding: compact ? '1px 7px' : '3px 10px', whiteSpace: 'nowrap',
+  };
+  let btn: React.ReactNode;
+  if (requested) {
+    btn = <button disabled style={{ ...base, cursor: 'default', color: 'var(--amber, #d98c00)', borderColor: 'var(--amber, #d98c00)' }}
+      title="run requested — the local dispatcher claims it on its next poll">⏳ requested</button>;
+  } else if (running) {
+    btn = <button disabled style={{ ...base, cursor: 'default', color: 'var(--blue)', borderColor: 'var(--blue)' }}
+      title={`running as ${latestRun?.agent_letter}·auto (run ${latestRun?.run_id || '?'})`}>⚙ running…</button>;
+  } else if (reason) {
+    btn = <button disabled style={{ ...base, cursor: 'not-allowed', opacity: 0.4 }}
+      title={`can't dispatch: ${reason}`}>▶ Run</button>;
+  } else {
+    btn = <button style={{ ...base, color: 'var(--green)', borderColor: 'var(--green)' }}
+      title={`dispatch to ${task.assignee}·auto via the local dispatcher${lastTitle ? ` — ${lastTitle}` : ''}`}
+      onClick={(e) => { e.stopPropagation(); onRequest(task.id); }}>▶ Run</button>;
+  }
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+      {btn}
+      {!compact && last && <OutcomeChip outcome={last.outcome} title={lastTitle} />}
+    </span>
   );
 };
 
