@@ -43,16 +43,20 @@ def _admin():
 def _greedy_pair(edges: List[float], alerts: List[float],
                  tolerance: float) -> set:
     """strategy_health._pair_phantom_missed's walk, returning the set of
-    paired edge timestamps instead of counts. Same order, same tie rules —
-    counts derived from this set equal the original's paired_edges."""
-    edges_sorted = sorted(edges)
+    paired edge INDICES (positions in the `edges` argument) instead of
+    counts. Same order, same tie rules — len() of this set equals the
+    original's paired_edges. Keyed by index, not timestamp: two edges
+    sharing one timestamp are distinct pairing slots, and each consumes
+    its own alert (a timestamp-keyed set double-collapsed them — one
+    matched alert marked both edges paired; board #122)."""
+    order = sorted(range(len(edges)), key=lambda k: edges[k])
     alerts_sorted = sorted(alerts)
     paired: set = set()
     i = j = 0
-    while i < len(edges_sorted) and j < len(alerts_sorted):
-        diff = alerts_sorted[j] - edges_sorted[i]
+    while i < len(order) and j < len(alerts_sorted):
+        diff = alerts_sorted[j] - edges[order[i]]
         if abs(diff) <= tolerance:
-            paired.add(edges_sorted[i])
+            paired.add(order[i])
             i += 1
             j += 1
         elif diff < 0:
@@ -79,10 +83,12 @@ def _score_sid(c, sid: int, tolerance: float,
     trades = list(reversed(tr))  # oldest → newest for display
 
     edges: List[Tuple[float, int, str]] = []  # (unix, trade_idx, 'entry'|'exit')
+    edge_pos: Dict[Tuple[int, str], int] = {}  # (trade_idx, kind) → edges index
     for idx, t in enumerate(trades):
         for kind in ("entry", "exit"):
             dt = _parse_iso(t.get(f"{kind}_fill_ts"))
             if dt is not None:
+                edge_pos[(idx, kind)] = len(edges)
                 edges.append((dt.timestamp(), idx, kind))
 
     # BOTH timestamp bases from ONE alert fetch (item 4): 'fired' =
@@ -113,10 +119,11 @@ def _score_sid(c, sid: int, tolerance: float,
                 basis_alerts["theo"].append(dth.timestamp())
 
     edge_ts = [e[0] for e in edges]
+    # paired[b] holds indices into `edges` (board #122 — index-keyed so
+    # duplicate edge timestamps count as separate pairing slots).
     paired = {b: _greedy_pair(edge_ts, basis_alerts[b], tolerance)
               for b in ("fired", "theo")}
-    points = {b: sum(1 for e in edges if e[0] in paired[b])
-              for b in ("fired", "theo")}
+    points = {b: len(paired[b]) for b in ("fired", "theo")}
     denom = 2 * len(trades)
 
     out: Dict[str, Any] = {
@@ -161,7 +168,9 @@ def _score_sid(c, sid: int, tolerance: float,
                     bd[f"{kind}_delta_sec"] = (
                         None if (u is None or near is None)
                         else round(near - u, 3))
-                    bd[f"{kind}_paired"] = bool(u is not None and u in paired[b])
+                    pos = edge_pos.get((idx, kind))
+                    bd[f"{kind}_paired"] = bool(
+                        pos is not None and pos in paired[b])
                 row[b] = bd
             rows.append(row)
         out["trades"] = rows

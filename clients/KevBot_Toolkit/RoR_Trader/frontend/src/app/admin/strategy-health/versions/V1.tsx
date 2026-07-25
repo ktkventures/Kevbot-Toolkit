@@ -353,12 +353,25 @@ export default function StrategyHealthV1() {
   // computation never blocks the main table; cells show '—' until it lands.
   const [last10, setLast10] = useState<Map<number, Last10Score>>(new Map());
   const [last10Sid, setLast10Sid] = useState<{ sid: number; name: string } | null>(null);
+  // Board #122: scope the batch call to the sids actually on the page. The
+  // no-sids form scores EVERY strategy in the strategies table (two
+  // sequential DB reads each) — slow enough at fleet scale that the
+  // mount-time fetch timed out or landed minutes late, leaving the column
+  // at '—' until a refresh happened to catch a warm run. Keying the effect
+  // to the loaded rows fires it as soon as the health data lands and
+  // re-fires it when an Apply changes the visible fleet.
+  const last10Sids = useMemo(
+    () => Array.from(new Set((data?.rows ?? []).map(r => r.strategy_id)))
+      .sort((a, b) => a - b).join(','),
+    [data]);
   useEffect(() => {
-    apiFetch<{ scores: Record<string, Last10Score> }>('/api/strategy-health-last10')
+    if (!last10Sids) return;
+    apiFetch<{ scores: Record<string, Last10Score> }>(
+      `/api/strategy-health-last10?sids=${last10Sids}`)
       .then((d) => setLast10(new Map(
         Object.entries(d.scores || {}).map(([k, v]) => [Number(k), v]))))
       .catch(() => { /* keep '—' cells */ });
-  }, []);
+  }, [last10Sids]);
 
   // Phase B (board #70): bug chips from open board tasks whose
   // affected_sids contains the row's sid, + per-sid notes counts.
