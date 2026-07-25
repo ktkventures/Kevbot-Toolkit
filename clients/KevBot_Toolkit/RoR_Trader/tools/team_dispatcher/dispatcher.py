@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""Team dispatcher (V4.9) — dispatches board tasks to headless Claude agents.
+
+DRY-RUN BY DEFAULT: prints/logs what it WOULD dispatch, makes ZERO writes.
+Live mode requires --live. Runs on Kevin's machine only (never Railway).
+
+Usage:
+  python3 dispatcher.py            # one dry-run pass
+  python3 dispatcher.py --loop     # dry-run every POLL_S seconds
+  python3 dispatcher.py --live     # real dispatching (claims, spawns, reports)
+
+Kill switches: touch tools/team_dispatcher/PAUSE (idles the loop);
+per-agent: registry status must be 'headless' to be dispatchable at all.
+Design: docs/_active/Design_Agent_Dispatcher.md (decisions approved 2026-07-23).
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+from datetime import datetime, timezone
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = "/home/kevin/projects/Kevbot-Toolkit/clients/KevBot_Toolkit/RoR_Trader"
+ENV = f"{REPO}/src/.env"
+CHARTER = f"{REPO}/docs/_active/Session_Charters.md"
+PAUSE_FILE = f"{HERE}/PAUSE"
+STATE_FILE = f"{HERE}/state.json"
+LOG_DIR = f"{HERE}/logs"
+
+CONCURRENCY = 3          # Kevin 07-23; blocked_by is the long-term governor
+DAILY_CAP = 24           # circuit breaker only
+POLL_S = 900
+RUN_TIMEOUT_S = 45 * 60  # lease
+CLAUDE_BIN = "claude"
+
+# Fallback roster until the agents registry (V2.6) is live. Only lanes listed
+# here can dispatch in fallback mode — Phase B = docs lane only.
+STUB_AGENTS = {
+    "M": {"letter": "M", "status": "headless", "worktree": REPO,
+          "scope": "docs/organization lane", "boundaries": "Edit only under docs/; board API; no git push, no deploys, no engine files, no prod-DB writes, no flags"},
+}
+
+
+def _creds():
+    url = key = None
+    for line in open(ENV, encoding="utf-8"):
+        line = line.strip()
+        if line.startswith("SUPABASE_URL="):
+            url = line.split("=", 1)[1].strip().strip('"')
+        elif line.startswith("SUPABASE_SERVICE_ROLE_KEY="):
+            key = line.split("=", 1)[1].strip().strip('"')
+    return url.rstrip("/"), key
+
+
+def api(method, path, body=None, prefer=None):
+    url, key = _creds()
+    headers = {"apikey": key, "Authorization": f"Bearer {key}",
+               "Content-Type": "application/json"}
+    if prefer:
+        headers["Prefer"] = prefer
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(f"{url}/rest/v1/{path}", data=data,
+                                 headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=15) as r:
+        txt = r.read().decode()
+        return json.loads(txt) if txt.strip() else None
+
+
+def headless_agents():
+    try:
+        rows = api("GET", "agents?status=eq.headless&select=*")
+        if rows:
+            return {r["letter"]: r for r in rows}, "registry"
+    except Exception:
+        pass
+    return STUB_AGENTS, "stub (registry not live yet — docs lane only)"
+
+
+def load_state():
+    try:
+        return json.load(open(STATE_FILE))
+    except Exception:
+        return {"runs": []}
+
+
+def save_state(st):
+    json.dump(st, open(STATE_FILE, "w"), indent=1)
+
+
+def today_run_count(st):
+    today = datetime.now(timezone.utc).date().isoformat()
+    return sum(1 for r in st["runs"] if r["ts"][:10] == today)
+
+
+def active_runs(st):
+    now = time.time()
+    return [r for r in st["runs"] if r.get("active") and now - r["t0"] < RUN_TIMEOUT_S]
+
+
+def next_actor(task):
+    for step in (task.get("checklist") or []):
+        if not step.get("done"):
+            return step.get("role") or task.get("assignee")
+    return task.get("assignee")
+
+
+def dispatchable(agents):
+    tasks = api("GET", "dev_tasks?status=eq.Todo&select=*"
+                       "&order=is_urgent.desc,priority_phase,priority_seq")
+    done_ids = {t["id"] for t in api("GET", "dev_tasks?status=eq.Done&select=id")}
+    out = []
+    for t in tasks:
+        a = t.get("assignee")
+        if a not in agents:
+            continue
+        tags = t.get("tags") or []
+        if "needs-review" in tags or "needs-scoping" in tags:
+            continue
+        if not (t.get("description") or "").strip():
+            continue  # never dispatch unscoped work
+        if any(b not in done_ids for b in (t.get("blocked_by") or [])):
+            continue
+        if next_actor(t) != a:
+            continue
+        out.append(t)
+    return out
+
+
+def build_prompt(agent, task):
+    comments = api("GET", f"dev_task_comments?task_id=eq.{task['id']}"
+                          "&order=created_at.desc&limit=5&select=author,body")
+    thread = "\n".join(f"- {c['author']}: {c['body'][:400]}" for c in reversed(comments or []))
+    steps = "\n".join(f"- [{'x' if s.get('done') else ' '}] ({s.get('role','')}) {s['text']}"
+                      for s in (task.get("checklist") or []))
+    return f"""You are {agent['letter']}·auto, a headless dispatched agent on the RoR Trader team.
+Identity/scope: {agent.get('scope','')}
+HARD BOUNDARIES (violating any = abort and report): {agent.get('boundaries','')}
+Charter (read first): {CHARTER}
+
+YOUR TASK — board #{task['id']}: {task['title']}
+Description:
+{task.get('description') or '(none)'}
+Process checklist:
+{steps or '(none)'}
+Recent thread:
+{thread or '(none)'}
+
+Do the task. Your FINAL message becomes a comment on task #{task['id']} — make it a
+self-contained result report (what you did, files touched, what needs review). If you
+completed checklist steps, list them as 'STEP DONE: <text>' lines. Do not change task
+status; do not touch anything outside your scope."""
+
+
+def spawn(agent, task, prompt, log_path):
+    with open(log_path, "w") as lf:
+        return subprocess.Popen(
+            [CLAUDE_BIN, "-p", prompt, "--output-format", "json"],
+            cwd=agent.get("worktree") or REPO, stdout=lf,
+            stderr=subprocess.STDOUT, start_new_session=True)
+
+
+def reap(st):
+    """Collect finished live runs → post comments, tag needs-review.
+    Runs in state were always live-dispatched, so reporting is unconditional."""
+    for r in active_runs(st):
+        proc_alive = os.path.exists(f"/proc/{r['pid']}")
+        expired = time.time() - r["t0"] >= RUN_TIMEOUT_S
+        if proc_alive and not expired:
+            continue
+        r["active"] = False
+        tail = open(r["log"]).read()[-3000:] if os.path.exists(r["log"]) else "(no log)"
+        result = tail
+        try:
+            result = json.loads(tail.strip().splitlines()[-1]).get("result", tail)
+        except Exception:
+            pass
+        if True:
+            if expired and proc_alive:
+                api("POST", "dev_task_comments", body={
+                    "task_id": r["task_id"], "author": "system",
+                    "body": f"dispatch LEASE EXPIRED ({r['agent']}·auto run {r['run_id']}) — killed. Log tail:\n{tail[-800:]}"})
+                api("PATCH", f"dev_tasks?id=eq.{r['task_id']}",
+                    body={"status": "Blocked", "notes": "dispatch failure — see thread"})
+            else:
+                api("POST", "dev_task_comments", body={
+                    "task_id": r["task_id"], "author": f"{r['agent']}·auto",
+                    "body": result[:6000]})
+                t = api("GET", f"dev_tasks?id=eq.{r['task_id']}&select=tags")[0]
+                api("PATCH", f"dev_tasks?id=eq.{r['task_id']}",
+                    body={"tags": list(set((t.get("tags") or []) + ["needs-review"]))})
+    save_state(st)
+
+
+def one_pass(live, only_task=None):
+    if os.path.exists(PAUSE_FILE):
+        print("PAUSED (remove tools/team_dispatcher/PAUSE to resume)")
+        return
+    agents, source = headless_agents()
+    st = load_state()
+    reap(st)
+    slots = CONCURRENCY - len(active_runs(st))
+    cap_left = DAILY_CAP - today_run_count(st)
+    cands = dispatchable(agents)
+    if only_task is not None:
+        hit = [t for t in cands if t["id"] == only_task]
+        if not hit:
+            print(f"task #{only_task} is NOT eligible (not Todo / wrong lane / blocked / "
+                  f"awaiting review / next-actor mismatch) — nothing dispatched")
+        cands = hit
+    now = datetime.now(timezone.utc).strftime("%H:%M:%SZ")
+    print(f"[{now}] agents={list(agents)} ({source}) · dispatchable={len(cands)} "
+          f"· slots={slots} · cap_left={cap_left} · mode={'LIVE' if live else 'DRY-RUN'}")
+    os.makedirs(LOG_DIR, exist_ok=True)
+    for t in cands[:max(0, min(slots, cap_left))]:
+        agent = agents[t["assignee"]]
+        prompt = build_prompt(agent, t)
+        run_id = f"r{int(time.time())}-{t['id']}"
+        log_path = f"{LOG_DIR}/{run_id}.log"
+        if not live:
+            open(f"{LOG_DIR}/{run_id}.DRY.prompt.txt", "w").write(prompt)
+            print(f"  WOULD DISPATCH #{t['id']} '{t['title'][:60]}' → {t['assignee']}·auto "
+                  f"(prompt saved: {run_id}.DRY.prompt.txt)")
+            continue
+        api("PATCH", f"dev_tasks?id=eq.{t['id']}", body={"status": "In Progress"})
+        api("POST", "dev_task_comments", body={
+            "task_id": t["id"], "author": "system",
+            "body": f"dispatched to {t['assignee']}·auto (run {run_id})"})
+        p = spawn(agent, t, prompt, log_path)
+        st["runs"].append({"run_id": run_id, "task_id": t["id"], "agent": t["assignee"],
+                           "pid": p.pid, "t0": time.time(), "log": log_path,
+                           "ts": datetime.now(timezone.utc).isoformat(), "active": True})
+        save_state(st)
+        print(f"  DISPATCHED #{t['id']} → {t['assignee']}·auto pid={p.pid}")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--live", action="store_true")
+    ap.add_argument("--loop", action="store_true")
+    ap.add_argument("--task", type=int, default=None,
+                    help="dispatch ONLY this task id (must still pass eligibility)")
+    args = ap.parse_args()
+    while True:
+        one_pass(args.live, only_task=args.task)
+        if not args.loop:
+            break
+        time.sleep(POLL_S)
+
+
+if __name__ == "__main__":
+    main()

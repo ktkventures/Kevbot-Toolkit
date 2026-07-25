@@ -1,0 +1,4 @@
+# runtime state of the local dispatcher — never commit
+state.json
+logs/
+PAUSE
