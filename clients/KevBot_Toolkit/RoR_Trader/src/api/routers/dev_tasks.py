@@ -194,6 +194,15 @@ def request_run(task_id: int, payload: dict = Body(default={}),
             status_code=409, detail="task is already In Progress")
     if t.get("status") == "Done":
         raise HTTPException(status_code=400, detail="task is Done")
+    # The button overrides queue ORDER, never "not workable yet" (M, #109
+    # review) — mirror of the dispatcher's run_requested() refusals.
+    if t.get("status") == "Scoping":
+        raise HTTPException(
+            status_code=400, detail="task is Scoping — not workable yet")
+    if "needs-scoping" in tags:
+        raise HTTPException(
+            status_code=400,
+            detail="tagged needs-scoping — not workable yet")
     if not (t.get("description") or "").strip():
         raise HTTPException(
             status_code=400,

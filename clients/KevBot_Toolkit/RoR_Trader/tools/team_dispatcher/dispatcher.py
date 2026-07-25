@@ -141,14 +141,20 @@ def run_requested(agents, done_ids):
     queue, FIFO by request time (tag-add bumps updated_at). Spec gates only:
     description non-empty, not blocked, agent headless-enrolled OR stub —
     deliberately NO next-actor / needs-review / status=Todo gates (the button
-    is an explicit human override), but a task that is already In Progress /
-    Done / Blocked can't be started. Returns (eligible, [(task, reason)])."""
+    is an explicit human override of queue ORDER). Hard refusals: In Progress /
+    Done / Blocked (can't be started) and Scoping / needs-scoping (not
+    workable yet — the button never overrides that). Returns
+    (eligible, [(task, reason)])."""
     rows = api("GET", f"dev_tasks?tags=cs.{{{RUN_REQUESTED_TAG}}}&select=*"
                       "&order=updated_at")
     ok, bad = [], []
     for t in rows or []:
-        if t.get("status") in ("In Progress", "Done", "Blocked"):
+        # The button overrides queue ORDER, never "not workable yet" (M, #109
+        # review): Scoping status / needs-scoping tag are hard refusals.
+        if t.get("status") in ("In Progress", "Done", "Blocked", "Scoping"):
             bad.append((t, f"status is {t['status']}"))
+        elif "needs-scoping" in (t.get("tags") or []):
+            bad.append((t, "tagged needs-scoping — not workable yet"))
         elif not (t.get("description") or "").strip():
             bad.append((t, "description is empty — never dispatch unscoped work"))
         elif t.get("assignee") not in agents:
@@ -238,10 +244,15 @@ def reap(st):
         if proc_alive and not expired:
             continue
         r["active"] = False
-        tail = open(r["log"]).read()[-3000:] if os.path.exists(r["log"]) else "(no log)"
+        # Parse from the FULL log — claude -p --output-format json emits ONE
+        # long line, so a pre-parse tail truncates it into a false
+        # outcome=error (M, #109 review). Only what we POST/store is capped:
+        # comment result[:6000], run_history log_tail[-4000:].
+        full = open(r["log"]).read() if os.path.exists(r["log"]) else "(no log)"
+        tail = full[-3000:]
         result, outcome = tail, "ok"
         try:
-            last = json.loads(tail.strip().splitlines()[-1])
+            last = json.loads(full.strip().splitlines()[-1])
             result = last.get("result", tail)
             if last.get("is_error"):
                 outcome = "error"

@@ -259,6 +259,9 @@ export function runIneligibleReason(
   if (t.status === 'In Progress') return 'already In Progress';
   if (t.status === 'Done') return 'task is Done';
   if (t.status === 'Blocked') return 'task is Blocked';
+  // The button overrides queue ORDER, never "not workable yet" (M, #109 review).
+  if (t.status === 'Scoping') return 'Scoping — not workable yet';
+  if ((t.tags || []).includes('needs-scoping')) return 'tagged needs-scoping — not workable yet';
   if (!(t.description || '').trim()) return 'no description — never dispatch unscoped work';
   if (!(t.assignee || '').trim()) return 'no assignee';
   if (!headless.has(t.assignee!)) return `${t.assignee} is not headless-enrolled`;
