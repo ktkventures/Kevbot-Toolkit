@@ -129,9 +129,11 @@ agent_comments = [c for c in calls("POST", "dev_task_comments")
                   if c[2]["author"] == "F·auto"]
 check("result posted as F·auto comment",
       len(agent_comments) == 1 and agent_comments[0][2]["body"] == "did the task. report here.")
-check("needs-review tag added (old tags kept)",
-      any(set(c[2].get("tags") or []) == {"old-tag", "needs-review"}
-          for c in calls("PATCH", "dev_tasks")))
+check("task PATCHed to Review (board #136 — status replaced the needs-review tag)",
+      any(c[2].get("status") == "Review" for c in calls("PATCH", "dev_tasks")))
+check("system status-transition comment posted",
+      any(c[2]["author"] == "system" and "In Progress → Review" in c[2]["body"]
+          for c in calls("POST", "dev_task_comments")))
 check("run_history outcome=ok",
       any(c[2].get("outcome") == "ok" for c in calls("PATCH", "run_history")))
 check("NOT treated as lease-expired",

@@ -17,8 +17,18 @@ _EDITABLE = {
     "title", "description", "status", "priority_phase", "priority_seq",
     "is_urgent", "impacts_live", "needs_live_validation", "area",
     "assignee", "blocked_by", "tags", "notes", "parent_id", "origin",
-    "checklist", "affected_sids",
+    "checklist", "affected_sids", "impact", "kevin_final",
+    "standing_approval",
 }
+
+# Blast-radius chip values (board #136) — see migrations/dev_tasks_lifecycle.sql.
+_IMPACTS = {"contained", "app", "engine", "live"}
+
+# Kanban pipeline stages that are NOT dispatchable work (board #136):
+# Approval = awaiting Kevin's stamp; Review/Staged = the work already ran.
+# The organic dispatcher queue is status=Todo only; these guard the
+# run-request button lane.
+_UNDISPATCHABLE_STAGES = ("Approval", "Review", "Staged")
 
 # 'discovered' marks rabbit-hole work found mid-task, parented under the
 # vision item that spawned it (Team Board convention).
@@ -40,6 +50,14 @@ def _validate_team_fields(c, row: dict, task_id: Optional[int] = None):
         raise HTTPException(
             status_code=400,
             detail=f"origin must be one of {sorted(_ORIGINS)}")
+    if "impact" in row and row["impact"] not in _IMPACTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"impact must be one of {sorted(_IMPACTS)}")
+    for f in ("kevin_final", "standing_approval"):
+        if f in row and not isinstance(row[f], bool):
+            raise HTTPException(
+                status_code=400, detail=f"{f} must be a boolean")
     if "affected_sids" in row:
         sids = row["affected_sids"]
         if not (isinstance(sids, list)
@@ -141,11 +159,26 @@ def update_task(task_id: int, payload: dict = Body(...),
         tracked = {k: row[k] for k in ("status", "assignee") if k in row}
         prev = None
         if tracked:
-            prev_rows = c.table("dev_tasks").select("status,assignee") \
+            prev_rows = c.table("dev_tasks") \
+                .select("status,assignee,kevin_final") \
                 .eq("id", task_id).execute().data
             if not prev_rows:
                 raise HTTPException(status_code=404, detail="task not found")
             prev = prev_rows[0]
+        # Two-touch close guard (board #136): once Kevin stamps "Approve + I
+        # review before Done", only Kevin's hand moves the task to Staged or
+        # Done. Staged → Done is exempt — that transition is the R release
+        # train shipping a task Kevin already signed off Review → Staged.
+        if (prev is not None and prev.get("kevin_final")
+                and row.get("status") in ("Staged", "Done")
+                and prev.get("status") not in ("Staged", "Done")
+                and (payload.get("actor") or "") != "kevin"):
+            raise HTTPException(
+                status_code=403,
+                detail="two-touch task — Kevin stamped 'I review before "
+                       "Done', so only actor=kevin moves it to Staged/Done "
+                       "(relaying his verbal OK? send actor='kevin' and say "
+                       "so on the thread)")
         c.table("dev_tasks").update(row).eq("id", task_id).execute()
         if prev:
             actor = payload.get("actor")
@@ -199,6 +232,13 @@ def request_run(task_id: int, payload: dict = Body(default={}),
     if t.get("status") == "Scoping":
         raise HTTPException(
             status_code=400, detail="task is Scoping — not workable yet")
+    # Board #136 pipeline stages: Approval isn't approved yet; Review/Staged
+    # already ran. Same "never overrides 'not workable'" rule as Scoping.
+    if t.get("status") in _UNDISPATCHABLE_STAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"task is {t['status']} — pipeline stage is not "
+                   "dispatchable")
     if "needs-scoping" in tags:
         raise HTTPException(
             status_code=400,
@@ -218,6 +258,53 @@ def request_run(task_id: int, payload: dict = Body(default={}),
         "task_id": task_id, "agent_letter": t["assignee"],
         "requested_by": author, "outcome": "requested"}).execute()
     return res.data[0] if res.data else {"status": "requested"}
+
+
+# The two Approval-stage stamp buttons (board #136, Kevin+M 07-25).
+# 'delegate' = "Approve — M closes" · 'final' = "Approve + I review before
+# Done" (two-touch: kevin_final=TRUE, only Kevin signs off Review →
+# Staged/Done). Both send the task to Todo and log ONE system comment.
+_STAMP_MODES = {"delegate": False, "final": True}
+
+
+@router.post("/{task_id}/stamp")
+def stamp_approval(task_id: int, payload: dict = Body(...),
+                   user=Depends(get_current_user)):
+    """Record Kevin's approval stamp on a task sitting in Approval.
+
+    Atomic replacement for the hand flow M ran on board #136 itself: sets
+    kevin_final per the stamp mode, moves Approval → Todo, and writes one
+    system comment naming the stamp and who recorded it (M relaying Kevin's
+    verbal OK passes author='kevin' and says so on the thread).
+    """
+    mode = payload.get("mode")
+    if mode not in _STAMP_MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"mode must be one of {sorted(_STAMP_MODES)}")
+    author = (payload.get("author") or "kevin").strip() or "kevin"
+    c = _admin()
+    rows = c.table("dev_tasks").select("id,status").eq("id", task_id) \
+        .execute().data
+    if not rows:
+        raise HTTPException(status_code=404, detail="task not found")
+    if rows[0].get("status") != "Approval":
+        raise HTTPException(
+            status_code=409,
+            detail=f"task is {rows[0].get('status')} — stamps only apply "
+                   "to tasks in Approval")
+    kevin_final = _STAMP_MODES[mode]
+    c.table("dev_tasks").update(
+        {"status": "Todo", "kevin_final": kevin_final}) \
+        .eq("id", task_id).execute()
+    label = ("two-touch (Kevin reviews before Done)" if kevin_final
+             else "M closes")
+    c.table("dev_task_comments").insert({
+        "task_id": task_id, "author": "system",
+        "body": f"stamp: approved — {label} (by {author}) · "
+                "status: Approval → Todo"}).execute()
+    res = c.table("dev_tasks").select("*").eq("id", task_id).execute().data
+    return res[0] if res else {"status": "stamped"}
 
 
 @router.get("/{task_id}/comments")

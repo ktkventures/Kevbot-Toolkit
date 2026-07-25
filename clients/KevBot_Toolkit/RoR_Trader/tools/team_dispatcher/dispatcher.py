@@ -151,8 +151,12 @@ def run_requested(agents, done_ids):
     ok, bad = [], []
     for t in rows or []:
         # The button overrides queue ORDER, never "not workable yet" (M, #109
-        # review): Scoping status / needs-scoping tag are hard refusals.
-        if t.get("status") in ("In Progress", "Done", "Blocked", "Scoping"):
+        # review): Scoping status / needs-scoping tag are hard refusals. The
+        # board-#136 pipeline stages joined the list — Approval isn't approved
+        # yet, Review/Staged already ran (claim-time net for tasks moved after
+        # the button press; the request endpoint refuses them up front).
+        if t.get("status") in ("In Progress", "Done", "Blocked", "Scoping",
+                               "Approval", "Review", "Staged"):
             bad.append((t, f"status is {t['status']}"))
         elif "needs-scoping" in (t.get("tags") or []):
             bad.append((t, "tagged needs-scoping — not workable yet"))
@@ -275,14 +279,16 @@ def parse_terminal(full):
 
 
 def reap(st):
-    """Collect finished live runs → post comments, tag needs-review.
+    """Collect finished live runs → post comments, move the task to Review.
     Runs in state were always live-dispatched, so reporting is unconditional.
     Collect triggers (board #131): process gone; lease expired (kill +
     Blocked); or the log already carries the terminal result JSON while the
     process lingers — those report normally and the leftover session group is
     killed. Iterates ALL active-flagged runs, NOT active_runs(): its
     within-lease filter excluded exactly the runs the lease branch exists for,
-    making that branch unreachable."""
+    making that branch unreachable. Board #136: Review STATUS replaced the
+    needs-review tag — output done, awaiting sign-off (M always; Kevin closes
+    iff kevin_final)."""
     for r in [x for x in st["runs"] if x.get("active")]:
         proc_alive = os.path.exists(f"/proc/{r['pid']}")
         expired = time.time() - r["t0"] >= RUN_TIMEOUT_S
@@ -310,9 +316,12 @@ def reap(st):
             api("POST", "dev_task_comments", body={
                 "task_id": r["task_id"], "author": f"{r['agent']}·auto",
                 "body": str(result)[:6000]})
-            t = api("GET", f"dev_tasks?id=eq.{r['task_id']}&select=tags")[0]
             api("PATCH", f"dev_tasks?id=eq.{r['task_id']}",
-                body={"tags": list(set((t.get("tags") or []) + ["needs-review"]))})
+                body={"status": "Review"})
+            api("POST", "dev_task_comments", body={
+                "task_id": r["task_id"], "author": "system",
+                "body": f"status: In Progress → Review (by dispatcher — "
+                        f"run {r['run_id']} finished, output awaiting sign-off)"})
             rh_finish(r["run_id"], outcome, tail)
     save_state(st)
 

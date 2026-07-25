@@ -20,8 +20,10 @@
  * Board #134 (polish round 2): comments/descriptions render markdown-lite
  * (shared taskMarkdown, remark-breaks); the open modal polls its thread +
  * run state every ~7s (pulsing agent-working badge, comments slide in live,
- * onPollTick refreshes the board's chips); Ask AI posts with an @M marker;
- * pre-approve chip flips needs-approval ⇄ kevin-ok.
+ * onPollTick refreshes the board's chips); Ask AI posts with an @M marker.
+ *
+ * Board #136 (kanban lifecycle): Approval-stage stamp buttons (two-touch),
+ * impact chip next to status, vision rows exempt from the pipeline stages.
  */
 'use client';
 
@@ -29,10 +31,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { apiFetch } from '@/lib/api/client';
 import {
-  Task, Comment, ChecklistStep, RunRow, STATUSES, AREAS, ASSIGNEES, ORIGINS,
-  STATUS_COLOR, STATUS_DEF, withLegacy, input, tagChip, relTime, elapsedShort,
+  Task, Comment, ChecklistStep, RunRow, AREAS, ASSIGNEES, ORIGINS,
+  STATUS_COLOR, STATUS_DEF, statusOptionsFor, withLegacy, input, tagChip, relTime, elapsedShort,
   RoleChip, NextChip, ProgressBar, RolePicker, RunButton, OutcomeChip,
-  ApprovalChip, nextApprovalTags, defaultChain,
+  StampButtons, TwoTouchChip, ImpactSelect, IMPACT_DEF, defaultChain,
 } from './taskBoardShared';
 import { Md, MD_CSS } from './taskMarkdown';
 
@@ -132,6 +134,19 @@ export default function TaskDetailModal({
     } catch (e) { setRunErr(String(e)); }
     loadRuns(id); loadThread(id);
     onRunRequested?.();
+  };
+
+  // Approval stamps (board #136): the server flips Approval → Todo, sets
+  // kevin_final per mode, and logs the system comment — refresh the thread
+  // here and the board via onPollTick (which re-renders this task prop).
+  const stampTask = async (id: number, mode: 'delegate' | 'final') => {
+    try {
+      await apiFetch(`/api/dev-tasks/${id}/stamp`, {
+        method: 'POST', body: JSON.stringify({ mode, author: commentAuthor }),
+      });
+    } catch (e) { setRunErr(String(e)); }
+    loadThread(id);
+    onPollTick?.();
   };
 
   useEffect(() => { loadThread(scoped.id); loadRuns(scoped.id); setCtxEdit(false); setCtxPreview(false); }, [scoped.id, loadThread, loadRuns]);
@@ -278,8 +293,11 @@ export default function TaskDetailModal({
           <select style={{ ...input, color: STATUS_COLOR[task.status] }} value={task.status}
             title={STATUS_DEF[task.status] || ''}
             onChange={(e) => patchTracked({ status: e.target.value })}>
-            {STATUSES.map((s) => <option key={s} value={s} title={STATUS_DEF[s]}>{s}</option>)}
+            {statusOptionsFor(task, vision).map((s) =>
+              <option key={s} value={s} title={STATUS_DEF[s]}>{s}</option>)}
           </select>
+          {/* impact chip lives next to status (board #136) */}
+          <ImpactSelect t={task} onPick={(v) => patch(task.id, { impact: v })} />
           <RolePicker value={task.assignee} pickTitle="assignee" allowEmpty
             options={withLegacy(roles, task.assignee || '').filter(Boolean)}
             onPick={(r) => patchTracked({ assignee: r })} />
@@ -296,10 +314,9 @@ export default function TaskDetailModal({
             <span title="urgent — jump the queue" style={{ fontSize: 13 }}>⚡</span>}
           {task.parent_id != null && task.origin === 'discovered' &&
             <span title="discovered mid-work (rabbit-hole fix)" style={{ fontSize: 13 }}>🔍</span>}
-          <ApprovalChip t={task} onToggle={(t) => {
-            const tags = nextApprovalTags(t);
-            if (tags) patch(t.id, { tags });
-          }} />
+          <TwoTouchChip t={task} />
+          {/* Approval-stage stamp buttons (board #136) — full labels here */}
+          <StampButtons t={task} onStamp={stampTask} />
           {vision && totalCount > 0 &&
             <span style={tagChip} title="subtasks done / total">{doneCount}/{totalCount}</span>}
           <span style={{ flex: 1 }} />
@@ -411,6 +428,11 @@ export default function TaskDetailModal({
                           </select>
                         </div>
                       </label>
+                      <label style={cfgLabel} title={IMPACT_DEF[scoped.impact || 'contained']}>impact
+                        <div style={{ marginTop: 2 }}>
+                          <ImpactSelect t={scoped} onPick={(v) => patch(scoped.id, { impact: v })} />
+                        </div>
+                      </label>
                       <label style={cfgLabel}>parent vision
                         <div style={{ marginTop: 2 }}>
                           <select style={input} value={scoped.parent_id ?? ''}
@@ -459,10 +481,20 @@ export default function TaskDetailModal({
                           onChange={(e) => patch(scoped.id, { needs_live_validation: e.target.checked })} /> ⏳ validate
                         <span style={cfgHint}> — needs live-market data to confirm</span>
                       </label>
-                      <label style={{ fontSize: 13, display: 'block' }}>
+                      <label style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>
                         <input type="checkbox" checked={scoped.is_urgent}
                           onChange={(e) => patch(scoped.id, { is_urgent: e.target.checked })} /> ⚡ urgent
                         <span style={cfgHint}> — jump the queue (a tag, not a priority)</span>
+                      </label>
+                      <label style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>
+                        <input type="checkbox" checked={!!scoped.kevin_final}
+                          onChange={(e) => patch(scoped.id, { kevin_final: e.target.checked })} /> 🔏 two-touch
+                        <span style={cfgHint}> — set by the Approval stamps (only Kevin signs off Review → Staged/Done); edit only to correct a mis-stamp</span>
+                      </label>
+                      <label style={{ fontSize: 13, display: 'block' }}>
+                        <input type="checkbox" checked={!!scoped.standing_approval}
+                          onChange={(e) => patch(scoped.id, { standing_approval: e.target.checked })} /> 🪪 standing approval
+                        <span style={cfgHint}> — pre-approved class of work (07-25 agreement); no pipeline logic reads it yet</span>
                       </label>
                     </div>
 

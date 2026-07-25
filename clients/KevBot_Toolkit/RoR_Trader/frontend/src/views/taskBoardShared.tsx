@@ -26,6 +26,12 @@ export interface Task {
   origin: string;
   checklist: ChecklistStep[];
   affected_sids?: number[] | null;
+  // Kanban lifecycle (board #136): blast-radius chip + two-touch stamp +
+  // reserved standing-approval flag (dev_tasks_lifecycle.sql). Optional so
+  // pre-migration rows render.
+  impact?: string;
+  kevin_final?: boolean;
+  standing_approval?: boolean;
   updated_at: string;
 }
 
@@ -45,16 +51,26 @@ export interface RunRow {
   log_tail: string | null;
 }
 
-export const STATUSES = ['Backlog', 'Scoping', 'Todo', 'In Progress', 'Blocked', 'Done'];
-// One-liners VERBATIM from Session_Charters.md §7 (Kevin+M, 07-23) — shown as
-// tooltips on every status select.
+// The agreed pipeline (Kevin+M 07-25, board #136): Backlog → Scoping →
+// Approval → Todo → In Progress → Review → Staged → Done; Blocked is the
+// anywhere-exception. Vision rows are EXEMPT (VISION_STATUSES below).
+export const STATUSES = ['Backlog', 'Scoping', 'Approval', 'Todo', 'In Progress', 'Review', 'Staged', 'Blocked', 'Done'];
+// Vision items track via their subtasks, not the pipeline — no Approval /
+// Review / Staged on them.
+export const VISION_STATUSES = ['Backlog', 'Scoping', 'Todo', 'In Progress', 'Blocked', 'Done'];
+// One-liners VERBATIM from Session_Charters.md §7 (Kevin+M 07-25 kanban
+// lifecycle — supersedes the 07-23 set) — shown as tooltips on every status
+// select. Charter changes re-sync here.
 export const STATUS_DEF: Record<string, string> = {
-  'Backlog': 'real but not next, don\u2019t start',
-  'Scoping': 'needs a human conversation to define, next actor Kevin/M',
-  'Todo': 'scoped and workable, queue-eligible (loops/dispatcher may claim)',
+  'Backlog': 'captured, not next',
+  'Scoping': 'M fleshes out purpose/plan/impact so Kevin can judge it',
+  'Approval': 'awaiting Kevin\u2019s stamp; NOTHING runs from here (dispatcher is Todo-only by construction); Kevin stamps one of two ways: \u201cApprove \u2014 M closes\u201d or \u201cApprove + I review before Done\u201d (kevin_final)',
+  'Todo': 'approved and queued; dispatch-eligible',
   'In Progress': 'actively worked or dispatch-claimed',
-  'Blocked': 'can\u2019t proceed, blocker named in thread/blocked_by',
-  'Done': 'verified complete, never self-set by the agent that did the work',
+  'Review': 'output done, awaiting sign-off (M always; Kevin closes iff kevin_final)',
+  'Staged': 'reviewed, brief held, waiting for a release train (trains ship everything Staged)',
+  'Blocked': 'anywhere-exception, blocker named',
+  'Done': 'shipped/closed, never self-set by the agent that did the work',
 };
 export const AREAS = ['engine', 'backtest', 'frontend', 'infra', 'data', 'docs', 'other'];
 // Team roles per Session_Charters.md §1. Legacy values ('claude', …) still
@@ -62,22 +78,36 @@ export const AREAS = ['engine', 'backtest', 'frontend', 'infra', 'data', 'docs',
 export const ASSIGNEES = ['', 'M', 'E', 'E2', 'F', 'P', 'R', 'kevin'];
 export const ORIGINS = ['planned', 'discovered', 'kevin'];
 export const AUTHOR_LS_KEY = 'ror_task_comment_author';
-// Tag convention: work is finished and waiting on a human — agents skip these,
-// Kevin filters to them. Rendered as a distinct chip, toggled like ⚡urgent.
-export const NEEDS_REVIEW_TAG = 'needs-review';
-// Batch-review protocol (Kevin 07-25, charter §7): needs-approval = M requests
-// Kevin's eyes BEFORE execution (amber); Kevin pre-approves by flipping it to
-// kevin-ok (green) = run when bandwidth allows. needs-review stays post-run.
-export const NEEDS_APPROVAL_TAG = 'needs-approval';
-export const KEVIN_OK_TAG = 'kevin-ok';
+// RETIRED by the board-#136 pipeline: needs-review became the Review STATUS;
+// needs-approval/kevin-ok became the Approval stage + stamp buttons. Kept
+// only so lingering data rows stay hidden from the chip cluster until M's
+// one-time post-ship tag migration removes them.
+export const RETIRED_TAGS = ['needs-review', 'needs-approval', 'kevin-ok'];
 // Board #109: the Run button is DECLARATIVE — this tag is the request; the
 // LOCAL dispatcher --loop polls for it and executes (Railway cannot reach
 // Kevin's machine). Cleared by the dispatcher on claim.
 export const RUN_REQUESTED_TAG = 'run-requested';
 export const COLLAPSED_LS_KEY = 'ror_board_collapsed_visions';
+// New-stage colors track who acts there: Approval gold = Kevin's stamp inbox
+// (his role color), Review sky = eyes on output, Staged teal = R's
+// release-train queue (R's role color).
 export const STATUS_COLOR: Record<string, string> = {
-  'Backlog': 'var(--text-tertiary)', 'Scoping': '#a855f7', 'Todo': 'var(--blue)',
-  'In Progress': 'var(--amber, #d98c00)', 'Blocked': 'var(--red)', 'Done': 'var(--green)',
+  'Backlog': 'var(--text-tertiary)', 'Scoping': '#a855f7', 'Approval': '#c9a227',
+  'Todo': 'var(--blue)', 'In Progress': 'var(--amber, #d98c00)', 'Review': '#0ea5e9',
+  'Staged': '#2aa8a0', 'Blocked': 'var(--red)', 'Done': 'var(--green)',
+};
+// Impact = blast-radius chip next to status (board #136), M-editable,
+// prominent in the Approval view. Colors escalate with radius.
+export const IMPACTS = ['contained', 'app', 'engine', 'live'];
+export const IMPACT_COLOR: Record<string, string> = {
+  contained: 'var(--text-tertiary)', app: 'var(--blue)',
+  engine: 'var(--amber, #d98c00)', live: 'var(--red)',
+};
+export const IMPACT_DEF: Record<string, string> = {
+  contained: 'contained — this lane only, no shared surfaces',
+  app: 'app — app-wide surface (UI/API), user-visible',
+  engine: 'engine — engine code paths, correctness risk',
+  live: 'live — touches live trading, deploy carefully',
 };
 export const ROLE_COLOR: Record<string, string> = {
   M: '#7c5cff', E: '#d9534f', E2: '#e08a3c', F: '#3b82f6', P: '#2e9e5b',
@@ -89,6 +119,11 @@ export const roleAbbrev = (r: string) =>
 
 export const withLegacy = (list: string[], current: string) =>
   list.includes(current) ? list : [...list, current];
+
+/** Status options for a select: full pipeline for leaves, the exempt set for
+ *  vision rows — always keeping a legacy/current value renderable. */
+export const statusOptionsFor = (t: Task, isVision: boolean) =>
+  withLegacy(isVision ? VISION_STATUSES : STATUSES, t.status);
 
 export const cell: React.CSSProperties = { padding: '7px 8px', verticalAlign: 'middle', fontSize: 13 };
 export const input: React.CSSProperties = {
@@ -119,36 +154,61 @@ export const defaultChain = (assignee?: string | null): ChecklistStep[] => [
 ];
 
 /**
- * Next tags after a pre-approve click: needs-approval → kevin-ok, kevin-ok →
- * back to needs-approval (undo). Null = neither tag present (no button).
+ * The two Approval-stage stamp buttons (board #136) — Kevin's two-touch
+ * choice, rendered only while the task sits in Approval. 'delegate' =
+ * "Approve — M closes" (→ Todo, kevin_final=false); 'final' = "Approve + I
+ * review before Done" (→ Todo, kevin_final=true; only Kevin then signs off
+ * Review → Staged/Done). Both hit POST /stamp, which logs the system
+ * comment. stopPropagation: the board renders them inside the title cell.
  */
-export function nextApprovalTags(t: Task): string[] | null {
-  const tags = t.tags || [];
-  if (tags.includes(KEVIN_OK_TAG))
-    return [...tags.filter((x) => x !== KEVIN_OK_TAG && x !== NEEDS_APPROVAL_TAG), NEEDS_APPROVAL_TAG];
-  if (tags.includes(NEEDS_APPROVAL_TAG))
-    return [...tags.filter((x) => x !== NEEDS_APPROVAL_TAG && x !== KEVIN_OK_TAG), KEVIN_OK_TAG];
-  return null;
-}
+export const StampButtons = ({ t, onStamp, compact = false }: {
+  t: Task; onStamp: (id: number, mode: 'delegate' | 'final') => void; compact?: boolean;
+}) => {
+  if (t.status !== 'Approval') return null;
+  const base: React.CSSProperties = {
+    ...input, cursor: 'pointer', fontWeight: 600, whiteSpace: 'nowrap',
+    fontSize: compact ? 11 : 12.5, padding: compact ? '1px 7px' : '3px 10px',
+  };
+  return (
+    <span style={{ display: 'inline-flex', gap: 6, marginLeft: compact ? 6 : 0 }}>
+      <button style={{ ...base, color: 'var(--green)', borderColor: 'var(--green)' }}
+        title="stamp: Approve — M closes. Task → Todo; M signs it off at Review."
+        onClick={(e) => { e.stopPropagation(); onStamp(t.id, 'delegate'); }}>
+        ✅ Approve · M closes</button>
+      <button style={{ ...base, color: '#c9a227', borderColor: '#c9a227' }}
+        title="stamp: Approve + I review before Done (two-touch). Task → Todo; only Kevin signs it off Review → Staged/Done."
+        onClick={(e) => { e.stopPropagation(); onStamp(t.id, 'final'); }}>
+        ✅👀 Approve · I review</button>
+    </span>
+  );
+};
 
-/**
- * Pre-approve control (board #134 item 3) — the chip IS the button. Amber
- * "needs-approval" flips to green "kevin-ok" on click and back on a second
- * click. Renders nothing when neither tag is present (add needs-approval via
- * Config tags). stopPropagation: it lives inside the clickable title cell.
- */
-export const ApprovalChip = ({ t, onToggle }: { t: Task; onToggle: (t: Task) => void }) => {
-  const tags = t.tags || [];
-  const ok = tags.includes(KEVIN_OK_TAG);
-  if (!ok && !tags.includes(NEEDS_APPROVAL_TAG)) return null;
-  return ok ? (
-    <span style={{ ...tagChip, cursor: 'pointer', borderColor: 'var(--green)', color: 'var(--green)', fontWeight: 700 }}
-      title="pre-approved by Kevin — run when bandwidth allows, no further check-ins absent surprises. Click to revert to needs-approval."
-      onClick={(e) => { e.stopPropagation(); onToggle(t); }}>✓ kevin-ok</span>
-  ) : (
-    <span style={{ ...tagChip, cursor: 'pointer', borderColor: 'var(--amber, #d98c00)', color: 'var(--amber, #d98c00)', fontWeight: 700 }}
-      title="M requests Kevin's eyes BEFORE execution. Click to pre-approve (flips to kevin-ok)."
-      onClick={(e) => { e.stopPropagation(); onToggle(t); }}>✋ needs-approval</span>
+/** Two-touch marker: Kevin stamped "I review before Done" — his sign-off
+ *  gates Review → Staged/Done. Set by the stamps; renders wherever chips do. */
+export const TwoTouchChip = ({ t }: { t: Task }) => !t.kevin_final ? null : (
+  <span style={{ ...tagChip, borderColor: '#c9a227', color: '#c9a227', fontWeight: 700 }}
+    title="two-touch: Kevin stamped 'Approve + I review before Done' — only Kevin signs this off Review → Staged/Done">
+    🔏 two-touch</span>
+);
+
+/** Impact select styled as a colored chip — M-editable in place (like the
+ *  status select), colors escalate with blast radius. */
+export const ImpactSelect = ({ t, onPick, compact = false }: {
+  t: Task; onPick: (impact: string) => void; compact?: boolean;
+}) => {
+  const val = t.impact || 'contained';
+  return (
+    <select value={val} title={IMPACT_DEF[val] || 'blast radius'}
+      style={{
+        ...input, color: IMPACT_COLOR[val] || 'var(--text-secondary)', fontWeight: 600,
+        fontSize: compact ? 11 : 13, padding: compact ? '1px 4px' : input.padding,
+      }}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => onPick(e.target.value)}>
+      {withLegacy(IMPACTS, val).map((i) => (
+        <option key={i} value={i} title={IMPACT_DEF[i]}>{i}</option>
+      ))}
+    </select>
   );
 };
 
@@ -190,6 +250,13 @@ export function nextActor(t: Task, subtasks: Task[]): { next: string | null; han
   if (subtasks.length > 0) {
     const firstOpen = subtasks.find((s) => s.status !== 'Done');
     next = firstOpen ? (firstOpen.assignee || null) : null;
+  } else if (t.status === 'Approval') {
+    next = 'kevin'; // his stamp is the gate (board #136)
+  } else if (t.status === 'Review') {
+    // Two-touch stamp: Kevin signs off; otherwise M closes (board #136).
+    next = t.kevin_final ? 'kevin' : 'M';
+  } else if (t.status === 'Staged') {
+    next = 'R'; // the next release train ships everything Staged
   } else {
     const firstStep = (t.checklist || []).find((s) => !s.done);
     next = (firstStep && firstStep.role) || t.assignee || null;
@@ -325,6 +392,11 @@ export function runIneligibleReason(
   if (t.status === 'Blocked') return 'task is Blocked';
   // The button overrides queue ORDER, never "not workable yet" (M, #109 review).
   if (t.status === 'Scoping') return 'Scoping — not workable yet';
+  // Board #136 pipeline stages — mirrored by the run-request endpoint and the
+  // dispatcher's claim-time refusals.
+  if (t.status === 'Approval') return 'Approval — awaiting Kevin’s stamp';
+  if (t.status === 'Review') return 'Review — output awaiting sign-off';
+  if (t.status === 'Staged') return 'Staged — ships with the next release train';
   if ((t.tags || []).includes('needs-scoping')) return 'tagged needs-scoping — not workable yet';
   if (!(t.description || '').trim()) return 'no description — never dispatch unscoped work';
   if (!(t.assignee || '').trim()) return 'no assignee';
