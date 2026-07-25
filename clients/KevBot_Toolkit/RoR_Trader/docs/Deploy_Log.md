@@ -21,6 +21,44 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-07-25
 
+- **17:04 UTC (11:04 MT)** — `2685c8a0` Merge PR #79 `feat/run-button` → dev: V4.12 ·
+  Registry Phase 2 (board #109) — Run button on /admin/tasks (rows + modal) that DECLARES
+  a dispatch (`run-requested` tag + system comment + `run_history` row); the LOCAL
+  dispatcher `--loop` EXECUTES it as a priority-jump (tag cleared on claim, lifecycle
+  requested→running→ok|error|lease-expired|ignored). Task modal run-history panel
+  (Config tab); /admin/agents status dropdown + prompt-template editor + per-agent
+  recent runs. M review fixes in: Scoping/needs-scoping hard refusal (dispatcher +
+  endpoint 400 + UI mirror) and reap() parsing from the FULL run log. New READ-ONLY
+  router `run_history.py`; `POST /api/dev-tasks/{id}/run-request`; dispatcher now
+  TRACKED at `tools/team_dispatcher/` (baseline + #109 delta). No RORT_* flags.
+  - **Migration `run_history.sql` pre-applied to Supabase 07-25 by F2 — additive,
+    RLS-on/no-policies, FK cascade to dev_tasks.** No DB change in this deploy.
+  - Service(s) redeployed: api / frontend (the functional pair); Worker / batch-worker /
+    Data Worker also rebuilt on the dev push (auto-deploy, no functional change) — all
+    SUCCESS @ `2685c8a0`, Worker logs show normal bar_cache activity post-boot.
+    shadow-worker untouched (E-lane `railway up` only). api verified: `/api/docs` 200,
+    `/api/run-history` 401-gated (live route, was 404). frontend verified via headless
+    Playwright (test account): Run column renders, 105 rows / 104 Run buttons, eligible
+    task shows enabled ▶ Run, disabled rows carry reason tooltips; authenticated
+    in-page probes 200 on dev-tasks + run-history.
+  - Observed cache gap: standard ~1–2 min Worker restart window ~17:05–17:07Z (brief
+    api 502 at 17:05:48Z); Saturday post-close, no live-alert impact.
+  - Notes: R release session. Gates: commits = exactly the 4 expected; parity suite
+    16/18 — the 2 FAILs are cache-parity SPY/10Sec 24/7 (OHLCVdiffs=43) + RTH (=1),
+    the known #103/#116 revision-drift class (settled day 07-22, identical counts to
+    author's run; 3rd recurrence in 4 days → V1.17), shipped on **explicit E sign-off
+    board #116 comment 169** (import-graph disjoint + reproduced on clean origin/dev);
+    canary-267 both legs symdiff=0. Frontend build green; tsc 40 == origin/dev 40
+    (baseline moved from author's 94 after PR #78; equality holds, 0 in touched files).
+    Reap full-log acceptance 9/9. Code review: no CONFIRMED blockers (nits: reap
+    IndexError if task deleted mid-run; run-request double-click race can strand a
+    stale ⏳ row; lease-expiry says "killed" but doesn't kill — pre-existing baseline).
+    Pre-existing `synthetic-parity` CI red (missing pytest — board infra item, dev
+    fails identically). Backup: `backup/dev-pre-run-button` @ `d9b7d4f7`. Merge-day
+    note executed: untracked pre-fix `dispatcher.py` removed from the main checkout
+    (diff-verified strictly older — exactly the two M review fixes missing); no
+    dispatcher process was running; `state.json`/`logs/` left in place.
+
 - **05:17 UTC (23:17 MT 07-24)** — `a0785db6` Merge PR #78 `feat/health-phase-a` → dev:
   Strategy Health last-10 pairing score + Phase B notes/bug-chips (board task #70,
   Phases A+B + Kevin's 4-item local-review round; approved on local, released 07-25).
