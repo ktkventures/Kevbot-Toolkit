@@ -2495,6 +2495,26 @@ MTF_PB_DEFER = os.getenv(
     "RORT_MTF_PB_DEFER", "0").strip().lower() in (
     "1", "true", "yes", "on")
 
+# RORT_MTF_PB_PREV_EPOCH (2026-07-25, board #121 — NVDA 341/343/344 19:00Z
+# miss): scope the PB-defer's `prev` bookkeeping to LOGICAL EPOCHS instead
+# of raw publishes. Legacy defer rotates `_mtf_confluence_prev[key]` on
+# EVERY publish, so a same-epoch REPUBLISH (rebroadcast-cascade correction,
+# coarse-RTH reload, refresher re-true) that lands between a secondary
+# close and a DELAYED primary bar-close eval clobbers prev with the
+# already-flipped records — the defer then serves the new state anyway and
+# the gate diverges from backtest. Proven live 07-24 19:00Z: flush force-
+# closed the 1h bar at 19:00:11 (prev:=SML, cur:=MSL), the volume-spike
+# 18:59 ws_agg minute arrived at 19:00:25 and its fan-out correction
+# republished (3600,'RTH') (prev:=MSL) ONE STEP before the 1Min monitors
+# evaluated — defer served MSL, live missed the entry both offline lanes
+# took. Flag ON: prev rotates only when effective_from CHANGES (the
+# secondary's last-closed bar actually advanced); same-epoch republishes
+# refresh current records but leave prev intact. Only meaningful with
+# RORT_MTF_PB_DEFER=1. Default OFF = byte-identical legacy bookkeeping.
+MTF_PB_PREV_EPOCH = os.getenv(
+    "RORT_MTF_PB_PREV_EPOCH", "0").strip().lower() in (
+    "1", "true", "yes", "on")
+
 
 def _shadow_retrue_force_full() -> bool:
     """RORT_SHADOW_RETRUE_FORCE_FULL (default OFF), 2026-07-14 — every
@@ -3422,8 +3442,6 @@ class SymbolHub:
         UTC-localized; live 'timestamp' ISO strings carry an offset).
         """
         if MTF_PB_DEFER:
-            self._mtf_confluence_prev[key] = self._mtf_confluence.get(
-                key, set())
             eff = 0.0
             if closed_bar_start_ts is not None:
                 try:
@@ -3433,6 +3451,20 @@ class SymbolHub:
                     eff = _ts.timestamp() + key[0]
                 except Exception:  # noqa: BLE001 — never break a publish
                     eff = 0.0
+            # RORT_MTF_PB_PREV_EPOCH (board #121): rotate prev only when
+            # the logical epoch CHANGES (a genuinely newer/other closed
+            # secondary bar). A same-epoch republish — rebroadcast-cascade
+            # correction, coarse-RTH reload, refresher re-true — refreshes
+            # the current records but must NOT consume prev: a delayed
+            # primary bar that started BEFORE this epoch still needs the
+            # prior epoch's records (the 07-24 19:00Z NVDA miss). First-
+            # ever publish (key absent) always rotates. Flag OFF =
+            # rotate-on-every-publish (legacy, byte-identical).
+            if (not MTF_PB_PREV_EPOCH
+                    or key not in self._mtf_confluence_effective_from
+                    or self._mtf_confluence_effective_from[key] != eff):
+                self._mtf_confluence_prev[key] = self._mtf_confluence.get(
+                    key, set())
             self._mtf_confluence_effective_from[key] = eff
         self._mtf_confluence[key] = records
 
