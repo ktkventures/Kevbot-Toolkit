@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Team dispatcher (V4.13) — dispatches board tasks to headless Claude agents.
+"""Team dispatcher (V4.14) — dispatches board tasks to headless Claude agents.
 
 DRY-RUN BY DEFAULT: prints/logs what it WOULD dispatch, makes ZERO writes.
 Live mode requires --live. Runs on Kevin's machine only (never Railway).
@@ -352,7 +352,23 @@ def one_pass(live, only_task=None):
         else:
             print(f"  WOULD CLEAR ineligible run-request #{t['id']}: {reason}", flush=True)
     os.makedirs(LOG_DIR, exist_ok=True)
-    for t in cands[:max(0, min(slots, cap_left))]:
+    # Per-lane serialization (board #132): ONE active run per agent letter.
+    # All of a letter's runs share one worktree, so same-lane concurrency
+    # collides on git/file state (a registry flip mid-loop launched 3 E·auto
+    # runs into one tree, 07-25). Seeded from live runs and grown per
+    # dispatch, so a lane can't double up within a pass either. Skipped tasks
+    # aren't claimed (button tags survive) — they retry when the lane frees.
+    busy = {r["agent"] for r in active_runs(st)}
+    budget = max(0, min(slots, cap_left))
+    for t in cands:
+        if budget <= 0:
+            break
+        if t["assignee"] in busy:
+            print(f"  SKIP #{t['id']} — {t['assignee']}·auto already has an active run "
+                  f"(one per lane)", flush=True)
+            continue
+        busy.add(t["assignee"])
+        budget -= 1
         agent = agents[t["assignee"]]
         prompt = build_prompt(agent, t)
         run_id = f"r{int(time.time())}-{t['id']}"
