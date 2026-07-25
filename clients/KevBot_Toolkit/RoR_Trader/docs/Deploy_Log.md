@@ -19,6 +19,47 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-07-25
+
+- **03:26 UTC (21:26 MT 07-24)** — `66ec9ea3` Merge PR #76 `feat/board-qol` → dev:
+  Board QoL (board task #106, V2.7 — both rounds; Kevin approved local preview 07-24
+  17:25Z, released 07-25 pre-open). Round 1: `needs-review` tag convention (amber 👀 chip,
+  one-click toggle mirroring ⚡urgent, filter checkbox — agents skip tagged items, Kevin
+  filters to them); sortable Flat-view column headers (ID / Pri / Task / Status-by-
+  lifecycle / Area / Who, asc→desc→clear; grouped view stays pipeline-ordered); `/admin/
+  tasks?task=<id>` deep links that open the task modal and keep the URL shareable via
+  `history.replaceState` (no Next `useSearchParams` suspense trap). Round 2: `Scoping`
+  status between Backlog and Todo in distinct purple (`#a855f7`); one-line status-
+  definition tooltips VERBATIM from Session_Charters.md §7 on every status select + option;
+  list rows chip ALL tags (vision, needs-scoping, …), needs-review keeping its amber
+  treatment. UI only — 3 `.tsx` files (AdminTasksPage / taskBoardShared / TaskDetailModal);
+  no python, no migrations, no flags.
+  - Service(s) redeployed: frontend / api (the relevant pair); Worker / batch-worker /
+    Data Worker / Streamlit / flat-file-cron also rebuilt on the dev push (auto-deploy) —
+    all SUCCESS on `66ec9ea3` (deploys created 03:26:12–17Z). shadow-worker untouched
+    (last deploy 07-23 17:02Z, E-lane `railway up` only).
+  - Gates (R re-run pre-merge on `17e4641a`): exactly the 2 branch commits over dev tip
+    `72216064` ✓ · fidelity parity suite 18/18 PASS, 0 FAIL — SPY 10Sec+1Min cache-parity
+    green (OHLCVdiffs=0), so the #103/#116 revision-drift class did NOT recur (E's PR #77
+    nightly settled-retrue held); canary-267 ON==OFF symdiff=0 (pre-open, no RTH false-
+    positive) ✓ · frontend `npm install && npm run build` exit 0 ✓ · code review: 0 confirmed
+    blockers (2 non-blocking minors — sort `<th onClick>` headers lack keyboard a11y,
+    consistent with existing clickable toggle spans; deep-link to a nonexistent task id
+    relies on the modal's pre-existing graceful handling) ✓. GitHub "Fidelity Gate" red =
+    the same pre-existing missing-`pytest` CI infra failure as every dev push (the
+    synthetic-parity suite itself passed 31/31; board backlog "CI: add pytest to the
+    synthetic-parity workflow").
+  - Deploy watch: frontend SUCCESS 03:26:13Z, api SUCCESS 03:26:17Z — both boot clean (api
+    `/health` 200, auth routes 401 = routing live; frontend `/admin/tasks` 200). Deployed
+    bundle confirmed to carry both rounds: served chunks `3931.*` / `4877.*` contain
+    `Scoping`, `#a855f7`, `needs-review`, the verbatim §7 tooltips, the 👀 toggle, and the
+    `?task=` deep-link (`replaceState` / `searchParams`). Interactive click-through not run
+    — no browser/Playwright MCP in this R session; served-code-presence proof used instead.
+    Observed cache gap: Worker restart window ~03:26–28Z, outside RTH (07-25 pre-open) —
+    none expected.
+  - Backup branch: `backup/dev-pre-board-qol` (`72216064`). Rollback = `git revert -m 1
+    66ec9ea3` (UI only — no DB / flags to roll back).
+
 ## 2026-07-23
 
 - **20:41 UTC (14:41 MT)** — `9a45898` Merge PR #74 `feat/agents-registry` → dev:
