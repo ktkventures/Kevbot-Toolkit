@@ -659,7 +659,6 @@ export default function StrategyHealthV1() {
                 <Th onClick={() => toggleSort('lastAlert')} label={`Last alert${arrow('lastAlert')}`} />
                 <Th onClick={() => toggleSort('trades')}    label={`Trades${arrow('trades')}`} align="right" />
                 <Th onClick={() => toggleSort('combined')}  label={`Combined %${arrow('combined')}`} align="right" />
-                <Th onClick={() => toggleSort('last10')}    label={`Last 10${arrow('last10')}`} align="right" />
                 <Th onClick={() => toggleSort('paired')}    label={`Paired ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('paired')}`} align="right" />
                 <Th onClick={() => toggleSort('phantom')}   label={`Phantom ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('phantom')}`} align="right" />
                 <Th onClick={() => toggleSort('missed')}    label={`Missed ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('missed')}`} align="right" />
@@ -668,6 +667,7 @@ export default function StrategyHealthV1() {
                     title="Snapshot subscription. ON = data-worker maintains a backtest snapshot. OFF = strategy is parked in the snapshot lane (alerts unaffected).">
                   Sub
                 </th>
+                <Th onClick={() => toggleSort('last10')}    label={`Last 10${arrow('last10')}`} align="right" />
                 <th style={{ padding: '6px 8px', fontWeight: 500 }}
                     title="Row context: notes (humans + nightly writers) and open board tasks affecting this sid.">
                   Context
@@ -793,26 +793,6 @@ export default function StrategyHealthV1() {
                         + `Excludes ${r.tbd_count} TBD (lane not yet caught up).`}>
                     {r.combined_pct === null ? '—' : `${r.combined_pct.toFixed(1)}%`}
                   </td>
-                  {/* Last-10 score (board #70): thresholds are the RATIO
-                       equivalents of Kevin's n/20 bands (18/20=90%, 14/20=70%)
-                       so shrunk denominators color consistently. */}
-                  <td style={{ padding: '6px 8px', textAlign: 'right' }}
-                      title="Last-10 completed backtest trades: 1 pt per entry/exit pairing to a live alert within ±10s. Click for per-trade detail.">
-                    {l10Ratio == null
-                      ? <span style={{ color: 'var(--text-muted)' }}>—</span>
-                      : <button
-                          onClick={() => setLast10Sid({
-                            sid: r.strategy_id,
-                            name: r.name || `sid ${r.strategy_id}` })}
-                          style={{ background: 'transparent', border: 'none',
-                                   cursor: 'pointer', padding: 0, fontSize: 13,
-                                   fontWeight: 600,
-                                   fontVariantNumeric: 'tabular-nums',
-                                   color: l10Ratio >= 0.9 ? '#66bb6a'
-                                     : l10Ratio >= 0.7 ? '#ffc107' : '#ef5350' }}>
-                          {l10!.points}/{l10!.denom}
-                        </button>}
-                  </td>
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',
                                color: r.paired_count_cov > 0
@@ -862,6 +842,26 @@ export default function StrategyHealthV1() {
                     >
                       {r.snapshot_subscribe_enabled ? 'ON' : 'OFF'}
                     </button>
+                  </td>
+                  {/* Last-10 score (board #70): thresholds are the RATIO
+                       equivalents of Kevin's n/20 bands (18/20=90%, 14/20=70%)
+                       so shrunk denominators color consistently. */}
+                  <td style={{ padding: '6px 8px', textAlign: 'right' }}
+                      title="Last-10 completed backtest trades: 1 pt per entry/exit pairing to a live alert within ±10s. Click for per-trade detail.">
+                    {l10Ratio == null
+                      ? <span style={{ color: 'var(--text-muted)' }}>—</span>
+                      : <button
+                          onClick={() => setLast10Sid({
+                            sid: r.strategy_id,
+                            name: r.name || `sid ${r.strategy_id}` })}
+                          style={{ background: 'transparent', border: 'none',
+                                   cursor: 'pointer', padding: 0, fontSize: 13,
+                                   fontWeight: 600,
+                                   fontVariantNumeric: 'tabular-nums',
+                                   color: l10Ratio >= 0.9 ? '#66bb6a'
+                                     : l10Ratio >= 0.7 ? '#ffc107' : '#ef5350' }}>
+                          {l10!.points}/{l10!.denom}
+                        </button>}
                   </td>
                   {/* Context (Kevin 07-25): replaces the Flags chip column —
                        flag data still drives the summary/filter chips up top.
