@@ -22,7 +22,7 @@ import { apiFetch } from '@/lib/api/client';
 import TaskDetailModal from './TaskDetailModal';
 import {
   Task, STATUSES, AREAS, ASSIGNEES, ORIGINS, STATUS_COLOR, AUTHOR_LS_KEY,
-  COLLAPSED_LS_KEY, withLegacy, cell, input, badge, tagChip,
+  COLLAPSED_LS_KEY, NEEDS_REVIEW_TAG, STATUS_DEF, withLegacy, cell, input, badge, tagChip,
   NextChip, ProgressBar,
 } from './taskBoardShared';
 
@@ -34,6 +34,10 @@ export default function AdminTasksPage() {
   const [hideDone, setHideDone] = useState(false);
   const [liveOnly, setLiveOnly] = useState(false);
   const [areaFilter, setAreaFilter] = useState('');
+  const [reviewOnly, setReviewOnly] = useState(false);
+  // Column sort applies to the FLAT view only — the grouped view's order IS
+  // the pipeline (priority within vision), so it stays fixed.
+  const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
   const [assigneeFilter, setAssigneeFilter] = useState('');
   const [modal, setModal] = useState<{ id: number; sel?: number } | null>(null);
   const [commentAuthor, setCommentAuthor] = useState('kevin');
@@ -65,6 +69,16 @@ export default function AdminTasksPage() {
       })
       .catch(() => { /* keep ASSIGNEES fallback */ });
   }, []);
+  useEffect(() => {
+    const id = parseInt(new URLSearchParams(window.location.search).get('task') || '', 10);
+    if (Number.isFinite(id)) setModal({ id });
+  }, []);
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (modal) url.searchParams.set('task', String(modal.id));
+    else url.searchParams.delete('task');
+    window.history.replaceState(null, '', url);
+  }, [modal]);
   useEffect(() => {
     const saved = localStorage.getItem(AUTHOR_LS_KEY);
     if (saved) setCommentAuthor(saved);
@@ -125,6 +139,7 @@ export default function AdminTasksPage() {
   const matches = (t: Task) =>
     (!hideDone || t.status !== 'Done') &&
     (!liveOnly || t.impacts_live) &&
+    (!reviewOnly || (t.tags || []).includes(NEEDS_REVIEW_TAG)) &&
     (!areaFilter || t.area === areaFilter) &&
     (!assigneeFilter || (t.assignee || '') === assigneeFilter);
 
@@ -156,7 +171,35 @@ export default function AdminTasksPage() {
 
   const visible = useMemo(() => tasks.filter(matches),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tasks, hideDone, liveOnly, areaFilter, assigneeFilter]);
+    [tasks, hideDone, liveOnly, reviewOnly, areaFilter, assigneeFilter]);
+
+  const needsReview = (t: Task) => (t.tags || []).includes(NEEDS_REVIEW_TAG);
+  const toggleReview = (t: Task) => {
+    const tags = needsReview(t)
+      ? (t.tags || []).filter((x) => x !== NEEDS_REVIEW_TAG)
+      : [...(t.tags || []), NEEDS_REVIEW_TAG];
+    patch(t.id, { tags });
+  };
+
+  const sortedVisible = useMemo(() => {
+    if (!sort) return visible;
+    const cmp = (a: Task, b: Task): number => {
+      switch (sort.key) {
+        case 'id': return a.id - b.id;
+        case 'pri': return (a.priority_phase - b.priority_phase) || (a.priority_seq - b.priority_seq);
+        case 'title': return a.title.localeCompare(b.title);
+        case 'status': return STATUSES.indexOf(a.status) - STATUSES.indexOf(b.status);
+        case 'area': return (a.area || '').localeCompare(b.area || '');
+        case 'who': return (a.assignee || '').localeCompare(b.assignee || '');
+        default: return 0;
+      }
+    };
+    return [...visible].sort((a, b) => cmp(a, b) * sort.dir);
+  }, [visible, sort]);
+
+  const clickSort = (key: string) => setSort((prev) =>
+    prev?.key === key ? (prev.dir === 1 ? { key, dir: -1 } : null) : { key, dir: 1 });
+  const sortMark = (key: string) => sort?.key === key ? (sort.dir === 1 ? ' ▲' : ' ▼') : '';
 
   const openCount = tasks.filter((t) => t.status !== 'Done').length;
   const liveCount = tasks.filter((t) => t.impacts_live && t.status !== 'Done').length;
@@ -175,7 +218,10 @@ export default function AdminTasksPage() {
 
   const TagChips = ({ t }: { t: Task }) => (
     <>
-      {(t.tags || []).filter((tag) => tag !== 'vision').map((tag) => (
+      {(t.tags || []).includes(NEEDS_REVIEW_TAG) &&
+        <span style={{ ...tagChip, borderColor: 'var(--amber, #d98c00)', color: 'var(--amber, #d98c00)', fontWeight: 700 }}
+          title="finished — waiting on human review">👀 review</span>}
+      {(t.tags || []).filter((tag) => tag !== NEEDS_REVIEW_TAG).map((tag) => (
         <span key={tag} style={tagChip}>{tag}</span>
       ))}
     </>
@@ -224,8 +270,9 @@ export default function AdminTasksPage() {
       </td>
       <td style={cell}>
         <select style={{ ...input, color: STATUS_COLOR[t.status] }} value={t.status}
+          title={STATUS_DEF[t.status] || ''}
           onChange={(e) => patch(t.id, { status: e.target.value })}>
-          {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+          {STATUSES.map((s) => <option key={s} value={s} title={STATUS_DEF[s]}>{s}</option>)}
         </select>
       </td>
       <td style={cell}>
@@ -235,6 +282,10 @@ export default function AdminTasksPage() {
           : <span style={badge('#2e7d32')} title="fully validatable offline — safe to work now">🟢 offline-ok</span>)}
         <span style={{ cursor: 'pointer' }} title="toggle urgent" onClick={() => patch(t.id, { is_urgent: !t.is_urgent })}>
           {t.is_urgent ? <span style={badge('#b00')}>⚡ urgent</span> : <span style={{ opacity: 0.3 }}>⚡</span>}
+        </span>
+        <span style={{ cursor: 'pointer', marginLeft: 4 }} title="toggle needs-review (finished — waiting on human review)"
+          onClick={() => toggleReview(t)}>
+          {needsReview(t) ? <span style={badge('#a06800')}>👀 review</span> : <span style={{ opacity: 0.3 }}>👀</span>}
         </span>
       </td>
       <td style={cell}>
@@ -337,6 +388,7 @@ export default function AdminTasksPage() {
           </span>
           <label><input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} /> hide Done</label>
           <label><input type="checkbox" checked={liveOnly} onChange={(e) => setLiveOnly(e.target.checked)} /> 🔴 live only</label>
+          <label><input type="checkbox" checked={reviewOnly} onChange={(e) => setReviewOnly(e.target.checked)} /> 👀 needs review</label>
           <span>area: <select style={input} value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)}>
             <option value="">all</option>{AREAS.map((a) => <option key={a} value={a}>{a}</option>)}
           </select></span>
@@ -352,13 +404,28 @@ export default function AdminTasksPage() {
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--border)', fontSize: 11, color: 'var(--text-tertiary)' }}>
-                <th style={{ ...cell, width: 44 }}>ID</th><th style={{ ...cell, width: 96 }}>Pri</th><th style={cell}>Task</th><th style={{ ...cell, width: 130 }}>Status</th>
-                <th style={{ ...cell, width: 200 }}>Flags</th><th style={{ ...cell, width: 110 }}>Area</th><th style={{ ...cell, width: 100 }}>Who</th><th style={{ ...cell, width: 32 }}></th>
+                {view === 'flat' ? (
+                  <>
+                    <th style={{ ...cell, width: 44, cursor: 'pointer' }} title="sort" onClick={() => clickSort('id')}>ID{sortMark('id')}</th>
+                    <th style={{ ...cell, width: 96, cursor: 'pointer' }} title="sort" onClick={() => clickSort('pri')}>Pri{sortMark('pri')}</th>
+                    <th style={{ ...cell, cursor: 'pointer' }} title="sort" onClick={() => clickSort('title')}>Task{sortMark('title')}</th>
+                    <th style={{ ...cell, width: 130, cursor: 'pointer' }} title="sort" onClick={() => clickSort('status')}>Status{sortMark('status')}</th>
+                    <th style={{ ...cell, width: 200 }}>Flags</th>
+                    <th style={{ ...cell, width: 110, cursor: 'pointer' }} title="sort" onClick={() => clickSort('area')}>Area{sortMark('area')}</th>
+                    <th style={{ ...cell, width: 100, cursor: 'pointer' }} title="sort" onClick={() => clickSort('who')}>Who{sortMark('who')}</th>
+                    <th style={{ ...cell, width: 32 }}></th>
+                  </>
+                ) : (
+                  <>
+                    <th style={{ ...cell, width: 44 }}>ID</th><th style={{ ...cell, width: 96 }}>Pri</th><th style={cell}>Task</th><th style={{ ...cell, width: 130 }}>Status</th>
+                    <th style={{ ...cell, width: 200 }}>Flags</th><th style={{ ...cell, width: 110 }}>Area</th><th style={{ ...cell, width: 100 }}>Who</th><th style={{ ...cell, width: 32 }}></th>
+                  </>
+                )}
               </tr>
             </thead>
             <tbody>
               {view === 'flat'
-                ? visible.map((t) => <TaskRow key={t.id} t={t} />)
+                ? sortedVisible.map((t) => <TaskRow key={t.id} t={t} />)
                 : groupedRows}
               {((view === 'flat' && visible.length === 0) || (view === 'grouped' && groupedRows.length === 0)) &&
                 <tr><td colSpan={8} style={{ ...cell, color: 'var(--text-tertiary)' }}>No tasks match the filters.</td></tr>}

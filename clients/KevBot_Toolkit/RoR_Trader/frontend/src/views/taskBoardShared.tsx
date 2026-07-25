@@ -30,16 +30,29 @@ export interface Task {
 
 export interface Comment { id: number; author: string; body: string; created_at: string; }
 
-export const STATUSES = ['Backlog', 'Todo', 'In Progress', 'Blocked', 'Done'];
+export const STATUSES = ['Backlog', 'Scoping', 'Todo', 'In Progress', 'Blocked', 'Done'];
+// One-liners VERBATIM from Session_Charters.md §7 (Kevin+M, 07-23) — shown as
+// tooltips on every status select.
+export const STATUS_DEF: Record<string, string> = {
+  'Backlog': 'real but not next, don\u2019t start',
+  'Scoping': 'needs a human conversation to define, next actor Kevin/M',
+  'Todo': 'scoped and workable, queue-eligible (loops/dispatcher may claim)',
+  'In Progress': 'actively worked or dispatch-claimed',
+  'Blocked': 'can\u2019t proceed, blocker named in thread/blocked_by',
+  'Done': 'verified complete, never self-set by the agent that did the work',
+};
 export const AREAS = ['engine', 'backtest', 'frontend', 'infra', 'data', 'docs', 'other'];
 // Team roles per Session_Charters.md §1. Legacy values ('claude', …) still
 // render: selects append any unknown current value instead of blanking it.
 export const ASSIGNEES = ['', 'M', 'E', 'E2', 'F', 'P', 'R', 'kevin'];
 export const ORIGINS = ['planned', 'discovered', 'kevin'];
 export const AUTHOR_LS_KEY = 'ror_task_comment_author';
+// Tag convention: work is finished and waiting on a human — agents skip these,
+// Kevin filters to them. Rendered as a distinct chip, toggled like ⚡urgent.
+export const NEEDS_REVIEW_TAG = 'needs-review';
 export const COLLAPSED_LS_KEY = 'ror_board_collapsed_visions';
 export const STATUS_COLOR: Record<string, string> = {
-  'Backlog': 'var(--text-tertiary)', 'Todo': 'var(--blue)',
+  'Backlog': 'var(--text-tertiary)', 'Scoping': '#a855f7', 'Todo': 'var(--blue)',
   'In Progress': 'var(--amber, #d98c00)', 'Blocked': 'var(--red)', 'Done': 'var(--green)',
 };
 export const ROLE_COLOR: Record<string, string> = {
