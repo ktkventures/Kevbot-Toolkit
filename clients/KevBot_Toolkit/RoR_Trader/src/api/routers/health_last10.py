@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.deps import get_current_user
-from api.routers.strategy_health import _parse_iso  # shared, module-level
+from api.routers.strategy_health import _bp_tf_seconds, _parse_iso  # module-level, read-only
 
 router = APIRouter(prefix="/api/strategy-health-last10", tags=["strategy-health"])
 
@@ -85,7 +85,13 @@ def _score_sid(c, sid: int, tolerance: float,
             if dt is not None:
                 edges.append((dt.timestamp(), idx, kind))
 
-    alerts_unix: List[float] = []
+    # BOTH timestamp bases from ONE alert fetch (item 4): 'fired' =
+    # alerts.timestamp (real-clock arrival — what we execute on, the list
+    # column + default basis); 'theo' = fill_ts||trigger_ts (bar-aligned,
+    # canonical get_strategy_health's field). The GAP between the two
+    # scores is the diagnostic: high-theo/low-fired = dispatch latency,
+    # low/low = logic-existence, high/high = healthy.
+    basis_alerts: Dict[str, List[float]] = {"fired": [], "theo": []}
     if edges:
         import datetime as _dt
         lo = _dt.datetime.fromtimestamp(min(e[0] for e in edges) - _ALERT_PAD_SEC,
@@ -97,40 +103,66 @@ def _score_sid(c, sid: int, tolerance: float,
         ).eq("strategy_id", sid).gte("timestamp", lo).lte("timestamp", hi) \
             .execute().data or []
         for a in al:
-            # Fired ts only — no theo fallback (a silent fallback would
-            # quietly resurrect the 0.0s bug for rows missing `timestamp`).
-            dt = _parse_iso(a.get("timestamp"))
-            if dt is not None:
-                alerts_unix.append(dt.timestamp())
+            # No cross-basis fallback (a silent fallback would quietly
+            # resurrect the 0.0s bug for rows missing `timestamp`).
+            df = _parse_iso(a.get("timestamp"))
+            if df is not None:
+                basis_alerts["fired"].append(df.timestamp())
+            dth = _parse_iso(a.get("fill_ts") or a.get("trigger_ts"))
+            if dth is not None:
+                basis_alerts["theo"].append(dth.timestamp())
 
-    paired = _greedy_pair([e[0] for e in edges], alerts_unix, tolerance)
-    alerts_sorted = sorted(alerts_unix)
-    points = sum(1 for e in edges if e[0] in paired)
+    edge_ts = [e[0] for e in edges]
+    paired = {b: _greedy_pair(edge_ts, basis_alerts[b], tolerance)
+              for b in ("fired", "theo")}
+    points = {b: sum(1 for e in edges if e[0] in paired[b])
+              for b in ("fired", "theo")}
     denom = 2 * len(trades)
 
     out: Dict[str, Any] = {
-        "strategy_id": sid, "points": points, "denom": denom,
+        "strategy_id": sid, "points": points["fired"],
+        "points_theo": points["theo"], "denom": denom,
         "trade_count": len(trades), "tolerance_seconds": tolerance,
     }
     if want_detail:
         import datetime as _dt
 
+        # Item 3 (sid-344): unpaired edges must show BLANK nearest/delta,
+        # not globally-nearest garbage. EXACT mirror of Chart+Trades'
+        # rule (StrategyDetailPage.computeMatches): a nearest candidate
+        # counts for display only within max(tolerance, 2 × timeframe).
+        tf_row = c.table("strategies").select("timeframe") \
+            .eq("id", sid).execute().data or []
+        tf_sec = _bp_tf_seconds(tf_row[0]["timeframe"]) if tf_row else None
+        display_window = max(tolerance, 2 * tf_sec) if tf_sec else tolerance
+        out["display_window_sec"] = display_window
+
         def _fmt(u: Optional[float]) -> Optional[str]:
             return None if u is None else _dt.datetime.fromtimestamp(
                 u, _dt.timezone.utc).isoformat()
 
+        sorted_alerts = {b: sorted(basis_alerts[b]) for b in ("fired", "theo")}
         rows = []
         for idx, t in enumerate(trades):
             row: Dict[str, Any] = {"trade_id": t.get("id")}
             for kind in ("entry", "exit"):
                 dt = _parse_iso(t.get(f"{kind}_fill_ts"))
                 u = dt.timestamp() if dt else None
-                near = _nearest(u, alerts_sorted) if u is not None else None
                 row[f"{kind}_ts"] = _fmt(u)
-                row[f"{kind}_nearest_alert_ts"] = _fmt(near)
-                row[f"{kind}_delta_sec"] = (
-                    None if (u is None or near is None) else round(near - u, 3))
-                row[f"{kind}_paired"] = bool(u is not None and u in paired)
+            for b in ("fired", "theo"):
+                bd: Dict[str, Any] = {}
+                for kind in ("entry", "exit"):
+                    dt = _parse_iso(t.get(f"{kind}_fill_ts"))
+                    u = dt.timestamp() if dt else None
+                    near = _nearest(u, sorted_alerts[b]) if u is not None else None
+                    if near is not None and abs(near - u) > display_window:
+                        near = None  # blank — the phantom/missed signal
+                    bd[f"{kind}_nearest_alert_ts"] = _fmt(near)
+                    bd[f"{kind}_delta_sec"] = (
+                        None if (u is None or near is None)
+                        else round(near - u, 3))
+                    bd[f"{kind}_paired"] = bool(u is not None and u in paired[b])
+                row[b] = bd
             rows.append(row)
         out["trades"] = rows
     return out

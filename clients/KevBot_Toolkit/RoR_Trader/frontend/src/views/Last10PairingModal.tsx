@@ -11,17 +11,21 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { apiFetch } from '@/lib/api/client';
 
+interface BasisSide {
+  entry_nearest_alert_ts: string | null; entry_delta_sec: number | null; entry_paired: boolean;
+  exit_nearest_alert_ts: string | null; exit_delta_sec: number | null; exit_paired: boolean;
+}
 interface TradeRow {
   trade_id: number;
-  entry_ts: string | null; entry_nearest_alert_ts: string | null;
-  entry_delta_sec: number | null; entry_paired: boolean;
-  exit_ts: string | null; exit_nearest_alert_ts: string | null;
-  exit_delta_sec: number | null; exit_paired: boolean;
+  entry_ts: string | null; exit_ts: string | null;
+  fired: BasisSide; theo: BasisSide;
 }
 interface Detail {
-  strategy_id: number; points: number; denom: number;
-  trade_count: number; tolerance_seconds: number; trades: TradeRow[];
+  strategy_id: number; points: number; points_theo: number; denom: number;
+  trade_count: number; tolerance_seconds: number; display_window_sec: number;
+  trades: TradeRow[];
 }
+type Basis = 'fired' | 'theo';
 
 const panelHead: React.CSSProperties = {
   fontSize: 11, fontWeight: 700, letterSpacing: 0.6, color: 'var(--text-tertiary)',
@@ -44,6 +48,8 @@ export default function Last10PairingModal({ sid, name, onClose }: {
 }) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Default = fired/dispatch — what we execute on (Kevin item 4).
+  const [basis, setBasis] = useState<Basis>('fired');
 
   useEffect(() => {
     apiFetch<Detail>(`/api/strategy-health-last10/${sid}`)
@@ -64,8 +70,21 @@ export default function Last10PairingModal({ sid, name, onClose }: {
         <div style={panelHead}>
           <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             Last-10 pairing · sid {sid} — {name}
-            {detail && <> · {detail.points}/{detail.denom} @ ±{detail.tolerance_seconds}s</>}
+            {detail && <> · fired {detail.points}/{detail.denom} · theo {detail.points_theo}/{detail.denom} @ ±{detail.tolerance_seconds}s</>}
           </span>
+          {detail && (['fired', 'theo'] as Basis[]).map((b) => (
+            <button key={b} onClick={() => setBasis(b)}
+              title={b === 'fired'
+                ? 'pair on the alert FIRED/arrival timestamp — what we execute on (default)'
+                : 'pair on the bar-aligned THEO timestamp (fill_ts) — canonical health-pairing field'}
+              style={{
+                background: basis === b ? 'var(--bg-input)' : 'transparent',
+                color: basis === b ? 'var(--blue)' : 'var(--text-secondary)',
+                border: `1px solid ${basis === b ? 'var(--blue)' : 'var(--border)'}`,
+                borderRadius: 10, padding: '1px 8px', cursor: 'pointer',
+                fontSize: 10.5, fontWeight: basis === b ? 700 : 400,
+              }}>{b}</button>
+          ))}
           <button onClick={onClose} style={{
             background: 'var(--bg-input)', color: 'var(--text-primary)',
             border: '1px solid var(--border)', borderRadius: 6, padding: '2px 8px',
@@ -97,13 +116,13 @@ export default function Last10PairingModal({ sid, name, onClose }: {
                   <tr key={t.trade_id}>
                     <td style={{ ...cell, color: 'var(--text-tertiary)' }}>{i + 1}</td>
                     <td style={cell}>{fmtTs(t.entry_ts)}</td>
-                    <td style={{ ...cell, color: 'var(--text-secondary)' }}>{fmtTs(t.entry_nearest_alert_ts)}</td>
-                    <td style={cell}>{fmtDelta(t.entry_delta_sec)}</td>
-                    <td style={cell}><Mark ok={t.entry_paired} /></td>
+                    <td style={{ ...cell, color: 'var(--text-secondary)' }}>{fmtTs(t[basis].entry_nearest_alert_ts)}</td>
+                    <td style={cell}>{fmtDelta(t[basis].entry_delta_sec)}</td>
+                    <td style={cell}><Mark ok={t[basis].entry_paired} /></td>
                     <td style={cell}>{fmtTs(t.exit_ts)}</td>
-                    <td style={{ ...cell, color: 'var(--text-secondary)' }}>{fmtTs(t.exit_nearest_alert_ts)}</td>
-                    <td style={cell}>{fmtDelta(t.exit_delta_sec)}</td>
-                    <td style={cell}><Mark ok={t.exit_paired} /></td>
+                    <td style={{ ...cell, color: 'var(--text-secondary)' }}>{fmtTs(t[basis].exit_nearest_alert_ts)}</td>
+                    <td style={cell}>{fmtDelta(t[basis].exit_delta_sec)}</td>
+                    <td style={cell}><Mark ok={t[basis].exit_paired} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -112,9 +131,14 @@ export default function Last10PairingModal({ sid, name, onClose }: {
           {detail && (
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 8 }}>
               1 point per entry/exit paired to a live alert within ±{detail.tolerance_seconds}s
-              (greedy 1:1, same semantics as Strategy Health phantom/missed). Nearest-alert
-              deltas are display-only — pairing is the 1:1 walk, so a shown Δ within tolerance
-              can still be unpaired if that alert was consumed by a neighboring edge.
+              (greedy 1:1, same semantics as Strategy Health phantom/missed). Basis:
+              fired = alert arrival ts (what we execute on, the list-column score);
+              theo = bar-aligned fill_ts. A high-theo/low-fired gap = dispatch latency;
+              low/low = logic-existence. Blank nearest/Δ = no alert within
+              ±{detail.display_window_sec}s (max of tolerance, 2×TF — the Chart+Trades
+              display rule); the ✗ already scores it. Deltas are display-only — a shown Δ
+              within tolerance can still be unpaired if that alert was consumed by a
+              neighboring edge.
             </div>
           )}
         </div>
