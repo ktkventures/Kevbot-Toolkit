@@ -25,6 +25,7 @@ export interface Task {
   parent_id: number | null;
   origin: string;
   checklist: ChecklistStep[];
+  affected_sids?: number[] | null;
   updated_at: string;
 }
 
