@@ -20,6 +20,8 @@ import { useEffect, useMemo, useState } from 'react';
 import Card from '@/components/Card';
 import { apiFetch } from '@/lib/api/client';
 import Last10PairingModal from '@/views/Last10PairingModal';
+import StrategyNotesModal from '@/views/StrategyNotesModal';
+import type { Task } from '@/views/taskBoardShared';
 import {
   useStrategyHealth,
   type StrategyHealthFlag,
@@ -358,6 +360,28 @@ export default function StrategyHealthV1() {
       .catch(() => { /* keep '—' cells */ });
   }, []);
 
+  // Phase B (board #70): bug chips from open board tasks whose
+  // affected_sids contains the row's sid, + per-sid notes counts.
+  const [bugTasks, setBugTasks] = useState<Task[]>([]);
+  const [noteCounts, setNoteCounts] = useState<Map<number, number>>(new Map());
+  const [notesSid, setNotesSid] = useState<{ sid: number; name: string } | null>(null);
+  const loadNotes = () => {
+    apiFetch<{ sid: number }[]>('/api/strategy-notes')
+      .then((rows) => {
+        const m = new Map<number, number>();
+        (rows || []).forEach((n) => m.set(n.sid, (m.get(n.sid) || 0) + 1));
+        setNoteCounts(m);
+      })
+      .catch(() => { /* counts stay empty */ });
+  };
+  useEffect(() => {
+    apiFetch<Task[]>('/api/dev-tasks?include_done=false')
+      .then((ts) => setBugTasks((ts || []).filter(
+        (t) => (t.affected_sids || []).length > 0)))
+      .catch(() => { /* chips stay empty */ });
+    loadNotes();
+  }, []);
+
   const [sortKey, setSortKey] = useState<SortKey>('flags');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [activeFlag, setActiveFlag] = useState<StrategyHealthFlag | null>(null);
@@ -636,6 +660,10 @@ export default function StrategyHealthV1() {
                 <Th onClick={() => toggleSort('trades')}    label={`Trades${arrow('trades')}`} align="right" />
                 <Th onClick={() => toggleSort('combined')}  label={`Combined %${arrow('combined')}`} align="right" />
                 <Th onClick={() => toggleSort('last10')}    label={`Last 10${arrow('last10')}`} align="right" />
+                <th style={{ padding: '6px 8px', fontWeight: 500 }}
+                    title="Per-strategy notes (humans + nightly writers) — click to read/add.">
+                  Notes
+                </th>
                 <Th onClick={() => toggleSort('paired')}    label={`Paired ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('paired')}`} align="right" />
                 <Th onClick={() => toggleSort('phantom')}   label={`Phantom ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('phantom')}`} align="right" />
                 <Th onClick={() => toggleSort('missed')}    label={`Missed ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('missed')}`} align="right" />
@@ -655,6 +683,9 @@ export default function StrategyHealthV1() {
                   parityKey(r.symbol, r.timeframe));
                 const l10 = last10.get(r.strategy_id);
                 const l10Ratio = l10 && l10.denom > 0 ? l10.points / l10.denom : null;
+                const rowBugs = bugTasks.filter(
+                  (t) => (t.affected_sids || []).includes(r.strategy_id));
+                const noteCount = noteCounts.get(r.strategy_id) || 0;
                 return (
                 <tr key={`${r.user_id}:${r.strategy_id}`}
                     style={{ borderTop: '1px solid var(--border)' }}>
@@ -675,6 +706,23 @@ export default function StrategyHealthV1() {
                       sid {r.strategy_id} · {r.direction} · {r.backtest_model || '—'}
                       {r.forward_testing ? ' · fwd' : ''}
                     </div>
+                    {rowBugs.length > 0 && (
+                      <div style={{ marginTop: 2 }}>
+                        {rowBugs.map((t) => (
+                          <a key={t.id} href={`/admin/tasks?task=${t.id}`}
+                             target="_blank" rel="noopener noreferrer"
+                             title={t.title}
+                             style={{
+                               display: 'inline-block', padding: '0 6px',
+                               borderRadius: 8, fontSize: 10.5, marginRight: 4,
+                               border: '1px solid #ef5350', color: '#ef5350',
+                               textDecoration: 'none', whiteSpace: 'nowrap',
+                             }}>
+                            🐛 #{t.id}
+                          </a>
+                        ))}
+                      </div>
+                    )}
                   </td>
                   <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums' }}>
                     {r.symbol || '—'}
@@ -783,6 +831,18 @@ export default function StrategyHealthV1() {
                           {l10!.points}/{l10!.denom}
                         </button>}
                   </td>
+                  <td style={{ padding: '6px 8px', textAlign: 'right' }}>
+                    <button
+                      onClick={() => setNotesSid({
+                        sid: r.strategy_id,
+                        name: r.name || `sid ${r.strategy_id}` })}
+                      title="strategy notes — click to read/add"
+                      style={{ background: 'transparent', border: 'none',
+                               cursor: 'pointer', padding: 0, fontSize: 12.5,
+                               color: noteCount > 0 ? 'var(--text)' : 'var(--text-muted)' }}>
+                      📝{noteCount > 0 ? ` ${noteCount}` : ''}
+                    </button>
+                  </td>
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',
                                color: r.paired_count_cov > 0
@@ -863,6 +923,10 @@ export default function StrategyHealthV1() {
       {last10Sid && (
         <Last10PairingModal sid={last10Sid.sid} name={last10Sid.name}
           onClose={() => setLast10Sid(null)} />
+      )}
+      {notesSid && (
+        <StrategyNotesModal sid={notesSid.sid} name={notesSid.name}
+          onClose={() => setNotesSid(null)} onChanged={loadNotes} />
       )}
     </div>
   );

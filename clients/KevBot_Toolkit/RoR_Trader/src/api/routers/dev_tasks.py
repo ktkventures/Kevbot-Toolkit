@@ -17,7 +17,7 @@ _EDITABLE = {
     "title", "description", "status", "priority_phase", "priority_seq",
     "is_urgent", "impacts_live", "needs_live_validation", "area",
     "assignee", "blocked_by", "tags", "notes", "parent_id", "origin",
-    "checklist",
+    "checklist", "affected_sids",
 }
 
 # 'discovered' marks rabbit-hole work found mid-task, parented under the
@@ -35,6 +35,13 @@ def _validate_team_fields(c, row: dict, task_id: Optional[int] = None):
         raise HTTPException(
             status_code=400,
             detail=f"origin must be one of {sorted(_ORIGINS)}")
+    if "affected_sids" in row:
+        sids = row["affected_sids"]
+        if not (isinstance(sids, list)
+                and all(isinstance(x, int) for x in sids)):
+            raise HTTPException(
+                status_code=400,
+                detail="affected_sids must be a list of integers")
     if "checklist" in row:
         cl = row["checklist"]
         ok = isinstance(cl, list) and all(
