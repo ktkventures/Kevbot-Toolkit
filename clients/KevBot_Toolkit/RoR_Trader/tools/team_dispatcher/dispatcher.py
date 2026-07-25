@@ -5,9 +5,10 @@ DRY-RUN BY DEFAULT: prints/logs what it WOULD dispatch, makes ZERO writes.
 Live mode requires --live. Runs on Kevin's machine only (never Railway).
 
 Usage:
-  python3 dispatcher.py            # one dry-run pass
-  python3 dispatcher.py --loop     # dry-run every POLL_S seconds
-  python3 dispatcher.py --live     # real dispatching (claims, spawns, reports)
+  python3 dispatcher.py                    # one dry-run pass
+  python3 dispatcher.py --loop             # dry-run every POLL_S seconds
+  python3 dispatcher.py --live             # real dispatching (claims, spawns, reports)
+  python3 dispatcher.py --live --loop --poll 20   # serve Run buttons (board #109)
 
 Kill switches: touch tools/team_dispatcher/PAUSE (idles the loop);
 per-agent: registry status must be 'headless' to be dispatchable at all.
@@ -35,6 +36,13 @@ DAILY_CAP = 24           # circuit breaker only
 POLL_S = 900
 RUN_TIMEOUT_S = 45 * 60  # lease
 CLAUDE_BIN = "claude"
+
+# Board #109 (Registry Phase 2): the Run button is DECLARATIVE — the API adds
+# this tag + a run_history row (outcome='requested'); this --loop is what
+# EXECUTES button presses. Requested tasks jump the queue (still eligibility-
+# gated); the tag is cleared on claim. Ineligible requests are cleared LOUDLY
+# (comment + run_history 'ignored') instead of rotting on the task.
+RUN_REQUESTED_TAG = "run-requested"
 
 # Fallback roster until the agents registry (V2.6) is live. Only lanes listed
 # here can dispatch in fallback mode — Phase B = docs lane only.
@@ -107,10 +115,9 @@ def next_actor(task):
     return task.get("assignee")
 
 
-def dispatchable(agents):
+def dispatchable(agents, done_ids):
     tasks = api("GET", "dev_tasks?status=eq.Todo&select=*"
                        "&order=is_urgent.desc,priority_phase,priority_seq")
-    done_ids = {t["id"] for t in api("GET", "dev_tasks?status=eq.Done&select=id")}
     out = []
     for t in tasks:
         a = t.get("assignee")
@@ -127,6 +134,66 @@ def dispatchable(agents):
             continue
         out.append(t)
     return out
+
+
+def run_requested(agents, done_ids):
+    """Button-requested tasks (board #109) — served ahead of the organic
+    queue, FIFO by request time (tag-add bumps updated_at). Spec gates only:
+    description non-empty, not blocked, agent headless-enrolled OR stub —
+    deliberately NO next-actor / needs-review / status=Todo gates (the button
+    is an explicit human override), but a task that is already In Progress /
+    Done / Blocked can't be started. Returns (eligible, [(task, reason)])."""
+    rows = api("GET", f"dev_tasks?tags=cs.{{{RUN_REQUESTED_TAG}}}&select=*"
+                      "&order=updated_at")
+    ok, bad = [], []
+    for t in rows or []:
+        if t.get("status") in ("In Progress", "Done", "Blocked"):
+            bad.append((t, f"status is {t['status']}"))
+        elif not (t.get("description") or "").strip():
+            bad.append((t, "description is empty — never dispatch unscoped work"))
+        elif t.get("assignee") not in agents:
+            bad.append((t, f"assignee '{t.get('assignee') or '—'}' is not headless-enrolled"))
+        elif any(b not in done_ids for b in (t.get("blocked_by") or [])):
+            bad.append((t, f"blocked by {t['blocked_by']}"))
+        else:
+            ok.append(t)
+    return ok, bad
+
+
+def clear_run_request(task, reason):
+    """LOUD ineligible-request cleanup (live mode only): drop the tag, mark
+    the pending run_history row 'ignored', explain on the thread."""
+    tags = [x for x in (task.get("tags") or []) if x != RUN_REQUESTED_TAG]
+    api("PATCH", f"dev_tasks?id=eq.{task['id']}", body={"tags": tags})
+    api("PATCH", f"run_history?task_id=eq.{task['id']}&outcome=eq.requested",
+        body={"finished_at": datetime.now(timezone.utc).isoformat(),
+              "outcome": "ignored", "log_tail": reason})
+    api("POST", "dev_task_comments", body={
+        "task_id": task["id"], "author": "system",
+        "body": f"run-request ignored: {reason} — tag cleared, re-request once fixed"})
+
+
+def rh_claim(task, run_id):
+    """run_history lifecycle, claim leg: requested → running. Button runs
+    already have a row (outcome='requested', from the API endpoint) — take
+    the oldest pending one; organic queue dispatches insert theirs here."""
+    now = datetime.now(timezone.utc).isoformat()
+    rows = api("GET", f"run_history?task_id=eq.{task['id']}&outcome=eq.requested"
+                      "&order=requested_at&limit=1&select=id")
+    if rows:
+        api("PATCH", f"run_history?id=eq.{rows[0]['id']}",
+            body={"run_id": run_id, "started_at": now, "outcome": "running"})
+        return
+    api("POST", "run_history", body={
+        "task_id": task["id"], "agent_letter": task.get("assignee") or "?",
+        "run_id": run_id, "started_at": now, "outcome": "running"})
+
+
+def rh_finish(run_id, outcome, log_tail):
+    """run_history lifecycle, finish leg (reap): running → terminal."""
+    api("PATCH", f"run_history?run_id=eq.{run_id}", body={
+        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "outcome": outcome, "log_tail": (log_tail or "")[-4000:]})
 
 
 def build_prompt(agent, task):
@@ -172,11 +239,14 @@ def reap(st):
             continue
         r["active"] = False
         tail = open(r["log"]).read()[-3000:] if os.path.exists(r["log"]) else "(no log)"
-        result = tail
+        result, outcome = tail, "ok"
         try:
-            result = json.loads(tail.strip().splitlines()[-1]).get("result", tail)
+            last = json.loads(tail.strip().splitlines()[-1])
+            result = last.get("result", tail)
+            if last.get("is_error"):
+                outcome = "error"
         except Exception:
-            pass
+            outcome = "error"  # unparseable/absent output = run died mid-stream
         if True:
             if expired and proc_alive:
                 api("POST", "dev_task_comments", body={
@@ -184,6 +254,7 @@ def reap(st):
                     "body": f"dispatch LEASE EXPIRED ({r['agent']}·auto run {r['run_id']}) — killed. Log tail:\n{tail[-800:]}"})
                 api("PATCH", f"dev_tasks?id=eq.{r['task_id']}",
                     body={"status": "Blocked", "notes": "dispatch failure — see thread"})
+                rh_finish(r["run_id"], "lease-expired", tail)
             else:
                 api("POST", "dev_task_comments", body={
                     "task_id": r["task_id"], "author": f"{r['agent']}·auto",
@@ -191,6 +262,7 @@ def reap(st):
                 t = api("GET", f"dev_tasks?id=eq.{r['task_id']}&select=tags")[0]
                 api("PATCH", f"dev_tasks?id=eq.{r['task_id']}",
                     body={"tags": list(set((t.get("tags") or []) + ["needs-review"]))})
+                rh_finish(r["run_id"], outcome, tail)
     save_state(st)
 
 
@@ -203,7 +275,12 @@ def one_pass(live, only_task=None):
     reap(st)
     slots = CONCURRENCY - len(active_runs(st))
     cap_left = DAILY_CAP - today_run_count(st)
-    cands = dispatchable(agents)
+    done_ids = {t["id"] for t in api("GET", "dev_tasks?status=eq.Done&select=id")}
+    # Button presses first (priority-jump), then the organic Todo queue.
+    requested, bad_requests = run_requested(agents, done_ids)
+    req_ids = {t["id"] for t in requested}
+    cands = requested + [t for t in dispatchable(agents, done_ids)
+                         if t["id"] not in req_ids]
     if only_task is not None:
         hit = [t for t in cands if t["id"] == only_task]
         if not hit:
@@ -212,22 +289,34 @@ def one_pass(live, only_task=None):
         cands = hit
     now = datetime.now(timezone.utc).strftime("%H:%M:%SZ")
     print(f"[{now}] agents={list(agents)} ({source}) · dispatchable={len(cands)} "
+          f"(button-requested={len(requested)}) "
           f"· slots={slots} · cap_left={cap_left} · mode={'LIVE' if live else 'DRY-RUN'}")
+    for t, reason in bad_requests:
+        if live:
+            clear_run_request(t, reason)
+            print(f"  CLEARED ineligible run-request #{t['id']}: {reason}")
+        else:
+            print(f"  WOULD CLEAR ineligible run-request #{t['id']}: {reason}")
     os.makedirs(LOG_DIR, exist_ok=True)
     for t in cands[:max(0, min(slots, cap_left))]:
         agent = agents[t["assignee"]]
         prompt = build_prompt(agent, t)
         run_id = f"r{int(time.time())}-{t['id']}"
         log_path = f"{LOG_DIR}/{run_id}.log"
+        flag = " [run-requested]" if t["id"] in req_ids else ""
         if not live:
             open(f"{LOG_DIR}/{run_id}.DRY.prompt.txt", "w").write(prompt)
-            print(f"  WOULD DISPATCH #{t['id']} '{t['title'][:60]}' → {t['assignee']}·auto "
+            print(f"  WOULD DISPATCH #{t['id']}{flag} '{t['title'][:60]}' → {t['assignee']}·auto "
                   f"(prompt saved: {run_id}.DRY.prompt.txt)")
             continue
-        api("PATCH", f"dev_tasks?id=eq.{t['id']}", body={"status": "In Progress"})
+        # Claim = status flip + run-requested tag cleared in ONE patch.
+        tags = [x for x in (t.get("tags") or []) if x != RUN_REQUESTED_TAG]
+        api("PATCH", f"dev_tasks?id=eq.{t['id']}",
+            body={"status": "In Progress", "tags": tags})
         api("POST", "dev_task_comments", body={
             "task_id": t["id"], "author": "system",
             "body": f"dispatched to {t['assignee']}·auto (run {run_id})"})
+        rh_claim(t, run_id)
         p = spawn(agent, t, prompt, log_path)
         st["runs"].append({"run_id": run_id, "task_id": t["id"], "agent": t["assignee"],
                            "pid": p.pid, "t0": time.time(), "log": log_path,
@@ -242,12 +331,15 @@ def main():
     ap.add_argument("--loop", action="store_true")
     ap.add_argument("--task", type=int, default=None,
                     help="dispatch ONLY this task id (must still pass eligibility)")
+    ap.add_argument("--poll", type=int, default=POLL_S,
+                    help="seconds between --loop passes (lower it when the "
+                         "loop is serving Run buttons — board #109)")
     args = ap.parse_args()
     while True:
         one_pass(args.live, only_task=args.task)
         if not args.loop:
             break
-        time.sleep(POLL_S)
+        time.sleep(args.poll)
 
 
 if __name__ == "__main__":
