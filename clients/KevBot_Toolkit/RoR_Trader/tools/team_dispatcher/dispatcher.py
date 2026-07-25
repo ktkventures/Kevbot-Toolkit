@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Team dispatcher (V4.9) — dispatches board tasks to headless Claude agents.
+"""Team dispatcher (V4.13) — dispatches board tasks to headless Claude agents.
 
 DRY-RUN BY DEFAULT: prints/logs what it WOULD dispatch, makes ZERO writes.
 Live mode requires --live. Runs on Kevin's machine only (never Railway).
@@ -17,6 +17,7 @@ Design: docs/_active/Design_Agent_Dispatcher.md (decisions approved 2026-07-23).
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -235,51 +236,92 @@ def spawn(agent, task, prompt, log_path):
             stderr=subprocess.STDOUT, start_new_session=True)
 
 
+def kill_run_group(pid):
+    """SIGKILL a run's whole session — spawn() uses start_new_session=True, so
+    the child leads its own process group and killpg reaches lingering
+    grandchildren too (board #131). Then reap the zombie (bounded wait) so
+    /proc/{pid} clears; a fresh dispatcher process isn't the parent, in which
+    case init reaps it."""
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    for _ in range(10):
+        try:
+            done, _ = os.waitpid(pid, os.WNOHANG)
+        except (ChildProcessError, OSError):
+            return
+        if done:
+            return
+        time.sleep(0.05)
+
+
+def parse_terminal(full):
+    """Terminal result object of a `claude -p --output-format json` run, or
+    None while the run is still mid-stream. Reverse scan: a lingering child
+    that inherited stdout can append stray lines AFTER the terminal JSON
+    (board #131, run r1785000766-122), so the last line alone isn't
+    trustworthy. Parses whole lines of the FULL log — the terminal JSON is ONE
+    long line, and a pre-parse tail truncates it into a false outcome=error
+    (M, #109 review)."""
+    for line in reversed(full.strip().splitlines()):
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(obj, dict) and (obj.get("type") == "result" or "result" in obj):
+            return obj
+    return None
+
+
 def reap(st):
     """Collect finished live runs → post comments, tag needs-review.
-    Runs in state were always live-dispatched, so reporting is unconditional."""
-    for r in active_runs(st):
+    Runs in state were always live-dispatched, so reporting is unconditional.
+    Collect triggers (board #131): process gone; lease expired (kill +
+    Blocked); or the log already carries the terminal result JSON while the
+    process lingers — those report normally and the leftover session group is
+    killed. Iterates ALL active-flagged runs, NOT active_runs(): its
+    within-lease filter excluded exactly the runs the lease branch exists for,
+    making that branch unreachable."""
+    for r in [x for x in st["runs"] if x.get("active")]:
         proc_alive = os.path.exists(f"/proc/{r['pid']}")
         expired = time.time() - r["t0"] >= RUN_TIMEOUT_S
-        if proc_alive and not expired:
-            continue
-        r["active"] = False
-        # Parse from the FULL log — claude -p --output-format json emits ONE
-        # long line, so a pre-parse tail truncates it into a false
-        # outcome=error (M, #109 review). Only what we POST/store is capped:
-        # comment result[:6000], run_history log_tail[-4000:].
         full = open(r["log"]).read() if os.path.exists(r["log"]) else "(no log)"
+        last = parse_terminal(full)
+        if proc_alive and not expired and last is None:
+            continue  # still running, within lease
+        r["active"] = False
         tail = full[-3000:]
-        result, outcome = tail, "ok"
-        try:
-            last = json.loads(full.strip().splitlines()[-1])
-            result = last.get("result", tail)
-            if last.get("is_error"):
-                outcome = "error"
-        except Exception:
-            outcome = "error"  # unparseable/absent output = run died mid-stream
-        if True:
-            if expired and proc_alive:
-                api("POST", "dev_task_comments", body={
-                    "task_id": r["task_id"], "author": "system",
-                    "body": f"dispatch LEASE EXPIRED ({r['agent']}·auto run {r['run_id']}) — killed. Log tail:\n{tail[-800:]}"})
-                api("PATCH", f"dev_tasks?id=eq.{r['task_id']}",
-                    body={"status": "Blocked", "notes": "dispatch failure — see thread"})
-                rh_finish(r["run_id"], "lease-expired", tail)
-            else:
-                api("POST", "dev_task_comments", body={
-                    "task_id": r["task_id"], "author": f"{r['agent']}·auto",
-                    "body": result[:6000]})
-                t = api("GET", f"dev_tasks?id=eq.{r['task_id']}&select=tags")[0]
-                api("PATCH", f"dev_tasks?id=eq.{r['task_id']}",
-                    body={"tags": list(set((t.get("tags") or []) + ["needs-review"]))})
-                rh_finish(r["run_id"], outcome, tail)
+        if proc_alive:
+            kill_run_group(r["pid"])  # lease kill, or a completed run's leftovers
+        if last is None and expired and proc_alive:
+            api("POST", "dev_task_comments", body={
+                "task_id": r["task_id"], "author": "system",
+                "body": f"dispatch LEASE EXPIRED ({r['agent']}·auto run {r['run_id']}) — killed. Log tail:\n{tail[-800:]}"})
+            api("PATCH", f"dev_tasks?id=eq.{r['task_id']}",
+                body={"status": "Blocked", "notes": "dispatch failure — see thread"})
+            rh_finish(r["run_id"], "lease-expired", tail)
+        else:
+            # Only what we POST/store is capped: comment result[:6000],
+            # run_history log_tail[-4000:]. No terminal JSON + dead proc =
+            # run died mid-stream → error.
+            result = last.get("result", tail) if last is not None else tail
+            outcome = ("error" if last.get("is_error") else "ok") if last is not None else "error"
+            api("POST", "dev_task_comments", body={
+                "task_id": r["task_id"], "author": f"{r['agent']}·auto",
+                "body": str(result)[:6000]})
+            t = api("GET", f"dev_tasks?id=eq.{r['task_id']}&select=tags")[0]
+            api("PATCH", f"dev_tasks?id=eq.{r['task_id']}",
+                body={"tags": list(set((t.get("tags") or []) + ["needs-review"]))})
+            rh_finish(r["run_id"], outcome, tail)
     save_state(st)
 
 
 def one_pass(live, only_task=None):
     if os.path.exists(PAUSE_FILE):
-        print("PAUSED (remove tools/team_dispatcher/PAUSE to resume)")
+        # flush=True on every print: --loop stdout is usually redirected to a
+        # file, where block buffering hides hours of output (board #131).
+        print("PAUSED (remove tools/team_dispatcher/PAUSE to resume)", flush=True)
         return
     agents, source = headless_agents()
     st = load_state()
@@ -296,18 +338,19 @@ def one_pass(live, only_task=None):
         hit = [t for t in cands if t["id"] == only_task]
         if not hit:
             print(f"task #{only_task} is NOT eligible (not Todo / wrong lane / blocked / "
-                  f"awaiting review / next-actor mismatch) — nothing dispatched")
+                  f"awaiting review / next-actor mismatch) — nothing dispatched", flush=True)
         cands = hit
     now = datetime.now(timezone.utc).strftime("%H:%M:%SZ")
     print(f"[{now}] agents={list(agents)} ({source}) · dispatchable={len(cands)} "
           f"(button-requested={len(requested)}) "
-          f"· slots={slots} · cap_left={cap_left} · mode={'LIVE' if live else 'DRY-RUN'}")
+          f"· slots={slots} · cap_left={cap_left} · mode={'LIVE' if live else 'DRY-RUN'}",
+          flush=True)
     for t, reason in bad_requests:
         if live:
             clear_run_request(t, reason)
-            print(f"  CLEARED ineligible run-request #{t['id']}: {reason}")
+            print(f"  CLEARED ineligible run-request #{t['id']}: {reason}", flush=True)
         else:
-            print(f"  WOULD CLEAR ineligible run-request #{t['id']}: {reason}")
+            print(f"  WOULD CLEAR ineligible run-request #{t['id']}: {reason}", flush=True)
     os.makedirs(LOG_DIR, exist_ok=True)
     for t in cands[:max(0, min(slots, cap_left))]:
         agent = agents[t["assignee"]]
@@ -318,7 +361,7 @@ def one_pass(live, only_task=None):
         if not live:
             open(f"{LOG_DIR}/{run_id}.DRY.prompt.txt", "w").write(prompt)
             print(f"  WOULD DISPATCH #{t['id']}{flag} '{t['title'][:60]}' → {t['assignee']}·auto "
-                  f"(prompt saved: {run_id}.DRY.prompt.txt)")
+                  f"(prompt saved: {run_id}.DRY.prompt.txt)", flush=True)
             continue
         # Claim = status flip + run-requested tag cleared in ONE patch.
         tags = [x for x in (t.get("tags") or []) if x != RUN_REQUESTED_TAG]
@@ -333,7 +376,7 @@ def one_pass(live, only_task=None):
                            "pid": p.pid, "t0": time.time(), "log": log_path,
                            "ts": datetime.now(timezone.utc).isoformat(), "active": True})
         save_state(st)
-        print(f"  DISPATCHED #{t['id']} → {t['assignee']}·auto pid={p.pid}")
+        print(f"  DISPATCHED #{t['id']} → {t['assignee']}·auto pid={p.pid}", flush=True)
 
 
 def main():
