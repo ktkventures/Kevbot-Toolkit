@@ -24,6 +24,7 @@ import {
   Task, RunRow, STATUSES, AREAS, ASSIGNEES, ORIGINS, STATUS_COLOR, AUTHOR_LS_KEY,
   COLLAPSED_LS_KEY, NEEDS_REVIEW_TAG, RUN_REQUESTED_TAG, STATUS_DEF, withLegacy,
   cell, input, badge, tagChip, NextChip, ProgressBar, RunButton,
+  NEEDS_APPROVAL_TAG, KEVIN_OK_TAG, ApprovalChip, nextApprovalTags, defaultChain,
 } from './taskBoardShared';
 
 export default function AdminTasksPage() {
@@ -140,10 +141,12 @@ export default function AdminTasksPage() {
   };
   const createTask = async () => {
     if (!nt.title.trim()) return;
-    // No parent selected = a new vision item (auto-tagged); subtasks carry origin.
+    // No parent selected = a new vision item (auto-tagged); subtasks carry
+    // origin and auto-populate the default 4-step process chain (board #134
+    // item 2 — editable afterward; visions pipeline via subtasks instead).
     const body = nt.parent_id == null
       ? { ...nt, parent_id: null, tags: ['vision'] }
-      : { ...nt };
+      : { ...nt, checklist: defaultChain(nt.assignee) };
     try {
       await apiFetch('/api/dev-tasks', { method: 'POST', body: JSON.stringify(body) });
       setNt({ ...nt, title: '' }); load();
@@ -210,6 +213,32 @@ export default function AdminTasksPage() {
       : [...(t.tags || []), NEEDS_REVIEW_TAG];
     patch(t.id, { tags });
   };
+  // Pre-approve (board #134 item 3): needs-approval ⇄ kevin-ok tag flip.
+  const toggleApproval = (t: Task) => {
+    const tags = nextApprovalTags(t);
+    if (tags) patch(t.id, { tags });
+  };
+
+  // Default-chain backfill (board #134 item 2): open LEAF tasks (not vision,
+  // no subtasks) with an empty checklist get the universal 4-step chain.
+  const chainless = useMemo(() => tasks.filter((t) =>
+    t.status !== 'Done' && (t.checklist || []).length === 0 &&
+    !((t.tags || []).includes('vision') || byParent.has(t.id))), [tasks, byParent]);
+  const backfillChains = async () => {
+    if (chainless.length === 0) return;
+    if (!confirm(`Add the default 4-step process chain (Build → M review → Kevin approval → Ship) to ${chainless.length} open task(s) without one?`)) return;
+    try {
+      await Promise.all(chainless.map((t) => apiFetch(`/api/dev-tasks/${t.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ checklist: defaultChain(t.assignee), actor: commentAuthor }),
+      })));
+    } catch (e) { setErr(String(e)); }
+    load();
+  };
+
+  // Board-side half of the modal's ~7s liveness poll (board #134 item 5):
+  // run/needs-review chips refresh on the same tick, no page reload.
+  const pollRefresh = useCallback(() => { load(); loadRuns(); }, [load, loadRuns]);
 
   const sortedVisible = useMemo(() => {
     if (!sort) return visible;
@@ -251,8 +280,12 @@ export default function AdminTasksPage() {
       {(t.tags || []).includes(NEEDS_REVIEW_TAG) &&
         <span style={{ ...tagChip, borderColor: 'var(--amber, #d98c00)', color: 'var(--amber, #d98c00)', fontWeight: 700 }}
           title="finished — waiting on human review">👀 review</span>}
+      {/* pre-approve chip IS the button: amber needs-approval ⇄ green kevin-ok */}
+      <ApprovalChip t={t} onToggle={toggleApproval} />
       {/* run-requested renders as the Run button's ⏳ state, not a raw chip */}
-      {(t.tags || []).filter((tag) => tag !== NEEDS_REVIEW_TAG && tag !== RUN_REQUESTED_TAG).map((tag) => (
+      {(t.tags || []).filter((tag) =>
+        tag !== NEEDS_REVIEW_TAG && tag !== RUN_REQUESTED_TAG
+        && tag !== NEEDS_APPROVAL_TAG && tag !== KEVIN_OK_TAG).map((tag) => (
         <span key={tag} style={tagChip}>{tag}</span>
       ))}
     </>
@@ -431,6 +464,11 @@ export default function AdminTasksPage() {
             <option value="">all</option>{assigneeOptions.map((a) => <option key={a} value={a}>{a}</option>)}
           </select></span>
           <button style={{ ...input, cursor: 'pointer' }} onClick={load}>↻ refresh</button>
+          {chainless.length > 0 && (
+            <button style={{ ...input, cursor: 'pointer' }} onClick={backfillChains}
+              title="backfill the default 4-step process chain (Build/investigate → M review → Kevin approval where flagged → Ship/close) onto open tasks that have none">
+              ⛓ add default chain ({chainless.length})</button>
+          )}
         </div>
       </Card>
 
@@ -481,7 +519,8 @@ export default function AdminTasksPage() {
           onClose={() => setModal(null)}
           onOpenTask={(id, sel) => setModal({ id, sel })}
           commentAuthor={commentAuthor} onPickAuthor={pickAuthor}
-          headless={headless} onRunRequested={() => { load(); loadRuns(); }} />
+          headless={headless} onRunRequested={() => { load(); loadRuns(); }}
+          onPollTick={pollRefresh} />
       )}
     </div>
   );

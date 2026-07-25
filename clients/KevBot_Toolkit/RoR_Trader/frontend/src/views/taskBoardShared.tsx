@@ -65,6 +65,11 @@ export const AUTHOR_LS_KEY = 'ror_task_comment_author';
 // Tag convention: work is finished and waiting on a human — agents skip these,
 // Kevin filters to them. Rendered as a distinct chip, toggled like ⚡urgent.
 export const NEEDS_REVIEW_TAG = 'needs-review';
+// Batch-review protocol (Kevin 07-25, charter §7): needs-approval = M requests
+// Kevin's eyes BEFORE execution (amber); Kevin pre-approves by flipping it to
+// kevin-ok (green) = run when bandwidth allows. needs-review stays post-run.
+export const NEEDS_APPROVAL_TAG = 'needs-approval';
+export const KEVIN_OK_TAG = 'kevin-ok';
 // Board #109: the Run button is DECLARATIVE — this tag is the request; the
 // LOCAL dispatcher --loop polls for it and executes (Railway cannot reach
 // Kevin's machine). Cleared by the dispatcher on claim.
@@ -99,6 +104,65 @@ export const tagChip: React.CSSProperties = {
   border: '1px solid var(--border)', color: 'var(--text-secondary)',
   marginLeft: 4, whiteSpace: 'nowrap', verticalAlign: 'middle',
 };
+
+/**
+ * Universal default process chain (Kevin 07-25, charter §7): every task
+ * carries a checklist; simple tasks get this 4-step handoff pipeline. New
+ * subtasks auto-populate it (editable); chain-less open tasks backfill via
+ * the board's "add default chain" button.
+ */
+export const defaultChain = (assignee?: string | null): ChecklistStep[] => [
+  { text: 'Build / investigate', done: false, role: assignee || null },
+  { text: 'M review', done: false, role: 'M' },
+  { text: 'Kevin approval (where flagged)', done: false, role: 'kevin' },
+  { text: 'Ship / close', done: false, role: 'M' },
+];
+
+/**
+ * Next tags after a pre-approve click: needs-approval → kevin-ok, kevin-ok →
+ * back to needs-approval (undo). Null = neither tag present (no button).
+ */
+export function nextApprovalTags(t: Task): string[] | null {
+  const tags = t.tags || [];
+  if (tags.includes(KEVIN_OK_TAG))
+    return [...tags.filter((x) => x !== KEVIN_OK_TAG && x !== NEEDS_APPROVAL_TAG), NEEDS_APPROVAL_TAG];
+  if (tags.includes(NEEDS_APPROVAL_TAG))
+    return [...tags.filter((x) => x !== NEEDS_APPROVAL_TAG && x !== KEVIN_OK_TAG), KEVIN_OK_TAG];
+  return null;
+}
+
+/**
+ * Pre-approve control (board #134 item 3) — the chip IS the button. Amber
+ * "needs-approval" flips to green "kevin-ok" on click and back on a second
+ * click. Renders nothing when neither tag is present (add needs-approval via
+ * Config tags). stopPropagation: it lives inside the clickable title cell.
+ */
+export const ApprovalChip = ({ t, onToggle }: { t: Task; onToggle: (t: Task) => void }) => {
+  const tags = t.tags || [];
+  const ok = tags.includes(KEVIN_OK_TAG);
+  if (!ok && !tags.includes(NEEDS_APPROVAL_TAG)) return null;
+  return ok ? (
+    <span style={{ ...tagChip, cursor: 'pointer', borderColor: 'var(--green)', color: 'var(--green)', fontWeight: 700 }}
+      title="pre-approved by Kevin — run when bandwidth allows, no further check-ins absent surprises. Click to revert to needs-approval."
+      onClick={(e) => { e.stopPropagation(); onToggle(t); }}>✓ kevin-ok</span>
+  ) : (
+    <span style={{ ...tagChip, cursor: 'pointer', borderColor: 'var(--amber, #d98c00)', color: 'var(--amber, #d98c00)', fontWeight: 700 }}
+      title="M requests Kevin's eyes BEFORE execution. Click to pre-approve (flips to kevin-ok)."
+      onClick={(e) => { e.stopPropagation(); onToggle(t); }}>✋ needs-approval</span>
+  );
+};
+
+/** Compact "how long has this been running" — 42s, 7m03s, 1h12m. */
+export function elapsedShort(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return '';
+  const s = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${String(s % 60).padStart(2, '0')}s`;
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`;
+}
 
 /** "2m ago" style relative timestamp for the activity feed. */
 export function relTime(iso: string | undefined): string {

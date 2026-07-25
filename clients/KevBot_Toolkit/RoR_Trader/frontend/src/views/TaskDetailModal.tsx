@@ -16,31 +16,25 @@
  * vision itself; "open full task ↗" swaps the modal in place (never stacks);
  * subtask modals get a "← parent" breadcrumb that returns with the selection
  * preserved.
+ *
+ * Board #134 (polish round 2): comments/descriptions render markdown-lite
+ * (shared taskMarkdown, remark-breaks); the open modal polls its thread +
+ * run state every ~7s (pulsing agent-working badge, comments slide in live,
+ * onPollTick refreshes the board's chips); Ask AI posts with an @M marker;
+ * pre-approve chip flips needs-approval ⇄ kevin-ok.
  */
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeRaw from 'rehype-raw';
-import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import { apiFetch } from '@/lib/api/client';
 import {
   Task, Comment, ChecklistStep, RunRow, STATUSES, AREAS, ASSIGNEES, ORIGINS,
-  STATUS_COLOR, STATUS_DEF, withLegacy, input, tagChip, relTime,
+  STATUS_COLOR, STATUS_DEF, withLegacy, input, tagChip, relTime, elapsedShort,
   RoleChip, NextChip, ProgressBar, RolePicker, RunButton, OutcomeChip,
+  ApprovalChip, nextApprovalTags, defaultChain,
 } from './taskBoardShared';
-
-// Default GitHub-style sanitize schema, plus data: image URIs (spec allows
-// pasted data-URI images; scripts/handlers stay stripped).
-const mdSchema = {
-  ...defaultSchema,
-  protocols: {
-    ...defaultSchema.protocols,
-    src: [...((defaultSchema.protocols as Record<string, string[]>)?.src || []), 'data'],
-  },
-};
+import { Md, MD_CSS } from './taskMarkdown';
 
 const panel: React.CSSProperties = {
   border: '1px solid var(--border)', borderRadius: 10, background: 'var(--bg-card, var(--bg-input))',
@@ -78,11 +72,14 @@ interface Props {
   headless?: Set<string>;
   /** Board refresh hook after a run request lands (tags changed server-side). */
   onRunRequested?: () => void;
+  /** Fired on each ~7s liveness poll tick (board #134 item 5) so the board
+   *  list refreshes its run / needs-review chips on the same cadence. */
+  onPollTick?: () => void;
 }
 
 export default function TaskDetailModal({
   task, allTasks, visionOptions, roles = ASSIGNEES, initialSelected, patch, del, onClose, onOpenTask,
-  commentAuthor, onPickAuthor, headless = new Set(['M']), onRunRequested,
+  commentAuthor, onPickAuthor, headless = new Set(['M']), onRunRequested, onPollTick,
 }: Props) {
   const subtasks = useMemo(
     () => allTasks.filter((t) => t.parent_id === task.id), [allTasks, task.id]);
@@ -140,9 +137,36 @@ export default function TaskDetailModal({
   useEffect(() => { loadThread(scoped.id); loadRuns(scoped.id); setCtxEdit(false); setCtxPreview(false); }, [scoped.id, loadThread, loadRuns]);
   useEffect(() => { setDraftDesc(scoped.description || ''); }, [scoped.id, scoped.description]);
   const thread = threads[scoped.id] || [];
+
+  // Real-time activity (board #134 item 5): while the modal is open, poll the
+  // scoped thread + run state every ~7s — new comments land live, the
+  // agent-working badge tracks run_history, and onPollTick lets the board
+  // list refresh its run/needs-review chips on the same cadence.
   useEffect(() => {
-    if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
+    const iv = setInterval(() => {
+      loadThread(scoped.id);
+      loadRuns(scoped.id);
+      if (scoped.id !== task.id) loadRuns(task.id); // header RunButton stays fresh too
+      onPollTick?.();
+    }, 7000);
+    return () => clearInterval(iv);
+  }, [scoped.id, task.id, loadThread, loadRuns, onPollTick]);
+
+  // Auto-scroll: jump to the bottom on scope change; on live growth only
+  // follow when the reader is already near the bottom (don't yank them out
+  // of history mid-read).
+  const lastScrollScope = useRef<number | null>(null);
+  useEffect(() => {
+    const el = feedRef.current;
+    if (!el) return;
+    const scopeChanged = lastScrollScope.current !== scoped.id;
+    lastScrollScope.current = scoped.id;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 300;
+    if (scopeChanged || nearBottom) el.scrollTop = el.scrollHeight;
   }, [thread.length, scoped.id]);
+
+  // LIVENESS: an active dispatcher run of the scoped item (outcome=running).
+  const liveRun = (runsMap[scoped.id] || []).find((r) => r.outcome === 'running');
 
   // Status/assignee edits write a system entry on the task's thread server-side
   // — re-fetch it so the entry appears without closing the modal.
@@ -151,11 +175,13 @@ export default function TaskDetailModal({
     loadThread(task.id);
   };
 
-  const postComment = async () => {
+  // prefix: '' = plain comment; '@M ' = Ask AI (board #134 item 4) — the @M
+  // marker is what M's board-watcher scans for, so it answers in-thread.
+  const postComment = async (prefix = '') => {
     if (!draftComment.trim()) return;
     try {
       await apiFetch(`/api/dev-tasks/${scoped.id}/comments`, {
-        method: 'POST', body: JSON.stringify({ body: draftComment, author: commentAuthor }),
+        method: 'POST', body: JSON.stringify({ body: prefix + draftComment, author: commentAuthor }),
       });
       setDraftComment('');
       loadThread(scoped.id);
@@ -188,15 +214,6 @@ export default function TaskDetailModal({
     s.split(',').map((x) => parseInt(x.trim(), 10)).filter((n) => Number.isFinite(n));
   const parseTags = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
 
-  const Md = ({ text }: { text: string }) => (
-    <div className="task-md">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeRaw, [rehypeSanitize, mdSchema]]}>
-        {text || '_no description yet — click Edit_'}
-      </ReactMarkdown>
-    </div>
-  );
-
   // Header-level counts describe the MODAL task; the Process tab describes
   // the scoped item (a selected subtask is always a leaf — one-level rule).
   const doneCount = vision
@@ -218,15 +235,14 @@ export default function TaskDetailModal({
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '4vh 16px',
     }}>
       <style>{`
-        .task-md { font-size: 13px; line-height: 1.5; }
-        .task-md h1, .task-md h2, .task-md h3 { margin: 10px 0 6px; }
-        .task-md p { margin: 6px 0; }
-        .task-md img { max-width: 100%; border-radius: 6px; }
-        .task-md table { border-collapse: collapse; margin: 8px 0; }
-        .task-md th, .task-md td { border: 1px solid var(--border); padding: 4px 8px; font-size: 12.5px; }
-        .task-md code { background: var(--bg-input); padding: 1px 4px; border-radius: 4px; font-size: 12px; }
-        .task-md pre { background: var(--bg-input); padding: 8px; border-radius: 6px; overflow-x: auto; }
-        .task-md ul, .task-md ol { padding-left: 20px; margin: 6px 0; }
+        ${MD_CSS}
+        @keyframes taskPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+        @keyframes cmSlideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+        .cm-in { animation: cmSlideIn 0.35s ease; }
+        .pulse-dot {
+          display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+          background: var(--blue); animation: taskPulse 1.4s ease-in-out infinite;
+        }
       `}</style>
       <div onClick={(e) => e.stopPropagation()} style={{
         background: 'var(--bg-card, var(--bg-input))', border: '1px solid var(--border)',
@@ -280,6 +296,10 @@ export default function TaskDetailModal({
             <span title="urgent — jump the queue" style={{ fontSize: 13 }}>⚡</span>}
           {task.parent_id != null && task.origin === 'discovered' &&
             <span title="discovered mid-work (rabbit-hole fix)" style={{ fontSize: 13 }}>🔍</span>}
+          <ApprovalChip t={task} onToggle={(t) => {
+            const tags = nextApprovalTags(t);
+            if (tags) patch(t.id, { tags });
+          }} />
           {vision && totalCount > 0 &&
             <span style={tagChip} title="subtasks done / total">{doneCount}/{totalCount}</span>}
           <span style={{ flex: 1 }} />
@@ -319,13 +339,13 @@ export default function TaskDetailModal({
                 {effTab === 'summary' && (
                   <>
                     <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{scoped.title}</div>
-                    {!ctxEdit && <Md text={scoped.description} />}
+                    {!ctxEdit && <Md text={scoped.description} fallback="_no description yet — click Edit_" />}
                     {ctxEdit && !ctxPreview && (
                       <textarea style={{ ...input, width: '100%', minHeight: 180, fontFamily: 'monospace', fontSize: 12.5 }}
                         value={draftDesc} onChange={(e) => setDraftDesc(e.target.value)}
                         placeholder="markdown + sanitized inline HTML…" />
                     )}
-                    {ctxEdit && ctxPreview && <Md text={draftDesc} />}
+                    {ctxEdit && ctxPreview && <Md text={draftDesc} fallback="_no description yet — click Edit_" />}
                   </>
                 )}
 
@@ -355,8 +375,14 @@ export default function TaskDetailModal({
                           onClick={() => setSteps(steps.filter((_, j) => j !== i))}>✕</span>
                       </div>
                     ))}
-                    {steps.length === 0 &&
-                      <div style={{ ...cfgHint, padding: '4px 8px' }}>No steps yet.</div>}
+                    {steps.length === 0 && (
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '4px 8px' }}>
+                        <span style={cfgHint}>No steps yet.</span>
+                        <button style={{ ...input, cursor: 'pointer', fontSize: 12 }}
+                          title="Build/investigate → M review → Kevin approval (where flagged) → Ship/close — editable after adding"
+                          onClick={() => setSteps(defaultChain(scoped.assignee))}>⛓ add default chain</button>
+                      </div>
+                    )}
                     <div style={{ display: 'flex', gap: 6, padding: '4px 8px', marginTop: 2 }}>
                       <input style={{ ...input, flex: 1 }} placeholder="add a step…" value={newStep}
                         onChange={(e) => setNewStep(e.target.value)}
@@ -541,20 +567,32 @@ export default function TaskDetailModal({
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 Activity — {scoped.id === task.id ? 'this task' : `#${scoped.id} ${scoped.title.slice(0, 30)}`}
               </span>
+              <span style={{ flex: 1 }} />
+              {liveRun && (
+                <span title={`dispatcher run ${liveRun.run_id || '?'} is live — thread updates every ~7s`}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 6, textTransform: 'none',
+                    border: '1px solid var(--blue)', borderRadius: 10, padding: '1px 8px',
+                    color: 'var(--blue)', fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap',
+                  }}>
+                  <span className="pulse-dot" />
+                  {liveRun.agent_letter}·auto working · {elapsedShort(liveRun.started_at || liveRun.requested_at)}
+                </span>
+              )}
             </div>
             <div ref={feedRef} style={{ flex: 1, overflowY: 'auto', padding: '8px 12px' }}>
               {thread.length === 0 &&
                 <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>No activity yet.</div>}
               {thread.map((cm) => cm.author === 'system' ? (
-                <div key={cm.id} style={{ fontSize: 11.5, color: 'var(--text-tertiary)', fontStyle: 'italic', margin: '6px 0', display: 'flex', gap: 6, alignItems: 'baseline' }}>
+                <div key={cm.id} className="cm-in" style={{ fontSize: 11.5, color: 'var(--text-tertiary)', fontStyle: 'italic', margin: '6px 0', display: 'flex', gap: 6, alignItems: 'baseline' }}>
                   <RoleChip role="system" title="system" />
                   <span>{cm.body} · {relTime(cm.created_at)}</span>
                 </div>
               ) : (
-                <div key={cm.id} style={{ fontSize: 13, margin: '8px 0', paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
+                <div key={cm.id} className="cm-in" style={{ fontSize: 13, margin: '8px 0', paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
                   <RoleChip role={cm.author} title={cm.author} />
                   <span style={{ color: 'var(--text-tertiary)', fontSize: 11, marginLeft: 6 }}>{relTime(cm.created_at)}</span>
-                  <div style={{ marginTop: 2, whiteSpace: 'pre-wrap' }}>{cm.body}</div>
+                  <div style={{ marginTop: 2 }}><Md text={cm.body} /></div>
                 </div>
               ))}
             </div>
@@ -566,7 +604,10 @@ export default function TaskDetailModal({
                 onChange={(e) => setDraftComment(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && postComment()} />
               <button style={{ ...input, cursor: 'pointer', background: 'var(--blue)', color: '#fff' }}
-                onClick={postComment}>Comment</button>
+                onClick={() => postComment()}>Comment</button>
+              <button style={{ ...input, cursor: 'pointer', borderColor: '#7c5cff', color: '#7c5cff', fontWeight: 600, whiteSpace: 'nowrap' }}
+                title="post with an @M marker — M's board-watcher answers in this thread"
+                onClick={() => postComment('@M ')}>🤖 Ask AI</button>
             </div>
           </div>
         </div>
