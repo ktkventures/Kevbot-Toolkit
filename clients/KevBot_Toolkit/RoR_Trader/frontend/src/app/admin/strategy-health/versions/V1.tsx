@@ -660,10 +660,6 @@ export default function StrategyHealthV1() {
                 <Th onClick={() => toggleSort('trades')}    label={`Trades${arrow('trades')}`} align="right" />
                 <Th onClick={() => toggleSort('combined')}  label={`Combined %${arrow('combined')}`} align="right" />
                 <Th onClick={() => toggleSort('last10')}    label={`Last 10${arrow('last10')}`} align="right" />
-                <th style={{ padding: '6px 8px', fontWeight: 500 }}
-                    title="Per-strategy notes (humans + nightly writers) — click to read/add.">
-                  Notes
-                </th>
                 <Th onClick={() => toggleSort('paired')}    label={`Paired ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('paired')}`} align="right" />
                 <Th onClick={() => toggleSort('phantom')}   label={`Phantom ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('phantom')}`} align="right" />
                 <Th onClick={() => toggleSort('missed')}    label={`Missed ${mode === 'custom' ? 'range' : windowLabel(windowHours)}${arrow('missed')}`} align="right" />
@@ -672,7 +668,10 @@ export default function StrategyHealthV1() {
                     title="Snapshot subscription. ON = data-worker maintains a backtest snapshot. OFF = strategy is parked in the snapshot lane (alerts unaffected).">
                   Sub
                 </th>
-                <Th onClick={() => toggleSort('flags')}     label={`Flags${arrow('flags')}`} />
+                <th style={{ padding: '6px 8px', fontWeight: 500 }}
+                    title="Row context: notes (humans + nightly writers) and open board tasks affecting this sid.">
+                  Context
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -706,23 +705,6 @@ export default function StrategyHealthV1() {
                       sid {r.strategy_id} · {r.direction} · {r.backtest_model || '—'}
                       {r.forward_testing ? ' · fwd' : ''}
                     </div>
-                    {rowBugs.length > 0 && (
-                      <div style={{ marginTop: 2 }}>
-                        {rowBugs.map((t) => (
-                          <a key={t.id} href={`/admin/tasks?task=${t.id}`}
-                             target="_blank" rel="noopener noreferrer"
-                             title={t.title}
-                             style={{
-                               display: 'inline-block', padding: '0 6px',
-                               borderRadius: 8, fontSize: 10.5, marginRight: 4,
-                               border: '1px solid #ef5350', color: '#ef5350',
-                               textDecoration: 'none', whiteSpace: 'nowrap',
-                             }}>
-                            🐛 #{t.id}
-                          </a>
-                        ))}
-                      </div>
-                    )}
                   </td>
                   <td style={{ padding: '6px 8px', fontVariantNumeric: 'tabular-nums' }}>
                     {r.symbol || '—'}
@@ -831,18 +813,6 @@ export default function StrategyHealthV1() {
                           {l10!.points}/{l10!.denom}
                         </button>}
                   </td>
-                  <td style={{ padding: '6px 8px', textAlign: 'right' }}>
-                    <button
-                      onClick={() => setNotesSid({
-                        sid: r.strategy_id,
-                        name: r.name || `sid ${r.strategy_id}` })}
-                      title="strategy notes — click to read/add"
-                      style={{ background: 'transparent', border: 'none',
-                               cursor: 'pointer', padding: 0, fontSize: 12.5,
-                               color: noteCount > 0 ? 'var(--text)' : 'var(--text-muted)' }}>
-                      📝{noteCount > 0 ? ` ${noteCount}` : ''}
-                    </button>
-                  </td>
                   <td style={{ padding: '6px 8px', textAlign: 'right',
                                fontVariantNumeric: 'tabular-nums',
                                color: r.paired_count_cov > 0
@@ -893,16 +863,35 @@ export default function StrategyHealthV1() {
                       {r.snapshot_subscribe_enabled ? 'ON' : 'OFF'}
                     </button>
                   </td>
-                  <td style={{ padding: '6px 8px' }}>
-                    {r.red_flags.length === 0 ? (
-                      <span style={flagChipStyle('gray')}>ok</span>
-                    ) : (
-                      r.red_flags.map(f => (
-                        <span key={f} style={flagChipStyle(FLAG_TONE[f])}>
-                          {FLAG_LABEL[f]}
-                        </span>
-                      ))
-                    )}
+                  {/* Context (Kevin 07-25): replaces the Flags chip column —
+                       flag data still drives the summary/filter chips up top.
+                       📝 notes on top, open affecting-task chips beneath. */}
+                  <td style={{ padding: '6px 8px', verticalAlign: 'top' }}>
+                    <button
+                      onClick={() => setNotesSid({
+                        sid: r.strategy_id,
+                        name: r.name || `sid ${r.strategy_id}` })}
+                      title="strategy notes — click to read/add"
+                      style={{ background: 'transparent', border: 'none',
+                               cursor: 'pointer', padding: 0, fontSize: 12.5,
+                               display: 'block',
+                               color: noteCount > 0 ? 'var(--text)' : 'var(--text-muted)' }}>
+                      📝{noteCount > 0 ? ` ${noteCount}` : ''}
+                    </button>
+                    {rowBugs.map((t) => (
+                      <a key={t.id} href={`/admin/tasks?task=${t.id}`}
+                         target="_blank" rel="noopener noreferrer"
+                         title={t.title}
+                         style={{
+                           display: 'block', width: 'fit-content',
+                           padding: '0 6px', borderRadius: 8, fontSize: 10.5,
+                           marginTop: 3, border: '1px solid #ef5350',
+                           color: '#ef5350', textDecoration: 'none',
+                           whiteSpace: 'nowrap',
+                         }}>
+                        🐛 #{t.id}
+                      </a>
+                    ))}
                   </td>
                 </tr>
                 );

@@ -9,8 +9,18 @@ Pairing semantics are a VERBATIM port of `_pair_phantom_missed`'s greedy
 two-pointer walk in routers/strategy_health.py:349 (which is a closure and
 not importable) — sorted edges vs sorted alerts, 1:1, |alert-edge| ≤ tol.
 The only addition is per-edge bookkeeping (WHICH edges paired) so the modal
-can show one row per trade. E reviews these semantics in the PR per the
-task spec; this file never writes and touches no engine paths.
+can show one row per trade.
+
+ALERT TIMESTAMP FIELD (Kevin review 07-25, sid-321 example): alerts are
+paired on their FIRED timestamp (`alerts.timestamp`, the row's real-clock
+arrival — shows the true ~3-4s dispatch lag, matching Chart+Trades on the
+strategy detail page). The theo fields (`fill_ts`/`trigger_ts`) are
+bar-aligned and identical to the backtest edge by construction — pairing on
+them yields uniform 0.0s deltas, which is what this fix removes. ⚠ FOR E'S
+SEMANTICS REVIEW: canonical get_strategy_health pairs on
+fill_ts||trigger_ts (theo) at ±60s default; this endpoint intentionally
+diverges per Kevin's directive that the fired ts is the truth — confirm or
+reconcile at PR review. This file never writes and touches no engine paths.
 """
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -87,7 +97,9 @@ def _score_sid(c, sid: int, tolerance: float,
         ).eq("strategy_id", sid).gte("timestamp", lo).lte("timestamp", hi) \
             .execute().data or []
         for a in al:
-            dt = _parse_iso(a.get("fill_ts") or a.get("trigger_ts"))
+            # Fired ts only — no theo fallback (a silent fallback would
+            # quietly resurrect the 0.0s bug for rows missing `timestamp`).
+            dt = _parse_iso(a.get("timestamp"))
             if dt is not None:
                 alerts_unix.append(dt.timestamp())
 
