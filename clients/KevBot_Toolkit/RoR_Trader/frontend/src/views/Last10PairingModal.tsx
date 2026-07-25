@@ -70,7 +70,7 @@ export default function Last10PairingModal({ sid, name, onClose }: {
         <div style={panelHead}>
           <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             Last-10 pairing · sid {sid} — {name}
-            {detail && <> · fired {detail.points}/{detail.denom} · theo {detail.points_theo}/{detail.denom} @ ±{detail.tolerance_seconds}s</>}
+            {detail && <> · fired {detail.points}/{detail.denom} · theo {detail.points_theo ?? '—'}/{detail.denom} @ ±{detail.tolerance_seconds}s</>}
           </span>
           {detail && (['fired', 'theo'] as Basis[]).map((b) => (
             <button key={b} onClick={() => setBasis(b)}
@@ -112,19 +112,24 @@ export default function Last10PairingModal({ sid, name, onClose }: {
                 </tr>
               </thead>
               <tbody>
-                {detail.trades.map((t, i) => (
+                {detail.trades.map((t, i) => {
+                  // Shape-tolerant: during frontend/API deploy skew the row
+                  // may lack the per-basis objects — render dashes, never crash.
+                  const side: Partial<BasisSide> = t[basis] ?? {};
+                  return (
                   <tr key={t.trade_id}>
                     <td style={{ ...cell, color: 'var(--text-tertiary)' }}>{i + 1}</td>
                     <td style={cell}>{fmtTs(t.entry_ts)}</td>
-                    <td style={{ ...cell, color: 'var(--text-secondary)' }}>{fmtTs(t[basis].entry_nearest_alert_ts)}</td>
-                    <td style={cell}>{fmtDelta(t[basis].entry_delta_sec)}</td>
-                    <td style={cell}><Mark ok={t[basis].entry_paired} /></td>
+                    <td style={{ ...cell, color: 'var(--text-secondary)' }}>{fmtTs(side.entry_nearest_alert_ts ?? null)}</td>
+                    <td style={cell}>{fmtDelta(side.entry_delta_sec ?? null)}</td>
+                    <td style={cell}><Mark ok={side.entry_paired ?? false} /></td>
                     <td style={cell}>{fmtTs(t.exit_ts)}</td>
-                    <td style={{ ...cell, color: 'var(--text-secondary)' }}>{fmtTs(t[basis].exit_nearest_alert_ts)}</td>
-                    <td style={cell}>{fmtDelta(t[basis].exit_delta_sec)}</td>
-                    <td style={cell}><Mark ok={t[basis].exit_paired} /></td>
+                    <td style={{ ...cell, color: 'var(--text-secondary)' }}>{fmtTs(side.exit_nearest_alert_ts ?? null)}</td>
+                    <td style={cell}>{fmtDelta(side.exit_delta_sec ?? null)}</td>
+                    <td style={cell}><Mark ok={side.exit_paired ?? false} /></td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           )}
