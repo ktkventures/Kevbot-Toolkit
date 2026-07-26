@@ -21,9 +21,10 @@ import Card from '@/components/Card';
 import { apiFetch } from '@/lib/api/client';
 import TaskDetailModal from './TaskDetailModal';
 import {
-  Task, RunRow, STATUSES, AREAS, ASSIGNEES, ORIGINS, STATUS_COLOR, AUTHOR_LS_KEY,
-  COLLAPSED_LS_KEY, NEEDS_REVIEW_TAG, RUN_REQUESTED_TAG, STATUS_DEF, withLegacy,
-  cell, input, badge, tagChip, NextChip, ProgressBar, RunButton,
+  Task, RunRow, AREAS, ASSIGNEES, ORIGINS, STATUS_COLOR, AUTHOR_LS_KEY,
+  COLLAPSED_LS_KEY, RUN_REQUESTED_TAG, STATUS_DEF, STATUSES, withLegacy,
+  statusOptionsFor, cell, input, badge, tagChip, NextChip, ProgressBar, RunButton,
+  RETIRED_TAGS, StampButtons, TwoTouchChip, ImpactSelect, defaultChain,
 } from './taskBoardShared';
 
 export default function AdminTasksPage() {
@@ -34,7 +35,10 @@ export default function AdminTasksPage() {
   const [hideDone, setHideDone] = useState(false);
   const [liveOnly, setLiveOnly] = useState(false);
   const [areaFilter, setAreaFilter] = useState('');
+  // reviewOnly = status Review (board #136 — replaces the needs-review tag);
+  // awaitingOk = Kevin's inbox preset (status Approval; vision rows exempt).
   const [reviewOnly, setReviewOnly] = useState(false);
+  const [awaitingOk, setAwaitingOk] = useState(false);
   // Column sort applies to the FLAT view only — the grouped view's order IS
   // the pipeline (priority within vision), so it stays fixed.
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
@@ -140,10 +144,12 @@ export default function AdminTasksPage() {
   };
   const createTask = async () => {
     if (!nt.title.trim()) return;
-    // No parent selected = a new vision item (auto-tagged); subtasks carry origin.
+    // No parent selected = a new vision item (auto-tagged); subtasks carry
+    // origin and auto-populate the default 4-step process chain (board #134
+    // item 2 — editable afterward; visions pipeline via subtasks instead).
     const body = nt.parent_id == null
       ? { ...nt, parent_id: null, tags: ['vision'] }
-      : { ...nt };
+      : { ...nt, checklist: defaultChain(nt.assignee) };
     try {
       await apiFetch('/api/dev-tasks', { method: 'POST', body: JSON.stringify(body) });
       setNt({ ...nt, title: '' }); load();
@@ -166,13 +172,6 @@ export default function AdminTasksPage() {
     titleRef.current?.focus();
   };
 
-  const matches = (t: Task) =>
-    (!hideDone || t.status !== 'Done') &&
-    (!liveOnly || t.impacts_live) &&
-    (!reviewOnly || (t.tags || []).includes(NEEDS_REVIEW_TAG)) &&
-    (!areaFilter || t.area === areaFilter) &&
-    (!assigneeFilter || (t.assignee || '') === assigneeFilter);
-
   const byParent = useMemo(() => {
     const m = new Map<number, Task[]>();
     tasks.forEach((t) => {
@@ -180,6 +179,20 @@ export default function AdminTasksPage() {
     });
     return m;
   }, [tasks]);
+
+  // Vision rows are EXEMPT from the Approval/Review/Staged pipeline (board
+  // #136) — they track via their subtasks. Tagged vision OR has subtasks
+  // (pre-tag data still groups correctly).
+  const isVision = (t: Task) =>
+    (t.tags || []).includes('vision') || byParent.has(t.id);
+
+  const matches = (t: Task) =>
+    (!hideDone || t.status !== 'Done') &&
+    (!liveOnly || t.impacts_live) &&
+    (!reviewOnly || t.status === 'Review') &&
+    (!awaitingOk || (t.status === 'Approval' && !isVision(t))) &&
+    (!areaFilter || t.area === areaFilter) &&
+    (!assigneeFilter || (t.assignee || '') === assigneeFilter);
 
   // A "vision item" is top-level and tagged vision — or already has subtasks
   // (so pre-tag data still groups correctly).
@@ -201,15 +214,39 @@ export default function AdminTasksPage() {
 
   const visible = useMemo(() => tasks.filter(matches),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tasks, hideDone, liveOnly, reviewOnly, areaFilter, assigneeFilter]);
+    [tasks, hideDone, liveOnly, reviewOnly, awaitingOk, areaFilter, assigneeFilter]);
 
-  const needsReview = (t: Task) => (t.tags || []).includes(NEEDS_REVIEW_TAG);
-  const toggleReview = (t: Task) => {
-    const tags = needsReview(t)
-      ? (t.tags || []).filter((x) => x !== NEEDS_REVIEW_TAG)
-      : [...(t.tags || []), NEEDS_REVIEW_TAG];
-    patch(t.id, { tags });
+  // Approval stamps (board #136): POST /stamp flips Approval → Todo, sets
+  // kevin_final per mode, and logs the system comment server-side.
+  const stamp = async (id: number, mode: 'delegate' | 'final') => {
+    try {
+      await apiFetch(`/api/dev-tasks/${id}/stamp`, {
+        method: 'POST', body: JSON.stringify({ mode, author: commentAuthor }),
+      });
+    } catch (e) { setErr(String(e)); }
+    load();
   };
+
+  // Default-chain backfill (board #134 item 2): open LEAF tasks (not vision,
+  // no subtasks) with an empty checklist get the universal 4-step chain.
+  const chainless = useMemo(() => tasks.filter((t) =>
+    t.status !== 'Done' && (t.checklist || []).length === 0 &&
+    !((t.tags || []).includes('vision') || byParent.has(t.id))), [tasks, byParent]);
+  const backfillChains = async () => {
+    if (chainless.length === 0) return;
+    if (!confirm(`Add the default 4-step process chain (Build → M review → Kevin approval → Ship) to ${chainless.length} open task(s) without one?`)) return;
+    try {
+      await Promise.all(chainless.map((t) => apiFetch(`/api/dev-tasks/${t.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ checklist: defaultChain(t.assignee), actor: commentAuthor }),
+      })));
+    } catch (e) { setErr(String(e)); }
+    load();
+  };
+
+  // Board-side half of the modal's ~7s liveness poll (board #134 item 5):
+  // run/needs-review chips refresh on the same tick, no page reload.
+  const pollRefresh = useCallback(() => { load(); loadRuns(); }, [load, loadRuns]);
 
   const sortedVisible = useMemo(() => {
     if (!sort) return visible;
@@ -248,11 +285,13 @@ export default function AdminTasksPage() {
 
   const TagChips = ({ t }: { t: Task }) => (
     <>
-      {(t.tags || []).includes(NEEDS_REVIEW_TAG) &&
-        <span style={{ ...tagChip, borderColor: 'var(--amber, #d98c00)', color: 'var(--amber, #d98c00)', fontWeight: 700 }}
-          title="finished — waiting on human review">👀 review</span>}
-      {/* run-requested renders as the Run button's ⏳ state, not a raw chip */}
-      {(t.tags || []).filter((tag) => tag !== NEEDS_REVIEW_TAG && tag !== RUN_REQUESTED_TAG).map((tag) => (
+      {/* two-touch marker (board #136) — set by the Approval stamps */}
+      <TwoTouchChip t={t} />
+      {/* run-requested renders as the Run button's ⏳ state, not a raw chip;
+          RETIRED_TAGS (needs-review / needs-approval / kevin-ok) stay hidden
+          until M's one-time post-ship tag migration deletes them */}
+      {(t.tags || []).filter((tag) =>
+        tag !== RUN_REQUESTED_TAG && !RETIRED_TAGS.includes(tag)).map((tag) => (
         <span key={tag} style={tagChip}>{tag}</span>
       ))}
     </>
@@ -291,6 +330,9 @@ export default function AdminTasksPage() {
           <span style={{ ...tagChip, marginLeft: 6 }} title="subtask of this vision item">↳ #{t.parent_id}</span>}
         <TagChips t={t} />
         <NextChip t={t} subtasks={byParent.get(t.id) || []} />
+        {/* Approval-stage stamp buttons (board #136) — Kevin's two-touch
+            choice, right in the row so the Awaiting-my-OK view is one-click */}
+        <StampButtons t={t} onStamp={stamp} compact />
         {rollup && <span style={{ marginLeft: 6 }}><ProgressBar done={rollup.done} total={rollup.total} mini /></span>}
         {(t.blocked_by?.length > 0) && <span style={{ color: 'var(--red)', fontSize: 11 }}> ⛔{t.blocked_by.join(',')}</span>}
         {rollup && (
@@ -303,8 +345,13 @@ export default function AdminTasksPage() {
         <select style={{ ...input, color: STATUS_COLOR[t.status] }} value={t.status}
           title={STATUS_DEF[t.status] || ''}
           onChange={(e) => patch(t.id, { status: e.target.value })}>
-          {STATUSES.map((s) => <option key={s} value={s} title={STATUS_DEF[s]}>{s}</option>)}
+          {statusOptionsFor(t, isVision(t)).map((s) =>
+            <option key={s} value={s} title={STATUS_DEF[s]}>{s}</option>)}
         </select>
+      </td>
+      <td style={cell}>
+        {/* blast-radius chip (board #136) — prominent in the Approval view */}
+        <ImpactSelect t={t} onPick={(v) => patch(t.id, { impact: v })} compact />
       </td>
       <td style={cell}>
         {t.impacts_live && <span style={badge('var(--red)')} title="touches live engine/trading code — deploy carefully">🔴 live</span>}
@@ -313,10 +360,6 @@ export default function AdminTasksPage() {
           : <span style={badge('#2e7d32')} title="fully validatable offline — safe to work now">🟢 offline-ok</span>)}
         <span style={{ cursor: 'pointer' }} title="toggle urgent" onClick={() => patch(t.id, { is_urgent: !t.is_urgent })}>
           {t.is_urgent ? <span style={badge('#b00')}>⚡ urgent</span> : <span style={{ opacity: 0.3 }}>⚡</span>}
-        </span>
-        <span style={{ cursor: 'pointer', marginLeft: 4 }} title="toggle needs-review (finished — waiting on human review)"
-          onClick={() => toggleReview(t)}>
-          {needsReview(t) ? <span style={badge('#a06800')}>👀 review</span> : <span style={{ opacity: 0.3 }}>👀</span>}
         </span>
       </td>
       <td style={cell}>
@@ -354,7 +397,7 @@ export default function AdminTasksPage() {
     if (shownLoose.length > 0) {
       groupedRows.push(
         <tr key="loose-header">
-          <td colSpan={9} style={{ ...cell, color: 'var(--text-tertiary)', fontSize: 11, paddingTop: 14 }}>
+          <td colSpan={10} style={{ ...cell, color: 'var(--text-tertiary)', fontSize: 11, paddingTop: 14 }}>
             ungrouped — tasks without a vision parent
           </td>
         </tr>);
@@ -366,10 +409,13 @@ export default function AdminTasksPage() {
     <div style={{ padding: 20, maxWidth: 1500, margin: '0 auto' }}>
       <h1 style={{ fontSize: 22, marginBottom: 4 }}>Dev Task Tracker</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
-        {openCount} open · {liveCount} touch live · sorted by priority (phase.seq, 1.1 first). Legend:
+        {openCount} open · {liveCount} touch live · sorted by priority (phase.seq, 1.1 first). Pipeline:
+        Backlog → Scoping → Approval → Todo → In Progress → Review → Staged → Done (Blocked = exception;
+        vision rows exempt). Legend:
         🟢 offline-ok = fully validatable now (safe to work); ⏳ = needs live-market data to confirm;
         🔴 = touches live engine/trading code (deploy carefully); ⚡ = urgent (a tag, not a priority);
-        🔍 = discovered mid-work (rabbit-hole fix, parented under its vision item).
+        🔍 = discovered mid-work (rabbit-hole fix, parented under its vision item);
+        🔏 = two-touch (Kevin reviews before Done); Impact = blast radius (contained | app | engine | live).
       </p>
 
       {err && <Card><div style={{ color: 'var(--red)', fontSize: 13 }}>⚠ {err}</div></Card>}
@@ -421,9 +467,17 @@ export default function AdminTasksPage() {
             <button style={{ ...input, cursor: 'pointer', marginLeft: 4, fontWeight: view === 'flat' ? 700 : 400, background: view === 'flat' ? 'var(--bg-input)' : 'transparent' }}
               onClick={() => setView('flat')}>Flat</button>
           </span>
+          <button style={{
+            ...input, cursor: 'pointer', fontWeight: awaitingOk ? 700 : 400, color: '#c9a227',
+            borderColor: awaitingOk ? '#c9a227' : 'var(--border)',
+          }}
+            title="Kevin's inbox — tasks sitting in Approval awaiting a stamp (vision rows are exempt from the pipeline)"
+            onClick={() => setAwaitingOk(!awaitingOk)}>
+            ✋ Awaiting my OK ({tasks.filter((t) => t.status === 'Approval' && !isVision(t)).length})</button>
           <label><input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} /> hide Done</label>
           <label><input type="checkbox" checked={liveOnly} onChange={(e) => setLiveOnly(e.target.checked)} /> 🔴 live only</label>
-          <label><input type="checkbox" checked={reviewOnly} onChange={(e) => setReviewOnly(e.target.checked)} /> 👀 needs review</label>
+          <label title="tasks sitting in the Review stage (replaces the needs-review tag)">
+            <input type="checkbox" checked={reviewOnly} onChange={(e) => setReviewOnly(e.target.checked)} /> 👀 in Review</label>
           <span>area: <select style={input} value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)}>
             <option value="">all</option>{AREAS.map((a) => <option key={a} value={a}>{a}</option>)}
           </select></span>
@@ -431,6 +485,11 @@ export default function AdminTasksPage() {
             <option value="">all</option>{assigneeOptions.map((a) => <option key={a} value={a}>{a}</option>)}
           </select></span>
           <button style={{ ...input, cursor: 'pointer' }} onClick={load}>↻ refresh</button>
+          {chainless.length > 0 && (
+            <button style={{ ...input, cursor: 'pointer' }} onClick={backfillChains}
+              title="backfill the default 4-step process chain (Build/investigate → M review → Kevin approval where flagged → Ship/close) onto open tasks that have none">
+              ⛓ add default chain ({chainless.length})</button>
+          )}
         </div>
       </Card>
 
@@ -445,7 +504,8 @@ export default function AdminTasksPage() {
                     <th style={{ ...cell, width: 96, cursor: 'pointer' }} title="sort" onClick={() => clickSort('pri')}>Pri{sortMark('pri')}</th>
                     <th style={{ ...cell, cursor: 'pointer' }} title="sort" onClick={() => clickSort('title')}>Task{sortMark('title')}</th>
                     <th style={{ ...cell, width: 130, cursor: 'pointer' }} title="sort" onClick={() => clickSort('status')}>Status{sortMark('status')}</th>
-                    <th style={{ ...cell, width: 200 }}>Flags</th>
+                    <th style={{ ...cell, width: 92 }} title="blast radius: contained | app | engine | live (M-editable)">Impact</th>
+                    <th style={{ ...cell, width: 170 }}>Flags</th>
                     <th style={{ ...cell, width: 110, cursor: 'pointer' }} title="sort" onClick={() => clickSort('area')}>Area{sortMark('area')}</th>
                     <th style={{ ...cell, width: 100, cursor: 'pointer' }} title="sort" onClick={() => clickSort('who')}>Who{sortMark('who')}</th>
                     <th style={{ ...cell, width: 78 }} title="dispatch this task to its agent (local dispatcher)">Run</th>
@@ -454,7 +514,8 @@ export default function AdminTasksPage() {
                 ) : (
                   <>
                     <th style={{ ...cell, width: 44 }}>ID</th><th style={{ ...cell, width: 96 }}>Pri</th><th style={cell}>Task</th><th style={{ ...cell, width: 130 }}>Status</th>
-                    <th style={{ ...cell, width: 200 }}>Flags</th><th style={{ ...cell, width: 110 }}>Area</th><th style={{ ...cell, width: 100 }}>Who</th>
+                    <th style={{ ...cell, width: 92 }} title="blast radius: contained | app | engine | live (M-editable)">Impact</th>
+                    <th style={{ ...cell, width: 170 }}>Flags</th><th style={{ ...cell, width: 110 }}>Area</th><th style={{ ...cell, width: 100 }}>Who</th>
                     <th style={{ ...cell, width: 78 }} title="dispatch this task to its agent (local dispatcher)">Run</th>
                     <th style={{ ...cell, width: 32 }}></th>
                   </>
@@ -466,7 +527,7 @@ export default function AdminTasksPage() {
                 ? sortedVisible.map((t) => <TaskRow key={t.id} t={t} />)
                 : groupedRows}
               {((view === 'flat' && visible.length === 0) || (view === 'grouped' && groupedRows.length === 0)) &&
-                <tr><td colSpan={9} style={{ ...cell, color: 'var(--text-tertiary)' }}>No tasks match the filters.</td></tr>}
+                <tr><td colSpan={10} style={{ ...cell, color: 'var(--text-tertiary)' }}>No tasks match the filters.</td></tr>}
             </tbody>
           </table>
         </Card>
@@ -481,7 +542,8 @@ export default function AdminTasksPage() {
           onClose={() => setModal(null)}
           onOpenTask={(id, sel) => setModal({ id, sel })}
           commentAuthor={commentAuthor} onPickAuthor={pickAuthor}
-          headless={headless} onRunRequested={() => { load(); loadRuns(); }} />
+          headless={headless} onRunRequested={() => { load(); loadRuns(); }}
+          onPollTick={pollRefresh} />
       )}
     </div>
   );

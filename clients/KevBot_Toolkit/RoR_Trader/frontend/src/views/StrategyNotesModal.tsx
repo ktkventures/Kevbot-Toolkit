@@ -12,6 +12,7 @@ import { apiFetch } from '@/lib/api/client';
 import {
   ASSIGNEES, AUTHOR_LS_KEY, RoleChip, RolePicker, withLegacy, relTime,
 } from './taskBoardShared';
+import { Md, MD_CSS } from './taskMarkdown';
 
 interface Note { id: number; sid: number; author: string; body: string; created_at: string; }
 
@@ -58,6 +59,7 @@ export default function StrategyNotesModal({ sid, name, onClose, onChanged }: {
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 1000,
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '6vh 16px',
     }}>
+      <style>{MD_CSS}</style>
       <div onClick={(e) => e.stopPropagation()} style={{
         background: 'var(--bg-card, var(--bg-input))', border: '1px solid var(--border)',
         borderRadius: 12, width: '90vw', maxWidth: 640, maxHeight: '78vh',
@@ -81,7 +83,7 @@ export default function StrategyNotesModal({ sid, name, onClose, onChanged }: {
             <div key={n.id} style={{ fontSize: 13, margin: '8px 0', paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
               <RoleChip role={n.author} title={n.author} />
               <span style={{ color: 'var(--text-tertiary)', fontSize: 11, marginLeft: 6 }}>{relTime(n.created_at)}</span>
-              <div style={{ marginTop: 2, whiteSpace: 'pre-wrap' }}>{n.body}</div>
+              <div style={{ marginTop: 2 }}><Md text={n.body} /></div>
             </div>
           ))}
         </div>
