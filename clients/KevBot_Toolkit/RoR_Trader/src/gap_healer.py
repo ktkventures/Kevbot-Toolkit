@@ -30,6 +30,11 @@ Feature flags:
   no redeploy needed beyond Railway's env-change restart).
 - GAP_HEAL_FORCE_DISABLED module constant — one-flip code rollback
   (same pattern as ralph_engine.BAR_GAP_FILL_ENABLED).
+- GAP_HEAL_SKIP_WHEN_CLOSED env — default OFF (board #140/#15/#51). When
+  ON, skips detect+sweep outside the extended-hours session (weekend /
+  overnight / market holiday) where every window is tradeless — kills the
+  weekend/after-hours empty-window re-confirmation noise + load. OFF ==
+  pre-#140 always-sweep behavior. Uses market_calendar (fail-safe OPEN).
 """
 from __future__ import annotations
 
@@ -88,6 +93,43 @@ def is_enabled() -> bool:
     if val in ("0", "false", "no", "off"):
         return False
     return True  # default ON
+
+
+def skip_when_closed_enabled() -> bool:
+    """Board #140 (#15 + #51): when ON, the healer skips detect/sweep
+    outside the extended-hours session (weekend, overnight, and market
+    HOLIDAYS). Default OFF → OFF == pre-#140 behavior (always sweep).
+
+    Rationale: with the market closed every window is genuinely tradeless
+    (no trades == everything looks like a gap), so the sweeper's REST
+    re-confirmation heals nothing — it only floods logs and sustains
+    REST/Supabase load (~48 sweep/detect events per 30s on weekends).
+    Real WS-missed bars only occur during a live session, which this gate
+    never touches. Outcome-equivalent, hence a pure log/load-hygiene win."""
+    return os.environ.get(
+        "GAP_HEAL_SKIP_WHEN_CLOSED", "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+# Throttle the "idling — market closed" log so a 120s sweeper doesn't
+# reprint it every cycle overnight/on weekends (would defeat the purpose).
+_CLOSED_LOG_THROTTLE_S = 1800.0
+_closed_log_last = {"mono": 0.0}
+
+
+def _market_is_closed() -> bool:
+    """True when the skip-when-closed flag is armed AND there is no active
+    trading session. Fail-safe: any error (e.g. calendar import) → False,
+    so the healer keeps its current always-on behavior."""
+    if not skip_when_closed_enabled():
+        return False
+    try:
+        import market_calendar
+        return market_calendar.is_market_closed()
+    except Exception as e:  # noqa: BLE001 — never break the healer on this
+        logger.warning("gap_heal: market-closed check failed (%s) — "
+                       "proceeding as OPEN", e)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +329,10 @@ def queue_heal(symbol: str, tf_seconds: int, missing_bar_starts: list,
         return 0
     if not missing_bar_starts:
         return 0
+    # Board #140: skip empty-window re-confirmation when the market is
+    # closed (weekend / overnight / holiday) — nothing to heal there.
+    if _market_is_closed():
+        return 0
 
     now = datetime.now(timezone.utc)
     accepted: list = []
@@ -476,6 +522,18 @@ def sweep_gaps(max_per_sweep: int = None) -> int:
     """One sweeper cycle: ask the engine for current gap candidates and
     queue heals, capped. Returns windows queued."""
     if not is_enabled() or _scan_provider is None:
+        return 0
+    # Board #140 (#51): outside a live session every window is tradeless,
+    # so skip the whole scan+heal cycle — the biggest weekend/after-hours
+    # log/REST/Supabase-load source. Throttled breadcrumb so operators can
+    # tell "idling on purpose" from "sweeper wedged".
+    if _market_is_closed():
+        nowm = time.monotonic()
+        if nowm - _closed_log_last["mono"] >= _CLOSED_LOG_THROTTLE_S:
+            _closed_log_last["mono"] = nowm
+            logger.info("gap_heal: sweep idle — market closed "
+                        "(weekend/overnight/holiday), skipping empty-window "
+                        "re-confirmation")
         return 0
     cap = max_per_sweep or GAP_HEAL_MAX_PER_SWEEP
     queued = 0
