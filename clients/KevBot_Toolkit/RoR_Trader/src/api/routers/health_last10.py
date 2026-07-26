@@ -5,6 +5,18 @@ COMPLETED backtest-lane trades, score 1 point per entry and per exit that
 pairs to a live ALERT within ±tolerance (default 10s) → n/20 (denominator
 shrinks to 2k when fewer than 10 completed trades exist).
 
+THREE PAIRING BASES (all from the SAME backtest edges, same greedy walk):
+  - `fired` (points)       — pair vs alert FIRED ts (`alerts.timestamp`); the
+                             default column basis, real-clock dispatch truth.
+  - `theo`  (points_theo)  — pair vs bar-aligned `fill_ts||trigger_ts`.
+  - `algo`  (points_algo)  — board #119 (Kevin 07-25): pair vs the ALGO-LANE
+                             trades (`trades` rows, `data_source LIKE 'cache_%'`
+                             — what the live algo ENGINE actually computed),
+                             NOT alerts. This is LOGIC-would-fire evidence,
+                             never delivery evidence. Diagnostic read:
+                             algo-high + fired-low = delivery/ops loss;
+                             algo-low = logic/state divergence.
+
 Pairing semantics are a VERBATIM port of `_pair_phantom_missed`'s greedy
 two-pointer walk in routers/strategy_health.py:349 (which is a closure and
 not importable) — sorted edges vs sorted alerts, 1:1, |alert-edge| ≤ tol.
@@ -33,6 +45,9 @@ router = APIRouter(prefix="/api/strategy-health-last10", tags=["strategy-health"
 
 _TOL_DEFAULT = 10.0
 _ALERT_PAD_SEC = 3600  # bracket the alert query 1h around the edges — light read
+# The three pairing bases scored per strategy (see module docstring). 'fired'
+# stays first — it backs the default column + the `points` field.
+_BASES = ("fired", "theo", "algo")
 
 
 def _admin():
@@ -91,19 +106,24 @@ def _score_sid(c, sid: int, tolerance: float,
                 edge_pos[(idx, kind)] = len(edges)
                 edges.append((dt.timestamp(), idx, kind))
 
-    # BOTH timestamp bases from ONE alert fetch (item 4): 'fired' =
+    # TWO of the three bases come from ONE alert fetch (item 4): 'fired' =
     # alerts.timestamp (real-clock arrival — what we execute on, the list
     # column + default basis); 'theo' = fill_ts||trigger_ts (bar-aligned,
     # canonical get_strategy_health's field). The GAP between the two
     # scores is the diagnostic: high-theo/low-fired = dispatch latency,
-    # low/low = logic-existence, high/high = healthy.
-    basis_alerts: Dict[str, List[float]] = {"fired": [], "theo": []}
+    # low/low = logic-existence, high/high = healthy. The third basis,
+    # 'algo', comes from a separate algo-lane trades fetch (#119, below).
+    # basis_alerts[b] holds the unix timestamps we pair the BT edges against
+    # for basis b. 'fired'/'theo' come from the alerts table; 'algo' comes
+    # from the algo-lane trades table (#119) — despite the variable name, the
+    # 'algo' list is trade edges, not alerts.
+    basis_alerts: Dict[str, List[float]] = {b: [] for b in _BASES}
     if edges:
         import datetime as _dt
-        lo = _dt.datetime.fromtimestamp(min(e[0] for e in edges) - _ALERT_PAD_SEC,
-                                        _dt.timezone.utc).isoformat()
-        hi = _dt.datetime.fromtimestamp(max(e[0] for e in edges) + _ALERT_PAD_SEC,
-                                        _dt.timezone.utc).isoformat()
+        lo_u = min(e[0] for e in edges) - _ALERT_PAD_SEC
+        hi_u = max(e[0] for e in edges) + _ALERT_PAD_SEC
+        lo = _dt.datetime.fromtimestamp(lo_u, _dt.timezone.utc).isoformat()
+        hi = _dt.datetime.fromtimestamp(hi_u, _dt.timezone.utc).isoformat()
         al = c.table("alerts").select(
             "strategy_id,fill_ts,trigger_ts,event_type,timestamp"
         ).eq("strategy_id", sid).gte("timestamp", lo).lte("timestamp", hi) \
@@ -118,18 +138,39 @@ def _score_sid(c, sid: int, tolerance: float,
             if dth is not None:
                 basis_alerts["theo"].append(dth.timestamp())
 
+        # ALGO basis (#119): pair BT edges against the ALGO-LANE trades
+        # (`data_source LIKE 'cache_%'` — what the live algo engine actually
+        # produced), NOT alerts. Flatten each algo trade's entry+exit into
+        # individual edge events, windowed to the same ±1h bracket. LOGIC-
+        # would-fire evidence, never delivery. DB-filter on entry_fill_ts (so
+        # still-open algo trades' entries count too, mirroring how entry
+        # alerts count for open positions); the per-edge unix guard keeps
+        # exit edges inside the same window the alert basis uses. One extra
+        # light read per sid.
+        alg = c.table("trades").select(
+            "entry_fill_ts,exit_fill_ts"
+        ).eq("strategy_id", sid).like("data_source", "cache_%") \
+            .gte("entry_fill_ts", lo).lte("entry_fill_ts", hi) \
+            .execute().data or []
+        for t in alg:
+            for kind in ("entry", "exit"):
+                de = _parse_iso(t.get(f"{kind}_fill_ts"))
+                if de is not None and lo_u <= de.timestamp() <= hi_u:
+                    basis_alerts["algo"].append(de.timestamp())
+
     edge_ts = [e[0] for e in edges]
     # paired[b] holds indices into `edges` (board #122 — index-keyed so
     # duplicate edge timestamps count as separate pairing slots).
     paired = {b: _greedy_pair(edge_ts, basis_alerts[b], tolerance)
-              for b in ("fired", "theo")}
-    points = {b: len(paired[b]) for b in ("fired", "theo")}
+              for b in _BASES}
+    points = {b: len(paired[b]) for b in _BASES}
     denom = 2 * len(trades)
 
     out: Dict[str, Any] = {
         "strategy_id": sid, "points": points["fired"],
-        "points_theo": points["theo"], "denom": denom,
-        "trade_count": len(trades), "tolerance_seconds": tolerance,
+        "points_theo": points["theo"], "points_algo": points["algo"],
+        "denom": denom, "trade_count": len(trades),
+        "tolerance_seconds": tolerance,
     }
     if want_detail:
         import datetime as _dt
@@ -148,7 +189,7 @@ def _score_sid(c, sid: int, tolerance: float,
             return None if u is None else _dt.datetime.fromtimestamp(
                 u, _dt.timezone.utc).isoformat()
 
-        sorted_alerts = {b: sorted(basis_alerts[b]) for b in ("fired", "theo")}
+        sorted_alerts = {b: sorted(basis_alerts[b]) for b in _BASES}
         rows = []
         for idx, t in enumerate(trades):
             row: Dict[str, Any] = {"trade_id": t.get("id")}
@@ -156,7 +197,7 @@ def _score_sid(c, sid: int, tolerance: float,
                 dt = _parse_iso(t.get(f"{kind}_fill_ts"))
                 u = dt.timestamp() if dt else None
                 row[f"{kind}_ts"] = _fmt(u)
-            for b in ("fired", "theo"):
+            for b in _BASES:
                 bd: Dict[str, Any] = {}
                 for kind in ("entry", "exit"):
                     dt = _parse_iso(t.get(f"{kind}_fill_ts"))
