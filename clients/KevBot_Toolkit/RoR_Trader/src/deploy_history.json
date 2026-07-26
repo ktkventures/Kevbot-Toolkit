@@ -1,8 +1,2619 @@
 {
-  "generated_at": "2026-06-12T07:52:57.803431+00:00",
+  "generated_at": "2026-07-26T03:18:07.962015+00:00",
   "since": "2026-05-28",
-  "count": 134,
+  "ref": "origin/dev",
+  "count": 548,
   "commits": [
+    {
+      "sha": "a476e89",
+      "full_sha": "a476e892185a6288ebc94bd3baf1285d45212905",
+      "timestamp_iso": "2026-07-25T19:38:46-06:00",
+      "subject": "feat(tooling): local-preview SOP + visual-verify screenshot helper (board #107)"
+    },
+    {
+      "sha": "b2480e8",
+      "full_sha": "b2480e89aa35f564c2f8d70c86f0888d23e9615b",
+      "timestamp_iso": "2026-07-25T19:37:31-06:00",
+      "subject": "Merge pull request #82 from ktkventures/feat/admin-roadmap"
+    },
+    {
+      "sha": "31ce039",
+      "full_sha": "31ce0399b9d9e7d08e16a938861a3dfd06dd4650",
+      "timestamp_iso": "2026-07-25T19:37:21-06:00",
+      "subject": "Merge pull request #83 from ktkventures/fix/ci-pytest-synthetic-parity-52"
+    },
+    {
+      "sha": "83d768c",
+      "full_sha": "83d768cda525bce32a406062eeab01011e095e45",
+      "timestamp_iso": "2026-07-25T19:37:15-06:00",
+      "subject": "Merge pull request #85 from ktkventures/feat/dispatch-oneshot-135"
+    },
+    {
+      "sha": "4330272",
+      "full_sha": "433027274d24a129af9cbac562105086df5149f1",
+      "timestamp_iso": "2026-07-25T19:37:09-06:00",
+      "subject": "Merge pull request #84 from ktkventures/chore/doc-path-sweep-104"
+    },
+    {
+      "sha": "43eb800",
+      "full_sha": "43eb80005266636df3f12cde48ad9899615f0a8c",
+      "timestamp_iso": "2026-07-25T19:21:20-06:00",
+      "subject": "fix(ci): keep synthetic-parity job green \u2014 graceful pytest import (board #52)"
+    },
+    {
+      "sha": "54355a1",
+      "full_sha": "54355a1f53311586037db4eefbcc918e87c68d61",
+      "timestamp_iso": "2026-07-25T19:12:08-06:00",
+      "subject": "feat(board): /admin/roadmap \u2014 Kevin's read-only big-picture page (board #139)"
+    },
+    {
+      "sha": "0be0f91",
+      "full_sha": "0be0f91f0f23847eb6c16cc92398f77a724fee05",
+      "timestamp_iso": "2026-07-25T19:07:49-06:00",
+      "subject": "docs(src): V4.4a comment doc-path sweep \u2014 unpin 8 _active docs (22 sites, basename-cite per _archive grep-name rule) + SOP_DEPRECATED repoint (board #104)"
+    },
+    {
+      "sha": "76a38db",
+      "full_sha": "76a38db570e2d927bafb1c8dbbb4877c70f4e584",
+      "timestamp_iso": "2026-07-25T19:04:18-06:00",
+      "subject": "fix(dispatch): prompt ONE-SHOT contract (no background waits) + misc caps as constants (board #135)"
+    },
+    {
+      "sha": "1ebab63",
+      "full_sha": "1ebab63339ad0a46972b9bde04aa3f00fb530c5c",
+      "timestamp_iso": "2026-07-25T18:10:19-06:00",
+      "subject": "docs(deploy-log): train 07-25 entries (cars 1+2, M-as-R under Kevin remote authorization)"
+    },
+    {
+      "sha": "5cce360",
+      "full_sha": "5cce360ce4667aebe7f0678e3efd19079c110080",
+      "timestamp_iso": "2026-07-25T18:06:56-06:00",
+      "subject": "Train 07-25 car 2: board polish + kanban lifecycle (#134/#136)"
+    },
+    {
+      "sha": "8bff755",
+      "full_sha": "8bff755f2c28df637ccaa02fe7c911c7cc53ad0c",
+      "timestamp_iso": "2026-07-25T18:00:11-06:00",
+      "subject": "feat(board): kanban lifecycle \u2014 Approval/Review/Staged, two-touch stamps, impact column (board #136)"
+    },
+    {
+      "sha": "95f9412",
+      "full_sha": "95f94126b6f1c595925afcb00009b96dca1f68a4",
+      "timestamp_iso": "2026-07-25T17:57:55-06:00",
+      "subject": "feat(board): polish round 2 \u2014 markdown-lite, default chain, pre-approve, Ask AI, live activity (board #134)"
+    },
+    {
+      "sha": "c3c8d6c",
+      "full_sha": "c3c8d6c8ff1cf03254ce992caf4c9a869b6f8035",
+      "timestamp_iso": "2026-07-25T17:56:00-06:00",
+      "subject": "Train 07-25 car 1: health nits + dispatcher hardening (#122/#131/#132)"
+    },
+    {
+      "sha": "634f987",
+      "full_sha": "634f987a74959169bdfeefad7a5542ea2cf2084e",
+      "timestamp_iso": "2026-07-25T13:16:18-06:00",
+      "subject": "fix(dispatch): per-lane serialization \u2014 one active run per agent letter (board #132)"
+    },
+    {
+      "sha": "ee98841",
+      "full_sha": "ee98841b53cee3aa43f110f4b1478b6d2167505b",
+      "timestamp_iso": "2026-07-25T12:56:33-06:00",
+      "subject": "fix(dispatch): shakedown fixes \u2014 reachable lease, real kill, lingering-completed reap, flushed loop (board #131)"
+    },
+    {
+      "sha": "f168dc7",
+      "full_sha": "f168dc78dd880936b70bf367151110f1255e7dcd",
+      "timestamp_iso": "2026-07-25T11:41:28-06:00",
+      "subject": "fix(health): index-keyed last-10 pairing + sids-scoped mount fetch (board #122)"
+    },
+    {
+      "sha": "7142faa",
+      "full_sha": "7142faabb37e4cb188568ea3b87ec96ad75f4b7b",
+      "timestamp_iso": "2026-07-25T11:15:56-06:00",
+      "subject": "docs(deploy-log): PR #79 feat/run-button merged to dev (17:04Z 2685c8a0)"
+    },
+    {
+      "sha": "2685c8a",
+      "full_sha": "2685c8a064480ace43cb60da1cf099c10079ba09",
+      "timestamp_iso": "2026-07-25T11:04:56-06:00",
+      "subject": "V4.12 \u00b7 Registry Phase 2: Run button + run history + prompt templates (board #109, PR #79)"
+    },
+    {
+      "sha": "cd237da",
+      "full_sha": "cd237da81a6ad615c0e79336f282687d471356d3",
+      "timestamp_iso": "2026-07-25T10:02:34-06:00",
+      "subject": "fix(dispatch): M review fixes \u2014 refuse Scoping/needs-scoping, reap from full log (board #109)"
+    },
+    {
+      "sha": "f3dde06",
+      "full_sha": "f3dde06a933fd1d91b089c56cd9c8f6849c77dae",
+      "timestamp_iso": "2026-07-24T23:56:31-06:00",
+      "subject": "feat(board-ui): Run button + run history + agents-page Phase 2 editors (board #109)"
+    },
+    {
+      "sha": "7f1e1ee",
+      "full_sha": "7f1e1eee86e1ffbc5ebe8ab49abd77ceabaef6c7",
+      "timestamp_iso": "2026-07-24T23:46:15-06:00",
+      "subject": "feat(dispatch): run-request plumbing \u2014 run_history table+API, run-requested priority-jump in dispatcher (board #109)"
+    },
+    {
+      "sha": "17651e8",
+      "full_sha": "17651e8d3d057abac94bfbe0f0b8d21194f8b0bb",
+      "timestamp_iso": "2026-07-24T23:43:44-06:00",
+      "subject": "chore(dispatcher): track tools/team_dispatcher/dispatcher.py as-is (pre-#109 baseline)"
+    },
+    {
+      "sha": "d9b7d4f",
+      "full_sha": "d9b7d4f7e078c3e53b9659370cb99bf8b0fe45b7",
+      "timestamp_iso": "2026-07-24T23:26:25-06:00",
+      "subject": "docs(deploy-log): PR #78 feat/health-phase-a merged to dev (05:17Z a0785db6)"
+    },
+    {
+      "sha": "a0785db",
+      "full_sha": "a0785db6f10931753df652071c441476ff7db530",
+      "timestamp_iso": "2026-07-24T23:17:27-06:00",
+      "subject": "Merge pull request #78 from ktkventures/feat/health-phase-a"
+    },
+    {
+      "sha": "1b276a5",
+      "full_sha": "1b276a5861f2946b1d4c57871e9982ac675d0d72",
+      "timestamp_iso": "2026-07-24T21:46:50-06:00",
+      "subject": "style(health): Last 10 column moves between Sub and Context (Kevin)"
+    },
+    {
+      "sha": "620e1cf",
+      "full_sha": "620e1cf2d185dca4e11dcc38c559543bec89184a",
+      "timestamp_iso": "2026-07-24T21:46:50-06:00",
+      "subject": "fix(health): last-10 modal survives frontend/API shape skew"
+    },
+    {
+      "sha": "d3f57fd",
+      "full_sha": "d3f57fd22c417c434423c816e69d398abd41350c",
+      "timestamp_iso": "2026-07-24T21:46:50-06:00",
+      "subject": "feat(health): blank unpaired displays + fired/theo dual-basis toggle (Kevin review items 3+4)"
+    },
+    {
+      "sha": "295b2bd",
+      "full_sha": "295b2bdb5143f61f46d800eaa5632abfb9bfba01",
+      "timestamp_iso": "2026-07-24T21:46:50-06:00",
+      "subject": "fix(health): pair last-10 on the alert FIRED ts + Context column replaces Flags (Kevin local review)"
+    },
+    {
+      "sha": "237fd5d",
+      "full_sha": "237fd5de8e45c51a2252176892542a92a4ff8304",
+      "timestamp_iso": "2026-07-24T21:46:50-06:00",
+      "subject": "feat(health): bug chips + strategy-notes canvas (board #70 Phase B)"
+    },
+    {
+      "sha": "efdcc4e",
+      "full_sha": "efdcc4e7710c1113d9ce1981cc9b784869c55a68",
+      "timestamp_iso": "2026-07-24T21:46:50-06:00",
+      "subject": "feat(health): last-10 pairing score + SID column on Strategy Health (board #70 Phase A)"
+    },
+    {
+      "sha": "338a1fb",
+      "full_sha": "338a1fbbb52861161ef9bbd541543f9b1dc539e4",
+      "timestamp_iso": "2026-07-24T21:35:42-06:00",
+      "subject": "docs(deploy-log): 07-25 board-qol merge entry (PR #76 @66ec9ea3, R gates+deploy-watch)"
+    },
+    {
+      "sha": "66ec9ea",
+      "full_sha": "66ec9ea3f995fcf6f49054f8c126e6620f41579e",
+      "timestamp_iso": "2026-07-24T21:26:10-06:00",
+      "subject": "Merge pull request #76 from ktkventures/feat/board-qol"
+    },
+    {
+      "sha": "7221606",
+      "full_sha": "722160646fc1ddf1a541678bac90f625820ba626",
+      "timestamp_iso": "2026-07-24T14:07:55-06:00",
+      "subject": "Merge pull request #77 from ktkventures/feat/nightly-settled-retrue"
+    },
+    {
+      "sha": "2a877e6",
+      "full_sha": "2a877e6887eca29e34e8bb07b78cb54554323756",
+      "timestamp_iso": "2026-07-24T11:14:50-06:00",
+      "subject": "feat(parity): nightly settled-day retrue to kill revision-drift false-reds (board #108/V1.10)"
+    },
+    {
+      "sha": "17e4641",
+      "full_sha": "17e4641a1ec444e4d6b4134d561c2cf1f91f2819",
+      "timestamp_iso": "2026-07-24T10:35:53-06:00",
+      "subject": "feat(admin-ui): Scoping status + definition tooltips + all-tag row chips (board #106 reopen)"
+    },
+    {
+      "sha": "6a0126f",
+      "full_sha": "6a0126fc001b906176bf2c2a90e3044c55fa1e0b",
+      "timestamp_iso": "2026-07-23T15:25:24-06:00",
+      "subject": "feat(admin-ui): board QoL \u2014 needs-review chip/filter/toggle, sortable flat columns, ?task= deep links (board #106)"
+    },
+    {
+      "sha": "4e52285",
+      "full_sha": "4e52285023d36c1a3b84c6f802f8dbf4b680da75",
+      "timestamp_iso": "2026-07-23T14:48:24-06:00",
+      "subject": "docs: V4.4 archive pass (phase 2b) \u2014 5 closed docs \u2192 docs/_archive via git mv, basenames preserved; INDEX.md added (board #79/#105)"
+    },
+    {
+      "sha": "f8a7709",
+      "full_sha": "f8a77096ec62fbb88e79744d5add90081bae5e04",
+      "timestamp_iso": "2026-07-23T14:47:17-06:00",
+      "subject": "docs(deploy-log): 07-23 agents-registry merge entry (PR #74 @9a45898, R gates+deploy-watch)"
+    },
+    {
+      "sha": "9a45898",
+      "full_sha": "9a45898af3ca71552815deb90e395c195af128f7",
+      "timestamp_iso": "2026-07-23T14:41:00-06:00",
+      "subject": "Merge pull request #74 from ktkventures/feat/agents-registry"
+    },
+    {
+      "sha": "fde9d28",
+      "full_sha": "fde9d280cb0fb87c31a2e77b8a700005de1ed5c5",
+      "timestamp_iso": "2026-07-23T14:14:34-06:00",
+      "subject": "Merge pull request #75 from ktkventures/fix/append-supersede-open"
+    },
+    {
+      "sha": "22e7573",
+      "full_sha": "22e757389c42749c5926d5182ceaa7fdb1c74e23",
+      "timestamp_iso": "2026-07-23T14:07:30-06:00",
+      "subject": "fix(append): supersede open placeholders + no pre-bar Hi-Fi fills (board #101)"
+    },
+    {
+      "sha": "cda2f3d",
+      "full_sha": "cda2f3d9b668d08a3d783d9c83e187404da5c5aa",
+      "timestamp_iso": "2026-07-23T10:53:17-06:00",
+      "subject": "feat(admin-ui): agents registry \u2014 roster table + /admin/agents + registry-driven role dropdowns (spec Phase 1)"
+    },
+    {
+      "sha": "c8d053e",
+      "full_sha": "c8d053e7ea323b50d0c83a4f72a15af30565d352",
+      "timestamp_iso": "2026-07-22T22:35:12-06:00",
+      "subject": "docs(deploy-log): 07-23 task-detail-panels merge entry (PR #72 \u2192 dev @ed4a0b6)"
+    },
+    {
+      "sha": "ed4a0b6",
+      "full_sha": "ed4a0b689aa7a75206bb068f6221967573bc7e4a",
+      "timestamp_iso": "2026-07-22T22:08:30-06:00",
+      "subject": "Merge pull request #72 from ktkventures/feat/task-detail-panels"
+    },
+    {
+      "sha": "b31c7ab",
+      "full_sha": "b31c7ab377d310d7f115ad2334f0487708a9415d",
+      "timestamp_iso": "2026-07-22T21:18:27-06:00",
+      "subject": "docs(hunt): 07-23 nightly morning brief + deploy-log entry (PR #73 BAR_DUP_GUARD)"
+    },
+    {
+      "sha": "ef447bd",
+      "full_sha": "ef447bd00e1a283be641628919890e59a69fef84",
+      "timestamp_iso": "2026-07-22T21:12:50-06:00",
+      "subject": "Merge pull request #73 from ktkventures/fix/bar-dup-guard"
+    },
+    {
+      "sha": "5334d6d",
+      "full_sha": "5334d6d0646de06d36b4c69f8e3b365a5cffd2f0",
+      "timestamp_iso": "2026-07-22T20:53:35-06:00",
+      "subject": "fix(engine): BAR_DUP_GUARD \u2014 stop duplicate-period rows / bar-count inflation in BarBuilder"
+    },
+    {
+      "sha": "7a75c15",
+      "full_sha": "7a75c153afc5e091ed23a7f97b75440a97b22dff",
+      "timestamp_iso": "2026-07-22T20:39:49-06:00",
+      "subject": "style(admin-ui): role chips become circular avatars (ClickUp-style)"
+    },
+    {
+      "sha": "e0e94c7",
+      "full_sha": "e0e94c7ab472faa02fd50b18c9f5359a4f4eb6ec",
+      "timestamp_iso": "2026-07-22T20:28:17-06:00",
+      "subject": "feat(admin-ui): avatar-style role pickers replace @ dropdowns (Kevin 07-22)"
+    },
+    {
+      "sha": "48e764e",
+      "full_sha": "48e764e91358d279c683a78edcd1166b54ccae78",
+      "timestamp_iso": "2026-07-22T19:51:30-06:00",
+      "subject": "fix(admin-ui): context-panel tabs fully re-scope to the selected pipeline item"
+    },
+    {
+      "sha": "596232b",
+      "full_sha": "596232bdce64199db7089457c8273212cf25748a",
+      "timestamp_iso": "2026-07-22T19:08:55-06:00",
+      "subject": "feat(admin-ui): design-review amendments \u2014 tabbed context, Next-actor chip, handoff pipeline (spec Phase 3 amendments)"
+    },
+    {
+      "sha": "c160707",
+      "full_sha": "c160707cecbd3547eeef1562fad1d3b68817071b",
+      "timestamp_iso": "2026-07-22T17:57:30-06:00",
+      "subject": "feat(admin-ui): three-panel task modal with selector checklist + subtask carets (spec Phase 3)"
+    },
+    {
+      "sha": "13057f3",
+      "full_sha": "13057f3ddc617a7b0db3ccb3f5fb4433949cdae5",
+      "timestamp_iso": "2026-07-22T16:42:40-06:00",
+      "subject": "docs(deploy-log): 07-22 team-board merge entry (PR #71 \u2192 dev @bf0d2cf)"
+    },
+    {
+      "sha": "bf0d2cf",
+      "full_sha": "bf0d2cf2ce82e17c858f8ee7abe694db96d5793b",
+      "timestamp_iso": "2026-07-22T16:37:50-06:00",
+      "subject": "Merge pull request #71 from ktkventures/feat/tasks-team-board"
+    },
+    {
+      "sha": "f188b83",
+      "full_sha": "f188b837e78aca887fdd98696b96bc3495efc3e3",
+      "timestamp_iso": "2026-07-22T16:26:37-06:00",
+      "subject": "feat(admin-ui): tasks page as the team board \u2014 vision/subtask hierarchy, role assignees, grouped view"
+    },
+    {
+      "sha": "0a31a9b",
+      "full_sha": "0a31a9b21136b12f804d65840b59ce1424c3f247",
+      "timestamp_iso": "2026-07-22T15:39:38-06:00",
+      "subject": "chore(team): commit multi-session org files \u2014 charter, board, /role-handoff + /release-brief skills (board V4.5)"
+    },
+    {
+      "sha": "7783548",
+      "full_sha": "7783548b657c663050b0842a4b3c5f5a2d250674",
+      "timestamp_iso": "2026-07-21T21:11:04-06:00",
+      "subject": "docs: Design_Provisional_Backtest_Tail \u2014 near-real-time backtest lane on unsettled REST bars (direction agreed 07-22; build after M-RS5a fleet promotion)"
+    },
+    {
+      "sha": "df2c3e0",
+      "full_sha": "df2c3e0a0f4a52a803a7e529a3a13cd301580968",
+      "timestamp_iso": "2026-07-21T20:30:37-06:00",
+      "subject": "docs(deploy-log): 07-22 shadow-worker merged-tree deploy + heartbeat unfreeze + pool-width mitigation"
+    },
+    {
+      "sha": "ff1427b",
+      "full_sha": "ff1427b0a013024362dd4d529e3fe33c207ebaac",
+      "timestamp_iso": "2026-07-21T19:36:59-06:00",
+      "subject": "Merge remote-tracking branch 'origin/dev' into merge/mrs5a-plus-dev-0722"
+    },
+    {
+      "sha": "ac1c65f",
+      "full_sha": "ac1c65fcc6569646772b65abe8ea06d91be252fd",
+      "timestamp_iso": "2026-07-21T19:20:04-06:00",
+      "subject": "docs(bug-hunt): 07-21\u219222 nightly morning brief \u2014 all divergences classified (4\u00d7 PLUMBING incl. boot-state class, 1\u00d7 LOGIC volume-gate class, 2\u00d7 INFRA), nothing armed (rails)"
+    },
+    {
+      "sha": "9baf588",
+      "full_sha": "9baf588b6527766239abf678bb5d104839e41151",
+      "timestamp_iso": "2026-07-21T15:15:52-06:00",
+      "subject": "docs(submin-canonical): live findings #1+#2, verified-live record, deploy log"
+    },
+    {
+      "sha": "22c6b1f",
+      "full_sha": "22c6b1f191d26a3abe07802a99a7edd2740f4ee6",
+      "timestamp_iso": "2026-07-21T15:08:32-06:00",
+      "subject": "fix(engine): sub-minute keys always get a dedicated canonical-owner shadow (live finding #2)"
+    },
+    {
+      "sha": "6ae7117",
+      "full_sha": "6ae7117e6ad317c1bfe2976ba1b587805347bc6c",
+      "timestamp_iso": "2026-07-21T14:42:08-06:00",
+      "subject": "fix(engine): canonical sub-minute derive must own the primary-TF close path too (live topology gap)"
+    },
+    {
+      "sha": "50f479d",
+      "full_sha": "50f479dc9be869ee2a66afbcb48058cfaa21b14c",
+      "timestamp_iso": "2026-07-21T11:31:47-06:00",
+      "subject": "docs(deploy-log): 07-21 flag-OFF deploy entry for submin canonical source"
+    },
+    {
+      "sha": "4214ba1",
+      "full_sha": "4214ba110292b8b758f95ee306f931651783a7ce",
+      "timestamp_iso": "2026-07-21T11:03:03-06:00",
+      "subject": "docs(submin-canonical): impl tracker + plan status (premise falsified: offline sub-min secondary was an upsampled pseudo-series)"
+    },
+    {
+      "sha": "9da6ca1",
+      "full_sha": "9da6ca1229f2ad762dc3c2019a0874c598eae284",
+      "timestamp_iso": "2026-07-21T10:55:40-06:00",
+      "subject": "refactor(engine): extract _close_subminute_shadows seam + harness canonical-submin leg + regression gate"
+    },
+    {
+      "sha": "d14c417",
+      "full_sha": "d14c417a282d5b1f2b1db07a9d1bd238b7df82ec",
+      "timestamp_iso": "2026-07-21T10:51:45-06:00",
+      "subject": "feat(submin-canonical): sub-minute canonical bar+state source (RORT_CANONICAL_SUBMIN_STATE, default OFF)"
+    },
+    {
+      "sha": "ea31a13",
+      "full_sha": "ea31a1353516f426a2182995f845fa926b9c9a9d",
+      "timestamp_iso": "2026-07-21T10:40:51-06:00",
+      "subject": "port(harness): secondary-TF-gap fixes onto dev \u2014 GEN packs, coarse-depth re-true, sub-minute re-true, fail-loud UNRES/LABEL-DRIFT (harness-only; from b4d9a76+5ec5f8e)"
+    },
+    {
+      "sha": "bb36204",
+      "full_sha": "bb36204eab46a08021ab992698f013fa84d867f9",
+      "timestamp_iso": "2026-07-21T10:10:28-06:00",
+      "subject": "feat(admin-ui): make the 3-layer bar architecture legible (Bar Cache <-> Resampled Store cross-links)"
+    },
+    {
+      "sha": "6cc6527",
+      "full_sha": "6cc6527bffe1693a46a25bcf5f2e95144812063b",
+      "timestamp_iso": "2026-07-21T09:11:19-06:00",
+      "subject": "fix(engine): label-drift completion \u2014 publish filters must match the canonical emit namespace (RORT_TF_LABEL_SEC_FIX)"
+    },
+    {
+      "sha": "7322550",
+      "full_sha": "73225500fdce1c7f3c464d7f351cd0e56af0c868",
+      "timestamp_iso": "2026-07-20T20:46:12-06:00",
+      "subject": "fix(engine): sub-minute confluence label drift \u2014 Sec never shortened, gates dead live (RORT_TF_LABEL_SEC_FIX, default OFF)"
+    },
+    {
+      "sha": "e660ace",
+      "full_sha": "e660ace8353ee94e196a4b06f13d85ca3d22a48e",
+      "timestamp_iso": "2026-07-20T17:07:37-06:00",
+      "subject": "fix(api): bulk-delete via direct-PG cascade + ownership guard (fixes 500s)"
+    },
+    {
+      "sha": "48de7ce",
+      "full_sha": "48de7ce411dad944d7c4a23043bee33d035c76a4",
+      "timestamp_iso": "2026-07-20T16:40:48-06:00",
+      "subject": "feat(strategy-health): Refresh-driven loading + v2 validation spec"
+    },
+    {
+      "sha": "1846ae3",
+      "full_sha": "1846ae3eeb6cac1293e21fa6b0562514016a4010",
+      "timestamp_iso": "2026-07-17T16:51:47-06:00",
+      "subject": "feat(shadow-worker): M-RS5a Phase 2c \u2014 resident-frame secondary-TF columns (RORT_SHADOW_RESIDENT_FRAME, flag OFF)"
+    },
+    {
+      "sha": "bda0670",
+      "full_sha": "bda06704bd4c9965a363f23b34c7dc3b3a476d98",
+      "timestamp_iso": "2026-07-17T15:27:18-06:00",
+      "subject": "refactor(services): factor secondary-column block into compute_secondary_columns (M-RS5a Phase 2c step 1)"
+    },
+    {
+      "sha": "2dd09e2",
+      "full_sha": "2dd09e2789a6f6b3fccfd0b1e3e6430fb6c168c7",
+      "timestamp_iso": "2026-07-17T14:08:58-06:00",
+      "subject": "feat(shadow-worker): M-RS5a Phase 2b \u2014 broaden resident-frame eligibility to user-pack TRIGGER strategies"
+    },
+    {
+      "sha": "3704df7",
+      "full_sha": "3704df78aae6100e4d2e7d55223c8afc48fecae1",
+      "timestamp_iso": "2026-07-17T13:14:10-06:00",
+      "subject": "feat(shadow-worker): M-RS5a Phase 1 \u2014 resident data window frame lifecycle (RORT_SHADOW_RESIDENT_FRAME, flag OFF)"
+    },
+    {
+      "sha": "7b67350",
+      "full_sha": "7b67350bcdf8e6fc908c4728766df1a6d7d396c5",
+      "timestamp_iso": "2026-07-16T16:19:05-06:00",
+      "subject": "feat(health+tooling): feed-freshness healthcheck (P2b, flag-OFF) + provider-event replay v1 (WIP, write-safe)"
+    },
+    {
+      "sha": "410ea7e",
+      "full_sha": "410ea7e033d3ef5f0a25dbbf5c02cc4ad52553bf",
+      "timestamp_iso": "2026-07-16T13:06:25-06:00",
+      "subject": "feat(engine): M-RS5b \u2014 canonical fine-TF gate state at every close (RORT_CANONICAL_FINE_TF_STATE)"
+    },
+    {
+      "sha": "838f118",
+      "full_sha": "838f118b63077a2fa89cb0a50aee79140db2a676",
+      "timestamp_iso": "2026-07-16T10:50:24-06:00",
+      "subject": "feat(engine): P1-hot-reload boot parity + P2 bounded-boot healthcheck + smoke-canary historical window (Brandon audit)"
+    },
+    {
+      "sha": "e758e31",
+      "full_sha": "e758e317f7cf40e972cce65a1dec22f8bc714e03",
+      "timestamp_iso": "2026-07-15T16:10:56-06:00",
+      "subject": "feat(engine): RORT_GRACE_FINAL_CLOSE_ELIGIBLE \u2014 no-signal-at-grace no longer suppresses final close (Brandon P1)"
+    },
+    {
+      "sha": "db73df1",
+      "full_sha": "db73df19f4f4399b017e206753c00996dea3e7ce",
+      "timestamp_iso": "2026-07-15T15:23:35-06:00",
+      "subject": "docs(deploy-log): 2026-07-15 push \u2014 RORT_CANONICAL_PRIMARY_CLOSE (flag OFF, no behavior change) + harness fixes + Brandon audit + /replay-check"
+    },
+    {
+      "sha": "515e9e0",
+      "full_sha": "515e9e07be6e534bdaea1618e13289d5bbf86c08",
+      "timestamp_iso": "2026-07-15T15:22:55-06:00",
+      "subject": "chore(skill): add /replay-check \u2014 achievable-fidelity-ceiling harness with honest scope caveat"
+    },
+    {
+      "sha": "206002b",
+      "full_sha": "206002b7ec4a2e12dd70146beb7abaee8c12c5e7",
+      "timestamp_iso": "2026-07-15T15:22:42-06:00",
+      "subject": "feat(engine): RORT_CANONICAL_PRIMARY_CLOSE \u2014 fix >=60s primary close/dispatch (Brandon P0+P1)"
+    },
+    {
+      "sha": "5c06682",
+      "full_sha": "5c06682f7db4859ebd0b0e917fa028e1bc60d5bc",
+      "timestamp_iso": "2026-07-15T13:43:25-06:00",
+      "subject": "test: document current-dev candle parity findings"
+    },
+    {
+      "sha": "7c1b651",
+      "full_sha": "7c1b651254cd238e1e49a86ce826fd772da70e1d",
+      "timestamp_iso": "2026-07-15T13:43:25-06:00",
+      "subject": "fix(harness): optimal pairing + independent exit-windowing (Brandon audit) + honest scope caveat"
+    },
+    {
+      "sha": "e33ad94",
+      "full_sha": "e33ad94cebad97dc233d508e942c1d79741dc45b",
+      "timestamp_iso": "2026-07-15T12:18:30-06:00",
+      "subject": "fix(harness): scope get_strategy_health fetches to target sids (inert prod hook _ONLY_SIDS) \u2014 kills the recurring Supabase statement-timeout"
+    },
+    {
+      "sha": "953c1d9",
+      "full_sha": "953c1d90af42ce82b2bbbde9544726246f5ed787",
+      "timestamp_iso": "2026-07-15T12:06:45-06:00",
+      "subject": "docs(measurement-trust): prefer nightly-recomputed settled window as the trustworthy reference (Kevin) + gate-parity offline-resolution & flag-mirror caveats"
+    },
+    {
+      "sha": "b2b3a95",
+      "full_sha": "b2b3a95cd9505f36a9f202a4d5e895a0b8df1aa5",
+      "timestamp_iso": "2026-07-15T11:39:12-06:00",
+      "subject": "feat(harness): --corrected ceiling (REST-healed bars) = floor-vs-logic splitter"
+    },
+    {
+      "sha": "acafabe",
+      "full_sha": "acafabe08c904dc5e2915dcdad112b38af5c2293",
+      "timestamp_iso": "2026-07-15T11:17:35-06:00",
+      "subject": "feat(Phase A): harness scores BOTH lanes through get_strategy_health \u2014 replay ceiling now byte-comparable to the dashboard"
+    },
+    {
+      "sha": "da61889",
+      "full_sha": "da6188906feeb4bdd732d562b25e0007e7df1d69",
+      "timestamp_iso": "2026-07-15T10:57:50-06:00",
+      "subject": "docs: dedicated Plan_Measurement_Trust.md (SSOT) \u2014 adds decision-time-vs-REST ceiling paradigm (Kevin) + Strategy-Health fetch-on-Refresh QoL; rollout doc points to it. Held for post-close push (RTH bar-gap avoidance)"
+    },
+    {
+      "sha": "1f7ff39",
+      "full_sha": "1f7ff39f7a80f39fcdafea045bada54c299061ea",
+      "timestamp_iso": "2026-07-15T10:43:10-06:00",
+      "subject": "docs: MEASUREMENT HARDENING plan (07-15) \u2014 unify harness pairing on get_strategy_health (TBD-excluded, 10s+60s); historical replay; gate-parity triangulation; UI productization. Kevin ruling: backtest 'staleness' not a blocker (TBD auto-excluded), need identical calc building blocks"
+    },
+    {
+      "sha": "3cdb29f",
+      "full_sha": "3cdb29fc79201efda67d2901dff8dda70d6e9532",
+      "timestamp_iso": "2026-07-14T16:54:28-06:00",
+      "subject": "docs: primary-drift check DONE (no trade-affecting drift \u2192 resync stays DELETED); tomorrow plan = 15:30Z measure the Five + VALIDATE the replay harness (REPLAY-vs-LIVE \u226590%) in one pass"
+    },
+    {
+      "sha": "169a823",
+      "full_sha": "169a823d2b7e9d1e0acb22928141486ec8d63dc8",
+      "timestamp_iso": "2026-07-14T16:40:55-06:00",
+      "subject": "docs(bug-hunt skill): add replay harness as the primary DIAGNOSE tool \u2014 separates logic bugs from ops loss in minutes; with the clean-day trust gate"
+    },
+    {
+      "sha": "a5c2e4a",
+      "full_sha": "a5c2e4ae3ffe080e61c3bc6239537d93bb7f1178",
+      "timestamp_iso": "2026-07-14T16:40:23-06:00",
+      "subject": "feat(replay harness): add REPLAY-vs-LIVE self-check line + drop REPLAY+FIX"
+    },
+    {
+      "sha": "00d61e9",
+      "full_sha": "00d61e92db085a4c1cf3a1db5ce1635f50be16ae",
+      "timestamp_iso": "2026-07-14T16:05:38-06:00",
+      "subject": "docs: work-queue status \u2014 items 1+2 done; achievable ceiling 327=95% 328=88% 333=83%; canonical-edge build DROPPED (harness A/B proved it changes nothing)"
+    },
+    {
+      "sha": "67d1fa5",
+      "full_sha": "67d1fa5e985c852a1329e3cfe9471d0bd2d2faf4",
+      "timestamp_iso": "2026-07-14T16:04:14-06:00",
+      "subject": "feat(replay harness): intra-bar tick simulation \u2014 harness is now trustworthy; first achievable-ceiling numbers"
+    },
+    {
+      "sha": "7bc7682",
+      "full_sha": "7bc76828365858471082ef2bd8019e392317fccb",
+      "timestamp_iso": "2026-07-14T15:56:14-06:00",
+      "subject": "fix(replay harness): bar_count must increment \u2014 harness now reproduces live and yields the achievable ceiling"
+    },
+    {
+      "sha": "6285a8d",
+      "full_sha": "6285a8d89273f3e10e6b21a4daf9ca6245ff9ed5",
+      "timestamp_iso": "2026-07-14T15:37:55-06:00",
+      "subject": "tool: replay harness v1 (WIP \u2014 gate lane faithful, primary lane not yet)"
+    },
+    {
+      "sha": "95534bc",
+      "full_sha": "95534bc9ef9a10a9455f3773fe174bb7b8e7ebb7",
+      "timestamp_iso": "2026-07-14T14:59:37-06:00",
+      "subject": "docs: deploy log \u2014 PR #66 liveness watchdogs shipped; post-deploy alert lag median 6s, watchdogs silent"
+    },
+    {
+      "sha": "5fdaeaa",
+      "full_sha": "5fdaeaa403796a502526330f3f7b6aee066b1cf4",
+      "timestamp_iso": "2026-07-14T14:56:37-06:00",
+      "subject": "Merge pull request #66 from ktkventures/feat/engine-liveness-watchdogs"
+    },
+    {
+      "sha": "d259d00",
+      "full_sha": "d259d0091822c088ad29e341bbdb41535930ce7a",
+      "timestamp_iso": "2026-07-14T14:55:49-06:00",
+      "subject": "feat(ops): engine liveness watchdogs \u2014 stall detector, alert-lag tripwire, heartbeat-age healthcheck"
+    },
+    {
+      "sha": "3fd0a8a",
+      "full_sha": "3fd0a8af9150313821439da82981024c9a1fa0ea",
+      "timestamp_iso": "2026-07-14T14:42:41-06:00",
+      "subject": "docs: ACTIVE WORK QUEUE at top of rollout doc \u2014 (1) latency tripwire + healthcheck, (2) replay harness v1 (counterfactual combined % at 5s/10s/60s), (3) fleet divergence scan, (4) resync: measure before redesigning (likely delete)"
+    },
+    {
+      "sha": "56b638f",
+      "full_sha": "56b638f583ad9bfa77d1b770a4b8ac8102195ab2",
+      "timestamp_iso": "2026-07-14T14:15:59-06:00",
+      "subject": "SEV fix + docs: PRIMARY-RESYNC starved the live engine (fleet-wide 5-10min alert lags, missed entries) \u2014 DISABLED 20:11Z, lag 320s->4s; three-lane arbitration tool; corrects the earlier mis-attribution to local DB load"
+    },
+    {
+      "sha": "6a37f4d",
+      "full_sha": "6a37f4dfbacbca545e9ea6ebb0ed23d5198b212f",
+      "timestamp_iso": "2026-07-14T13:48:03-06:00",
+      "subject": "docs: post-arm status (refresher now re-trues: changed=5; retro-proof of the 14:39 misses) + ops incident 19:20-19:33Z (local DB load during RTH -> lost alerts + 10-12min dispatch lag; measurement window contaminated)"
+    },
+    {
+      "sha": "68dd15f",
+      "full_sha": "68dd15fef93ca64d21c768585f0804442da931f2",
+      "timestamp_iso": "2026-07-14T12:36:36-06:00",
+      "subject": "tool: retro-replay gate states over recorded data \u2014 force-full fix retro-proven on the 07-14 14:39 events (both gates open, would pair); recipe nuances in header = replay-harness seed"
+    },
+    {
+      "sha": "39ac87c",
+      "full_sha": "39ac87c5c674ecf54d96d83e6abfe6e3c45b1686",
+      "timestamp_iso": "2026-07-14T11:51:14-06:00",
+      "subject": "docs: PR #65 shipped+armed 17:50Z \u2014 shadow re-true snapshot fast-path root cause (supersedes canonical-edge item 1); deploy log entry"
+    },
+    {
+      "sha": "b0a1edd",
+      "full_sha": "b0a1edd63aa7aefe08b008417ca2c2d6bdf7d5a4",
+      "timestamp_iso": "2026-07-14T11:49:15-06:00",
+      "subject": "Merge pull request #65 from ktkventures/feat/shadow-retrue-force-full"
+    },
+    {
+      "sha": "8fdf6a0",
+      "full_sha": "8fdf6a00dd87aa35538e1f4433918cf07ad28cb9",
+      "timestamp_iso": "2026-07-14T11:48:58-06:00",
+      "subject": "fix: RORT_SHADOW_RETRUE_FORCE_FULL \u2014 shadow re-trues must full-replay, not restore the live lineage via the snapshot fast-path"
+    },
+    {
+      "sha": "6e5eedd",
+      "full_sha": "6e5eedd2169386b25b36c0069a03d6b98ddaee35",
+      "timestamp_iso": "2026-07-14T11:11:08-06:00",
+      "subject": "docs: NEXT PHASE plan \u2014 fine-TF canonical edge (inline-first), replay harness in-house, healthcheck freshness; external-audit protocol"
+    },
+    {
+      "sha": "fe1fbc9",
+      "full_sha": "fe1fbc91a84c4ae9fc0cbc01eac935b8cd968488",
+      "timestamp_iso": "2026-07-14T09:28:28-06:00",
+      "subject": "docs: overnight loop close-out \u2014 15:30Z goal check (328 25%\u219275%, 327 25%), poisoning class confirmed DEAD live, residual pinned = live fine-TF SWING state drift vs settled (refresher tail-lag); Kevin decision: canonical fine-TF newest-bar serve"
+    },
+    {
+      "sha": "e9e3835",
+      "full_sha": "e9e3835a03f2be874f36a738b68445985eab3370",
+      "timestamp_iso": "2026-07-14T05:19:37-06:00",
+      "subject": "docs: T2 attribution complete + T3 pre-market battery ALL GREEN (presence 32/32, 285 MACD_HISTOGRAM live-proven, FINE-DUP-SKIP firing, 338=90% pre-market)"
+    },
+    {
+      "sha": "46e76c5",
+      "full_sha": "46e76c53c6468d9399999c1d8f11d2e08ebd57ad",
+      "timestamp_iso": "2026-07-13T20:39:44-06:00",
+      "subject": "docs: overnight loop \u2014 PRs #61+#62 merged+armed 02:36-02:38Z (prev-chain + cascade-poisoning fixes, REFRESH_S=120); clobber retraction + cascade finding in rollout log"
+    },
+    {
+      "sha": "eb4ae5b",
+      "full_sha": "eb4ae5b9ed9c45fe5303ad432d45125fd8c60eba",
+      "timestamp_iso": "2026-07-13T20:36:19-06:00",
+      "subject": "Merge pull request #62 from ktkventures/feat/fine-incremental-authority"
+    },
+    {
+      "sha": "c1e8875",
+      "full_sha": "c1e8875e3de5259d1a4bae4c93b12e82a26db9f9",
+      "timestamp_iso": "2026-07-13T20:36:10-06:00",
+      "subject": "Merge pull request #61 from ktkventures/feat/warmup-prev-chain"
+    },
+    {
+      "sha": "758e3df",
+      "full_sha": "758e3df43dd84a15e99368af9e37af9f4156daad",
+      "timestamp_iso": "2026-07-13T18:40:51-06:00",
+      "subject": "fix: RORT_MTF_FINE_INCREMENTAL_AUTHORITY \u2014 stop the fan-out duplicate branch from re-poisoning fine-TF shadow gate states every ~2-3 min"
+    },
+    {
+      "sha": "bf2f9ec",
+      "full_sha": "bf2f9ec876550e81ba733a2c8b8fb3a6f152066d",
+      "timestamp_iso": "2026-07-13T18:13:38-06:00",
+      "subject": "fix: RORT_WARMUP_PREV_CHAIN \u2014 warmup/recompute populate the prev-value chain (shift-based pack records were silently dropped on all derive paths)"
+    },
+    {
+      "sha": "4aad6cf",
+      "full_sha": "4aad6cf53e9b062dd361e247a65cb88deb1de8e7",
+      "timestamp_iso": "2026-07-13T17:42:56-06:00",
+      "subject": "docs: nightly-coordination rule in overnight handoff (no pushes/merges/lane-writes while 00:20Z recompute runs)"
+    },
+    {
+      "sha": "e6b36c3",
+      "full_sha": "e6b36c357f8d27b6845ad09f371feee12f3cdba8",
+      "timestamp_iso": "2026-07-13T17:38:40-06:00",
+      "subject": "docs+tool: overnight-loop handoff block (T1/T2/T3 gates, armed-flag state, gotchas) + _measure_five.py rolling paired-% tool"
+    },
+    {
+      "sha": "c36764c",
+      "full_sha": "c36764ca89c190a725a9fb6febf4653b0c26933b",
+      "timestamp_iso": "2026-07-13T17:13:44-06:00",
+      "subject": "docs: APPLY armed (deploy log) + MTF publish-clobber finding \u2014 telemetry-proven last-writer-wins on shared gate keys (new #1 hunt)"
+    },
+    {
+      "sha": "aaeccec",
+      "full_sha": "aaecceca8b6e7cf0974770507e4bb66a92567089",
+      "timestamp_iso": "2026-07-13T15:20:22-06:00",
+      "subject": "docs: deploy-log + rollout \u2014 PR #60 merged, primary-resync dry-run meter armed (RESYNC_S=900)"
+    },
+    {
+      "sha": "f3b297b",
+      "full_sha": "f3b297bbc0b25825f9389e6aa2a174f82ce49d49",
+      "timestamp_iso": "2026-07-13T15:18:17-06:00",
+      "subject": "Merge pull request #60 from ktkventures/feat/primary-state-resync"
+    },
+    {
+      "sha": "a715f28",
+      "full_sha": "a715f284f2a082f7e53777359c8e4325109b9db7",
+      "timestamp_iso": "2026-07-13T15:17:22-06:00",
+      "subject": "feat(fidelity): primary-TF pack state re-sync \u2014 the 340-class fix (RORT_PRIMARY_STATE_RESYNC_S, default OFF)"
+    },
+    {
+      "sha": "5f86f78",
+      "full_sha": "5f86f78a98d7d6465899a27e38b313255e582351",
+      "timestamp_iso": "2026-07-13T15:02:12-06:00",
+      "subject": "docs: deploy-log + rollout entry \u2014 PR #59 merged, RORT_RESAMPLED_STORE_SERVE_LIVE armed 20:59Z (Claude-armed per standing authorization)"
+    },
+    {
+      "sha": "d48c884",
+      "full_sha": "d48c884a9c219a31760a87aed8963287a16f5eca",
+      "timestamp_iso": "2026-07-13T14:58:40-06:00",
+      "subject": "Merge pull request #59 from ktkventures/feat/resampled-store-serve-live"
+    },
+    {
+      "sha": "538e026",
+      "full_sha": "538e02690e6c49eb0868eafef24fb8c101285f81",
+      "timestamp_iso": "2026-07-13T13:12:50-06:00",
+      "subject": "feat(M-RS2-p2 Phase 4): live-lane store serve \u2014 _load_warmup_df serves settled history from the resampled store (default OFF)"
+    },
+    {
+      "sha": "b922404",
+      "full_sha": "b9224047daa5cd5d2ae52d22f1efb6a5520a5d67",
+      "timestamp_iso": "2026-07-13T12:26:40-06:00",
+      "subject": "docs(M-RS2-p2): Monday execution log + remaining-work ranking (session-handoff anchor)"
+    },
+    {
+      "sha": "0692a47",
+      "full_sha": "0692a47c83919b85f3c5061a61d0dc7eebba2486",
+      "timestamp_iso": "2026-07-13T11:57:16-06:00",
+      "subject": "docs: autopsy correction 2 \u2014 340 exits reclassified D\u2192C (in-memory MACD state drift, not WS floor); latent grace-fire suppression hole noted"
+    },
+    {
+      "sha": "ee2b1f5",
+      "full_sha": "ee2b1f565636d35ae2478dd0fe3013ba96977f73",
+      "timestamp_iso": "2026-07-13T11:44:53-06:00",
+      "subject": "Merge pull request #58 from ktkventures/feat/resampled-store-admin"
+    },
+    {
+      "sha": "0723c2a",
+      "full_sha": "0723c2a636e80b24b04f888078d076ed90a6d0de",
+      "timestamp_iso": "2026-07-13T11:43:56-06:00",
+      "subject": "feat(M-RS2-p2): Resampled Store admin view (\u00a78) \u2014 coverage/freshness/settled% observability"
+    },
+    {
+      "sha": "70b06bc",
+      "full_sha": "70b06bce18b62230eac91399b7afe8d71338cec3",
+      "timestamp_iso": "2026-07-13T11:09:04-06:00",
+      "subject": "docs: autopsy A2 mechanism corrected (hysteresis falsified \u2192 close-feed freeze; refresher armed)"
+    },
+    {
+      "sha": "ea6594f",
+      "full_sha": "ea6594f9f750128576a593663ca9a6c7fa39f306",
+      "timestamp_iso": "2026-07-13T11:08:04-06:00",
+      "subject": "Merge pull request #57 from ktkventures/fix/shadow-state-hysteresis"
+    },
+    {
+      "sha": "d625e20",
+      "full_sha": "d625e20aa2e552fcff2a6e9bb0ef8dfe55f6082d",
+      "timestamp_iso": "2026-07-13T11:05:43-06:00",
+      "subject": "feat(fidelity): RORT_SHADOW_DEEP_ANCHOR \u2014 deep-anchor shadow warmup for hysteretic interpreters (default-OFF) + VALIDATION-A autopsy correction"
+    },
+    {
+      "sha": "bfa177d",
+      "full_sha": "bfa177da9cb1348a58863a0e2753d1499d13a484",
+      "timestamp_iso": "2026-07-13T09:40:25-06:00",
+      "subject": "Merge pull request #56 from ktkventures/fix/gate-fail-closed"
+    },
+    {
+      "sha": "961545e",
+      "full_sha": "961545e89f1479cbe8b12dc2436678c7490eb832",
+      "timestamp_iso": "2026-07-13T09:40:19-06:00",
+      "subject": "fix(fidelity): RORT_GATE_FAIL_CLOSED \u2014 gated entries fail CLOSED on an empty confluence record set (default-OFF)"
+    },
+    {
+      "sha": "ca71fbf",
+      "full_sha": "ca71fbf97138e77b10b3403d364aad592401d4e0",
+      "timestamp_iso": "2026-07-13T09:35:28-06:00",
+      "subject": "Merge pull request #55 from ktkventures/fix/mtf-pb-boundary-defer"
+    },
+    {
+      "sha": "b4b51ad",
+      "full_sha": "b4b51ad4225a18c0c9806eb190fc538616885b63",
+      "timestamp_iso": "2026-07-13T09:31:08-06:00",
+      "subject": "fix(fidelity): RORT_MTF_PB_DEFER \u2014 PB cross-TF gates honor the last secondary bar CLOSED BEFORE the primary bar began (default-OFF)"
+    },
+    {
+      "sha": "754ddef",
+      "full_sha": "754ddef5d0fedc7ed21a33986526b6d33196bca1",
+      "timestamp_iso": "2026-07-11T00:36:22-06:00",
+      "subject": "feat(M-RS2-p2): COMPUTE-SKIP \u2014 serve settled coarse days from the store (RORT_RESAMPLED_STORE_SERVE, default-OFF)"
+    },
+    {
+      "sha": "d15f55a",
+      "full_sha": "d15f55a5f4b21f0ce18c0db293a8ca9e9fb66289",
+      "timestamp_iso": "2026-07-11T00:23:46-06:00",
+      "subject": "docs(M-RS2-p2): sprint item 4 \u2014 Gated-Five divergence autopsy + Phase 2 status"
+    },
+    {
+      "sha": "2f02e0f",
+      "full_sha": "2f02e0f45fab5da8cc2cc0ba4e88cfa1f3057acb",
+      "timestamp_iso": "2026-07-10T23:49:44-06:00",
+      "subject": "docs(M-RS2-p2): sprint item 2 \u2014 fine-TF construction divergence quantified; HYPOTHESIS FALSIFIED"
+    },
+    {
+      "sha": "ab47462",
+      "full_sha": "ab4746202bbe2721055c1043b31ed9f404edf533",
+      "timestamp_iso": "2026-07-10T23:33:29-06:00",
+      "subject": "docs(M-RS2-p2): Weekend Sprint Ledger \u2014 sprint item 1: fleet verify replay, ZERO drift"
+    },
+    {
+      "sha": "c94a3ba",
+      "full_sha": "c94a3ba0ef2dbcfca83a721fe74b0d2a1a1609ce",
+      "timestamp_iso": "2026-07-10T23:12:58-06:00",
+      "subject": "fix(M-RS2-p2): store maintain runs around the clock (T+1 overnight revision class)"
+    },
+    {
+      "sha": "5a8852e",
+      "full_sha": "5a8852ee2889313d36f6588b84abfd6f406a03a1",
+      "timestamp_iso": "2026-07-10T21:49:18-06:00",
+      "subject": "docs(M-RS2-p2): Phase 1 COMPLETE \u2014 loop proven, store full fleet ~700k rows, close sealed"
+    },
+    {
+      "sha": "83344da",
+      "full_sha": "83344daa22081c575ba5af7e42c0ec326372e04b",
+      "timestamp_iso": "2026-07-10T17:00:31-06:00",
+      "subject": "feat(M-RS2-p2): verify splits EDGE LAG from DRIFT"
+    },
+    {
+      "sha": "17bc9eb",
+      "full_sha": "17bc9eba2cda60f114a388e0706acab70c8480a3",
+      "timestamp_iso": "2026-07-10T16:56:39-06:00",
+      "subject": "feat(M-RS2-p2): DRIFT warnings self-describe (first differing cell inline)"
+    },
+    {
+      "sha": "b793bb5",
+      "full_sha": "b793bb5aa9f88f6d9833a2ecfe1f0197c75596d1",
+      "timestamp_iso": "2026-07-10T16:50:06-06:00",
+      "subject": "fix(M-RS2-p2): maintain_all_coarse counts error/skip dicts as failures (breaker-visible)"
+    },
+    {
+      "sha": "522bfec",
+      "full_sha": "522bfeca0f4dc7d0ccb19f041aeed2cdd17e2178",
+      "timestamp_iso": "2026-07-10T16:45:59-06:00",
+      "subject": "fix(M-RS2-p2): maintain hook logs its decision every pass (no silent skip)"
+    },
+    {
+      "sha": "bad767a",
+      "full_sha": "bad767af787286aad37b53c0a00e6ccc29201025",
+      "timestamp_iso": "2026-07-10T16:34:39-06:00",
+      "subject": "fix(M-RS2-p2): CLI --symbols override defaults TFs to the config-derived catalog"
+    },
+    {
+      "sha": "7d53de6",
+      "full_sha": "7d53de6afdbe83084161cd4dd95903ec9bc86fb2",
+      "timestamp_iso": "2026-07-10T16:19:40-06:00",
+      "subject": "feat(M-RS2-p2): store targets follow the capture-symbol authority (was TSLA-only)"
+    },
+    {
+      "sha": "d1e94fc",
+      "full_sha": "d1e94fc041f112419d05c23754b3a1d31371df1c",
+      "timestamp_iso": "2026-07-10T16:16:34-06:00",
+      "subject": "docs(M-RS2-p2): rollout tracker Plan_MRS2_P2_Rollout.md (phases 1-5, evidence gates) + status pointer in design doc"
+    },
+    {
+      "sha": "756bd9b",
+      "full_sha": "756bd9b469bd95ed5482f510baac0cc59c628d63",
+      "timestamp_iso": "2026-07-10T15:18:19-06:00",
+      "subject": "Merge pull request #54 from ktkventures/feat/mrs2-consumer3-live-verify"
+    },
+    {
+      "sha": "9953c11",
+      "full_sha": "9953c11cdcd1d990aeaad319f630a45b3cba884d",
+      "timestamp_iso": "2026-07-10T15:18:14-06:00",
+      "subject": "feat(M-RS2-p2): wire store maintain into the settle-sweeper cadence (default-OFF)"
+    },
+    {
+      "sha": "40af29d",
+      "full_sha": "40af29de7aa11cba9d7ed9d7380d9aea9e1af730",
+      "timestamp_iso": "2026-07-10T15:15:30-06:00",
+      "subject": "Merge pull request #53 from ktkventures/feat/mrs2-consumer3-live-verify"
+    },
+    {
+      "sha": "9d953e4",
+      "full_sha": "9d953e45b5cf7ac1b9f84d22ed37d5f6506bde5a",
+      "timestamp_iso": "2026-07-10T15:14:28-06:00",
+      "subject": "feat(M-RS2-p2): consumer #3 verify-first \u2014 LIVE warmup/reload path verifies the resampled store (log-only)"
+    },
+    {
+      "sha": "8f1b96e",
+      "full_sha": "8f1b96e6156b9057d2890228e2299a9c27f154f1",
+      "timestamp_iso": "2026-07-10T15:09:07-06:00",
+      "subject": "Merge pull request #52 from ktkventures/feat/mrs2-p2-resampled-store"
+    },
+    {
+      "sha": "889dbb5",
+      "full_sha": "889dbb51670df2cd0e2b21cb32ceffb53339cf4c",
+      "timestamp_iso": "2026-07-10T15:04:25-06:00",
+      "subject": "merge origin/dev into feat/mrs2-p2-resampled-store (take dev for untouched shadow/strategies files)"
+    },
+    {
+      "sha": "e712123",
+      "full_sha": "e7121236ddad5070b633f54340606e903f799bf5",
+      "timestamp_iso": "2026-07-10T14:56:07-06:00",
+      "subject": "feat(M-RS2-p2): consumer #1 v3 \u2014 verified-canonical read (window-alignment fix, 5th comparator catch)"
+    },
+    {
+      "sha": "0014e87",
+      "full_sha": "0014e87ed839cad0ddd11168c8670b99efaf078b",
+      "timestamp_iso": "2026-07-10T13:24:22-06:00",
+      "subject": "feat(M-RS2-p2): settled-only shadow criterion + maintain day-alignment fix; full-catalog seed GREEN"
+    },
+    {
+      "sha": "79b4199",
+      "full_sha": "79b419920b3da05fa942fee14f397604b06584f6",
+      "timestamp_iso": "2026-07-10T12:08:15-06:00",
+      "subject": "feat(M-RS2-p2): expand seed to full gate-eligible coarse catalog (config-derived) + base_layer seam + TF-adaptive depth"
+    },
+    {
+      "sha": "9be610d",
+      "full_sha": "9be610de1d11568b3408de000a872bd0ea5bc932",
+      "timestamp_iso": "2026-07-10T10:16:28-06:00",
+      "subject": "feat(M-RS2-p2): resampled store maintenance/backfill loop (\u00a75) + shadow comparator (\u00a77) + coverage (\u00a78)"
+    },
+    {
+      "sha": "f2741fa",
+      "full_sha": "f2741fa962414c2e87324e9832aa1322150c942e",
+      "timestamp_iso": "2026-07-09T20:39:44-06:00",
+      "subject": "feat(M-RS2-p2): resampled store consumer #2 \u2014 parity-ribbon coarse-secondary swap, byte-identity-gated"
+    },
+    {
+      "sha": "6cd239b",
+      "full_sha": "6cd239b6eb8ab745c79bac1d399124730e4d07c0",
+      "timestamp_iso": "2026-07-09T20:06:28-06:00",
+      "subject": "feat(M-RS2-p2): resampled store M1c \u2014 consumer #1 (backtest coarse-secondary) reads store, byte-identity-gated"
+    },
+    {
+      "sha": "a7cf402",
+      "full_sha": "a7cf402b250456e9e138bf3f34b79d993da647eb",
+      "timestamp_iso": "2026-07-09T19:08:38-06:00",
+      "subject": "feat(M-RS2-p2): resampled bar store M1b \u2014 DDL applied + gated WINDOW-REPLACE write path + persistence shadow (60/60 byte-identical)"
+    },
+    {
+      "sha": "033aa8e",
+      "full_sha": "033aa8eec8e9edbafe2e74857e9ef634a6a9117f",
+      "timestamp_iso": "2026-07-09T18:41:54-06:00",
+      "subject": "feat(M-RS2-p2): resampled bar store M1a \u2014 offline byte-identity proven (700/700)"
+    },
+    {
+      "sha": "1bb9a0a",
+      "full_sha": "1bb9a0ab9e1103bcde6d363eeb4bcb98547fdc53",
+      "timestamp_iso": "2026-07-09T16:58:29-06:00",
+      "subject": "Merge pull request #51 from ktkventures/fix/1min-gate-resident-path"
+    },
+    {
+      "sha": "0629e18",
+      "full_sha": "0629e180bb16915994e81f50683d4b90765d6e44",
+      "timestamp_iso": "2026-07-09T14:58:39-06:00",
+      "subject": "docs(M-RS2-p2): resampled bar-store design spec for parallel build session"
+    },
+    {
+      "sha": "55bfd22",
+      "full_sha": "55bfd2241c50d438cfa87f73e9f002cd2fce5b68",
+      "timestamp_iso": "2026-07-09T14:41:23-06:00",
+      "subject": "bug-hunt: three-lane arbitration + today's divergence-hunt lessons"
+    },
+    {
+      "sha": "9aa2706",
+      "full_sha": "9aa2706c7069ce35dfde546b84acded5a5906d9d",
+      "timestamp_iso": "2026-07-09T13:25:49-06:00",
+      "subject": "fix(fidelity): enforce 1-minute SECONDARY gate in the RESIDENT/STREAMING lanes (RORT_ENFORCE_1MIN_GATE)"
+    },
+    {
+      "sha": "cad5fac",
+      "full_sha": "cad5fac60ce36b092951256271887b3cee46b857",
+      "timestamp_iso": "2026-07-09T12:23:49-06:00",
+      "subject": "Merge pull request #50 from ktkventures/fix/1min-secondary-gate-enforce"
+    },
+    {
+      "sha": "86caac9",
+      "full_sha": "86caac9b7c2b6744882805b2f78ae52a7fbadfc4",
+      "timestamp_iso": "2026-07-09T12:16:11-06:00",
+      "subject": "fix(fidelity): enforce 1-minute SECONDARY confluence gate offline (RORT_ENFORCE_1MIN_GATE)"
+    },
+    {
+      "sha": "4947fd8",
+      "full_sha": "4947fd89043e9ae8aa86c2f174d60336dc04a348",
+      "timestamp_iso": "2026-07-09T08:48:33-06:00",
+      "subject": "Merge pull request #49 from ktkventures/fix/mtf-coarse-rth-session-reload"
+    },
+    {
+      "sha": "4a64301",
+      "full_sha": "4a643010ac97a8a52792fc080566e2b668e95a78",
+      "timestamp_iso": "2026-07-09T08:40:40-06:00",
+      "subject": "fix(bughunt): CLASS 1a \u2014 coarse-gate session contamination (RORT_MTF_COARSE_RTH_RELOAD)"
+    },
+    {
+      "sha": "96cbfa6",
+      "full_sha": "96cbfa659ed1b101d85f45c1bae78ec163989436",
+      "timestamp_iso": "2026-07-09T08:21:41-06:00",
+      "subject": "Merge pull request #48 from ktkventures/fix/gate-parity-harness-trigger-and-allgates"
+    },
+    {
+      "sha": "926b971",
+      "full_sha": "926b971f238cbfe47d7b553f6aaf32d6a68a8cd3",
+      "timestamp_iso": "2026-07-09T08:19:48-06:00",
+      "subject": "fix(gate-parity): resolve modern trigger + break down ALL gates (unblock 0/0 blank)"
+    },
+    {
+      "sha": "63b03ef",
+      "full_sha": "63b03ef66eab066edd6f4c73ec3c5d665e47a460",
+      "timestamp_iso": "2026-07-08T15:51:08-06:00",
+      "subject": "Merge pull request #47 from ktkventures/fix/parity-warmup-per-tf-window"
+    },
+    {
+      "sha": "457efa4",
+      "full_sha": "457efa4b2bdcc52fc836c9335a149d2fa7a1c64e",
+      "timestamp_iso": "2026-07-08T15:45:47-06:00",
+      "subject": "fix(ribbon): per-TF warmup windows \u2014 stop loading sub-minute primary over coarse-gate span (PR #46 regression)"
+    },
+    {
+      "sha": "c08818e",
+      "full_sha": "c08818e4396c1a388ecb332ab17a808cc3f00112",
+      "timestamp_iso": "2026-07-08T15:00:54-06:00",
+      "subject": "Merge pull request #46 from ktkventures/fix/parity-ribbon-warmup-standard"
+    },
+    {
+      "sha": "a54ef86",
+      "full_sha": "a54ef86c09e4434ac11b4ff3b7cee1438e38eb30",
+      "timestamp_iso": "2026-07-08T15:00:33-06:00",
+      "subject": "fix(parity): conform ribbon warmup to the standard compute_warmup_days"
+    },
+    {
+      "sha": "49be930",
+      "full_sha": "49be9300ddb31f75382df15d1729f1dc8c06ed9e",
+      "timestamp_iso": "2026-07-08T12:25:57-06:00",
+      "subject": "Merge pull request #45 from ktkventures/fix/parity-default-window-guard"
+    },
+    {
+      "sha": "314a75d",
+      "full_sha": "314a75d203313c94a5e4bc2d3d24d024c65d4b7a",
+      "timestamp_iso": "2026-07-08T12:23:49-06:00",
+      "subject": "fix(parity): default drift ribbon to last-4h + TF-aware server clamp"
+    },
+    {
+      "sha": "06d5d5b",
+      "full_sha": "06d5d5b5bfaa1b41203f1948dc96105246310917",
+      "timestamp_iso": "2026-07-08T11:13:22-06:00",
+      "subject": "Merge pull request #44 from ktkventures/fix/parity-module-stale-sourcing"
+    },
+    {
+      "sha": "6f3fb3a",
+      "full_sha": "6f3fb3ad289beaae481e8d1355080e0e3b7064c5",
+      "timestamp_iso": "2026-07-08T11:10:55-06:00",
+      "subject": "fix(parity): lane-aligned window sourcing for Per-Bar Parity Drift ribbons"
+    },
+    {
+      "sha": "7100108",
+      "full_sha": "71001083fe03d0056a160a0f0f50cfaeb0e2fe2f",
+      "timestamp_iso": "2026-07-07T17:13:39-06:00",
+      "subject": "Merge pull request #43 from ktkventures/feat/model-parity-tab"
+    },
+    {
+      "sha": "dfc8b81",
+      "full_sha": "dfc8b810b3c3746ddf97b26885e7b9456db70bc4",
+      "timestamp_iso": "2026-07-07T17:11:42-06:00",
+      "subject": "feat(W2-6c): Model Parity tab \u2014 runtime-effective models + fleet per-bar parity"
+    },
+    {
+      "sha": "c198f1a",
+      "full_sha": "c198f1ace4ec492f0dbbb599647b781ee215d7a1",
+      "timestamp_iso": "2026-07-07T16:06:00-06:00",
+      "subject": "Merge pull request #42 from ktkventures/fix/bounded-warmup-widen"
+    },
+    {
+      "sha": "0d9e143",
+      "full_sha": "0d9e143d1b8fd91eb1b3f3ed2b48b1714c6a78f6",
+      "timestamp_iso": "2026-07-07T16:05:58-06:00",
+      "subject": "Merge pull request #41 from ktkventures/feat/health-bar-parity-column"
+    },
+    {
+      "sha": "f161816",
+      "full_sha": "f161816d76fa21d2348b74678731d07d7ccde184",
+      "timestamp_iso": "2026-07-07T15:34:28-06:00",
+      "subject": "fix(mech#1): bound the #39 warmup widen \u2014 one-shot 1Min-source depth + per-slot cache + sub-minute cap"
+    },
+    {
+      "sha": "22155df",
+      "full_sha": "22155df4f0d9f3533d5127bd56c47c059b484dd1",
+      "timestamp_iso": "2026-07-07T15:09:52-06:00",
+      "subject": "feat(W2-6a): Strategy Health Bar Parity % column \u2014 live bars vs REST truth"
+    },
+    {
+      "sha": "73968fc",
+      "full_sha": "73968fc77889476f8da62e4a59696cc004e3bd30",
+      "timestamp_iso": "2026-07-07T13:56:56-06:00",
+      "subject": "Merge pull request #40 from ktkventures/fix/shadow-pass-runtime-regression"
+    },
+    {
+      "sha": "b686947",
+      "full_sha": "b6869479eb1eff45310672994fd1d03b79688693",
+      "timestamp_iso": "2026-07-07T13:53:24-06:00",
+      "subject": "fix: shadow-worker deploy-provenance fingerprint + per-poll runtime gate"
+    },
+    {
+      "sha": "0507089",
+      "full_sha": "05070898332d17f54256e42e03e288426691d496",
+      "timestamp_iso": "2026-07-07T11:30:29-06:00",
+      "subject": "Merge pull request #39 from ktkventures/fix/bar-count-warmup"
+    },
+    {
+      "sha": "5fb49f0",
+      "full_sha": "5fb49f0d3736159a884835e6d4cd54f0b9eb4c7b",
+      "timestamp_iso": "2026-07-07T11:29:58-06:00",
+      "subject": "Merge pull request #38 from ktkventures/fix/interp-aware-shadows"
+    },
+    {
+      "sha": "23f33d8",
+      "full_sha": "23f33d840267cb814f28c9afd589839a56a9ca40",
+      "timestamp_iso": "2026-07-07T11:21:21-06:00",
+      "subject": "fix(validate): steady-cut string compare \u2014 isoformat 'T' vs pandas ' ' dropped same-date entries"
+    },
+    {
+      "sha": "b300a96",
+      "full_sha": "b300a9674e6c32814844f4947004496ab1db2cbd",
+      "timestamp_iso": "2026-07-07T11:00:39-06:00",
+      "subject": "fix(mech#1): bar-count warmup \u2014 windowed prep re-seeds recursive packs after closed days"
+    },
+    {
+      "sha": "f551ded",
+      "full_sha": "f551ded04d97cb40aecb5ba95d62e66ae7d686d0",
+      "timestamp_iso": "2026-07-07T10:38:30-06:00",
+      "subject": "fix(W2-5): interpreter-aware shadow topology \u2014 gates starved by interpreter-blind has_real"
+    },
+    {
+      "sha": "04cd3c4",
+      "full_sha": "04cd3c40e7c95177a35fd084a6b9283163242090",
+      "timestamp_iso": "2026-07-06T16:57:19-06:00",
+      "subject": "Merge pull request #37 from ktkventures/fix/mb-save-model-fields"
+    },
+    {
+      "sha": "4ea6e36",
+      "full_sha": "4ea6e3684c735751bc4d3e78f5867872f5d7881b",
+      "timestamp_iso": "2026-07-06T16:56:55-06:00",
+      "subject": "fix(MB): saveResult() dropped all three model fields \u2014 manually-saved results had algo_model unset"
+    },
+    {
+      "sha": "264f057",
+      "full_sha": "264f057c5c8e550216f372bc5deb1987158a6022",
+      "timestamp_iso": "2026-07-06T14:28:11-06:00",
+      "subject": "Merge pull request #36 from ktkventures/fix/session-label-gate"
+    },
+    {
+      "sha": "c714b80",
+      "full_sha": "c714b80e14da116b1111fcc8d32d8301cde35efd",
+      "timestamp_iso": "2026-07-06T14:27:54-06:00",
+      "subject": "fix(W2-2): label-gated bar-close dispatch \u2014 align live session bar set with backtest"
+    },
+    {
+      "sha": "e9b6b4c",
+      "full_sha": "e9b6b4ce173b14957259e48f168f411be65a8a56",
+      "timestamp_iso": "2026-07-06T14:22:59-06:00",
+      "subject": "Merge pull request #35 from ktkventures/feat/nightly-recompute"
+    },
+    {
+      "sha": "68a8220",
+      "full_sha": "68a82205a7a398038232aa3fe1c342689732e4e8",
+      "timestamp_iso": "2026-07-06T14:22:20-06:00",
+      "subject": "feat(W2-1): nightly full_recompute backstop \u2014 flag-gated enqueuer in batch-worker"
+    },
+    {
+      "sha": "7386781",
+      "full_sha": "7386781750eae061aaee5cb57a3a73059e829791",
+      "timestamp_iso": "2026-07-06T13:35:52-06:00",
+      "subject": "Merge pull request #34 from ktkventures/feat/shadow-heartbeat"
+    },
+    {
+      "sha": "9db03d6",
+      "full_sha": "9db03d618a384848ca32ef24d7347fe60f5e0e43",
+      "timestamp_iso": "2026-07-06T13:34:25-06:00",
+      "subject": "feat: shadow heartbeat \u2014 per-strategy 'BT current through' + honest TBD coverage (W2-0)"
+    },
+    {
+      "sha": "ae2b656",
+      "full_sha": "ae2b656deab4ce36edfb94e76dc50d734e50c526",
+      "timestamp_iso": "2026-07-06T12:52:34-06:00",
+      "subject": "Merge pull request #33 from ktkventures/fix/shadow-poll-watchdog"
+    },
+    {
+      "sha": "bc3a9b4",
+      "full_sha": "bc3a9b4d9f56d96e23774761ce368af368f27c9a",
+      "timestamp_iso": "2026-07-06T12:52:28-06:00",
+      "subject": "fix(shadow): pass watchdog + per-pass status telemetry \u2014 end the silent wedges"
+    },
+    {
+      "sha": "a50ec5f",
+      "full_sha": "a50ec5fbee9d5eb8ce856a8eebf0d0615291041d",
+      "timestamp_iso": "2026-07-06T11:47:35-06:00",
+      "subject": "Merge pull request #32 from ktkventures/fix/mtf-state-refresher"
+    },
+    {
+      "sha": "7d2535e",
+      "full_sha": "7d2535eb81545d5bfadc81be99b2b80b1466f28b",
+      "timestamp_iso": "2026-07-06T11:46:32-06:00",
+      "subject": "fix(ralph): periodic MTF gate-state refresher \u2014 Bug Hunt Wave 1 #2 (flag RORT_MTF_STATE_REFRESH_S, default OFF)"
+    },
+    {
+      "sha": "87ef2cf",
+      "full_sha": "87ef2cfccc7f6c681b5743399b8abc0ce4042f49",
+      "timestamp_iso": "2026-07-06T11:36:23-06:00",
+      "subject": "Merge pull request #31 from ktkventures/fix/mtf-session-shadows"
+    },
+    {
+      "sha": "cdcc24e",
+      "full_sha": "cdcc24e0e427ab525d25336cb94366d32d5115e1",
+      "timestamp_iso": "2026-07-06T11:28:51-06:00",
+      "subject": "fix(ralph): session-keyed coarse-gate shadows \u2014 Bug Hunt Wave 1 #1 (flag RORT_MTF_SESSION_SHADOWS, default OFF)"
+    },
+    {
+      "sha": "df96c11",
+      "full_sha": "df96c11f900800227907de41e6138237dde58a6d",
+      "timestamp_iso": "2026-07-03T08:35:40-06:00",
+      "subject": "Merge pull request #30 from ktkventures/feat/shadow-empty-probe"
+    },
+    {
+      "sha": "24bf78a",
+      "full_sha": "24bf78a9e7d8642ea36e517d3c4bb9963de0ce7c",
+      "timestamp_iso": "2026-07-03T08:35:34-06:00",
+      "subject": "perf(M-RS4): empty-window probe \u2014 one indexed row instead of a full warmup prep when gap-walking"
+    },
+    {
+      "sha": "96d74e1",
+      "full_sha": "96d74e1a27bf7e20bfd0803b349994005441551b",
+      "timestamp_iso": "2026-07-03T08:32:52-06:00",
+      "subject": "Merge pull request #29 from ktkventures/feat/flag-graduation"
+    },
+    {
+      "sha": "0013f49",
+      "full_sha": "0013f492d171af0a45b3f7bcc2d0b7d39bf871b3",
+      "timestamp_iso": "2026-07-03T08:28:15-06:00",
+      "subject": "feat: flag graduation \u2014 proven rollout flags default-ON (env stays as kill switch)"
+    },
+    {
+      "sha": "77635e3",
+      "full_sha": "77635e332e5ea4acd11b8a476da6c414228bb16d",
+      "timestamp_iso": "2026-07-02T18:19:28-06:00",
+      "subject": "Merge pull request #28 from ktkventures/fix/mb-hifi-prime-dos"
+    },
+    {
+      "sha": "7ee6567",
+      "full_sha": "7ee6567fc701072078807eec3236304b37f15160",
+      "timestamp_iso": "2026-07-02T17:49:45-06:00",
+      "subject": "fix(MB): 1Sec prime DB-DOS \u2014 chunked reads + circuit breaker + warm/empty-day skip"
+    },
+    {
+      "sha": "1417af6",
+      "full_sha": "1417af6719e93fa6d16083a528bf97bf42414cc1",
+      "timestamp_iso": "2026-07-02T14:58:53-06:00",
+      "subject": "Merge pull request #27 from ktkventures/feat/mb-required-confluences"
+    },
+    {
+      "sha": "2a4bcab",
+      "full_sha": "2a4bcab61b25dcae78c65c1f1a012c62ed67669f",
+      "timestamp_iso": "2026-07-02T14:21:38-06:00",
+      "subject": "feat(MB): required confluences \u2014 \u2731 tri-state baseline gates for the combo search"
+    },
+    {
+      "sha": "95adb52",
+      "full_sha": "95adb5269011fe91f09cede73ed6af50b6cb0ba2",
+      "timestamp_iso": "2026-07-02T14:07:31-06:00",
+      "subject": "Merge pull request #26 from ktkventures/fix/algo-model-fail-loud"
+    },
+    {
+      "sha": "9d49050",
+      "full_sha": "9d4905021a2440c26c0d6bf4fe0e835fded89c2d",
+      "timestamp_iso": "2026-07-02T14:07:13-06:00",
+      "subject": "fix: fail loud when algo_model is unset instead of writing 'cache_None' lanes"
+    },
+    {
+      "sha": "f0d2518",
+      "full_sha": "f0d25183fd7c12d7ed315516ce86e02f18f093cc",
+      "timestamp_iso": "2026-07-02T13:56:59-06:00",
+      "subject": "Merge pull request #25 from ktkventures/feat/mb-phase1-cleanup"
+    },
+    {
+      "sha": "774d239",
+      "full_sha": "774d239d90c0767c7a30174dcf59dd6f37fa71bc",
+      "timestamp_iso": "2026-07-02T12:51:42-06:00",
+      "subject": "feat(MB): Phase 1 cleanup \u2014 HiFi default, registry model defaults, user-pack-only options"
+    },
+    {
+      "sha": "f455968",
+      "full_sha": "f455968220c047b5c22c8f302833e0f0e3d3b9d8",
+      "timestamp_iso": "2026-07-02T12:41:08-06:00",
+      "subject": "Merge pull request #24 from ktkventures/feat/mrs4-settle-sweeper"
+    },
+    {
+      "sha": "afc0fe5",
+      "full_sha": "afc0fe50ca4026739a545491484868996acdbf4c",
+      "timestamp_iso": "2026-07-02T12:40:50-06:00",
+      "subject": "feat(M-RS4): settle sweeper \u2014 deterministic bar_cache correction without streaming"
+    },
+    {
+      "sha": "0ef25b7",
+      "full_sha": "0ef25b79f76b57830117891cb6d1b0fa316be8ab",
+      "timestamp_iso": "2026-07-02T09:50:06-06:00",
+      "subject": "Merge pull request #23 from ktkventures/fix/mrs4-gap-skip"
+    },
+    {
+      "sha": "1a818a8",
+      "full_sha": "1a818a8f3a5a690b8dcf38552b47bc51f0012444",
+      "timestamp_iso": "2026-07-02T09:49:42-06:00",
+      "subject": "fix(M-RS4): gap-skip \u2014 capped advance stalls forever at bar-free gaps (overnight)"
+    },
+    {
+      "sha": "823e7a8",
+      "full_sha": "823e7a8b66af3f9b5ed2ca7826007ac00e4a8bd2",
+      "timestamp_iso": "2026-07-01T15:19:32-06:00",
+      "subject": "Merge pull request #22 from ktkventures/fix/mrs4-config-memo-threadpool"
+    },
+    {
+      "sha": "82b4afc",
+      "full_sha": "82b4afcd920c8a062f82d1868ac92e70411ceef0",
+      "timestamp_iso": "2026-07-01T15:19:24-06:00",
+      "subject": "fix(M-RS4): shadow re-arm wrote 0 \u2014 compare entry vs anchor as Timestamps not strings"
+    },
+    {
+      "sha": "91903ce",
+      "full_sha": "91903ce2623ce8f6761df6befd7d7e6fd9a3a1ad",
+      "timestamp_iso": "2026-07-01T14:39:23-06:00",
+      "subject": "Merge pull request #21 from ktkventures/fix/mrs4-config-memo-threadpool"
+    },
+    {
+      "sha": "6d3f0cd",
+      "full_sha": "6d3f0cd9280b98705eab56c3082d70ce0f11ba65",
+      "timestamp_iso": "2026-07-01T14:39:13-06:00",
+      "subject": "feat(M-RS4): Fix 1b \u2014 also memoize the admin config loaders (worker-path fallback)"
+    },
+    {
+      "sha": "2ac1dc8",
+      "full_sha": "2ac1dc8133cbbe652ee2e43fd591114a990a9c2d",
+      "timestamp_iso": "2026-07-01T14:30:18-06:00",
+      "subject": "Merge pull request #20 from ktkventures/fix/mrs4-config-memo-threadpool"
+    },
+    {
+      "sha": "a650412",
+      "full_sha": "a65041247e002f40614cf7eb3f0da0fbcfbc8be9",
+      "timestamp_iso": "2026-07-01T14:29:24-06:00",
+      "subject": "feat(M-RS4): Fix 1b + Fix 2c \u2014 unblock shadow-worker write loop (gated, default-off)"
+    },
+    {
+      "sha": "2f19361",
+      "full_sha": "2f193615d88a738b76c53dcb761e10448f3e0702",
+      "timestamp_iso": "2026-07-01T12:47:10-06:00",
+      "subject": "docs(M-RS4): 2026-07-01 session \u2014 Fix 1a+Fix 2 shipped, engine proven live, Health=backtest\u2194alerts"
+    },
+    {
+      "sha": "b1cb52b",
+      "full_sha": "b1cb52bd11888d80c9df827365cf52e0ecec4c26",
+      "timestamp_iso": "2026-07-01T12:09:55-06:00",
+      "subject": "Merge pull request #19 from ktkventures/fix/mrs4-shadow-antistarvation"
+    },
+    {
+      "sha": "8282c54",
+      "full_sha": "8282c54dc63f53adff4615c9507af11a5435e356",
+      "timestamp_iso": "2026-07-01T12:09:05-06:00",
+      "subject": "feat(M-RS4): Fix 2 \u2014 shadow-loop anti-starvation (fairness + bounded poll + async KPI)"
+    },
+    {
+      "sha": "6c11752",
+      "full_sha": "6c117529cf1b470e644e72332339fffe39273ab6",
+      "timestamp_iso": "2026-07-01T12:09:05-06:00",
+      "subject": "fix(M-RS4): hydrate shadow bootstrap anchor from DB (stop 409-conflict re-insert spam)"
+    },
+    {
+      "sha": "74d16d6",
+      "full_sha": "74d16d653ebb452fe6505ef8e65aeb4c10bdafca",
+      "timestamp_iso": "2026-07-01T12:07:05-06:00",
+      "subject": "feat(M-RS4): Fix 2 \u2014 shadow-loop anti-starvation (fairness + bounded poll + async KPI)"
+    },
+    {
+      "sha": "b73b448",
+      "full_sha": "b73b4486d4e3812f8d79125cb517e58e4a2e14b2",
+      "timestamp_iso": "2026-07-01T09:47:30-06:00",
+      "subject": "Merge pull request #18 from ktkventures/fix/mrs4-hifi-incremental-load"
+    },
+    {
+      "sha": "688cef1",
+      "full_sha": "688cef1fe7f44f1a020c0430c1610d10c71431f1",
+      "timestamp_iso": "2026-07-01T09:24:07-06:00",
+      "subject": "feat(M-RS4): Fix 1a \u2014 incremental Hi-Fi load (gated, byte-identical)"
+    },
+    {
+      "sha": "d5bc8f7",
+      "full_sha": "d5bc8f7734cba77dcdcc262ef8124ae033234ff3",
+      "timestamp_iso": "2026-07-01T09:23:36-06:00",
+      "subject": "feat(M-RS4): Fix 1a \u2014 incremental Hi-Fi load (gated, byte-identical)"
+    },
+    {
+      "sha": "5642624",
+      "full_sha": "564262476af6c1858261a0d545f116d9363ace5b",
+      "timestamp_iso": "2026-06-30T19:45:04-06:00",
+      "subject": "docs(M-RS4): session split \u2014 tonight safe prep (scope+gate+emblem backend), morning Fix 1 + live"
+    },
+    {
+      "sha": "6ebbf45",
+      "full_sha": "6ebbf45ab5f2759fd792a08960e461372ba229a1",
+      "timestamp_iso": "2026-06-30T19:25:53-06:00",
+      "subject": "docs(M-RS4): Hi-Fi reframe \u2014 prompt+visible not instant; per-trade status emblem + Health TBD gate"
+    },
+    {
+      "sha": "c8dc922",
+      "full_sha": "c8dc92250cf42736f56905c960488a15784a20a8",
+      "timestamp_iso": "2026-06-30T18:43:14-06:00",
+      "subject": "docs(M-RS4): revert two-phase loop (per-second fidelity regression) + next-session pickup"
+    },
+    {
+      "sha": "c0cc45d",
+      "full_sha": "c0cc45df77be8c7dbd5ee374086632ae420806b7",
+      "timestamp_iso": "2026-06-30T18:23:11-06:00",
+      "subject": "Revert \"feat(M-RS4): Phase 3 scheduling fix \u2014 two-phase loop (decouple KPI from advance)\""
+    },
+    {
+      "sha": "a9ba71c",
+      "full_sha": "a9ba71ca160547b03c462edeb054b577a26734b9",
+      "timestamp_iso": "2026-06-30T17:52:12-06:00",
+      "subject": "docs(M-RS4): Hi-Fi is fidelity-critical + reload-alls \u2192 Fix 1 (incremental load) required for per-second fidelity"
+    },
+    {
+      "sha": "b14657c",
+      "full_sha": "b14657c56cac1de3fceb02cd4f0e4c2a23e6ff41",
+      "timestamp_iso": "2026-06-30T17:34:19-06:00",
+      "subject": "fix(M-RS4): hydrate shadow bootstrap anchor from DB (stop 409-conflict re-insert spam)"
+    },
+    {
+      "sha": "4205b4e",
+      "full_sha": "4205b4e325b29e2f82081c66a3b28b9a7e842f09",
+      "timestamp_iso": "2026-06-30T17:13:53-06:00",
+      "subject": "feat(M-RS4): Phase 3 scheduling fix \u2014 two-phase loop (decouple KPI from advance)"
+    },
+    {
+      "sha": "a0b9256",
+      "full_sha": "a0b92561d2f72a56353058620d072dfca4737f78",
+      "timestamp_iso": "2026-06-30T17:02:59-06:00",
+      "subject": "docs(M-RS4): Phase 3 scheduling fixes design (incremental KPI + bound/parallelize loop)"
+    },
+    {
+      "sha": "c7ad803",
+      "full_sha": "c7ad8031b910e31c6678b87689dadd15ee892dd3",
+      "timestamp_iso": "2026-06-30T16:15:27-06:00",
+      "subject": "Merge pull request #17 from ktkventures/docs/mrs4-planning"
+    },
+    {
+      "sha": "f33584e",
+      "full_sha": "f33584edb2d03f95f1b236f7b91811b6dcd068c7",
+      "timestamp_iso": "2026-06-30T15:46:55-06:00",
+      "subject": "feat(M-RS4): shadow per-strategy shard (RORT_SHADOW_SIDS)"
+    },
+    {
+      "sha": "5e2c1d5",
+      "full_sha": "5e2c1d51fbb6ce84a6e348559d7e2c1774972d7c",
+      "timestamp_iso": "2026-06-30T15:20:33-06:00",
+      "subject": "fix(algo-recompute): read raw config in recompute_and_persist_algo_trades"
+    },
+    {
+      "sha": "1e76e56",
+      "full_sha": "1e76e56bc7414d89369ed3a14c32ea644463bddd",
+      "timestamp_iso": "2026-06-30T15:15:56-06:00",
+      "subject": "feat(M-RS4): Phase 3 Step E \u2014 shadow refreshes KPIs/equity for the fresh lane"
+    },
+    {
+      "sha": "332079c",
+      "full_sha": "332079c9a47c0714dd44da63e6ebb86ba1f35b87",
+      "timestamp_iso": "2026-06-30T13:36:28-06:00",
+      "subject": "perf(M-RS4): shadow persists secondary-TF snapshot for cheap re-bootstrap"
+    },
+    {
+      "sha": "f1392e8",
+      "full_sha": "f1392e87b195efc7c1c5f6f68bdc62af84bd8b05",
+      "timestamp_iso": "2026-06-30T13:01:38-06:00",
+      "subject": "feat(M-RS4): Phase 3 \u2014 shadow read-path fix (read reduction + read-only)"
+    },
+    {
+      "sha": "7bf05ba",
+      "full_sha": "7bf05ba470fcdbc1cf9731dca46bf8ab652f6407",
+      "timestamp_iso": "2026-06-30T11:23:29-06:00",
+      "subject": "feat(M-RS4): Phase 3 \u2014 provisional unsettled-tail emission (gated default-OFF)"
+    },
+    {
+      "sha": "f35a14a",
+      "full_sha": "f35a14ae381036352c534622c5bc5aed77436f4d",
+      "timestamp_iso": "2026-06-30T10:12:48-06:00",
+      "subject": "feat(M-RS4): Phase 3 Step D (crash recovery proven) + perf gate + Railway deploy doc"
+    },
+    {
+      "sha": "940bf72",
+      "full_sha": "940bf7290890c6e3285787cbb45c3224b52ca1bb",
+      "timestamp_iso": "2026-06-30T09:49:41-06:00",
+      "subject": "feat(M-RS4): Phase 3 Step C \u2014 ResidentEngineManager (settled lane) + wired"
+    },
+    {
+      "sha": "5afb38c",
+      "full_sha": "5afb38c0fa829e0e3bea98e7be090b831aca06c1",
+      "timestamp_iso": "2026-06-30T08:54:17-06:00",
+      "subject": "feat(M-RS4): Phase 3 \u2014 add trades.provisional column (applied to prod)"
+    },
+    {
+      "sha": "0d6b1c7",
+      "full_sha": "0d6b1c71e92c827cfb65c53889aa844bf9f78f51",
+      "timestamp_iso": "2026-06-30T08:46:05-06:00",
+      "subject": "feat(M-RS4): Phase 3 Step C \u2014 resident engine core (ResidentStrategyEngine)"
+    },
+    {
+      "sha": "5fd16b1",
+      "full_sha": "5fd16b13dc432cee53ec1683b4f96e7f4096736f",
+      "timestamp_iso": "2026-06-30T08:07:33-06:00",
+      "subject": "feat(M-RS4): Phase 3 Step B \u2014 scaffold inert shadow-worker service"
+    },
+    {
+      "sha": "6bc37a3",
+      "full_sha": "6bc37a3be63f1343baa0535f096da0f7bd22063e",
+      "timestamp_iso": "2026-06-30T08:04:37-06:00",
+      "subject": "feat(M-RS4): Phase 3 Step A \u2014 continuous-resident byte-identity proof (GREEN)"
+    },
+    {
+      "sha": "9dcd5d5",
+      "full_sha": "9dcd5d57791c89704f5978a553f84ca7929ffed1",
+      "timestamp_iso": "2026-06-29T22:13:53-06:00",
+      "subject": "Merge pull request #16 from ktkventures/docs/mrs4-planning"
+    },
+    {
+      "sha": "7b18ece",
+      "full_sha": "7b18ece99714137873775214fa8ed6945b4ea857",
+      "timestamp_iso": "2026-06-29T22:13:36-06:00",
+      "subject": "docs(M-RS4): Phase 3 continuous-backtest-engine plan + M-RS3 lineage"
+    },
+    {
+      "sha": "87e1ef5",
+      "full_sha": "87e1ef5fe15adff848155cc404036167461e8e37",
+      "timestamp_iso": "2026-06-29T20:15:13-06:00",
+      "subject": "Merge pull request #15 from ktkventures/feat/mrs4-phase4-ws-tab"
+    },
+    {
+      "sha": "91a8af1",
+      "full_sha": "91a8af1213f86914da383386ec24d123086e9236",
+      "timestamp_iso": "2026-06-29T20:15:03-06:00",
+      "subject": "feat(M-RS4): Phase 4b \u2014 Supply page REST/WS tabs (both streams at a glance)"
+    },
+    {
+      "sha": "b4d166f",
+      "full_sha": "b4d166fd9ffda3dc21d222b317e3977f1c4b263d",
+      "timestamp_iso": "2026-06-29T20:10:25-06:00",
+      "subject": "Merge pull request #14 from ktkventures/feat/mrs4-phase4-supply-addticker-verify"
+    },
+    {
+      "sha": "b1e100c",
+      "full_sha": "b1e100ce07a4f3b301f67deae1c2a15e916a6467",
+      "timestamp_iso": "2026-06-29T20:10:12-06:00",
+      "subject": "feat(M-RS4): Phase 4a \u2014 Supply page Add-ticker + windowed Verify-vs-Polygon"
+    },
+    {
+      "sha": "018b491",
+      "full_sha": "018b491b7c00eaeb0fe59c8dc5fbdf6ea98efbde",
+      "timestamp_iso": "2026-06-29T20:00:55-06:00",
+      "subject": "Merge pull request #13 from ktkventures/feat/mrs4-phase1-fetch1s-cache"
+    },
+    {
+      "sha": "3e76325",
+      "full_sha": "3e76325a290bebd3518d17416f806d243b984b2b",
+      "timestamp_iso": "2026-06-29T20:00:34-06:00",
+      "subject": "feat(M-RS4): Phase 1 \u2014 route the last Polygon-direct consumer through bar_cache"
+    },
+    {
+      "sha": "10c6c6b",
+      "full_sha": "10c6c6b850fc0cd553e30ac17030a80532bb8e26",
+      "timestamp_iso": "2026-06-29T17:02:42-06:00",
+      "subject": "Merge pull request #12 from ktkventures/feat/barcache-backfill-batchworker"
+    },
+    {
+      "sha": "1aed296",
+      "full_sha": "1aed2964495764a88ca421dc705724f4392d68eb",
+      "timestamp_iso": "2026-06-29T17:02:14-06:00",
+      "subject": "feat(bar-cache): run backfills on the batch-worker (compute_jobs 'backfill' type)"
+    },
+    {
+      "sha": "bb70fb7",
+      "full_sha": "bb70fb74d1b4360b9b269aa0d01285790af172a5",
+      "timestamp_iso": "2026-06-29T16:10:09-06:00",
+      "subject": "Merge pull request #11 from ktkventures/feat/barcache-backfill-controls"
+    },
+    {
+      "sha": "39266c6",
+      "full_sha": "39266c68f40aae10a5c718d06bf61258388e78fb",
+      "timestamp_iso": "2026-06-29T16:10:03-06:00",
+      "subject": "feat(bar-cache-ui): catalog-driven supply page + per-row backfill-to-date"
+    },
+    {
+      "sha": "9ed33ed",
+      "full_sha": "9ed33ed85fcb7421c25adc5f08653229d75a8fe3",
+      "timestamp_iso": "2026-06-29T15:42:15-06:00",
+      "subject": "Merge pull request #10 from ktkventures/feat/barcache-coverage-view"
+    },
+    {
+      "sha": "aec1580",
+      "full_sha": "aec15800676420012ef97e5355905af1c7598718",
+      "timestamp_iso": "2026-06-29T15:42:03-06:00",
+      "subject": "feat(bar-cache-ui): supply coverage view \u2014 all tracked symbols, not just live tail"
+    },
+    {
+      "sha": "e10e9b7",
+      "full_sha": "e10e9b7edec3cb29c9beb58f035f052ef46a2085",
+      "timestamp_iso": "2026-06-29T15:24:03-06:00",
+      "subject": "Merge pull request #9 from ktkventures/feat/barcache-freshness-ui"
+    },
+    {
+      "sha": "c41cbc3",
+      "full_sha": "c41cbc3a1a08551f2deeabe0e018e0dbc46ca983",
+      "timestamp_iso": "2026-06-29T15:23:44-06:00",
+      "subject": "feat(bar-cache-ui): live write-through freshness on the Bar-Cache Supply page"
+    },
+    {
+      "sha": "2ad3965",
+      "full_sha": "2ad3965858f17a1a78c95e5f4eb478a612309023",
+      "timestamp_iso": "2026-06-29T14:31:15-06:00",
+      "subject": "Merge pull request #8 from ktkventures/feat/writethrough-gates"
+    },
+    {
+      "sha": "715e3cb",
+      "full_sha": "715e3cba387df4bb9b7993655068ab72d9658b09",
+      "timestamp_iso": "2026-06-29T14:30:33-06:00",
+      "subject": "docs(bar_cache): Step 4 already-complete \u2014 BAR_CACHE_ENABLED live in prod + gap heals on read"
+    },
+    {
+      "sha": "6ae19ae",
+      "full_sha": "6ae19ae055837917d825dc2cb286d771ec2780d5",
+      "timestamp_iso": "2026-06-29T14:27:36-06:00",
+      "subject": "Merge pull request #7 from ktkventures/feat/writethrough-gates"
+    },
+    {
+      "sha": "8fbac05",
+      "full_sha": "8fbac05e6fb2f5eb35bfa3f753a1e88f207f0892",
+      "timestamp_iso": "2026-06-29T14:26:46-06:00",
+      "subject": "feat(bar_cache): write-through fidelity gates + settle-sweep index (burn-in followups)"
+    },
+    {
+      "sha": "2010063",
+      "full_sha": "20100639dda1efbd3d8a8e01543eaf4adb5fd797",
+      "timestamp_iso": "2026-06-29T11:55:39-06:00",
+      "subject": "Merge pull request #6 from ktkventures/feat/barcache-writethrough"
+    },
+    {
+      "sha": "9595387",
+      "full_sha": "95953872eacea3d159ceb78790e74da87a7d07aa",
+      "timestamp_iso": "2026-06-29T11:55:01-06:00",
+      "subject": "Merge pull request #5 from ktkventures/fix/bar-leak-autocommit"
+    },
+    {
+      "sha": "4bebb43",
+      "full_sha": "4bebb43811ff599b128e243b74a0d8a02f3f42ea",
+      "timestamp_iso": "2026-06-28T21:06:48-06:00",
+      "subject": "feat(bar_cache): continuous write-through unification \u2014 step 2 (gated, default-OFF)"
+    },
+    {
+      "sha": "ca2ed54",
+      "full_sha": "ca2ed54467a6a02fa6b51ea161adec39d4cd9f72",
+      "timestamp_iso": "2026-06-28T13:48:56-06:00",
+      "subject": "fix(cache): read_bars autocommit \u2014 kill the #7 bar-leak (idle-in-txn strand)"
+    },
+    {
+      "sha": "bc9cf21",
+      "full_sha": "bc9cf217204742df6bc9d93543e0eb49db6dcb29",
+      "timestamp_iso": "2026-06-28T00:06:10-06:00",
+      "subject": "Merge pull request #4 from ktkventures/feature/m-rs3-parallel-recompute"
+    },
+    {
+      "sha": "4cca0b2",
+      "full_sha": "4cca0b203b06a338155eb7df252a35bf554587a7",
+      "timestamp_iso": "2026-06-27T21:43:02-06:00",
+      "subject": "feat(admin): Trade Snapshots UI \u2014 capture + diff trade-level fidelity"
+    },
+    {
+      "sha": "c3eafb2",
+      "full_sha": "c3eafb20693221a2d589bdd13a0746bb8d38d9d4",
+      "timestamp_iso": "2026-06-27T20:41:46-06:00",
+      "subject": "feat(tools): trade-level snapshot + diff for exact recompute fidelity audits"
+    },
+    {
+      "sha": "522780d",
+      "full_sha": "522780d4a2a8a9d11fd7c5a1550bf77ea5d99dc1",
+      "timestamp_iso": "2026-06-27T20:39:54-06:00",
+      "subject": "feat(recompute): supervisor heartbeat = CPU+IO progress counter (validated reap)"
+    },
+    {
+      "sha": "0351787",
+      "full_sha": "03517873dd0e54e5cab3b52fccbd1311cc151095",
+      "timestamp_iso": "2026-06-27T19:40:02-06:00",
+      "subject": "feat(recompute): M-RS3 supervised pool \u2014 heartbeat watchdog hang recovery (default OFF)"
+    },
+    {
+      "sha": "2be9fa4",
+      "full_sha": "2be9fa4e5b635d70b1007ab9fe65cd9882adab21",
+      "timestamp_iso": "2026-06-27T15:15:43-06:00",
+      "subject": "chore(batch-worker): log cgroup cpu/ram limits (true container ceiling)"
+    },
+    {
+      "sha": "5a67bb8",
+      "full_sha": "5a67bb8d6ccf9ffa6ac33b0339b61073281f5ec3",
+      "timestamp_iso": "2026-06-27T15:14:09-06:00",
+      "subject": "chore(batch-worker): log host cpu/ram at startup for parallelism tuning"
+    },
+    {
+      "sha": "a11d23c",
+      "full_sha": "a11d23cb0dd3dfa0fd5ad49bb489b9d01ec3084b",
+      "timestamp_iso": "2026-06-27T14:33:43-06:00",
+      "subject": "feat(recompute): M-RS3 Phase 2 \u2014 compute_jobs queue + dedicated batch-worker (default OFF)"
+    },
+    {
+      "sha": "1f8e855",
+      "full_sha": "1f8e8551dd3b08720880019e780a133f35962a8e",
+      "timestamp_iso": "2026-06-27T14:15:33-06:00",
+      "subject": "feat(recompute): M-RS3 Phase 1 \u2014 parallel recompute pool (default OFF)"
+    },
+    {
+      "sha": "4b186fc",
+      "full_sha": "4b186fcb8a2eda877615f1dfdaf8952e07a068a0",
+      "timestamp_iso": "2026-06-26T20:20:19-06:00",
+      "subject": "Merge pull request #3 from ktkventures/feature/tv-export-emitter-coverage"
+    },
+    {
+      "sha": "cd58081",
+      "full_sha": "cd5808159f8b433ef07d11dac7ae9a6bd38e7cc8",
+      "timestamp_iso": "2026-06-26T20:12:02-06:00",
+      "subject": "feat(tv-export): readiness badge on the Strategy Detail TradingView tab"
+    },
+    {
+      "sha": "39a8695",
+      "full_sha": "39a869571267b0702a4069bfef51d12c884cc663",
+      "timestamp_iso": "2026-06-26T20:12:02-06:00",
+      "subject": "feat(eod): gate the entry-suppression behind RORT_SUPPRESS_EOD_REENTRY (default OFF)"
+    },
+    {
+      "sha": "1df8e7d",
+      "full_sha": "1df8e7d3cf404cf629af21a28f4472f143acf785",
+      "timestamp_iso": "2026-06-26T20:12:02-06:00",
+      "subject": "fix(eod): suppress entries inside be-flat window \u2014 engine + Pine lockstep"
+    },
+    {
+      "sha": "36fce7f",
+      "full_sha": "36fce7f99bbc1b8a99ab5561a92bb187851917f2",
+      "timestamp_iso": "2026-06-26T19:01:10-06:00",
+      "subject": "Merge pull request #2 from ktkventures/feature/tv-export-emitter-coverage"
+    },
+    {
+      "sha": "717c50a",
+      "full_sha": "717c50a1133e26505635e94222835b6d994770c4",
+      "timestamp_iso": "2026-06-26T18:45:53-06:00",
+      "subject": "docs(tv-export): readiness design doc \u2014 contract, badges, canaries, codegen north star"
+    },
+    {
+      "sha": "0bdbacd",
+      "full_sha": "0bdbacd6d1cbf7f02673b6625fb41fcbff880a95",
+      "timestamp_iso": "2026-06-26T18:40:51-06:00",
+      "subject": "feat(tv-export): readiness check + parity-canary registry (Stages 1-2)"
+    },
+    {
+      "sha": "c1fd35d",
+      "full_sha": "c1fd35d9a4eb9cda8aa6487fcad04ae02962ef9b",
+      "timestamp_iso": "2026-06-26T18:40:51-06:00",
+      "subject": "refactor(tv-export): stop + time-exit methods as registries"
+    },
+    {
+      "sha": "051375d",
+      "full_sha": "051375d8ea1738d6b289dd72706b851f6c3a2232",
+      "timestamp_iso": "2026-06-26T18:40:51-06:00",
+      "subject": "feat(tv-export): Fix C \u2014 legacy trigger aliases + max_hold_bars exit"
+    },
+    {
+      "sha": "d115d32",
+      "full_sha": "d115d32fc6b975806c90c51cfb579177eaf22891",
+      "timestamp_iso": "2026-06-26T18:40:51-06:00",
+      "subject": "feat(tv-export): EOD time-exit emitter (eod_exit)"
+    },
+    {
+      "sha": "723b5dc",
+      "full_sha": "723b5dce1a649753d945a8a11868d684a0cb901a",
+      "timestamp_iso": "2026-06-26T18:40:51-06:00",
+      "subject": "feat(tv-export): faithful swing-stop emitter (Fix B.2)"
+    },
+    {
+      "sha": "5c4b1da",
+      "full_sha": "5c4b1da17d19120294ccd6bf8f5288d1901f4987",
+      "timestamp_iso": "2026-06-26T18:40:51-06:00",
+      "subject": "feat(tv-export): Mass Builder confluence-id entry/exit resolution (Fix B)"
+    },
+    {
+      "sha": "7411cd6",
+      "full_sha": "7411cd690cca080cadd5fef09eda356bda3978cf",
+      "timestamp_iso": "2026-06-26T18:40:51-06:00",
+      "subject": "feat(tv-export): UT Bot V4 as primary entry/exit trigger (Fix A)"
+    },
+    {
+      "sha": "4a22777",
+      "full_sha": "4a22777c6f9f989d27f17f8bbb0dc580e662cd38",
+      "timestamp_iso": "2026-06-26T18:26:34-06:00",
+      "subject": "fix(recompute): preserve-range guard \u2014 UAD must not truncate backtest history to data_days"
+    },
+    {
+      "sha": "1e4daa0",
+      "full_sha": "1e4daa047bdcf47fbd6d68f7e0f4f6a76c976a7c",
+      "timestamp_iso": "2026-06-26T17:29:51-06:00",
+      "subject": "chore: re-trigger Railway deploy of b47bbbc (coarse-secondary fix)"
+    },
+    {
+      "sha": "b47bbbc",
+      "full_sha": "b47bbbc76d36b71902150b23fe736fae49aa6fd1",
+      "timestamp_iso": "2026-06-26T15:58:11-06:00",
+      "subject": "fix(backtest): build coarse (>=1H) secondary gate from 1Min, not the sub-minute primary"
+    },
+    {
+      "sha": "f46abbf",
+      "full_sha": "f46abbf8c74dacd5441552f7ad9a11cff6923782",
+      "timestamp_iso": "2026-06-26T13:46:47-06:00",
+      "subject": "fix(cache): read_bars prepare_threshold=None for Supabase transaction pooler (6543)"
+    },
+    {
+      "sha": "c1d25be",
+      "full_sha": "c1d25be0c057b1e999dc34d20620c29469d71472",
+      "timestamp_iso": "2026-06-26T13:35:11-06:00",
+      "subject": "feat(cache): materialize_derived \u2014 build coarse (>=1Hour) layers from cached 1Min (split-safe)"
+    },
+    {
+      "sha": "7d23f8d",
+      "full_sha": "7d23f8dde94fe36a6f914cdd0af328f241819e72",
+      "timestamp_iso": "2026-06-26T12:56:50-06:00",
+      "subject": "docs: log coarse-gate live-trigger bug + fix + deploy (a38f876, live-hours, verifying)"
+    },
+    {
+      "sha": "a38f876",
+      "full_sha": "a38f876c956d2573cec9bd247ff35927a9943916",
+      "timestamp_iso": "2026-06-26T12:55:50-06:00",
+      "subject": "fix(live): seed cross-TF gate from warmed shadow so coarse (1H/4H/1D) gates fire live"
+    },
+    {
+      "sha": "b16b723",
+      "full_sha": "b16b72365c62c8e0b1f1827b27a1bf8ded03a15e",
+      "timestamp_iso": "2026-06-26T12:20:36-06:00",
+      "subject": "feat(fidelity): parity suite + cache reads only 1Sec/1Min source layers (derive rest)"
+    },
+    {
+      "sha": "e78c997",
+      "full_sha": "e78c997883d028ffd4bb213a6b680beb9382f9c8",
+      "timestamp_iso": "2026-06-26T11:49:54-06:00",
+      "subject": "docs(known-bugs): cache upsample bug FIXED-VERIFIED (275/321 cache-on byte-identical)"
+    },
+    {
+      "sha": "2bd6a1a",
+      "full_sha": "2bd6a1aacc0355e2a1b2b781e3536c4729ed4ab7",
+      "timestamp_iso": "2026-06-26T10:30:57-06:00",
+      "subject": "docs(known-bugs): log SEV cache upsample bug (1Min->sub-minute) + fix + cleanup scope"
+    },
+    {
+      "sha": "b8bac23",
+      "full_sha": "b8bac23591aeed0513c59dd15d480670d96b7c4f",
+      "timestamp_iso": "2026-06-26T10:29:10-06:00",
+      "subject": "fix(cache): never upsample \u2014 sub-minute derives from 1Sec, 1Min stays native (SEV)"
+    },
+    {
+      "sha": "d98daa0",
+      "full_sha": "d98daa017698dab8c2d2dca65d98bed122adc24b",
+      "timestamp_iso": "2026-06-26T00:13:44-06:00",
+      "subject": "docs(known-bugs): log KPI double-count (BT+ALGO) bug + fix (FIXED-PENDING-VERIFY)"
+    },
+    {
+      "sha": "6df2eb1",
+      "full_sha": "6df2eb110a2e1776e5a50d39c2dbcf69bd342945",
+      "timestamp_iso": "2026-06-26T00:12:52-06:00",
+      "subject": "fix(kpis): scope algo-append KPI recompute to backtest_% (was double-counting BT+ALGO)"
+    },
+    {
+      "sha": "ba7a1cc",
+      "full_sha": "ba7a1ccab80885b06e489f5ec3008059066b9fa1",
+      "timestamp_iso": "2026-06-25T22:59:03-06:00",
+      "subject": "obs(hifi): load-once prime always logs outcome (served/fallback/warm)"
+    },
+    {
+      "sha": "97e6a20",
+      "full_sha": "97e6a20a4b704c1ff977663a3c544f9d00ca32dd",
+      "timestamp_iso": "2026-06-25T22:32:06-06:00",
+      "subject": "feat(update-all): RORT_UPDATE_ALL_SKIP_ALGO \u2014 backtest-lane-only kill-switch (default off)"
+    },
+    {
+      "sha": "1394cf9",
+      "full_sha": "1394cf9b9e6c8a3a8e16d824b3b34cc5732d0460",
+      "timestamp_iso": "2026-06-25T22:20:16-06:00",
+      "subject": "feat(bar-cache): read-health on admin page (verify Railway env) + algo-lane design + trigger bug log"
+    },
+    {
+      "sha": "f4c88c3",
+      "full_sha": "f4c88c36966a583c64235a52c85dbbff28318a10",
+      "timestamp_iso": "2026-06-25T22:02:15-06:00",
+      "subject": "docs: deploy-log M-RS2 Phase 2 merge to dev (inert until env set)"
+    },
+    {
+      "sha": "cd6056c",
+      "full_sha": "cd6056ce8dd66666890e7c6224f60971f9594933",
+      "timestamp_iso": "2026-06-25T22:01:34-06:00",
+      "subject": "Merge M-RS2 Phase 2: REST Bars read path + Hi-Fi load-once (byte-identical, behind BAR_CACHE_ENABLED)"
+    },
+    {
+      "sha": "bcd82dd",
+      "full_sha": "bcd82dd3d78a498d066da59fef91fbccbccb6958",
+      "timestamp_iso": "2026-06-25T22:01:34-06:00",
+      "subject": "chore(M-RS2): psycopg in requirements + STATUS 2026-06-25 (read path + Hi-Fi load-once)"
+    },
+    {
+      "sha": "657910a",
+      "full_sha": "657910a8eff9b55df840537d877ddc545070d7bd",
+      "timestamp_iso": "2026-06-25T21:46:56-06:00",
+      "subject": "feat(hifi): load-once 1-second from REST Bars for Hi-Fi Pass 2"
+    },
+    {
+      "sha": "4554da3",
+      "full_sha": "4554da3a2517827c50619a19736e38b00e13fa96",
+      "timestamp_iso": "2026-06-25T21:22:01-06:00",
+      "subject": "docs: correct two-cache doc \u2014 REST Bars 1s verified byte-identical + complete"
+    },
+    {
+      "sha": "12fa237",
+      "full_sha": "12fa237c4538deea3e1cf66a42ec857b1e15717c",
+      "timestamp_iso": "2026-06-25T21:09:15-06:00",
+      "subject": "docs: lock two-cache naming \u2014 Live Bars vs REST Bars (definitions + code headers)"
+    },
+    {
+      "sha": "d647a9a",
+      "full_sha": "d647a9afb8b2878ae86d79a02f40c23bdc3a5c33",
+      "timestamp_iso": "2026-06-25T20:23:00-06:00",
+      "subject": "docs(M-RS2 P2): record end-to-end 325 result (1.8x, byte-identical)"
+    },
+    {
+      "sha": "58296d4",
+      "full_sha": "58296d4ec0dd264934b7a7224845227e2421ae04",
+      "timestamp_iso": "2026-06-25T20:22:04-06:00",
+      "subject": "feat(M-RS2 P2): cached_load_market_data serves native-TF via direct-PG read_bars"
+    },
+    {
+      "sha": "2a4adc3",
+      "full_sha": "2a4adc3d662e7889b9b79dc6a25e908423c689b5",
+      "timestamp_iso": "2026-06-25T19:53:06-06:00",
+      "subject": "docs(deploy-log): 2026-06-25 fe666a4 push (ID column + EOD docs)"
+    },
+    {
+      "sha": "66080a1",
+      "full_sha": "66080a1dcd0ee6520414d3c8f3f6dc6c51201642",
+      "timestamp_iso": "2026-06-24T18:32:40-06:00",
+      "subject": "feat(M-RS2 P2): primary-load A/B harness + conclusive result (30Sec 8.8x faster, byte-identical)"
+    },
+    {
+      "sha": "5e78f77",
+      "full_sha": "5e78f77e785cbd577f6cf55cd131b1859a15c9ad",
+      "timestamp_iso": "2026-06-24T18:29:03-06:00",
+      "subject": "feat(M-RS2 P2): bar_cache.read_bars() direct-Postgres read primitive (byte-identical to REST read)"
+    },
+    {
+      "sha": "fe666a4",
+      "full_sha": "fe666a421d55af3207b1f8dbade63a8e913beac8",
+      "timestamp_iso": "2026-06-24T18:26:29-06:00",
+      "subject": "docs(eod 2026-06-24) + tasks: ID column on board; M-RS2 PM findings + corrections (read path = direct PG; Polygon-1s 'unreliable' was a test-harness positional-arg bug)"
+    },
+    {
+      "sha": "e6b9221",
+      "full_sha": "e6b922142fa5579039f423b22aadaf0cf3151e23",
+      "timestamp_iso": "2026-06-24T16:15:20-06:00",
+      "subject": "docs(deploy-log): 2026-06-24 M-RS1 + M-RS2 Phase 1 deploy"
+    },
+    {
+      "sha": "dc053b3",
+      "full_sha": "dc053b31e553ac94e5f4c135c7814352d66bd0f5",
+      "timestamp_iso": "2026-06-24T16:14:02-06:00",
+      "subject": "feat(M-RS2): Phase 1 REST bar-cache supply \u2014 capture engine + admin page (kill-switched)"
+    },
+    {
+      "sha": "deb96e5",
+      "full_sha": "deb96e5e7d9b1ee9bb625acc238912effc310f8e",
+      "timestamp_iso": "2026-06-24T16:13:48-06:00",
+      "subject": "perf(recompute): M-RS1 per-TF warmup right-sizing (RORT_RIGHTSIZE_WARMUP, default off)"
+    },
+    {
+      "sha": "64547cf",
+      "full_sha": "64547cfbb4d9314cbd6130a4c4932cc9b0bc6063",
+      "timestamp_iso": "2026-06-23T19:02:47-06:00",
+      "subject": "fix(backtest): inherit only OPEN positions on resume (FLAT restore broke entries)"
+    },
+    {
+      "sha": "bb33332",
+      "full_sha": "bb33332f330f8b6befa94d8873e281052b101c0e",
+      "timestamp_iso": "2026-06-23T18:42:51-06:00",
+      "subject": "fix(backtest): inherit boundary-open position on append resume (kill-switch, default OFF)"
+    },
+    {
+      "sha": "1269d46",
+      "full_sha": "1269d46650dc0ab1a1c74aa09831667c5057b174",
+      "timestamp_iso": "2026-06-23T11:12:47-06:00",
+      "subject": "strategy-health: add tolerance_seconds param (default 60) for 5s/10s fidelity view + bug-hunt skill + docs"
+    },
+    {
+      "sha": "48ecb57",
+      "full_sha": "48ecb5708a01b92b28468a9e1eb8e065e846d51e",
+      "timestamp_iso": "2026-06-22T19:01:54-06:00",
+      "subject": "docs: STATUS \u2014 2026-06-22 EOD (gen-gate fix + secondary-TF snapshot) + 2026-06-23 plan"
+    },
+    {
+      "sha": "3da94eb",
+      "full_sha": "3da94eb8c4d3fad122a7fcf5ded56ea33a55011b",
+      "timestamp_iso": "2026-06-22T19:00:23-06:00",
+      "subject": "diag: XTF_BLOCK_DIAG \u2014 log cross-TF gate state when a gated entry is suppressed live"
+    },
+    {
+      "sha": "e0b1e4a",
+      "full_sha": "e0b1e4a61a97b28f692a8ef2b957703987fcef5f",
+      "timestamp_iso": "2026-06-22T18:29:25-06:00",
+      "subject": "Secondary-TF snapshot: seed on full recompute + key by model_override"
+    },
+    {
+      "sha": "26743f4",
+      "full_sha": "26743f49abd3fb80e11a8505cce6826d94f19902",
+      "timestamp_iso": "2026-06-22T17:58:50-06:00",
+      "subject": "rename: secondary-TF CACHE -> secondary-TF SNAPSHOT (avoid collision with the algo/cache_% lane)"
+    },
+    {
+      "sha": "e60fbc7",
+      "full_sha": "e60fbc7bce6ae7688d49ebb66599c45683c5e64a",
+      "timestamp_iso": "2026-06-22T17:18:44-06:00",
+      "subject": "Secondary-TF cache for fast Update-New-Data (kill-switch RORT_SECONDARY_TF_CACHE, default OFF)"
+    },
+    {
+      "sha": "cde1dec",
+      "full_sha": "cde1decbf8e4eec4929d15d4e60995238a67be51",
+      "timestamp_iso": "2026-06-22T16:14:20-06:00",
+      "subject": "cleanup: remove temporary GATE_BLOCK_DIAG (root cause fixed, confirmed live)"
+    },
+    {
+      "sha": "880bdb3",
+      "full_sha": "880bdb36754c118da6c65317660f24c64e5928cf",
+      "timestamp_iso": "2026-06-22T15:49:59-06:00",
+      "subject": "Live gen-gate ROOT FIX: load general packs via explicit user_id at engine startup"
+    },
+    {
+      "sha": "0479d49",
+      "full_sha": "0479d4904c0e7411d1cf71e238d01f1292a6be4c",
+      "timestamp_iso": "2026-06-22T15:36:14-06:00",
+      "subject": "diag: GATE_BLOCK_DIAG \u2014 log live gate state when a gated entry trigger fires but is suppressed"
+    },
+    {
+      "sha": "b1c732c",
+      "full_sha": "b1c732c7a0afa869518d5ebd133062bd39dcdf47",
+      "timestamp_iso": "2026-06-22T14:57:47-06:00",
+      "subject": "Live gen-gate: coerce bar timestamp str->datetime so general-pack gating fires live"
+    },
+    {
+      "sha": "d61946b",
+      "full_sha": "d61946b78ecb9d19c6509dbf5e3648cf6704b031",
+      "timestamp_iso": "2026-06-22T12:09:07-06:00",
+      "subject": "Live gating: fix general-pack matching for compound pack ids (time-of-day gates never fired live)"
+    },
+    {
+      "sha": "38c527e",
+      "full_sha": "38c527e2cd5fbef2c189bc1fcf8105c0bb06a4e9",
+      "timestamp_iso": "2026-06-22T10:31:46-06:00",
+      "subject": "My Strategies card: show general confluences (were hidden \u2014 only TF shown)"
+    },
+    {
+      "sha": "99c25cf",
+      "full_sha": "99c25cf9c31eed6eaa591ada4b81e725b524a89b",
+      "timestamp_iso": "2026-06-22T10:28:20-06:00",
+      "subject": "General-pack gating: fix UTC\u2192ET timezone bug (session/time-of-day silently blocked live)"
+    },
+    {
+      "sha": "17d4801",
+      "full_sha": "17d4801f381a0401b8cb7dd5a02785f40dbcb353",
+      "timestamp_iso": "2026-06-19T21:19:48-06:00",
+      "subject": "Mass Results: group by full trigger-set (entry \u00d7 exit \u00d7 stop), not entry-only"
+    },
+    {
+      "sha": "7fb84ae",
+      "full_sha": "7fb84ae0f08ea00f2d10b87197ec73e09f46fab9",
+      "timestamp_iso": "2026-06-19T21:16:35-06:00",
+      "subject": "Mass Builder: fix cross-pack multi-trigger silent-drop (dough tracked only first combo's exit)"
+    },
+    {
+      "sha": "9968af9",
+      "full_sha": "9968af96de34eb61e112ecc6f9e433f5db9562f8",
+      "timestamp_iso": "2026-06-19T17:32:44-06:00",
+      "subject": "Mass Results: defer engine-accurate inline re-run (not faithful via /backtest/run)"
+    },
+    {
+      "sha": "d7f5983",
+      "full_sha": "d7f598338234151d67d7857bf2d47600794e26a9",
+      "timestamp_iso": "2026-06-19T17:19:15-06:00",
+      "subject": "Mass Results: engine re-run reproduces the result's original window"
+    },
+    {
+      "sha": "2df10a7",
+      "full_sha": "2df10a7f90567ed9a87ceee6d1257ed2725c0510",
+      "timestamp_iso": "2026-06-19T17:01:15-06:00",
+      "subject": "Mass Results: engine-accurate fetch-on-demand per result"
+    },
+    {
+      "sha": "adcc96d",
+      "full_sha": "adcc96d9d78a634e066b1f4d7fb601252c26d504",
+      "timestamp_iso": "2026-06-19T16:41:31-06:00",
+      "subject": "Mass Results: nested per-dough result drill-down (live-updating)"
+    },
+    {
+      "sha": "cdcb841",
+      "full_sha": "cdcb841929a25bbdf1f3b1cf008b5ec7418017b8",
+      "timestamp_iso": "2026-06-19T16:10:11-06:00",
+      "subject": "Mass Builder: incremental mid-flight result persistence (resilience + live view)"
+    },
+    {
+      "sha": "a55cf95",
+      "full_sha": "a55cf954ff41ac34e5e9833e8f1d8c20f0fefbf2",
+      "timestamp_iso": "2026-06-19T15:26:08-06:00",
+      "subject": "Mass Builder: scope confluence-group prep to cut OOM on multi-trigger/long runs"
+    },
+    {
+      "sha": "1e50428",
+      "full_sha": "1e50428f21fcad938858e105c9879707272b002d",
+      "timestamp_iso": "2026-06-19T12:20:44-06:00",
+      "subject": "[1.5] Skip algo-lane historical cold-seed (lane fills live) \u2014 fast first-UND"
+    },
+    {
+      "sha": "45f9ace",
+      "full_sha": "45f9ace2610c47126a412fba6cc38e050658ded4",
+      "timestamp_iso": "2026-06-19T12:09:14-06:00",
+      "subject": "Task tracker: add \ud83d\udfe2 offline-ok badge + clearer legend"
+    },
+    {
+      "sha": "438b254",
+      "full_sha": "438b254698910e166be0625d5075fb50c9bf47c5",
+      "timestamp_iso": "2026-06-19T12:02:04-06:00",
+      "subject": "Task tracker polish: nav link + one-line priority + task modal + wider"
+    },
+    {
+      "sha": "997bb97",
+      "full_sha": "997bb97cabeeaecb01b7385338c4ff589822788f",
+      "timestamp_iso": "2026-06-19T11:36:04-06:00",
+      "subject": "feat: Dev Task Tracker (admin board) \u2014 ClickUp-lite shared task mgmt"
+    },
+    {
+      "sha": "4f6eb64",
+      "full_sha": "4f6eb648388550a9fcba7fb719929519b5c5a4be",
+      "timestamp_iso": "2026-06-19T10:51:41-06:00",
+      "subject": "doc: STATUS \u2014 PENDING MONDAY live-validation + selective-rollback map (Bug5 kill-switch)"
+    },
+    {
+      "sha": "3159d96",
+      "full_sha": "3159d96e9e849e6a564a84243504d2fb104f93a2",
+      "timestamp_iso": "2026-06-19T10:50:53-06:00",
+      "subject": "[FC] Bug 5 kill-switch: RORT_TF_SCALED_WARMUP (default on) for instant rollback"
+    },
+    {
+      "sha": "8c2fdcb",
+      "full_sha": "8c2fdcbb05a257dba0a55a4f730a39ca480e2e03",
+      "timestamp_iso": "2026-06-19T09:39:32-06:00",
+      "subject": "[FC] Fix Bug 5 regression: 1Min warmup (<=60s loads native, not resample-to-1Min)"
+    },
+    {
+      "sha": "a76c40e",
+      "full_sha": "a76c40e0093a61e64d4ac9f3e3300f6c9a1fbf56",
+      "timestamp_iso": "2026-06-18T19:19:56-06:00",
+      "subject": "doc: Tier 2 validated (byte-identical, ~60x) + flipped ON"
+    },
+    {
+      "sha": "6c21564",
+      "full_sha": "6c215649adce59516e3d7f0bbd4aa2f437efc566",
+      "timestamp_iso": "2026-06-18T19:14:56-06:00",
+      "subject": "[FC] Tier 2: stable window-class key + visible-window trim -> byte-identical re-bake"
+    },
+    {
+      "sha": "2113889",
+      "full_sha": "2113889e2d14bcc059554674674fc7c842a62c94",
+      "timestamp_iso": "2026-06-18T18:38:53-06:00",
+      "subject": "doc: Tier 2 implemented end-to-end (gated off) + validation + flip gate"
+    },
+    {
+      "sha": "074518a",
+      "full_sha": "074518a665d54d074e1b7e465ea7b285d137e923",
+      "timestamp_iso": "2026-06-18T18:36:33-06:00",
+      "subject": "Tier 2: MB persists dough per group + window-only key (drop user_id)"
+    },
+    {
+      "sha": "2b4aeb5",
+      "full_sha": "2b4aeb583e75a5b0e8552206c52bd0291b796ff2",
+      "timestamp_iso": "2026-06-18T18:33:30-06:00",
+      "subject": "Tier 2: gated dough re-bake in recompute (default OFF, fallback-safe)"
+    },
+    {
+      "sha": "bddbf7c",
+      "full_sha": "bddbf7c23888ed9685945bf988abe5d8a87b6c1a",
+      "timestamp_iso": "2026-06-18T18:31:35-06:00",
+      "subject": "Tier 2: dough storage helpers (Supabase Storage) + validated end-to-end"
+    },
+    {
+      "sha": "6daa3b4",
+      "full_sha": "6daa3b49e7814d1e5e89a6bd8eee356ba3eac0e5",
+      "timestamp_iso": "2026-06-18T18:16:05-06:00",
+      "subject": "Tier 2 groundwork: bar_cache_store (dough serialize/deserialize) + validated"
+    },
+    {
+      "sha": "5ad07cd",
+      "full_sha": "5ad07cd562bf6e985ea480d555a5ccaf12beeb57",
+      "timestamp_iso": "2026-06-18T17:51:42-06:00",
+      "subject": "doc: Tier 1 shipped + Tier 2 (Parquet dough) plan + pizza-dough confirmation"
+    },
+    {
+      "sha": "8e270c7",
+      "full_sha": "8e270c7ce337a2d15dec195366f091a9ab4134c9",
+      "timestamp_iso": "2026-06-18T17:51:17-06:00",
+      "subject": "[FC] Tier 1: auto-populate backtest lane on trades-less save (Mass Builder)"
+    },
+    {
+      "sha": "e9db535",
+      "full_sha": "e9db535e14b041f5617894aedba27684fc38d79c",
+      "timestamp_iso": "2026-06-18T15:49:04-06:00",
+      "subject": "Equity alignment: blue/yellow split at in_sample_end (OOS), matching Fwd count"
+    },
+    {
+      "sha": "12874e8",
+      "full_sha": "12874e815116d00c198eb11c9506c2511b70f26e",
+      "timestamp_iso": "2026-06-18T15:25:34-06:00",
+      "subject": "Bug 1: Fwd count = backtest-lane only, divided at in_sample_end (OOS start)"
+    },
+    {
+      "sha": "da8bdfe",
+      "full_sha": "da8bdfea633a286223ca0003e72e79e78be9cefa",
+      "timestamp_iso": "2026-06-18T15:17:51-06:00",
+      "subject": "doc: STATUS reorg \u2014 309-314 root-caused (display artifacts + Bug5 fixed + 310 RVOL open); priorities P0 live-confirm/RVOL, P1 Stage-2 pipeline"
+    },
+    {
+      "sha": "0e19838",
+      "full_sha": "0e1983871373bc142a7d05a28f47b6bb400a0b84",
+      "timestamp_iso": "2026-06-18T15:08:27-06:00",
+      "subject": "[FC] Bug 5 fix: TF-scaled resample-from-1min warmup for cross-TF gates"
+    },
+    {
+      "sha": "207e5f6",
+      "full_sha": "207e5f6802a3349c621eb0ab25b81451a93783ce",
+      "timestamp_iso": "2026-06-18T14:15:36-06:00",
+      "subject": "doc: Bug 5 root cause CONFIRMED \u2014 live gate warmup flat days=7 starves coarse-TF gates"
+    },
+    {
+      "sha": "436fefe",
+      "full_sha": "436fefe4972d9f230c3c3d0029d33aa39febd80d",
+      "timestamp_iso": "2026-06-18T14:13:03-06:00",
+      "subject": "doc: MB bugs \u2014 confirm forward_test_start anchor (created_at vs in_sample_end) + 311 phantom"
+    },
+    {
+      "sha": "a1df5b9",
+      "full_sha": "a1df5b93441df1b48b590a00c3a76c74e0a190d8",
+      "timestamp_iso": "2026-06-18T13:50:13-06:00",
+      "subject": "doc: Mass-Builder forward-test bug audit (309-314) \u2014 2 display artifacts + 1 real live-gate bug"
+    },
+    {
+      "sha": "bfc3947",
+      "full_sha": "bfc39475a892fc28adecf5ab6c606e326c84de0a",
+      "timestamp_iso": "2026-06-18T13:11:22-06:00",
+      "subject": "diag: gate divergence 309/310/313 root-caused (fwd_test_start=None + live cross-TF gate); harness daily-gate fix"
+    },
+    {
+      "sha": "9b4e435",
+      "full_sha": "9b4e435af16d60e97fcab44134f9d37347a3e2fc",
+      "timestamp_iso": "2026-06-18T13:02:28-06:00",
+      "subject": "doc: Roadmap \u2014 speed-batch journey + gate-timing pivot"
+    },
+    {
+      "sha": "35ddf41",
+      "full_sha": "35ddf4165329e3dbc090e50d702129e979e35a2a",
+      "timestamp_iso": "2026-06-18T12:47:24-06:00",
+      "subject": "doc: STATUS \u2014 #21 done (2x, profile verdict), #29 partial + decouple rejected"
+    },
+    {
+      "sha": "13c4786",
+      "full_sha": "13c478632976b01844cb7c03e7a76d0e1027ad92",
+      "timestamp_iso": "2026-06-18T12:46:51-06:00",
+      "subject": "[FC] #29 chart speed: scope chart prep (#21) + trim to visible window"
+    },
+    {
+      "sha": "1bbad56",
+      "full_sha": "1bbad56601f88d287904d1937102bbd49a2f6e49",
+      "timestamp_iso": "2026-06-18T12:00:09-06:00",
+      "subject": "[FC] #21 scope confluence-group prep to needed groups (kill-switch, default OFF)"
+    },
+    {
+      "sha": "6c7de2c",
+      "full_sha": "6c7de2c07951dd1140e279c6599863ea1435731c",
+      "timestamp_iso": "2026-06-18T09:56:52-06:00",
+      "subject": "[FC] data_loader: never silently return partial Polygon data (retry + raise)"
+    },
+    {
+      "sha": "79bbbe4",
+      "full_sha": "79bbbe41fa4b05a34ecb4651e072c1cccfdbbb90",
+      "timestamp_iso": "2026-06-18T09:44:23-06:00",
+      "subject": "docs: add _active/STATUS.md SSOT + log 2026-06-18 divergence findings"
+    },
+    {
+      "sha": "509a6d9",
+      "full_sha": "509a6d91c5b045c5df69b4dde7211ab9573db51e",
+      "timestamp_iso": "2026-06-17T15:19:25-06:00",
+      "subject": "Fidelity Gate: regression harness vs backtest<->live drift"
+    },
+    {
+      "sha": "c8b60db",
+      "full_sha": "c8b60dbc0b08aefac464edb8695d5cd662c71cee",
+      "timestamp_iso": "2026-06-17T12:08:41-06:00",
+      "subject": "frontend: archive 3-way divergence tab behind default-off flag (#28)"
+    },
+    {
+      "sha": "7f69c48",
+      "full_sha": "7f69c48d2edc499821a17cf6229af2c09409ca03",
+      "timestamp_iso": "2026-06-16T17:33:41-06:00",
+      "subject": "doc: append-edge fossilization mechanics + EOD 2026-06-16 v2-snapshot prod-validation"
+    },
+    {
+      "sha": "411e5e7",
+      "full_sha": "411e5e76e7ecdea071ce5ec82176699a170c9fbe",
+      "timestamp_iso": "2026-06-16T15:00:03-06:00",
+      "subject": "v2 band-replace: snapshot-resume mode (dormant) + end_date clip"
+    },
+    {
+      "sha": "738ac9e",
+      "full_sha": "738ac9ec51835b3f28de3fb4c018ce0eb2305295",
+      "timestamp_iso": "2026-06-16T11:42:11-06:00",
+      "subject": "No-wipe guard: band-replace skips when recompute returns 0 (avoid silent-fetch wipe)"
+    },
+    {
+      "sha": "208a9dd",
+      "full_sha": "208a9ddfff7d19aaf6bbb90961779fabd0fbdbdc",
+      "timestamp_iso": "2026-06-16T09:57:02-06:00",
+      "subject": "Health Overview: classify lag-tail as TBD (coverage = data edge, not stamp) + RPC ON CONFLICT fix"
+    },
+    {
+      "sha": "37a7dad",
+      "full_sha": "37a7dadeae49147e10921c2513c0530a6982da0f",
+      "timestamp_iso": "2026-06-15T19:50:30-06:00",
+      "subject": "Fix Strategy Health Overview over-filtering: per-strategy coverage TBD"
+    },
+    {
+      "sha": "ed758da",
+      "full_sha": "ed758daebc84b802de813f411e1e367c484dd723",
+      "timestamp_iso": "2026-06-15T18:06:58-06:00",
+      "subject": "B2 append-edge fix (capped warmup, dormant) + Health Overview Combined%/TBD"
+    },
+    {
+      "sha": "dd2d0f4",
+      "full_sha": "dd2d0f40a6eb82b0ee4f70fdccad0628783adee0",
+      "timestamp_iso": "2026-06-13T20:10:04-06:00",
+      "subject": "[claude-iter-0613p] doc: prominent Kevin validation follow-up checklist at top of spec"
+    },
+    {
+      "sha": "57a93e4",
+      "full_sha": "57a93e42334c2980a450ff60a0cd17f050fecf0d",
+      "timestamp_iso": "2026-06-13T19:35:59-06:00",
+      "subject": "[claude-iter-0613o] pack emitters Wave 3: vwap_v2, swing_123, strat_assistant (sr_channels deferred)"
+    },
+    {
+      "sha": "5818bda",
+      "full_sha": "5818bdad12ad7d3731f8941ee33ef66ff48a1f69",
+      "timestamp_iso": "2026-06-13T19:31:19-06:00",
+      "subject": "[claude-iter-0613n] pack emitters Wave 2: supertrend, rvol_v2, rsi_zones_2, stochastic, bollinger_bands"
+    },
+    {
+      "sha": "90aa9c4",
+      "full_sha": "90aa9c48dda644786a5c2f8b90adfdc915bab522",
+      "timestamp_iso": "2026-06-13T19:25:56-06:00",
+      "subject": "[claude-iter-0613m] pack emitters Wave 1: ema_pp_v4, ema_stack_v2, macd_line_v2, macd_histogram_v2"
+    },
+    {
+      "sha": "e8f57b2",
+      "full_sha": "e8f57b23273c0cad5d50a5be0042c435c293d2bb",
+      "timestamp_iso": "2026-06-13T17:21:22-06:00",
+      "subject": "[claude-iter-0613l] doc: generator shipped + verify steps"
+    },
+    {
+      "sha": "5e07374",
+      "full_sha": "5e0737443fe04589fc8980aa5048797fbd699bb6",
+      "timestamp_iso": "2026-06-13T17:20:21-06:00",
+      "subject": "[claude-iter-0613k] TradingView Export generator + endpoint + Strategy Detail tab"
+    },
+    {
+      "sha": "5f7b4de",
+      "full_sha": "5f7b4ded86e0eaaa391ee8ee15e31fa7236cc0d8",
+      "timestamp_iso": "2026-06-13T17:12:05-06:00",
+      "subject": "[claude-iter-0613j] RTH-only TV parity: 98.6% match, zero absent trades \u2014 residual was thin-tape"
+    },
+    {
+      "sha": "bf8bfb3",
+      "full_sha": "bf8bfb36f0a114e8d9fdd28a468d8c29b06186d3",
+      "timestamp_iso": "2026-06-13T17:06:30-06:00",
+      "subject": "[claude-iter-0613i] TV full-strategy trade parity: 626/673 (~93%) match, prices ~identical, 93% exit-reason agree"
+    },
+    {
+      "sha": "182452d",
+      "full_sha": "182452d539ef0c411f80becdc314f70291adad75",
+      "timestamp_iso": "2026-06-13T16:40:46-06:00",
+      "subject": "[claude-iter-0613h] doc: bar-parity results in spec"
+    },
+    {
+      "sha": "1b85aa6",
+      "full_sha": "1b85aa66771c2b9827a8b2233e1ec5bf62fa9506",
+      "timestamp_iso": "2026-06-13T16:40:10-06:00",
+      "subject": "[claude-iter-0613g] TV bar parity: math exact (EMA \u0394~0), REST\u2248TV bar-for-bar, live missed 33 thin-tape bars"
+    },
+    {
+      "sha": "5c99343",
+      "full_sha": "5c99343adcd3e792ed44eec003aaec1e51b1f92b",
+      "timestamp_iso": "2026-06-13T16:27:19-06:00",
+      "subject": "[claude-iter-0613f] TV port: gate lag fix (drop [1]), Checkpoint C (full+intrabar stop), CSV comparator"
+    },
+    {
+      "sha": "76e4d44",
+      "full_sha": "76e4d4417555d03a7e19e51628c7d6013f4b5ef3",
+      "timestamp_iso": "2026-06-13T15:01:04-06:00",
+      "subject": "[claude-iter-0613e] TradingView Export: sid 303 Checkpoint B (2m gate) + C semantics confirmed"
+    },
+    {
+      "sha": "278a051",
+      "full_sha": "278a0510d33bba4df9112929cf700a1c5a9b73bb",
+      "timestamp_iso": "2026-06-13T13:16:23-06:00",
+      "subject": "[claude-iter-0613d] TradingView Export: design spec + sid 303 Checkpoint A Pine"
+    },
+    {
+      "sha": "8481c84",
+      "full_sha": "8481c84092f80adccb57f6d04dde9455341dcc5b",
+      "timestamp_iso": "2026-06-13T12:36:41-06:00",
+      "subject": "[claude-iter-0613c] doc: Live mode panel shipped + weekend status"
+    },
+    {
+      "sha": "dcede9a",
+      "full_sha": "dcede9ad34ef27f92ef66ecc9d240b7bac954a68",
+      "timestamp_iso": "2026-06-13T11:45:16-06:00",
+      "subject": "[claude-iter-0613b] Alert Lens Live mode: recorded gate telemetry panel"
+    },
+    {
+      "sha": "1931db2",
+      "full_sha": "1931db269085cc677ad0b36eec5b8027db004b7f",
+      "timestamp_iso": "2026-06-13T11:38:35-06:00",
+      "subject": "[claude-iter-0613a] parity-sim V2: WS-vs-REST trigger divergence attributor + finding"
+    },
+    {
+      "sha": "13bb25f",
+      "full_sha": "13bb25f05e65021f853e4803a1501f6dd80d4c5e",
+      "timestamp_iso": "2026-06-12T18:25:28-06:00",
+      "subject": "[claude-iter-0612k] End-of-Day Report: post-fix verdicts, fleet by-hour, weekend plan"
+    },
+    {
+      "sha": "79b35fd",
+      "full_sha": "79b35fd39e396686c1e802ff29c3307f98952749",
+      "timestamp_iso": "2026-06-12T17:01:29-06:00",
+      "subject": "[claude-iter-0612j] EOD post-fix UAD verdicts: control +30.8pts, gate telemetry first use"
+    },
+    {
+      "sha": "f9c6883",
+      "full_sha": "f9c6883912dcc18d542b4d3b364c458d56f430e0",
+      "timestamp_iso": "2026-06-12T15:30:34-06:00",
+      "subject": "[claude-iter-0612i] watcher false-alarm closure: gap healer re-sourced rows; state healthy"
+    },
+    {
+      "sha": "f4a0784",
+      "full_sha": "f4a07840e543b95a908c54c7fe1f7365be93311c",
+      "timestamp_iso": "2026-06-12T15:25:20-06:00",
+      "subject": "[claude-iter-0612h] cache scrub (49.3k clobbered >=120s rows) + doc"
+    },
+    {
+      "sha": "38ae2cc",
+      "full_sha": "38ae2ccb9c14b7704010100b88d4c2521f5fb400",
+      "timestamp_iso": "2026-06-12T15:22:45-06:00",
+      "subject": "[claude-iter-0612h] by-deploy TBD classification (mirrors by-hour)"
+    },
+    {
+      "sha": "838e29a",
+      "full_sha": "838e29a12eb4149c2f464ada6e174b4a24291e5f",
+      "timestamp_iso": "2026-06-12T15:15:57-06:00",
+      "subject": "[claude-iter-0612g] doc: clobber root cause + fix narrative"
+    },
+    {
+      "sha": "dc3f3bb",
+      "full_sha": "dc3f3bba82fca3e6302302e582dd481a2299e24d",
+      "timestamp_iso": "2026-06-12T15:15:09-06:00",
+      "subject": "[claude-iter-0612g] clobber root-cause fix: MERGE late sub-bars, flush writes pure-secondary >=60s"
+    },
+    {
+      "sha": "91307a9",
+      "full_sha": "91307a93afc21f6c6376ea6e87e177075ffcbfb9",
+      "timestamp_iso": "2026-06-12T14:54:09-06:00",
+      "subject": "[claude-iter-0612f] gate telemetry validated live: per-bar gate states recording"
+    },
+    {
+      "sha": "ba7d8f3",
+      "full_sha": "ba7d8f37e6bbcf87722ee393940211ee3a5089e1",
+      "timestamp_iso": "2026-06-12T14:29:18-06:00",
+      "subject": "[claude-iter-0612e] bisection facts: freeze deterministic under guard, caller-layer suspect"
+    },
+    {
+      "sha": "36dc2df",
+      "full_sha": "36dc2df9551a40591eece10dddde3f3aa66af222",
+      "timestamp_iso": "2026-06-12T14:28:46-06:00",
+      "subject": "Revert \"[claude-iter-0612e] re-land clobber guard UNDER TELEMETRY (live bisection, extended hours)\""
+    },
+    {
+      "sha": "0d767d9",
+      "full_sha": "0d767d93e6117169fbfebdda66b93c80f4c48baa",
+      "timestamp_iso": "2026-06-12T14:17:49-06:00",
+      "subject": "[claude-iter-0612e] re-land clobber guard UNDER TELEMETRY (live bisection, extended hours)"
+    },
+    {
+      "sha": "92b3d07",
+      "full_sha": "92b3d07c7512729c1a41c1b151879ad893e436af",
+      "timestamp_iso": "2026-06-12T14:13:08-06:00",
+      "subject": "[claude-iter-0612d] gate-state telemetry + freeze alarm (the visibility instrument)"
+    },
+    {
+      "sha": "2e1eabc",
+      "full_sha": "2e1eabc69425da2f42596281c89292698442f145",
+      "timestamp_iso": "2026-06-12T13:47:17-06:00",
+      "subject": "[claude-iter-0612c] EOD wrap: day timeline, contaminated windows, weekend queue"
+    },
+    {
+      "sha": "92c9528",
+      "full_sha": "92c95285c6bb1ed27cb5aaac491af132d2585d83",
+      "timestamp_iso": "2026-06-12T13:43:09-06:00",
+      "subject": "Revert \"[claude-iter-0612c] 2m clobber fix: sub-bar fan-out inputs never replace closed periods\""
+    },
+    {
+      "sha": "c7f9852",
+      "full_sha": "c7f9852e356b4a8d24f00dfe7e50d02303f033eb",
+      "timestamp_iso": "2026-06-12T13:22:20-06:00",
+      "subject": "[claude-iter-0612c] strategy-health by-hour: TBD classification (Kevin's design)"
+    },
+    {
+      "sha": "247afec",
+      "full_sha": "247afec959e553db65c5ae9be9c53fbbdc16a8bd",
+      "timestamp_iso": "2026-06-12T13:02:33-06:00",
+      "subject": "[claude-iter-0612c] 2m clobber fix: sub-bar fan-out inputs never replace closed periods"
+    },
+    {
+      "sha": "48e07ee",
+      "full_sha": "48e07ee46ac5bbff06ba96db41b3b25cca840c7f",
+      "timestamp_iso": "2026-06-12T12:10:21-06:00",
+      "subject": "[claude-iter-0612b] volume integrity: dedup sub-bar volume + skip_volume on chart-visual feed"
+    },
+    {
+      "sha": "711e72b",
+      "full_sha": "711e72b4a76691ebab24ccbbbef70d05da5282f9",
+      "timestamp_iso": "2026-06-12T09:34:47-06:00",
+      "subject": "[claude-iter-0612b] B5 TRUE root cause: own_records must publish own-TF records only"
+    },
+    {
+      "sha": "cf73ecf",
+      "full_sha": "cf73ecf74279780fe995121b1d7c6a9455c76fa2",
+      "timestamp_iso": "2026-06-12T02:17:17-06:00",
+      "subject": "[claude-iter-0612a] fleet report: morning summary + 302 re-heal verification"
+    },
+    {
+      "sha": "ff61d57",
+      "full_sha": "ff61d57daaa9ed232b49b327615cdc1e994983ed",
+      "timestamp_iso": "2026-06-12T01:59:56-06:00",
+      "subject": "[claude-iter-0612a] deploy_history: add gate-fix SHA"
+    },
     {
       "sha": "02dab4c",
       "full_sha": "02dab4c98064fddd9c99c9a65bb71a10dcf0f9da",
@@ -680,132 +3291,6 @@
       "full_sha": "0758187eac798a9e2884a3d1b760c6afdd8dec90",
       "timestamp_iso": "2026-05-29T09:25:24-06:00",
       "subject": "strategy_health: add global_fair counts; walkthrough defaults to them"
-    },
-    {
-      "sha": "ba7b628",
-      "full_sha": "ba7b628d54c39037bba69d9044fabbf46213bb40",
-      "timestamp_iso": "2026-05-28T17:14:38-06:00",
-      "subject": "docs: plan for 2026-05-29 RTH validation session"
-    },
-    {
-      "sha": "1ba3482",
-      "full_sha": "1ba3482b3a7cadc33d8eb52470cb9541aff0ef32",
-      "timestamp_iso": "2026-05-28T17:07:02-06:00",
-      "subject": "rest_verifier: distinct gap_fill_unverified status; Known_Bugs entry for live\u2194backtest gap-fill divergence"
-    },
-    {
-      "sha": "0f47daa",
-      "full_sha": "0f47daa593fdd61509070979d24d716f0b62ba9e",
-      "timestamp_iso": "2026-05-28T16:45:27-06:00",
-      "subject": "rest_verifier + apply_rest_correction: align L-type bar_time to bar boundary"
-    },
-    {
-      "sha": "45a3a12",
-      "full_sha": "45a3a12a3cbaad203ae3b4a6e5520ab559ae4b44",
-      "timestamp_iso": "2026-05-28T16:30:13-06:00",
-      "subject": "ws_rest_spliced Phases A+B+C: snapshot fidelity + multi-bar replay + per-second splice"
-    },
-    {
-      "sha": "cc2a9b2",
-      "full_sha": "cc2a9b25b35578dab20edd4cc166fdf381839042",
-      "timestamp_iso": "2026-05-28T15:37:08-06:00",
-      "subject": "docs: drift_uncorrected_cascade root cause + Known_Bugs entries"
-    },
-    {
-      "sha": "697fb9a",
-      "full_sha": "697fb9a639c9dcbe63c8e64cbb6402bc6437e5ef",
-      "timestamp_iso": "2026-05-28T15:29:15-06:00",
-      "subject": "docs: capture 2026-05-28 EOD baseline metrics post-M8"
-    },
-    {
-      "sha": "1bc4150",
-      "full_sha": "1bc415004472250450ec4d1df9aa5ce384d7cea8",
-      "timestamp_iso": "2026-05-28T15:12:55-06:00",
-      "subject": "docs: divergence investigation SOP + tool + first session log"
-    },
-    {
-      "sha": "70a449d",
-      "full_sha": "70a449d7db06e7ebb69c4265b6e346df28a6e60f",
-      "timestamp_iso": "2026-05-28T13:30:13-06:00",
-      "subject": "docs: mark rest_polled/B1 superseded; update WS coverage entry status"
-    },
-    {
-      "sha": "cb7eeaf",
-      "full_sha": "cb7eeaf2adc42d08af3e14e5b7db522379f465eb",
-      "timestamp_iso": "2026-05-28T12:51:38-06:00",
-      "subject": "M8: promote ws_rest_spliced to default, demote ws_agg_reconciled"
-    },
-    {
-      "sha": "f95aa64",
-      "full_sha": "f95aa6411b0ff7a5676c30d3749eb7b01c16b028",
-      "timestamp_iso": "2026-05-28T12:17:39-06:00",
-      "subject": "unified_engine: stamp exit's exec_type on _signal_exit, not entry's"
-    },
-    {
-      "sha": "440ec04",
-      "full_sha": "440ec04841f078fb8a1601015b35d19e987d6fe9",
-      "timestamp_iso": "2026-05-28T11:43:33-06:00",
-      "subject": "rest_verifier: diagnostic logging in _fetch_rest_bar empty-path"
-    },
-    {
-      "sha": "0b82c30",
-      "full_sha": "0b82c3051fc0b9f51bb373d9d8b5cc2bbf87ef32",
-      "timestamp_iso": "2026-05-28T11:19:03-06:00",
-      "subject": "rest_verifier: bypass data_loader's day cache for fresh REST fetches"
-    },
-    {
-      "sha": "596ac82",
-      "full_sha": "596ac820e88e143a3cc4cd728e200270d7de578f",
-      "timestamp_iso": "2026-05-28T11:02:14-06:00",
-      "subject": "rest_verifier: 120s max_wait + sweeper for REST settle tail"
-    },
-    {
-      "sha": "541d78c",
-      "full_sha": "541d78c044391096efa93f21204c1a326bdfcf02",
-      "timestamp_iso": "2026-05-28T10:38:04-06:00",
-      "subject": "rest_verifier: prefer signal_data.bar_time over fill_ts arithmetic"
-    },
-    {
-      "sha": "b323f35",
-      "full_sha": "b323f356abcf1d279e8636a6ae23c148d0f16ec2",
-      "timestamp_iso": "2026-05-28T10:27:29-06:00",
-      "subject": "ws_rest_spliced: drift_uncorrected status + snapshot warning dedupe"
-    },
-    {
-      "sha": "a0b7d54",
-      "full_sha": "a0b7d54a4be8d148d98da61747075f64f1192198",
-      "timestamp_iso": "2026-05-28T09:29:22-06:00",
-      "subject": "M6 ws_rest_spliced: apply_rest_correction + verifier callback wiring"
-    },
-    {
-      "sha": "a27cf26",
-      "full_sha": "a27cf268f7494b84de212ef506033871736cf38f",
-      "timestamp_iso": "2026-05-28T09:24:05-06:00",
-      "subject": "M5: Dispatch routing for ws_rest_spliced (mirrors ws_agg_reconciled)"
-    },
-    {
-      "sha": "4e8fe9a",
-      "full_sha": "4e8fe9aedeb6fbf9aa5699f56a77f2d57030ca69",
-      "timestamp_iso": "2026-05-28T09:22:37-06:00",
-      "subject": "M4: Wire rest_verifier hook into Ralph alert-fire dispatchers"
-    },
-    {
-      "sha": "6feae0d",
-      "full_sha": "6feae0d6a368fcd43906df4493d450665908d5d4",
-      "timestamp_iso": "2026-05-28T09:18:39-06:00",
-      "subject": "M3: REST verifier module"
-    },
-    {
-      "sha": "705384a",
-      "full_sha": "705384a45f51290160184d7db664e065c9885bfa",
-      "timestamp_iso": "2026-05-28T09:16:25-06:00",
-      "subject": "M2: Migration + ALERT_COLUMN_FIELDS for verification_* columns"
-    },
-    {
-      "sha": "bffdd1d",
-      "full_sha": "bffdd1d120826f3b06e9a38e3bd4d9727e2c5d72",
-      "timestamp_iso": "2026-05-28T09:14:58-06:00",
-      "subject": "M1: Register ws_rest_spliced live model + supersede rest_polled"
     }
   ]
 }
