@@ -37,7 +37,15 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
-import pytest
+
+# pytest is only needed when this file is collected by the pytest runner
+# (see the docstring's `python -m pytest ...` invocation). The __main__ block
+# below runs every test as plain python without it, so import gracefully —
+# CI runs the plain-python path and does not install pytest.
+try:
+    import pytest  # noqa: F401
+except ModuleNotFoundError:
+    pytest = None  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
