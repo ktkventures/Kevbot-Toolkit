@@ -238,6 +238,29 @@ export function relTime(iso: string | undefined): string {
   return `${Math.round(h / 24)}d ago`;
 }
 
+/** Vision predicate: tagged 'vision' OR already has subtasks (pre-tag data
+ *  still groups correctly). Vision rows are pipeline-exempt (board #136). */
+export const isVisionTask = (t: Task, byParent: Map<number, Task[]>) =>
+  (t.tags || []).includes('vision') || byParent.has(t.id);
+
+/**
+ * The board grouping — ONE implementation consumed by /admin/tasks and
+ * /admin/roadmap (Spec_Admin_Roadmap.md §2): the two pages must never
+ * disagree about what a vision item is. Input order (API priority order)
+ * is preserved in every output list.
+ */
+export function groupBoard(tasks: Task[]): {
+  byParent: Map<number, Task[]>; visionItems: Task[]; looseTasks: Task[];
+} {
+  const byParent = new Map<number, Task[]>();
+  tasks.forEach((t) => {
+    if (t.parent_id != null) byParent.set(t.parent_id, [...(byParent.get(t.parent_id) || []), t]);
+  });
+  const visionItems = tasks.filter((t) => t.parent_id == null && isVisionTask(t, byParent));
+  const looseTasks = tasks.filter((t) => t.parent_id == null && !isVisionTask(t, byParent));
+  return { byParent, visionItems, looseTasks };
+}
+
 /**
  * Who acts next (spec Phase-3 amendments #3). The checklist is a handoff
  * pipeline: leaf = first un-done step's role (fallback: assignee); vision =
