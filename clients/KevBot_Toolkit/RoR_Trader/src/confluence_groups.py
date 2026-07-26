@@ -568,6 +568,26 @@ def get_config_path() -> Path:
     return project_dir / "config" / "confluence_groups.json"
 
 
+# Board #140 (#9): dedup the "template not found" skip-warning. Confluence
+# groups are (re)loaded on every config poll, so a group that references a
+# removed pack (e.g. the retired rsi_zones / rsi_zones_3) reprinted this
+# benign warning on EVERY reload and flooded worker logs. Skipping the
+# group is correct; we just want ONE breadcrumb per missing template per
+# process, not one per load. Keyed by base_template so a genuinely-new
+# missing template still surfaces once.
+_WARNED_MISSING_TEMPLATES: set = set()
+
+
+def _warn_missing_template(group_id: str, base_template: str) -> None:
+    """Emit the skip-warning at most once per (base_template) per process."""
+    if base_template in _WARNED_MISSING_TEMPLATES:
+        return
+    _WARNED_MISSING_TEMPLATES.add(base_template)
+    print(f"Warning: skipping group '{group_id}' — "
+          f"template '{base_template}' not found "
+          f"(user pack may be removed; further occurrences suppressed)")
+
+
 def _parse_group_list(raw_groups: list) -> List[ConfluenceGroup]:
     """Convert list of dicts to ConfluenceGroup objects with backward compat."""
     groups = []
@@ -604,9 +624,7 @@ def _parse_group_list(raw_groups: list) -> List[ConfluenceGroup]:
 
         # Guard: skip groups referencing templates not in TEMPLATES
         if base_template not in TEMPLATES:
-            print(f"Warning: skipping group '{group_data['id']}' — "
-                  f"template '{base_template}' not found "
-                  f"(user pack may be removed)")
+            _warn_missing_template(group_data['id'], base_template)
             continue
 
         group = ConfluenceGroup(
@@ -752,9 +770,7 @@ def load_confluence_groups() -> List[ConfluenceGroup]:
             # Guard: skip groups referencing templates not in TEMPLATES
             # (e.g., a user pack that was removed)
             if base_template not in TEMPLATES:
-                print(f"Warning: skipping group '{group_data['id']}' — "
-                      f"template '{base_template}' not found "
-                      f"(user pack may be removed)")
+                _warn_missing_template(group_data['id'], base_template)
                 continue
 
             group = ConfluenceGroup(
