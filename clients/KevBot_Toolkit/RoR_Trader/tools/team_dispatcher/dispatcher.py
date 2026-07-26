@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Team dispatcher (V4.14) — dispatches board tasks to headless Claude agents.
+"""Team dispatcher (V4.15) — dispatches board tasks to headless Claude agents.
 
 DRY-RUN BY DEFAULT: prints/logs what it WOULD dispatch, makes ZERO writes.
 Live mode requires --live. Runs on Kevin's machine only (never Railway).
@@ -38,6 +38,15 @@ POLL_S = 900
 RUN_TIMEOUT_S = 45 * 60  # lease
 CLAUDE_BIN = "claude"
 
+# Misc caps (board #135) — every timeout/truncation knob in one place.
+API_TIMEOUT_S = 15         # Supabase REST call timeout
+THREAD_COMMENTS = 5        # recent thread comments quoted in the prompt
+COMMENT_SNIP = 400         # chars kept of each quoted comment
+REAP_TAIL = 3000           # chars of log tail reap works from
+LEASE_COMMENT_TAIL = 800   # chars of tail quoted in the lease-expired comment
+RESULT_COMMENT_MAX = 6000  # chars of agent result posted as a task comment
+LOG_TAIL_DB_MAX = 4000     # chars of log tail stored in run_history
+
 # Board #109 (Registry Phase 2): the Run button is DECLARATIVE — the API adds
 # this tag + a run_history row (outcome='requested'); this --loop is what
 # EXECUTES button presses. Requested tasks jump the queue (still eligibility-
@@ -73,7 +82,7 @@ def api(method, path, body=None, prefer=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(f"{url}/rest/v1/{path}", data=data,
                                  headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=15) as r:
+    with urllib.request.urlopen(req, timeout=API_TIMEOUT_S) as r:
         txt = r.read().decode()
         return json.loads(txt) if txt.strip() else None
 
@@ -204,13 +213,17 @@ def rh_finish(run_id, outcome, log_tail):
     """run_history lifecycle, finish leg (reap): running → terminal."""
     api("PATCH", f"run_history?run_id=eq.{run_id}", body={
         "finished_at": datetime.now(timezone.utc).isoformat(),
-        "outcome": outcome, "log_tail": (log_tail or "")[-4000:]})
+        "outcome": outcome, "log_tail": (log_tail or "")[-LOG_TAIL_DB_MAX:]})
 
 
 def build_prompt(agent, task):
+    """Board #135: the ONE-SHOT CONTRACT block exists because two real runs
+    (#121/#68) armed background suite-watchers and ended their turn — a
+    headless `claude -p` process exits with its final message and reap kills
+    the whole session group, so backgrounded work silently never happens."""
     comments = api("GET", f"dev_task_comments?task_id=eq.{task['id']}"
-                          "&order=created_at.desc&limit=5&select=author,body")
-    thread = "\n".join(f"- {c['author']}: {c['body'][:400]}" for c in reversed(comments or []))
+                          f"&order=created_at.desc&limit={THREAD_COMMENTS}&select=author,body")
+    thread = "\n".join(f"- {c['author']}: {c['body'][:COMMENT_SNIP]}" for c in reversed(comments or []))
     steps = "\n".join(f"- [{'x' if s.get('done') else ' '}] ({s.get('role','')}) {s['text']}"
                       for s in (task.get("checklist") or []))
     return f"""You are {agent['letter']}·auto, a headless dispatched agent on the RoR Trader team.
@@ -225,6 +238,15 @@ Process checklist:
 {steps or '(none)'}
 Recent thread:
 {thread or '(none)'}
+
+ONE-SHOT CONTRACT: you are a single headless process on a {RUN_TIMEOUT_S // 60}-minute
+lease. The moment your final message ends, the process exits and its whole process
+group is KILLED — background shells, watchers, monitors, scheduled wakeups and
+"notify me when done" hooks die with it and NEVER fire. Run every step synchronously
+and wait for it in-process: a long step (test suite, backtest) is run in the
+foreground to completion, budgeted against the lease — never backgrounded to "check
+on later". Anything you cannot finish in-process goes in your final report as
+remaining work, not into the background.
 
 Do the task. Your FINAL message becomes a comment on task #{task['id']} — make it a
 self-contained result report (what you did, files touched, what needs review). If you
@@ -297,25 +319,25 @@ def reap(st):
         if proc_alive and not expired and last is None:
             continue  # still running, within lease
         r["active"] = False
-        tail = full[-3000:]
+        tail = full[-REAP_TAIL:]
         if proc_alive:
             kill_run_group(r["pid"])  # lease kill, or a completed run's leftovers
         if last is None and expired and proc_alive:
             api("POST", "dev_task_comments", body={
                 "task_id": r["task_id"], "author": "system",
-                "body": f"dispatch LEASE EXPIRED ({r['agent']}·auto run {r['run_id']}) — killed. Log tail:\n{tail[-800:]}"})
+                "body": f"dispatch LEASE EXPIRED ({r['agent']}·auto run {r['run_id']}) — killed. Log tail:\n{tail[-LEASE_COMMENT_TAIL:]}"})
             api("PATCH", f"dev_tasks?id=eq.{r['task_id']}",
                 body={"status": "Blocked", "notes": "dispatch failure — see thread"})
             rh_finish(r["run_id"], "lease-expired", tail)
         else:
-            # Only what we POST/store is capped: comment result[:6000],
-            # run_history log_tail[-4000:]. No terminal JSON + dead proc =
+            # Only what we POST/store is capped: comment RESULT_COMMENT_MAX,
+            # run_history LOG_TAIL_DB_MAX. No terminal JSON + dead proc =
             # run died mid-stream → error.
             result = last.get("result", tail) if last is not None else tail
             outcome = ("error" if last.get("is_error") else "ok") if last is not None else "error"
             api("POST", "dev_task_comments", body={
                 "task_id": r["task_id"], "author": f"{r['agent']}·auto",
-                "body": str(result)[:6000]})
+                "body": str(result)[:RESULT_COMMENT_MAX]})
             api("PATCH", f"dev_tasks?id=eq.{r['task_id']}",
                 body={"status": "Review"})
             api("POST", "dev_task_comments", body={
