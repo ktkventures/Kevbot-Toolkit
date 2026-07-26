@@ -1,0 +1,10 @@
+{
+  "name": "visual-verify",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Headless Playwright screenshot helper for task-thread visual verification (board #107)",
+  "type": "module",
+  "dependencies": {
+    "playwright": "^1.49.1"
+  }
+}
