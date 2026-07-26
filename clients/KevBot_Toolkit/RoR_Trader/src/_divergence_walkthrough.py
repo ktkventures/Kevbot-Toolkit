@@ -9,6 +9,7 @@ Usage:
     python _divergence_walkthrough.py --window-hours 1 --max-clusters 20
     python _divergence_walkthrough.py --strategy-id 151 --window-hours 3
     python _divergence_walkthrough.py --denom    # also print the per-strategy paired-count denominator
+    python _divergence_walkthrough.py --denom --tolerance-seconds 10   # stricter fidelity view
 """
 from __future__ import annotations
 import argparse
@@ -26,6 +27,11 @@ def main():
                    help="Include all events, not just needs_investigation")
     p.add_argument("--denom", action="store_true",
                    help="Also fetch paired/total counts from the overview endpoint as the 'good' denominator")
+    p.add_argument("--tolerance-seconds", type=float, default=None,
+                   help="Alert<->backtest pairing tolerance (seconds) for the "
+                        "--denom overview counts. Defaults to the endpoint's "
+                        "own default (60s). Use 5 or 10 for a stricter "
+                        "fidelity view.")
     args = p.parse_args()
 
     # Admin context — match how the UI calls the endpoint
@@ -37,7 +43,8 @@ def main():
     from db import set_admin_user_context, get_admin_client
     set_admin_user_context(os.environ["DEV_USER_ID"])
     from api.routers.strategy_health import (
-        get_strategy_health_backlog, get_strategy_health)
+        get_strategy_health_backlog, get_strategy_health,
+        _DIVERGENCE_TOLERANCE_SEC)
 
     user = {"id": os.environ["DEV_USER_ID"], "email": "admin@local"}
 
@@ -62,10 +69,20 @@ def main():
     print()
 
     if args.denom:
+        # get_strategy_health() gained a `tolerance_seconds` param with the
+        # measurement-trust work. Because it's a FastAPI endpoint, its default
+        # is a Query() FieldInfo object — harmless through FastAPI, but when we
+        # call it DIRECTLY (as here) an unpassed `tolerance_seconds` stays a
+        # Query() and line ~389 does `abs(diff) <= Query(...)` -> TypeError.
+        # So resolve a real float and pass it explicitly. (Board #40.)
+        tol = (args.tolerance_seconds if args.tolerance_seconds is not None
+               else _DIVERGENCE_TOLERANCE_SEC)
         oh = get_strategy_health(
             user=user, window_hours=args.window_hours,
-            start=None, end=None)
+            start=None, end=None, tolerance_seconds=tol)
         oh_rows = oh.get("rows") or []
+        if args.tolerance_seconds is not None:
+            print(f"  (pairing tolerance override: ±{tol:g}s)")
         # Pull paired/phantom/missed by sid for strategies in the backlog
         sids_in_bl = {r.get("strategy_id") for r in rows}
         # 2026-05-29: prefer the GLOBAL fair counts for cross-strategy
