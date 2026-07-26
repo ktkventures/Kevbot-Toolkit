@@ -1434,7 +1434,7 @@ def pine_readiness(strategy_id: int, user=Depends(get_current_user)):
     can list exactly what a strategy needs to be exportable + trade-ready via TV.
 
     Returns {ready: bool, missing: [{kind, detail, ...}], caveats: [...]}.
-    See docs/_active/Design_TV_Export_Readiness.md §5.
+    See Design_TV_Export_Readiness.md §5.
     """
     strat = _get_or_404(strategy_id, user)
     from pine_generator import tv_export_readiness

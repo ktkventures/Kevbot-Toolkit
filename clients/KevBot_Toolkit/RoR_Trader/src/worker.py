@@ -1199,7 +1199,7 @@ class DBRalphEngine:
     def _start_mtf_state_refresh(
             self, engine) -> Optional[threading.Thread]:
         """Launch the MTF gate-state refresher daemon thread (Bug Hunt
-        Wave 1 #2, docs/_active/Bug_Hunt_Wave1_2026-07-06.md).
+        Wave 1 #2, Bug_Hunt_Wave1_2026-07-06.md).
 
         Every RORT_MTF_STATE_REFRESH_S seconds, calls
         `hub.refresh_mtf_states()` on every SymbolHub the engine holds —

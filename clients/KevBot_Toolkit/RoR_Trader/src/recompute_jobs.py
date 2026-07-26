@@ -313,7 +313,7 @@ def _is_cancelled(job_id: str) -> bool:
 # silent-failure traps — an unloaded pack registry (=> every recompute returns
 # 0 trades) and a fork-inherited Supabase admin client (=> shared socket). The
 # per-strategy compute is byte-identical to the sequential path: parallelism
-# only changes scheduling. See docs/_active/Design_M-RS3_Parallel_Recompute.md.
+# only changes scheduling. See Design_M-RS3_Parallel_Recompute.md.
 
 def _status_rank(s: Optional[str]) -> int:
     return {'error': 4, 'skipped': 3, 'appended': 2,
