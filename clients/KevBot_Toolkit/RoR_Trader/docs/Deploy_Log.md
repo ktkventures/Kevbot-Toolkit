@@ -19,6 +19,17 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
   - Notes: anything unusual (stuck deploys, reverts, etc.)
 ```
 
+## 2026-07-26
+
+- **~00:05 UTC (~18:05 MT 07-25)** — `5cce360c` Train 07-25 car 2: board polish + kanban lifecycle (#134/#136)
+  - Service(s) redeployed: api + frontend (Worker/batch rebuild, no functional change). Post-close Sat.
+  - Gates: parity 16 pass + 2 known SPY/10Sec revision-drift fails (E-lane verdicts on record ×3); npm/tsc green (F·auto, exact SHA); lifecycle migration applied pre-merge (additive).
+  - Executed by M acting as R under Kevin's explicit remote authorization (recorded #134); dispatcher.py conflict resolved via F·auto rebase (#138).
+
+- **~23:50 UTC 07-25 (~17:50 MT)** — `c3c8d6c8` Train 07-25 car 1: health nits + dispatcher hardening (#122/#131/#132)
+  - Service(s) redeployed: api + frontend + Worker + batch (post-close Sat). api/docs 200, /admin/tasks 200 verified.
+  - Backup: `backup/dev-pre-train-0725`.
+
 ## 2026-07-25
 
 - **17:04 UTC (11:04 MT)** — `2685c8a0` Merge PR #79 `feat/run-button` → dev: V4.12 ·
