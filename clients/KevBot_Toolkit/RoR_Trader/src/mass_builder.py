@@ -1756,11 +1756,15 @@ _MAX_AUTO_RESUMES = 3  # retry cap: if a search fails to complete after
 
 
 def cleanup_orphaned_mass_searches() -> dict:
-    """Handle mass_searches rows still in 'running' state on API startup.
+    """Recover mass_searches rows left behind by a dead API process on startup.
 
     A fresh API process has no worker threads by definition, so any DB row
     still showing 'running' belongs to a prior process whose daemon thread
-    died (pod restart, deploy, crash). Two paths per row:
+    died (pod restart, deploy, crash). With RORT_MASS_RECOVER_QUEUED=1 we also
+    reclaim 'queued' rows — a job that OOM-restarted during the load phase,
+    before the worker flushed 'running' or wrote its first checkpoint, is
+    otherwise stuck 'queued' forever, invisible to a 'running'-only sweep
+    (board #32). Two paths per row:
 
     * **Auto-resume** (Roadmap 9s Tier 2 follow-up, 2026-04-21): row has a
       checkpoint with ≥1 completed (symbol, tf) group AND resume_count <
@@ -1774,48 +1778,88 @@ def cleanup_orphaned_mass_searches() -> dict:
       resume_count and is a no-op if capped).
 
     Returns a summary dict: {resumed: int, orphaned: int, ids_resumed: [],
-    ids_orphaned: []}.
+    ids_orphaned: [], queued_recovered: int}.
     """
-    summary = {'resumed': 0, 'orphaned': 0, 'ids_resumed': [], 'ids_orphaned': []}
+    import os
+    summary = {'resumed': 0, 'orphaned': 0, 'ids_resumed': [], 'ids_orphaned': [],
+               'queued_recovered': 0}
     from db import USE_DB
     if not USE_DB:
         return summary
+
+    # Kill-switch (board #32). OFF (default) → legacy behavior: only
+    # status='running' rows are swept, and a 'running' row is auto-resumed
+    # ONLY from a real checkpoint. ON → also reclaim status='queued' rows that
+    # a dead process left stranded (see docstring), and skip any row whose
+    # worker is still live in THIS process so the manual /cleanup-orphans
+    # trigger can't reap a freshly-spawned search mid-run.
+    _recover_queued = os.getenv('RORT_MASS_RECOVER_QUEUED', '0') == '1'
+
     try:
         from db import get_admin_client, update_mass_search
         client = get_admin_client()
         # Pull the full config_data with each row so we can decide per-row
         # whether to auto-resume or mark orphaned without extra round-trips.
-        resp = client.table('mass_searches') \
-            .select('id, config_data, user_id') \
-            .eq('status', 'running') \
-            .execute()
-        running = resp.data if resp and resp.data else []
-        if not running:
-            logger.info("Mass search startup cleanup: 0 running rows found")
+        if _recover_queued:
+            resp = client.table('mass_searches') \
+                .select('id, config_data, user_id, status') \
+                .in_('status', ['queued', 'running']) \
+                .execute()
+        else:
+            resp = client.table('mass_searches') \
+                .select('id, config_data, user_id') \
+                .eq('status', 'running') \
+                .execute()
+        rows = resp.data if resp and resp.data else []
+        if not rows:
+            logger.info("Mass search startup cleanup: 0 recoverable rows found")
             return summary
 
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        for row in running:
+        for row in rows:
             sid = row.get('id')
+            is_queued = _recover_queued and row.get('status') == 'queued'
+
+            # Live-process guard (flag-gated). Never reap a search whose worker
+            # is still running in THIS process. On API boot _active_searches is
+            # empty, so every DB row is a genuine orphan and nothing is skipped;
+            # this only matters for the manual /cleanup-orphans endpoint.
+            if _recover_queued:
+                with _search_lock:
+                    _live = (_active_searches.get(str(sid))
+                             or _active_searches.get(sid))
+                if _live and _live.get('status') == 'running' \
+                        and not _live.get('cancelled'):
+                    continue
+
             cfg_data = row.get('config_data') or {}
             checkpoint = cfg_data.get('checkpoint') or {}
             completed = checkpoint.get('completed_symbol_tfs') or []
             resume_count = int(checkpoint.get('resume_count') or 0)
             saved_config = cfg_data.get('config') or {}
 
+            has_checkpoint = isinstance(checkpoint, dict) and len(completed) > 0
+            # Legacy ('running'): resume only from a real checkpoint. #32
+            # ('queued'): no checkpoint exists yet, so resume from scratch; a
+            # row already mid from-scratch-retry (resume_count>0, only ever
+            # produced by our own queued recovery) keeps its full retry budget.
+            # A first-run 'running' row that died before its first checkpoint
+            # stays orphaned, exactly as before.
             can_resume = (
-                isinstance(checkpoint, dict)
-                and len(completed) > 0
-                and resume_count < _MAX_AUTO_RESUMES
+                resume_count < _MAX_AUTO_RESUMES
                 and isinstance(saved_config, dict)
                 and saved_config  # non-empty
+                and (has_checkpoint
+                     or is_queued
+                     or (_recover_queued and resume_count > 0))
             )
 
             if can_resume:
                 # Bump retry counter BEFORE launching so a crash loop is
                 # bounded. Leave status='running' since the new worker
-                # takes over immediately.
+                # takes over immediately (for a reclaimed 'queued' row this
+                # also flips it out of 'queued' so it stops looking fresh).
                 new_checkpoint = dict(checkpoint)
                 new_checkpoint['resume_count'] = resume_count + 1
                 new_checkpoint['last_auto_resumed_at'] = now_iso
@@ -1827,10 +1871,11 @@ def cleanup_orphaned_mass_searches() -> dict:
                     # safe.
                     _merged_cfg = dict(cfg_data)
                     _merged_cfg['checkpoint'] = new_checkpoint
-                    client.table('mass_searches').update({
-                        'config_data': _merged_cfg,
-                        'updated_at': now_iso,
-                    }).eq('id', sid).execute()
+                    _upd = {'config_data': _merged_cfg, 'updated_at': now_iso}
+                    if _recover_queued:
+                        _upd['status'] = 'running'
+                    client.table('mass_searches').update(_upd) \
+                        .eq('id', sid).execute()
 
                     # Relaunch worker in admin-mode context so user-scoped
                     # DB queries (user packs, strategies) still resolve to
@@ -1838,11 +1883,16 @@ def cleanup_orphaned_mass_searches() -> dict:
                     row_user_id = row.get('user_id')
                     start_mass_search_async(
                         sid, saved_config,
-                        resume_checkpoint=new_checkpoint,
+                        # No completed groups (a reclaimed 'queued' row) →
+                        # start from scratch; else resume from checkpoint.
+                        resume_checkpoint=(new_checkpoint if has_checkpoint
+                                           else None),
                         user_id_override=row_user_id,
                     )
                     summary['resumed'] += 1
                     summary['ids_resumed'].append(sid)
+                    if is_queued:
+                        summary['queued_recovered'] += 1
                     logger.info(
                         "Mass search auto-resumed id=%s at %d/%d groups "
                         "(attempt %d/%d)",
@@ -1868,9 +1918,9 @@ def cleanup_orphaned_mass_searches() -> dict:
                 summary['ids_orphaned'].append(sid)
 
         logger.info(
-            "Mass search startup cleanup: resumed=%d orphaned=%d "
-            "(ids_resumed=%s, ids_orphaned=%s)",
-            summary['resumed'], summary['orphaned'],
+            "Mass search startup cleanup: resumed=%d (queued_recovered=%d) "
+            "orphaned=%d (ids_resumed=%s, ids_orphaned=%s)",
+            summary['resumed'], summary['queued_recovered'], summary['orphaned'],
             summary['ids_resumed'], summary['ids_orphaned'])
         return summary
     except Exception as e:

@@ -95,7 +95,9 @@ def cleanup_orphans_now(user=Depends(get_current_user)):
     (e.g., daemon thread scheduling delay, or a bug in the startup path).
 
     Runs the same cleanup_orphaned_mass_searches as on API boot. Returns
-    {resumed, orphaned, ids_resumed, ids_orphaned}.
+    {resumed, orphaned, ids_resumed, ids_orphaned, queued_recovered}. With
+    RORT_MASS_RECOVER_QUEUED=1 this also reclaims rows stuck in 'queued'
+    (board #32) and skips searches still live in this process.
     """
     from db import USE_DB
     if not USE_DB:
