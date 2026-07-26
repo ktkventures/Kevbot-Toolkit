@@ -129,6 +129,14 @@ function flagChipStyle(tone: 'red' | 'amber' | 'gray'): React.CSSProperties {
   };
 }
 
+// board #119 — ALGO-basis (logic-would-fire) badge. Violet accent keeps the
+// algo Last-10 column visually distinct from the delivery-basis "Last 10".
+const ALGO_BADGE: React.CSSProperties = {
+  background: 'rgba(139,92,246,0.18)', color: '#a78bfa',
+  padding: '0 5px', borderRadius: 3, fontSize: 9.5, fontWeight: 700,
+  letterSpacing: 0.4, verticalAlign: 'middle', marginRight: 4,
+};
+
 // ── Sortable table ────────────────────────────────────────────────────
 
 type SortKey =
@@ -136,10 +144,16 @@ type SortKey =
   | 'btCurrent' | 'kpis' | 'lastTrade' | 'trades'
   | 'lastBt' | 'lastAlert' | 'barParity'
   | 'combined' | 'paired' | 'phantom' | 'missed' | 'tbd'
-  | 'sid' | 'last10';
+  | 'sid' | 'last10' | 'last10Algo';
 
-/** Last-10 score shape from /api/strategy-health-last10 (board #70). */
-type Last10Score = { points: number; denom: number };
+/** Last-10 score shape from /api/strategy-health-last10 (board #70).
+ *  `points` = fired/delivery basis (default column); `points_algo` = board
+ *  #119 ALGO basis (BT edges paired vs algo-lane `cache_%` trades — logic-
+ *  would-fire, not delivery). Both optional-guarded for API/frontend skew. */
+type Last10Score = {
+  points: number; denom: number;
+  points_theo?: number; points_algo?: number;
+};
 
 /** Join key between StrategyHealthRow and BarParityPair — parity is
  *  computed per unique (symbol, timeframe), shared across strategies. */
@@ -160,6 +174,12 @@ function rowSortValue(
       const s10 = last10?.get(r.strategy_id);
       // best ratio first on asc; no-data rows sort last
       return s10 && s10.denom > 0 ? -(s10.points / s10.denom) : 1;
+    }
+    case 'last10Algo': {
+      const s10 = last10?.get(r.strategy_id);
+      // ALGO (#119): sort on the algo-basis ratio; no-data rows sort last.
+      return s10 && s10.denom > 0 && s10.points_algo != null
+        ? -(s10.points_algo / s10.denom) : 1;
     }
     case 'name':      return r.name ?? '';
     case 'symbol':    return r.symbol ?? '';
@@ -352,7 +372,8 @@ export default function StrategyHealthV1() {
   // Last-10 health scores (board #70) — independent fetch so a slow score
   // computation never blocks the main table; cells show '—' until it lands.
   const [last10, setLast10] = useState<Map<number, Last10Score>>(new Map());
-  const [last10Sid, setLast10Sid] = useState<{ sid: number; name: string } | null>(null);
+  const [last10Sid, setLast10Sid] = useState<
+    { sid: number; name: string; basis?: 'fired' | 'theo' | 'algo' } | null>(null);
   // Board #122: scope the batch call to the sids actually on the page. The
   // no-sids form scores EVERY strategy in the strategies table (two
   // sequential DB reads each) — slow enough at fleet scale that the
@@ -681,6 +702,15 @@ export default function StrategyHealthV1() {
                   Sub
                 </th>
                 <Th onClick={() => toggleSort('last10')}    label={`Last 10${arrow('last10')}`} align="right" />
+                {/* board #119 — Last-10 ALGO basis. Sortable like the others;
+                     custom <th> so it can carry the ALGO badge + tooltip. */}
+                <th onClick={() => toggleSort('last10Algo')}
+                    title="Last-10 ALGO basis (board #119): the SAME last-10 backtest edges paired against the ALGO-LANE trades (data_source cache_% — what the live engine actually computed), NOT alerts. Logic-would-fire evidence, never delivery. Read the gap vs 'Last 10': algo-high + Last-10-low = delivery/ops loss; algo-low = logic/state divergence."
+                    style={{ padding: '6px 8px', cursor: 'pointer',
+                             userSelect: 'none', textAlign: 'right',
+                             fontWeight: 500, whiteSpace: 'nowrap' }}>
+                  <span style={ALGO_BADGE}>ALGO</span>Last 10{arrow('last10Algo')}
+                </th>
                 <th style={{ padding: '6px 8px', fontWeight: 500 }}
                     title="Row context: notes (humans + nightly writers) and open board tasks affecting this sid.">
                   Context
@@ -695,6 +725,9 @@ export default function StrategyHealthV1() {
                   parityKey(r.symbol, r.timeframe));
                 const l10 = last10.get(r.strategy_id);
                 const l10Ratio = l10 && l10.denom > 0 ? l10.points / l10.denom : null;
+                // board #119 — algo-basis ratio (null when unscored / API skew)
+                const l10AlgoRatio = l10 && l10.denom > 0 && l10.points_algo != null
+                  ? l10.points_algo / l10.denom : null;
                 const rowBugs = bugTasks.filter(
                   (t) => (t.affected_sids || []).includes(r.strategy_id));
                 const noteCount = noteCounts.get(r.strategy_id) || 0;
@@ -866,7 +899,8 @@ export default function StrategyHealthV1() {
                       : <button
                           onClick={() => setLast10Sid({
                             sid: r.strategy_id,
-                            name: r.name || `sid ${r.strategy_id}` })}
+                            name: r.name || `sid ${r.strategy_id}`,
+                            basis: 'fired' })}
                           style={{ background: 'transparent', border: 'none',
                                    cursor: 'pointer', padding: 0, fontSize: 13,
                                    fontWeight: 600,
@@ -874,6 +908,28 @@ export default function StrategyHealthV1() {
                                    color: l10Ratio >= 0.9 ? '#66bb6a'
                                      : l10Ratio >= 0.7 ? '#ffc107' : '#ef5350' }}>
                           {l10!.points}/{l10!.denom}
+                        </button>}
+                  </td>
+                  {/* Last-10 ALGO basis (board #119): same score shape + color
+                       bands as delivery Last 10, but a violet ALGO badge and a
+                       click that opens the modal ON the algo basis. Logic-
+                       would-fire signal, not delivery. */}
+                  <td style={{ padding: '6px 8px', textAlign: 'right' }}
+                      title="Algo-lane basis (#119): 1 pt per last-10 backtest entry/exit that pairs to an ALGO-lane trade edge (cache_%) within ±10s — logic-would-fire, never delivery. Click for per-trade detail.">
+                    {l10AlgoRatio == null
+                      ? <span style={{ color: 'var(--text-muted)' }}>—</span>
+                      : <button
+                          onClick={() => setLast10Sid({
+                            sid: r.strategy_id,
+                            name: r.name || `sid ${r.strategy_id}`,
+                            basis: 'algo' })}
+                          style={{ background: 'transparent', border: 'none',
+                                   cursor: 'pointer', padding: 0, fontSize: 13,
+                                   fontWeight: 600,
+                                   fontVariantNumeric: 'tabular-nums',
+                                   color: l10AlgoRatio >= 0.9 ? '#66bb6a'
+                                     : l10AlgoRatio >= 0.7 ? '#ffc107' : '#ef5350' }}>
+                          <span style={ALGO_BADGE}>ALGO</span>{l10!.points_algo}/{l10!.denom}
                         </button>}
                   </td>
                   {/* Context (Kevin 07-25): replaces the Flags chip column —
@@ -911,7 +967,7 @@ export default function StrategyHealthV1() {
               })}
               {filteredRows.length === 0 && (
                 <tr>
-                  <td colSpan={17} style={{ padding: 16, textAlign: 'center',
+                  <td colSpan={18} style={{ padding: 16, textAlign: 'center',
                                             color: 'var(--text-muted)' }}>
                     No strategies match the current filter.
                   </td>
@@ -923,7 +979,11 @@ export default function StrategyHealthV1() {
       </Card>
 
       {last10Sid && (
-        <Last10PairingModal sid={last10Sid.sid} name={last10Sid.name}
+        // key on sid+basis so re-opening from a different cell remounts with
+        // the correct initial basis (board #119).
+        <Last10PairingModal key={`${last10Sid.sid}:${last10Sid.basis ?? 'fired'}`}
+          sid={last10Sid.sid} name={last10Sid.name}
+          initialBasis={last10Sid.basis}
           onClose={() => setLast10Sid(null)} />
       )}
       {notesSid && (

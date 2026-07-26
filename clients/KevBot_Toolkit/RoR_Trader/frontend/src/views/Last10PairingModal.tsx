@@ -3,6 +3,9 @@
  * Strategy Health table → one row per completed backtest trade showing how
  * its entry and exit paired against live alerts (±10s greedy 1:1, verbatim
  * strategy_health semantics — served by /api/strategy-health-last10/{sid}).
+ * Three bases toggle-able (board #119): fired / theo (both vs alerts) and
+ * algo (vs the ALGO-LANE cache_% trades — logic-would-fire, not delivery).
+ * `initialBasis` seeds which one opens (the ALGO column opens on 'algo').
  * Three-panel-modal design language; portals to <body> (sidebar stacking).
  */
 'use client';
@@ -18,14 +21,16 @@ interface BasisSide {
 interface TradeRow {
   trade_id: number;
   entry_ts: string | null; exit_ts: string | null;
-  fired: BasisSide; theo: BasisSide;
+  fired: BasisSide; theo: BasisSide; algo: BasisSide;
 }
 interface Detail {
-  strategy_id: number; points: number; points_theo: number; denom: number;
+  strategy_id: number; points: number; points_theo: number;
+  points_algo: number; denom: number;
   trade_count: number; tolerance_seconds: number; display_window_sec: number;
   trades: TradeRow[];
 }
-type Basis = 'fired' | 'theo';
+// board #119 — 'algo' pairs BT edges against the algo-lane (cache_%) trades.
+type Basis = 'fired' | 'theo' | 'algo';
 
 const panelHead: React.CSSProperties = {
   fontSize: 11, fontWeight: 700, letterSpacing: 0.6, color: 'var(--text-tertiary)',
@@ -43,13 +48,16 @@ const Mark = ({ ok }: { ok: boolean }) => (
   <span style={{ color: ok ? 'var(--green)' : 'var(--red)', fontWeight: 700 }}>{ok ? '✓' : '✗'}</span>
 );
 
-export default function Last10PairingModal({ sid, name, onClose }: {
-  sid: number; name: string; onClose: () => void;
+export default function Last10PairingModal({ sid, name, onClose, initialBasis }: {
+  sid: number; name: string; onClose: () => void; initialBasis?: Basis;
 }) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  // Default = fired/dispatch — what we execute on (Kevin item 4).
-  const [basis, setBasis] = useState<Basis>('fired');
+  // Default = fired/dispatch — what we execute on (Kevin item 4). The opener
+  // may seed a basis (e.g. the ALGO column opens on 'algo', board #119).
+  const [basis, setBasis] = useState<Basis>(initialBasis ?? 'fired');
+  // Algo basis pairs vs algo-lane trade edges, not alerts (board #119).
+  const nearLabel = basis === 'algo' ? 'nearest algo' : 'nearest alert';
 
   useEffect(() => {
     apiFetch<Detail>(`/api/strategy-health-last10/${sid}`)
@@ -70,13 +78,15 @@ export default function Last10PairingModal({ sid, name, onClose }: {
         <div style={panelHead}>
           <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             Last-10 pairing · sid {sid} — {name}
-            {detail && <> · fired {detail.points}/{detail.denom} · theo {detail.points_theo ?? '—'}/{detail.denom} @ ±{detail.tolerance_seconds}s</>}
+            {detail && <> · fired {detail.points}/{detail.denom} · theo {detail.points_theo ?? '—'}/{detail.denom} · algo {detail.points_algo ?? '—'}/{detail.denom} @ ±{detail.tolerance_seconds}s</>}
           </span>
-          {detail && (['fired', 'theo'] as Basis[]).map((b) => (
+          {detail && (['fired', 'theo', 'algo'] as Basis[]).map((b) => (
             <button key={b} onClick={() => setBasis(b)}
               title={b === 'fired'
                 ? 'pair on the alert FIRED/arrival timestamp — what we execute on (default)'
-                : 'pair on the bar-aligned THEO timestamp (fill_ts) — canonical health-pairing field'}
+                : b === 'theo'
+                ? 'pair on the bar-aligned THEO timestamp (fill_ts) — canonical health-pairing field'
+                : 'pair vs ALGO-LANE trades (cache_%) — what the live engine computed (logic-would-fire, not delivery; board #119)'}
               style={{
                 background: basis === b ? 'var(--bg-input)' : 'transparent',
                 color: basis === b ? 'var(--blue)' : 'var(--text-secondary)',
@@ -102,11 +112,11 @@ export default function Last10PairingModal({ sid, name, onClose }: {
                 <tr style={{ fontSize: 10.5, color: 'var(--text-tertiary)', textAlign: 'left', textTransform: 'uppercase' }}>
                   <th style={cell}>#</th>
                   <th style={cell}>bt entry (UTC)</th>
-                  <th style={cell}>nearest alert</th>
+                  <th style={cell}>{nearLabel}</th>
                   <th style={cell}>Δ</th>
                   <th style={cell}>pt</th>
                   <th style={cell}>bt exit (UTC)</th>
-                  <th style={cell}>nearest alert</th>
+                  <th style={cell}>{nearLabel}</th>
                   <th style={cell}>Δ</th>
                   <th style={cell}>pt</th>
                 </tr>
@@ -135,11 +145,14 @@ export default function Last10PairingModal({ sid, name, onClose }: {
           )}
           {detail && (
             <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 8 }}>
-              1 point per entry/exit paired to a live alert within ±{detail.tolerance_seconds}s
+              1 point per entry/exit paired within ±{detail.tolerance_seconds}s
               (greedy 1:1, same semantics as Strategy Health phantom/missed). Basis:
               fired = alert arrival ts (what we execute on, the list-column score);
-              theo = bar-aligned fill_ts. A high-theo/low-fired gap = dispatch latency;
-              low/low = logic-existence. Blank nearest/Δ = no alert within
+              theo = bar-aligned fill_ts; algo = ALGO-LANE trade edges (cache_% — what
+              the live engine computed, logic-would-fire NOT delivery; board #119). A
+              high-theo/low-fired gap = dispatch latency; low/low = logic-existence.
+              high-algo/low-fired = delivery/ops loss; low-algo = logic/state divergence.
+              Blank nearest/Δ = no counterpart within
               ±{detail.display_window_sec}s (max of tolerance, 2×TF — the Chart+Trades
               display rule); the ✗ already scores it. Deltas are display-only — a shown Δ
               within tolerance can still be unpaired if that alert was consumed by a
