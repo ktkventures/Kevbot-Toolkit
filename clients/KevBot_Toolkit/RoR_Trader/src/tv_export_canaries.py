@@ -1,6 +1,6 @@
 """TV-export parity canaries — the single source of truth for which Pine emitters
 have been VALIDATED against TradingView trade-for-trade, not merely "emit without
-error". See docs/_active/Design_TV_Export_Readiness.md §5.3.
+error". See Design_TV_Export_Readiness.md §5.3.
 
 Why this exists: tv_export_readiness() answers "can this strategy emit Pine?".
 That is necessary but NOT sufficient — the EOD re-entry churn emitted fine and was

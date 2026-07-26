@@ -1505,7 +1505,7 @@ class StrategyMonitor:
             # PB boundary defer (RORT_MTF_PB_DEFER — 2026-07-13 Kevin
             # ruling, memory feedback_pb_boundary_semantics_ruling; autopsy
             # cause C "cross-TF boundary race",
-            # docs/_active/Gated_Five_Divergence_Autopsy.md): PB gates must
+            # Gated_Five_Divergence_Autopsy.md): PB gates must
             # honor the last secondary bar fully CLOSED BEFORE this primary
             # bar began. A key's CURRENT records merge iff they became
             # PB-usable at/before this bar's START (effective_from <=
@@ -2016,7 +2016,7 @@ def _secondary_warmup_days(tf_str: str, is_crypto_sym: bool = False,
 
 
 # DEEP-ANCHOR shadow warmup for HYSTERETIC interpreter families (2026-07-13,
-# Gated-Five autopsy cause C, docs/_active/Gated_Five_Divergence_Autopsy.md).
+# Gated-Five autopsy cause C, Gated_Five_Divergence_Autopsy.md).
 #
 # Trailing-stop interpreters (UT Bot's ATR trail, SuperTrend's ratcheted
 # bands) carry unbounded path dependence WITHIN a trend run: the ratchet only
@@ -2226,7 +2226,7 @@ def _load_warmup_df(sym: str, tf_seconds: int, session: str) -> pd.DataFrame:
 
 
 # Bug Hunt Wave 1 #1 — coarse-gate SESSION MISMATCH (2026-07-06,
-# docs/_active/Bug_Hunt_Wave1_2026-07-06.md).
+# Bug_Hunt_Wave1_2026-07-06.md).
 #
 # The live coarse-secondary gate shadows (_ShadowIndicatorEngine) were keyed
 # by tf_seconds ONLY, and the hub warmup resolved the warmup session from
@@ -2257,7 +2257,7 @@ MTF_SESSION_SHADOWS = os.getenv(
 
 
 # Bug Hunt Wave 1 #2 — sub-hour secondary stoch-state FREEZE (2026-07-06,
-# docs/_active/Bug_Hunt_Wave1_2026-07-06.md #2).
+# Bug_Hunt_Wave1_2026-07-06.md #2).
 #
 # Proven on sid 272: the SPY hub's 10m secondary shadow served a boot-era
 # record (10M-STOCHASTIC_OSCILLATOR-BULLISH_MIDRANGE) unchanged 13:53→17:00
@@ -2382,7 +2382,7 @@ def _state_drift(cur_eng, fresh_eng, top_n: int = 3):
 
 
 # Bug Hunt Wave 2 W2-2 — session-edge bar-set asymmetry (2026-07-06,
-# docs/_active/Bug_Hunt_Wave1_2026-07-06.md W2-2).
+# Bug_Hunt_Wave1_2026-07-06.md W2-2).
 #
 # Live gates bar-close dispatch by event-ARRIVAL time; the backtest lane
 # filters by bar LABEL (data_loader._filter_session). Bars complete on the
@@ -2404,7 +2404,7 @@ SESSION_LABEL_GATE = os.getenv(
 
 
 # Bug Hunt Wave 2 W2-5 — interpreter-blind shadow topology (2026-07-07,
-# docs/_active/Bug_Hunt_Wave1_2026-07-06.md W2-5).
+# Bug_Hunt_Wave1_2026-07-06.md W2-5).
 #
 # finalize_shadow_engines skips creating a secondary-TF shadow whenever ANY
 # real monitor exists on that (tf, session) — regardless of WHICH interpreter
@@ -2460,7 +2460,7 @@ MTF_COARSE_RTH_RELOAD = os.getenv(
 # PB boundary semantics — cross-TF gate one-bar DEFER (2026-07-13, Kevin
 # ruling: memory feedback_pb_boundary_semantics_ruling; Gated-Five autopsy
 # cause C — cross-TF boundary race, ~27% of the gated-five divergence,
-# docs/_active/Gated_Five_Divergence_Autopsy.md).
+# Gated_Five_Divergence_Autopsy.md).
 #
 # PB (Previous-Bar) confluence gates must honor the last secondary bar
 # fully CLOSED BEFORE the current primary bar began. The backtest builds

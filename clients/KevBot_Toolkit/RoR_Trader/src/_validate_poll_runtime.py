@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Per-poll RUNTIME budget gate for the shadow-worker resident lane.
 
-WHY (2026-07-07 incident, docs/_active/Bug_Hunt_Wave1_2026-07-06.md LIVE INCIDENT):
+WHY (2026-07-07 incident, Bug_Hunt_Wave1_2026-07-06.md LIVE INCIDENT):
 PR #39 was gated byte-identical on OUTPUT but never on RUNTIME, and separately a
 wrong-tree `railway up` shipped an image whose shadow-worker feature set silently
 regressed (lost #33 pass telemetry/watchdog and #34 heartbeats). 90+ minutes of

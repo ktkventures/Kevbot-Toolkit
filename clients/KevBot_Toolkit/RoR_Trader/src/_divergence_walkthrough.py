@@ -3,7 +3,7 @@
 Wraps `/api/admin/strategy-health/backlog` so we get apples-to-apples
 results with the UI, plus pulls ±2 min context for each event so we can
 classify quickly. Designed for the workflow described in
-`docs/SOP_Divergence_Investigation.md`.
+`docs/SOP_Divergence_Investigation_DEPRECATED.md`.
 
 Usage:
     python _divergence_walkthrough.py --window-hours 1 --max-clusters 20

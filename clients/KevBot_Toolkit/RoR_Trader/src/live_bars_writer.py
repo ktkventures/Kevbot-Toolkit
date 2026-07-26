@@ -14,7 +14,7 @@ THIS IS THE *LIVE BARS* CACHE — one of two bar caches. Do not confuse it with
 
 RED LINE: never point the REST revision/refresh (overwrite-to-match-Polygon)
 logic at `live_bars`. Overwriting a seen bar here destroys the forensic record.
-Canonical reference: docs/_active/Two_Bar_Caches_DEFINITIONS.md
+Canonical reference: Two_Bar_Caches_DEFINITIONS.md
 ================================================================================
 
 The worker calls write_bar() each time a BarBuilder finalizes a bar

@@ -4,7 +4,7 @@ strategy and report which export cleanly vs. what's missing, grouped by gap.
 This is the definitive offline work-list for emitter coverage. It shares the
 SAME code path as the GET /strategies/{id}/pine-readiness endpoint
 (pine_generator.tv_export_readiness) — so the audit and the live badge can never
-disagree. See docs/_active/Design_TV_Export_Readiness.md.
+disagree. See Design_TV_Export_Readiness.md.
 
 Read-only against prod (admin client, bypasses RLS). Run from src/:
     ../.venv/bin/python _tv_emitter_audit.py

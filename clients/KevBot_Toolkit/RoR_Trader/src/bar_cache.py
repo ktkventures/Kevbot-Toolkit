@@ -14,7 +14,7 @@ THIS IS THE *REST BARS* CACHE — one of two bar caches. Do not confuse it with
 
 RED LINE: the overwrite-to-match-Polygon logic in this module touches ONLY
 `bar_cache`. It must NEVER be pointed at `live_bars`.
-Canonical reference: docs/_active/Two_Bar_Caches_DEFINITIONS.md
+Canonical reference: Two_Bar_Caches_DEFINITIONS.md
 ================================================================================
 
 Wraps load_market_data so identical (symbol, timeframe, days, session)

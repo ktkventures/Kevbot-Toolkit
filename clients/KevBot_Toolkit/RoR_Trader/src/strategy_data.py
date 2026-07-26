@@ -45,7 +45,7 @@ WARMUP_MULTIPLIER = 2
 Keeping `*2` matches the prior behavior of `prepare_forward_test_data:834`
 so live KPIs don't shift out from under existing strategies. The
 right-sized path (M-RS1, RORT_RIGHTSIZE_WARMUP=1) replaces this — see
-`compute_warmup_days` + `docs/_active/Plan_M-RS1_Warmup_Rightsizing.md`."""
+`compute_warmup_days` + `Plan_M-RS1_Warmup_Rightsizing.md`."""
 
 # ── M-RS1 right-sized warmup (per-TF; kill-switch RORT_RIGHTSIZE_WARMUP) ──
 PRIMARY_WARMUP_BARS = 1200
@@ -237,7 +237,7 @@ def _resampled_store_serve_enabled() -> bool:
     """COMPUTE-SKIP kill-switch (default OFF): serve the SETTLED zone of coarse
     secondaries FROM the canonical store and load 1Min only for the edge days —
     the M-RS2-P2 speed payoff. Promotion-gated: arm only after the verify ledger
-    is green on real windows (docs/_active/Weekend_Sprint_Ledger.md: fleet-wide
+    is green on real windows (Weekend_Sprint_Ledger.md: fleet-wide
     zero drift, 2026-07-11). Instant rollback by unsetting."""
     return os.getenv("RORT_RESAMPLED_STORE_SERVE", "0") == "1"
 
@@ -514,7 +514,7 @@ def compute_warmup_days(strat: dict, visible_days: float) -> float:
     FIXED bar count regardless of how long the backtest runs. For an old
     coarse-gate strategy (visible ≈ 540d) this loads ~1,620d ≈ 555k 1-min
     bars and the engine chews all of it (~2/3 trimmed away). See cProfile in
-    `docs/_active/Recompute_Scalability_Findings.md`.
+    `Recompute_Scalability_Findings.md`.
 
     RIGHT-SIZED (M-RS1, RORT_RIGHTSIZE_WARMUP=1): size warmup PER-TF to the
     bars each TF needs to converge, then take the max calendar span:
@@ -522,7 +522,7 @@ def compute_warmup_days(strat: dict, visible_days: float) -> float:
       - each SECONDARY (coarse): SECONDARY_WARMUP_BARS (== live's 250-bar
         standard). A single global target would over-warm the coarse TF.
     Independent of visible_days. Byte-identical-gated before default ON —
-    see `docs/_active/Plan_M-RS1_Warmup_Rightsizing.md`.
+    see `Plan_M-RS1_Warmup_Rightsizing.md`.
     """
     if not _rightsize_warmup_enabled():
         return max(1.0, float(visible_days) * float(WARMUP_MULTIPLIER))

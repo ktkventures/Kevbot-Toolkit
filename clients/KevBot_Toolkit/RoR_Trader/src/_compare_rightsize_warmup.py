@@ -7,7 +7,7 @@ once with RORT_RIGHTSIZE_WARMUP=0 (legacy `visible_days*2`) and once with
 quantify the speedup.
 
 Registry-safe (calls scan_and_load_all per feedback_local_script_pack_registry)
-and writes NOTHING to the DB. See docs/_active/Plan_M-RS1_Warmup_Rightsizing.md.
+and writes NOTHING to the DB. See Plan_M-RS1_Warmup_Rightsizing.md.
 
 Interpretation note: a 1Day/1Week-gated strategy may show a diff because the
 LEGACY path *under*-warmed daily gates (visible_days*2 < 250 daily bars). That

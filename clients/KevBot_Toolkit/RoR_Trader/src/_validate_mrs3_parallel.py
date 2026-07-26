@@ -6,7 +6,7 @@ RORT_RECOMPUTE_PARALLELISM=1 (sequential, runs in-parent) and once with =N
 signatures + KPIs are identical per strategy. Any diff means an environment
 landmine in the pool worker (registry not loaded / DB client) — NOT a logic
 change, since the per-strategy compute function is the same. (See
-docs/_active/Design_M-RS3_Parallel_Recompute.md.)
+Design_M-RS3_Parallel_Recompute.md.)
 
 Writes the production DB (real DELETE+INSERT recompute). Run only when markets
 are closed. Idempotent — re-running converges to the same trades.
