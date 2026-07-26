@@ -25,6 +25,7 @@ import {
   COLLAPSED_LS_KEY, RUN_REQUESTED_TAG, STATUS_DEF, STATUSES, withLegacy,
   statusOptionsFor, cell, input, badge, tagChip, NextChip, ProgressBar, RunButton,
   RETIRED_TAGS, StampButtons, TwoTouchChip, ImpactSelect, defaultChain,
+  groupBoard, isVisionTask,
 } from './taskBoardShared';
 
 export default function AdminTasksPage() {
@@ -172,19 +173,13 @@ export default function AdminTasksPage() {
     titleRef.current?.focus();
   };
 
-  const byParent = useMemo(() => {
-    const m = new Map<number, Task[]>();
-    tasks.forEach((t) => {
-      if (t.parent_id != null) m.set(t.parent_id, [...(m.get(t.parent_id) || []), t]);
-    });
-    return m;
-  }, [tasks]);
+  // Grouping + vision predicate live in taskBoardShared.groupBoard — the ONE
+  // implementation shared with /admin/roadmap (Spec_Admin_Roadmap.md §2).
+  const { byParent, visionItems, looseTasks } = useMemo(() => groupBoard(tasks), [tasks]);
 
   // Vision rows are EXEMPT from the Approval/Review/Staged pipeline (board
-  // #136) — they track via their subtasks. Tagged vision OR has subtasks
-  // (pre-tag data still groups correctly).
-  const isVision = (t: Task) =>
-    (t.tags || []).includes('vision') || byParent.has(t.id);
+  // #136) — they track via their subtasks.
+  const isVision = (t: Task) => isVisionTask(t, byParent);
 
   const matches = (t: Task) =>
     (!hideDone || t.status !== 'Done') &&
@@ -193,17 +188,6 @@ export default function AdminTasksPage() {
     (!awaitingOk || (t.status === 'Approval' && !isVision(t))) &&
     (!areaFilter || t.area === areaFilter) &&
     (!assigneeFilter || (t.assignee || '') === assigneeFilter);
-
-  // A "vision item" is top-level and tagged vision — or already has subtasks
-  // (so pre-tag data still groups correctly).
-  const visionItems = useMemo(() =>
-    tasks.filter((t) => t.parent_id == null &&
-      ((t.tags || []).includes('vision') || byParent.has(t.id))),
-  [tasks, byParent]);
-  const looseTasks = useMemo(() =>
-    tasks.filter((t) => t.parent_id == null &&
-      !((t.tags || []).includes('vision') || byParent.has(t.id))),
-  [tasks, byParent]);
 
   const assigneeOptions = useMemo(() => {
     const known = roles.filter(Boolean);
