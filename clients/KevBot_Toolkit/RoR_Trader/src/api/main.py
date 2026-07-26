@@ -73,6 +73,7 @@ def create_app() -> FastAPI:
     from api.routers.agents import router as agents_router
     from api.routers.run_history import router as run_history_router
     from api.routers.health_last10 import router as health_last10_router
+    from api.routers.replay_sim import router as replay_sim_router
     from api.routers.strategy_notes import router as strategy_notes_router
     from api.routers.bar_cache_admin import router as bar_cache_admin_router
     from api.routers.resampled_store_admin import router as resampled_store_admin_router
@@ -106,6 +107,7 @@ def create_app() -> FastAPI:
     app.include_router(agents_router)
     app.include_router(run_history_router)
     app.include_router(health_last10_router)
+    app.include_router(replay_sim_router)
     app.include_router(strategy_notes_router)
     app.include_router(bar_cache_admin_router)
     app.include_router(resampled_store_admin_router)

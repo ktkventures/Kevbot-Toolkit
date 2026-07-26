@@ -459,3 +459,66 @@ run (convergent with bt) is never confused with the decision-time run.
   rendering next to the score.
 
 Sequencing (Kevin): after Phase C + the Run button, per his stated priority.
+
+---
+
+## 12. BUILD STATUS — V1.16 implemented (E·auto, 07-26, board #120)
+
+Kevin stamped BOTH phases 07-26 with the **per-strategy opt-in** scaling
+refinement (nightly cost = opted-in count × ~2min, a dial Kevin holds; default
+OFF). The producer half is built on `feat/replay-sim-basis-120` (off the design
+branch), local commit, NOT pushed — attended session pushes + arms. F still owns
+the React UI (button, toggle switch, SIM badge, ledger rendering) against the
+endpoints below.
+
+**Open-question resolutions (§10):** Q1 runner host = **A (local poller)** ✅.
+Q2 Phase 2 = **built, local (option A)** — reuses the Phase-1 queue+job so the
+heavy replay never touches a prod Railway service (honors
+feedback_local_analysis_starves_live_worker); the opt-in bound keeps local
+compute small, and the local host already carries the nightly ops presence
+(dispatcher + bug-hunt). Q3 span cap = **5** (`SIM_MAX_SPAN_TRADING_DAYS`).
+Q4 enrichment = **v1.1** (score column ships timestamp-only). Q5 = decision-time
+default; `--corrected` available.
+
+**Files (all additive; no existing engine path altered except one router
+registration):**
+- `src/migrations/replay_sim_basis.sql` — results cache (§4.1).
+- `src/migrations/replay_sim_requests.sql` — request queue (§4.2, option A;
+  `source` = button|nightly, `claimed_by` for replica-safe claim).
+- `src/migrations/replay_sim_optin.sql` — per-strategy nightly opt-in (Kevin
+  07-26; PK strategy_id, `enabled` default false).
+- `src/replay_sim_job.py` — the producer. Pure/offline-testable helpers
+  (`size_window` §6 session-floor+5-day span-cap, `build_divergence_ledger` §8,
+  `measure_coverage` §8 D4, `classify_status`, `flags_fingerprint` §8 D9,
+  `apply_staleness` §4.3) + `run_sim_job()` (lazy `replay_harness` import → the
+  module stays offline-importable). Writes ONE cache row per run incl. the
+  fail-loud `unres` row (never a silent 0). Stamps the armed-flag fp into
+  `system_settings` so the read path detects flag drift without importing the
+  harness.
+- `src/api/routers/replay_sim.py` — `GET /{sid}` (`score_sim_basis`, reuses
+  `health_last10._greedy_pair` verbatim — no fork), `POST /{sid}/run` (enqueue,
+  409 if already pending), `GET /{sid}/requests`, `GET|PUT /{sid}/optin`.
+  Registered in `api/main.py`. Never runs the engine.
+- `tools/team_sim/replay_sim_poller.py` — local executor. Phase 1: claim
+  `requested` rows FIFO, run ONE replay at a time (serialized), write terminal
+  outcome. Phase 2 `--nightly` (flag-gated `RORT_SIM_NIGHTLY`, default OFF):
+  enqueue opted-in, non-fresh sids, drain serially. Guardrails (a) off-hours
+  only `in_offhours_window`, (b) serialized vs the recompute `no_active_recompute`,
+  (c) 5-day span cap, (d) skip-fresh `is_cache_fresh`. DRY-RUN by default;
+  `PAUSE` kill-switch.
+- `src/test_replay_sim.py` — 25 offline tests mapping to §9 + §8 (window/span-cap,
+  ledger, coverage fail-loud, staleness, fingerprint, score-reuse via a fake
+  client, poller guardrails). All green; existing last10 suite unaffected.
+
+**Flags/knobs introduced (all default OFF / conservative):** `RORT_SIM_NIGHTLY`
+(arms the Phase-2 sweep), `SIM_MAX_SPAN_TRADING_DAYS=5`, `SIM_SKIP_FRESH_DAYS=3`.
+No flag changes the engine — they gate only the new nightly producer.
+
+**Not built (F's half, per the clean split):** the `basis=sim` fold into
+`health_last10.py`, the run/toggle UI, the SIM badge + ledger rendering. F can
+call `score_sim_basis` directly or mirror it when V2.8's `basis` dispatch lands.
+
+**Deploy note for the attended session:** apply the three migrations in Supabase;
+the API router ships with the next API deploy (additive). The poller runs on
+Kevin's machine (`--live --loop` for the button; `RORT_SIM_NIGHTLY=1 … --nightly`
+once opt-ins exist). Nothing auto-arms.
