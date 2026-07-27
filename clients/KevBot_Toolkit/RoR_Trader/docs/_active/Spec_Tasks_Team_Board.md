@@ -76,7 +76,7 @@ Read-only page at `frontend/src/app/admin/roadmap/page.tsx` + Sidebar entry
 (`frontend/src/components/Sidebar.tsx` `navItems` children, next to Tasks at `:116`):
 vision items as cards (progress bar from subtask rollup, assignee chips, `impacts_live`
 flags surfaced), ordered by priority. No editing — it's Kevin's big-picture view; edits
-happen on /admin/tasks. Detail spec follows Phase 1 ship.
+happen on /admin/tasks. Detail spec: `Spec_Admin_Roadmap.md` (M·auto, 07-25, board #78).
 
 ## Non-goals (v1)
 Real-time updates, drag-and-drop ordering, auth-role hardening (endpoint stays
@@ -171,3 +171,19 @@ a non-goal this phase (needs a storage bucket — later phase).
   before adding deps; if adding, react-markdown + rehype-raw + rehype-sanitize (or
   DOMPurify) — keep bundle impact minimal.
 - V2.2 (health-overview) moves to AFTER this ships — Kevin's call 07-22.
+
+## Phase 3 amendments — Kevin design review 07-22 (SUPERSEDE 3B where they differ)
+1. Leaf checklist moves out of the bottom strip into a **Process tab** in the context
+   panel. Tabs: leaf = [Summary][Process][Config], vision = [Summary][Config]. Leaf
+   modals have NO bottom strip; vision modals keep the subtask-selector strip.
+2. Checklist = **handoff pipeline**: steps {text, done, role}; role = step owner. Team
+   practice: REASSIGN the task at each handoff point (assignee = current ball-holder).
+3. **Next-actor chip**: leaf = first un-done step's role; vision = first non-Done
+   subtask's assignee. Quiet when == assignee; alert "handoff due → <role>" when not.
+4. **Progress bar** in modal header: leaf from checklist, vision from subtask rollup;
+   hidden when empty.
+5. Header row ONLY: status · assignee · Next chip · progress bar · pri · set-flags ·
+   🔍 · (vision) n/m. Area/parent/tags/seq/flag-toggles → Config tab.
+6. Subtask modals: breadcrumb "← <parent>" returning with selection preserved;
+   "open full task" swaps in place (no stacking).
+7. Activity authors render as compact colored role chips; attribution only.
