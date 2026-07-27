@@ -68,6 +68,27 @@ Expand the registry by adding a row + a roster entry. Keep letters short and bor
 
 ## 4. Shared guardrails (all roles)
 
+**THE ASSIGNEE IS WHOEVER THE TASK IS WAITING ON (Kevin, 2026-07-27 — binding).**
+The `assignee` field is not a label for who *owns the topic*; it names the single person or
+role the task is **blocked on right now**. Whoever is assigned owns the next action. If a
+task is NOT assigned to you, acting on it is optional.
+- **Need someone's input before you can progress? REASSIGN THE TASK TO THEM, then comment
+  saying what you need.** A comment alone is not a handoff — the assignee is. Leaving a
+  task on yourself while you are blocked is the failure mode this rule exists to kill.
+- Kevin does the same in reverse. If he does not know who is next, **he assigns to M**, and
+  M routes it — so M should read an unrouted task as a routing request, not a work request.
+- **Before ending any turn on a task, set `assignee` to whoever it now waits on.** This
+  applies to every role and every headless `*·auto` agent.
+- **The checklist / progress bar is a GUIDELINE, never a gate.** It is shorthand for how
+  the process usually goes; surprises happen and it will not always be followed. Where a
+  checklist role and the assignee disagree, **the assignee wins.**
+- Payoff: Kevin sorts the board by `assignee = kevin` and sees exactly what is blocked on
+  him. Anything not assigned to him is not yet his problem.
+- Cost of getting this wrong, measured: the dispatcher used to treat the checklist as
+  authoritative (`next_actor()` overriding `assignee`), which silently made the **entire
+  Todo queue undispatchable for ~41 hours** on 07-26/27 with no error, log, or comment.
+  See memory `feedback_assignee_is_the_waiting_on`.
+
 **Git** (learned the hard way — see memory `feedback_multiagent_git_workflow`):
 - Each role works in its own worktree/branch. Branch from **latest** `origin/dev`:
   `git fetch origin && git worktree add ../Kevbot-<role> -b <branch> origin/dev`.
