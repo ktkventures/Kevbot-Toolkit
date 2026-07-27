@@ -70,6 +70,7 @@ def create_app() -> FastAPI:
     from api.routers.update_jobs import router as update_jobs_router
     from api.routers.system_settings import router as system_settings_router
     from api.routers.dev_tasks import router as dev_tasks_router
+    from api.routers.mentions import router as mentions_router
     from api.routers.agents import router as agents_router
     from api.routers.run_history import router as run_history_router
     from api.routers.health_last10 import router as health_last10_router
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
     app.include_router(update_jobs_router)
     app.include_router(system_settings_router)
     app.include_router(dev_tasks_router)
+    app.include_router(mentions_router)
     app.include_router(agents_router)
     app.include_router(run_history_router)
     app.include_router(health_last10_router)

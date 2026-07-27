@@ -37,6 +37,29 @@ export interface Task {
 
 export interface Comment { id: number; author: string; body: string; created_at: string; }
 
+/**
+ * An @-mention delivered to a role (board #143). Written at comment-POST time;
+ * `seen_at` NULL = still in the inbox. Enriched by GET /api/mentions with the
+ * host task's title/status and the comment excerpt for display.
+ */
+export interface Mention {
+  id: number;
+  comment_id: number;
+  task_id: number;
+  mentioned: string;      // the role tagged: M|E|E2|F|P|R|kevin
+  author: string;         // who wrote the comment
+  created_at: string;
+  seen_at: string | null;
+  task_title?: string | null;
+  task_status?: string | null;
+  excerpt?: string | null;
+}
+
+// The @-mention token set (board #143): registry letters + kevin. Sourced from
+// the agents registry at runtime; this is the fallback + the compose picker's
+// order. Adding a role is one line here + one registry row.
+export const MENTION_ROLES = ['M', 'E', 'E2', 'F', 'P', 'R', 'kevin'];
+
 /** One dispatcher run of a board task (run_history table, board #109). */
 export interface RunRow {
   id: number;

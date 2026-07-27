@@ -20,8 +20,9 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Card from '@/components/Card';
 import { apiFetch } from '@/lib/api/client';
 import TaskDetailModal from './TaskDetailModal';
+import TaskMessagesPanel from './TaskMessagesPanel';
 import {
-  Task, RunRow, AREAS, ASSIGNEES, ORIGINS, STATUS_COLOR, AUTHOR_LS_KEY,
+  Task, RunRow, Mention, AREAS, ASSIGNEES, ORIGINS, STATUS_COLOR, AUTHOR_LS_KEY,
   COLLAPSED_LS_KEY, RUN_REQUESTED_TAG, STATUS_DEF, STATUSES, withLegacy,
   statusOptionsFor, cell, input, badge, tagChip, NextChip, ProgressBar, RunButton,
   RETIRED_TAGS, StampButtons, TwoTouchChip, ImpactSelect, defaultChain,
@@ -32,7 +33,7 @@ export default function AdminTasksPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-  const [view, setView] = useState<'grouped' | 'flat'>('grouped');
+  const [view, setView] = useState<'grouped' | 'flat' | 'messages'>('grouped');
   const [hideDone, setHideDone] = useState(false);
   const [liveOnly, setLiveOnly] = useState(false);
   const [areaFilter, setAreaFilter] = useState('');
@@ -58,6 +59,11 @@ export default function AdminTasksPage() {
   // headless-enrolled; run_history rows carry requested/running/last-outcome.
   const [agents, setAgents] = useState<{ letter: string; status: string }[]>([]);
   const [runs, setRuns] = useState<RunRow[]>([]);
+  // Messages tab (board #143): unread mentions for the current viewer role
+  // (whoever you're acting as = commentAuthor) drives the tab's badge. The
+  // panel owns the full list; here we only keep the count.
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [msgSignal, setMsgSignal] = useState(0);
   const [nt, setNt] = useState({
     title: '', priority_phase: 1, priority_seq: 99, area: 'other',
     assignee: '', impacts_live: false,
@@ -97,6 +103,17 @@ export default function AdminTasksPage() {
     catch { /* run states just don't render */ }
   }, []);
   useEffect(() => { loadRuns(); }, [loadRuns]);
+  // Unread-mention badge (board #143): count unseen mentions addressed to the
+  // current viewer role. Refetched on author change + each board poll tick.
+  const loadUnread = useCallback(async () => {
+    if (!commentAuthor) { setUnreadCount(0); return; }
+    try {
+      const m = await apiFetch<Mention[]>(
+        `/api/mentions?for=${encodeURIComponent(commentAuthor)}&unseen=true`);
+      setUnreadCount((m || []).length);
+    } catch { /* badge just doesn't show */ }
+  }, [commentAuthor]);
+  useEffect(() => { loadUnread(); }, [loadUnread]);
   // Mirrors the dispatcher's enrollment rule: registry rows with
   // status='headless'; when there are none, its stub fallback is M (docs lane).
   const headless = useMemo(() => {
@@ -251,14 +268,18 @@ export default function AdminTasksPage() {
   // poll probe — refetch the 120-row task list + run states ONLY when it moved
   // (or when called with no arg — a forced refresh, e.g. after a stamp). An
   // open modal no longer drives a full board select every tick.
+  // Board #143: the unread-mention badge refreshes on EVERY tick — it is one
+  // cheap count query, and a new @-mention does not necessarily move the
+  // board's max(updated_at) (a comment insert need not touch dev_tasks).
   const pollRefresh = useCallback((boardMax?: string | null) => {
+    loadUnread();
     if (boardMax === undefined) { load(); loadRuns(); return; }          // forced
     if (boardMaxInit.current && boardMax === lastBoardMax.current) return; // unchanged
     const wasInit = boardMaxInit.current;
     lastBoardMax.current = boardMax;
     boardMaxInit.current = true;
     if (wasInit) { load(); loadRuns(); }                                  // changed → refetch
-  }, [load, loadRuns]);
+  }, [load, loadRuns, loadUnread]);
 
   const sortedVisible = useMemo(() => {
     if (!sort) return visible;
@@ -480,6 +501,24 @@ export default function AdminTasksPage() {
               onClick={() => setView('grouped')}>By vision</button>
             <button style={{ ...input, cursor: 'pointer', marginLeft: 4, fontWeight: view === 'flat' ? 700 : 400, background: view === 'flat' ? 'var(--bg-input)' : 'transparent' }}
               onClick={() => setView('flat')}>Flat</button>
+            {/* Messages tab (board #143) — unread @-mentions for the current
+                viewer role; the badge is the unseen count. */}
+            <button style={{
+              ...input, cursor: 'pointer', marginLeft: 4, position: 'relative',
+              fontWeight: view === 'messages' ? 700 : 400,
+              background: view === 'messages' ? 'var(--bg-input)' : 'transparent',
+              borderColor: unreadCount ? 'var(--blue)' : 'var(--border)',
+            }}
+              title={`your @-mentions (as ${commentAuthor || '—'}) — ${unreadCount} unread`}
+              onClick={() => { setView('messages'); setMsgSignal((n) => n + 1); }}>
+              ✉ Messages
+              {unreadCount > 0 && (
+                <span style={{
+                  marginLeft: 6, background: 'var(--blue)', color: '#fff',
+                  borderRadius: 9, fontSize: 10.5, fontWeight: 700, padding: '0 6px',
+                }}>{unreadCount}</span>
+              )}
+            </button>
           </span>
           <button style={{
             ...input, cursor: 'pointer', fontWeight: awaitingOk ? 700 : 400, color: '#c9a227',
@@ -518,7 +557,13 @@ export default function AdminTasksPage() {
         </div>
       </Card>
 
-      {loading ? <Card>Loading…</Card> : (
+      {view === 'messages' ? (
+        <Card>
+          <TaskMessagesPanel forRole={commentAuthor}
+            onOpenTask={(id) => setModal({ id })}
+            onSeenChange={loadUnread} refreshSignal={msgSignal} />
+        </Card>
+      ) : loading ? <Card>Loading…</Card> : (
         <Card>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
