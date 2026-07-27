@@ -284,7 +284,7 @@ def stamp_approval(task_id: int, payload: dict = Body(...),
             detail=f"mode must be one of {sorted(_STAMP_MODES)}")
     author = (payload.get("author") or "kevin").strip() or "kevin"
     c = _admin()
-    rows = c.table("dev_tasks").select("id,status").eq("id", task_id) \
+    rows = c.table("dev_tasks").select("id,status,checklist").eq("id", task_id) \
         .execute().data
     if not rows:
         raise HTTPException(status_code=404, detail="task not found")
@@ -294,17 +294,75 @@ def stamp_approval(task_id: int, payload: dict = Body(...),
             detail=f"task is {rows[0].get('status')} — stamps only apply "
                    "to tasks in Approval")
     kevin_final = _STAMP_MODES[mode]
-    c.table("dev_tasks").update(
-        {"status": "Todo", "kevin_final": kevin_final}) \
-        .eq("id", task_id).execute()
+    update = {"status": "Todo", "kevin_final": kevin_final}
+
+    # The stamp IS the completion of the first pending Kevin checklist step
+    # (board #151). Without ticking it, next_actor() keeps returning 'kevin'
+    # after the task lands in Todo; the dispatcher's eligibility gate
+    # (next_actor == assignee) then skips it, and an approved task sits in
+    # Todo forever (dispatchable=0) — looking approved but going nowhere.
+    # Tick ONLY the first un-done kevin step: a later two-touch review step
+    # (kevin_final) must stay open so its Review sign-off is still gated.
+    checklist = rows[0].get("checklist") or []
+    ticked = None
+    for step in checklist:
+        if (not step.get("done")
+                and (step.get("role") or "").strip().lower() == "kevin"):
+            step["done"] = True
+            ticked = step.get("text")
+            update["checklist"] = checklist  # JSONB is replaced whole
+            break
+
+    c.table("dev_tasks").update(update).eq("id", task_id).execute()
     label = ("two-touch (Kevin reviews before Done)" if kevin_final
              else "M closes")
+    tick_note = f' · checklist: ticked "{ticked}"' if ticked else ""
     c.table("dev_task_comments").insert({
         "task_id": task_id, "author": "system",
         "body": f"stamp: approved — {label} (by {author}) · "
-                "status: Approval → Todo"}).execute()
+                f"status: Approval → Todo{tick_note}"}).execute()
     res = c.table("dev_tasks").select("*").eq("id", task_id).execute().data
     return res[0] if res else {"status": "stamped"}
+
+
+@router.get("/{task_id}/poll")
+def poll_task(task_id: int, scoped_id: Optional[int] = None,
+              user=Depends(get_current_user)):
+    """One round-trip for the open-modal liveness poll (board #148).
+
+    Replaces the 3-4 separate calls the modal fired every tick (comments +
+    runs(scoped) + runs(task) + a full board refetch). Returns the scoped
+    thread and its run rows, the header task's run rows when a subtask is
+    scoped, and a cheap board-change probe: the single most-recent
+    dev_tasks.updated_at (kept fresh by the trg_dev_tasks_touch trigger). The
+    caller compares that probe to its last-seen value and refetches the whole
+    120-row board ONLY when it moved, instead of every tick.
+
+    All reads use list semantics (`.data or []`) — never `.single()` — so a
+    task with zero comments or run rows returns `[]`, not a PGRST116/406 that
+    Supabase would log as an error.
+    """
+    c = _admin()
+    sid = scoped_id if scoped_id is not None else task_id
+    comments = c.table("dev_task_comments").select("*") \
+        .eq("task_id", sid).order("created_at").execute().data or []
+    runs = c.table("run_history").select("*").eq("task_id", sid) \
+        .order("requested_at", desc=True).limit(50).execute().data or []
+    # The header RunButton scopes to the modal task; only fetch its runs
+    # separately when a subtask is selected (otherwise `runs` already covers it).
+    header_runs = None
+    if sid != task_id:
+        header_runs = c.table("run_history").select("*") \
+            .eq("task_id", task_id).order("requested_at", desc=True) \
+            .limit(50).execute().data or []
+    probe = c.table("dev_tasks").select("updated_at") \
+        .order("updated_at", desc=True).limit(1).execute().data
+    return {
+        "comments": comments,
+        "runs": runs,
+        "header_runs": header_runs,
+        "board_max_updated_at": (probe[0]["updated_at"] if probe else None),
+    }
 
 
 @router.get("/{task_id}/comments")

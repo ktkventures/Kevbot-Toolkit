@@ -19,8 +19,10 @@
  *
  * Board #134 (polish round 2): comments/descriptions render markdown-lite
  * (shared taskMarkdown, remark-breaks); the open modal polls its thread +
- * run state every ~7s (pulsing agent-working badge, comments slide in live,
- * onPollTick refreshes the board's chips); Ask AI posts with an @M marker.
+ * run state on a liveness tick (pulsing agent-working badge, comments slide in
+ * live, onPollTick refreshes the board's chips); Ask AI posts with an @M
+ * marker. Board #148: that poll is ONE consolidated /poll call every 15s,
+ * paused while the tab is hidden, and it board-refetches only on real change.
  *
  * Board #136 (kanban lifecycle): Approval-stage stamp buttons (two-touch),
  * impact chip next to status, vision rows exempt from the pipeline stages.
@@ -34,7 +36,7 @@ import {
   Task, Comment, ChecklistStep, RunRow, AREAS, ASSIGNEES, ORIGINS,
   STATUS_COLOR, STATUS_DEF, statusOptionsFor, withLegacy, input, tagChip, relTime, elapsedShort,
   RoleChip, NextChip, ProgressBar, RolePicker, RunButton, OutcomeChip,
-  StampButtons, TwoTouchChip, ImpactSelect, IMPACT_DEF, defaultChain,
+  StampButtons, TwoTouchChip, ImpactSelect, IMPACT_DEF, defaultChain, StuckChip,
 } from './taskBoardShared';
 import { Md, MD_CSS } from './taskMarkdown';
 
@@ -56,7 +58,20 @@ const chipBtn = (active: boolean): React.CSSProperties => ({
 const cfgLabel: React.CSSProperties = { fontSize: 12, color: 'var(--text-secondary)', display: 'block', marginBottom: 2 };
 const cfgHint: React.CSSProperties = { fontSize: 11, color: 'var(--text-tertiary)' };
 
+// Open-modal liveness cadence (board #148). Was 7s firing 3-4 calls/tick incl.
+// a full 120-row board refetch; now 15s, ONE consolidated /poll call, and it
+// skips ticks entirely while the tab is hidden.
+const POLL_MS = 15000;
+
 type Tab = 'summary' | 'process' | 'config';
+
+/** One consolidated modal-poll round-trip (board #148, GET .../poll). */
+interface PollResponse {
+  comments: Comment[];
+  runs: RunRow[];
+  header_runs: RunRow[] | null;
+  board_max_updated_at: string | null;
+}
 
 interface Props {
   task: Task;
@@ -74,9 +89,12 @@ interface Props {
   headless?: Set<string>;
   /** Board refresh hook after a run request lands (tags changed server-side). */
   onRunRequested?: () => void;
-  /** Fired on each ~7s liveness poll tick (board #134 item 5) so the board
-   *  list refreshes its run / needs-review chips on the same cadence. */
-  onPollTick?: () => void;
+  /** Fired on each liveness poll tick (board #134 item 5) so the board list
+   *  can refresh its run / needs-review chips. Board #148: receives the board's
+   *  max(updated_at) from the modal's consolidated poll probe — the board
+   *  refetches its full task list ONLY when that value moved. Called with no
+   *  arg to FORCE a refresh (e.g. after a stamp). */
+  onPollTick?: (boardMaxUpdatedAt?: string | null) => void;
 }
 
 export default function TaskDetailModal({
@@ -138,7 +156,8 @@ export default function TaskDetailModal({
 
   // Approval stamps (board #136): the server flips Approval → Todo, sets
   // kevin_final per mode, and logs the system comment — refresh the thread
-  // here and the board via onPollTick (which re-renders this task prop).
+  // here and FORCE a board refresh via onPollTick() with no arg (board #148:
+  // the status changed, so don't wait on the probe).
   const stampTask = async (id: number, mode: 'delegate' | 'final') => {
     try {
       await apiFetch(`/api/dev-tasks/${id}/stamp`, {
@@ -153,19 +172,45 @@ export default function TaskDetailModal({
   useEffect(() => { setDraftDesc(scoped.description || ''); }, [scoped.id, scoped.description]);
   const thread = threads[scoped.id] || [];
 
-  // Real-time activity (board #134 item 5): while the modal is open, poll the
-  // scoped thread + run state every ~7s — new comments land live, the
-  // agent-working badge tracks run_history, and onPollTick lets the board
-  // list refresh its run/needs-review chips on the same cadence.
+  // Real-time activity (board #134 item 5, reworked board #148): while the
+  // modal is open, poll the scoped thread + run state — new comments land
+  // live, the agent-working badge tracks run_history, and onPollTick lets the
+  // board refresh its chips. ONE consolidated /poll call per tick replaces the
+  // old 3-4 (comments + runs(scoped) + runs(task) + a full board refetch); it
+  // skips ticks entirely while the tab is hidden (resuming on focus), and the
+  // board-change probe (board_max_updated_at) means the board's 120-row list
+  // is refetched only when it actually changed. The interval is torn down on
+  // unmount, so a closed modal polls nothing.
   useEffect(() => {
-    const iv = setInterval(() => {
-      loadThread(scoped.id);
-      loadRuns(scoped.id);
-      if (scoped.id !== task.id) loadRuns(task.id); // header RunButton stays fresh too
-      onPollTick?.();
-    }, 7000);
-    return () => clearInterval(iv);
-  }, [scoped.id, task.id, loadThread, loadRuns, onPollTick]);
+    let cancelled = false;
+    const poll = async () => {
+      if (cancelled) return;
+      // No point polling a modal nobody is looking at.
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      const sid = scoped.id;
+      try {
+        const res = await apiFetch<PollResponse>(
+          `/api/dev-tasks/${task.id}/poll${sid !== task.id ? `?scoped_id=${sid}` : ''}`);
+        if (cancelled || !res) return;
+        setThreads((m) => ({ ...m, [sid]: res.comments || [] }));
+        setRunsMap((m) => {
+          const next = { ...m, [sid]: res.runs || [] };
+          if (res.header_runs) next[task.id] = res.header_runs;
+          return next;
+        });
+        onPollTick?.(res.board_max_updated_at ?? null);
+      } catch { /* transient — the next tick retries */ }
+    };
+    const iv = setInterval(poll, POLL_MS);
+    // Resume promptly when the tab regains focus (ticks are skipped while hidden).
+    const onVis = () => { if (document.visibilityState === 'visible') poll(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [scoped.id, task.id, onPollTick]);
 
   // Auto-scroll: jump to the bottom on scope change; on live growth only
   // follow when the reader is already near the bottom (don't yank them out
@@ -302,6 +347,8 @@ export default function TaskDetailModal({
             options={withLegacy(roles, task.assignee || '').filter(Boolean)}
             onPick={(r) => patchTracked({ assignee: r })} />
           <NextChip t={task} subtasks={subtasks} />
+          {/* board #151 tell — Todo + Kevin-next = queue-eligible but undispatchable */}
+          <StuckChip t={task} subtasks={subtasks} />
           <ProgressBar done={doneCount} total={totalCount} />
           <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }} title="priority phase.seq (edit in Config)">
             {task.priority_phase}.{task.priority_seq}
@@ -601,7 +648,7 @@ export default function TaskDetailModal({
               </span>
               <span style={{ flex: 1 }} />
               {liveRun && (
-                <span title={`dispatcher run ${liveRun.run_id || '?'} is live — thread updates every ~7s`}
+                <span title={`dispatcher run ${liveRun.run_id || '?'} is live — thread updates every ~15s`}
                   style={{
                     display: 'inline-flex', alignItems: 'center', gap: 6, textTransform: 'none',
                     border: '1px solid var(--blue)', borderRadius: 10, padding: '1px 8px',

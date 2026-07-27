@@ -25,7 +25,7 @@ import {
   COLLAPSED_LS_KEY, RUN_REQUESTED_TAG, STATUS_DEF, STATUSES, withLegacy,
   statusOptionsFor, cell, input, badge, tagChip, NextChip, ProgressBar, RunButton,
   RETIRED_TAGS, StampButtons, TwoTouchChip, ImpactSelect, defaultChain,
-  groupBoard, isVisionTask,
+  groupBoard, isVisionTask, StuckChip, isStuckInTodo,
 } from './taskBoardShared';
 
 export default function AdminTasksPage() {
@@ -40,6 +40,10 @@ export default function AdminTasksPage() {
   // awaitingOk = Kevin's inbox preset (status Approval; vision rows exempt).
   const [reviewOnly, setReviewOnly] = useState(false);
   const [awaitingOk, setAwaitingOk] = useState(false);
+  // stuckOnly = board #151 tell — Todo tasks whose next actor is Kevin (a
+  // contradiction: queue-eligible yet undispatchable). Needs byParent, so its
+  // predicate lives after grouping (see `stuck`/`matches`).
+  const [stuckOnly, setStuckOnly] = useState(false);
   // Column sort applies to the FLAT view only — the grouped view's order IS
   // the pipeline (priority within vision), so it stays fixed.
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
@@ -60,12 +64,21 @@ export default function AdminTasksPage() {
     parent_id: null as number | null, origin: 'planned',
   });
   const titleRef = useRef<HTMLInputElement>(null);
+  // Board #148: the modal's consolidated poll probe hands us the board's
+  // max(updated_at); we refetch the 120-row list only when it moves. Seed the
+  // baseline from every full load so the first probe compares against truth.
+  const lastBoardMax = useRef<string | null>(null);
+  const boardMaxInit = useRef(false);
 
   const load = useCallback(async () => {
     try {
       setErr(null);
       const data = await apiFetch<Task[]>('/api/dev-tasks');
       setTasks(data || []);
+      let mx: string | null = null;
+      for (const t of data || []) if (t.updated_at && (!mx || t.updated_at > mx)) mx = t.updated_at;
+      lastBoardMax.current = mx;
+      boardMaxInit.current = true;
     } catch (e) { setErr(String(e)); }
     finally { setLoading(false); }
   }, []);
@@ -181,11 +194,16 @@ export default function AdminTasksPage() {
   // #136) — they track via their subtasks.
   const isVision = (t: Task) => isVisionTask(t, byParent);
 
+  // Board #151 contradiction: Todo + next-actor Kevin (needs subtasks).
+  const stuck = (t: Task) => isStuckInTodo(t, byParent.get(t.id) || []);
+  const stuckCount = tasks.filter(stuck).length;
+
   const matches = (t: Task) =>
     (!hideDone || t.status !== 'Done') &&
     (!liveOnly || t.impacts_live) &&
     (!reviewOnly || t.status === 'Review') &&
     (!awaitingOk || (t.status === 'Approval' && !isVision(t))) &&
+    (!stuckOnly || stuck(t)) &&
     (!areaFilter || t.area === areaFilter) &&
     (!assigneeFilter || (t.assignee || '') === assigneeFilter);
 
@@ -198,7 +216,7 @@ export default function AdminTasksPage() {
 
   const visible = useMemo(() => tasks.filter(matches),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tasks, hideDone, liveOnly, reviewOnly, awaitingOk, areaFilter, assigneeFilter]);
+    [tasks, hideDone, liveOnly, reviewOnly, awaitingOk, stuckOnly, areaFilter, assigneeFilter]);
 
   // Approval stamps (board #136): POST /stamp flips Approval → Todo, sets
   // kevin_final per mode, and logs the system comment server-side.
@@ -228,9 +246,19 @@ export default function AdminTasksPage() {
     load();
   };
 
-  // Board-side half of the modal's ~7s liveness poll (board #134 item 5):
-  // run/needs-review chips refresh on the same tick, no page reload.
-  const pollRefresh = useCallback(() => { load(); loadRuns(); }, [load, loadRuns]);
+  // Board-side half of the modal's liveness poll (board #134 item 5). Board
+  // #148: the modal hands us the board's max(updated_at) from its consolidated
+  // poll probe — refetch the 120-row task list + run states ONLY when it moved
+  // (or when called with no arg — a forced refresh, e.g. after a stamp). An
+  // open modal no longer drives a full board select every tick.
+  const pollRefresh = useCallback((boardMax?: string | null) => {
+    if (boardMax === undefined) { load(); loadRuns(); return; }          // forced
+    if (boardMaxInit.current && boardMax === lastBoardMax.current) return; // unchanged
+    const wasInit = boardMaxInit.current;
+    lastBoardMax.current = boardMax;
+    boardMaxInit.current = true;
+    if (wasInit) { load(); loadRuns(); }                                  // changed → refetch
+  }, [load, loadRuns]);
 
   const sortedVisible = useMemo(() => {
     if (!sort) return visible;
@@ -314,6 +342,8 @@ export default function AdminTasksPage() {
           <span style={{ ...tagChip, marginLeft: 6 }} title="subtask of this vision item">↳ #{t.parent_id}</span>}
         <TagChips t={t} />
         <NextChip t={t} subtasks={byParent.get(t.id) || []} />
+        {/* board #151 tell — Todo task whose next actor is Kevin sits undispatched */}
+        <StuckChip t={t} subtasks={byParent.get(t.id) || []} />
         {/* Approval-stage stamp buttons (board #136) — Kevin's two-touch
             choice, right in the row so the Awaiting-my-OK view is one-click */}
         <StampButtons t={t} onStamp={stamp} compact />
@@ -458,6 +488,17 @@ export default function AdminTasksPage() {
             title="Kevin's inbox — tasks sitting in Approval awaiting a stamp (vision rows are exempt from the pipeline)"
             onClick={() => setAwaitingOk(!awaitingOk)}>
             ✋ Awaiting my OK ({tasks.filter((t) => t.status === 'Approval' && !isVision(t)).length})</button>
+          {/* board #151: a Todo task whose next actor is Kevin can't dispatch —
+              surfaced only when the class exists so it never hides again */}
+          {(stuckCount > 0 || stuckOnly) && (
+            <button style={{
+              ...input, cursor: 'pointer', fontWeight: stuckOnly ? 700 : 400,
+              color: 'var(--red)', borderColor: stuckOnly ? 'var(--red)' : 'var(--border)',
+            }}
+              title="contradiction (board #151): Todo tasks whose next actor is Kevin — queue-eligible yet the dispatcher's next-actor gate skips them, so they sit undispatched. Tick the pending Kevin checklist step (or re-stamp) to release."
+              onClick={() => setStuckOnly(!stuckOnly)}>
+              ⚠ stuck in Todo ({stuckCount})</button>
+          )}
           <label><input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} /> hide Done</label>
           <label><input type="checkbox" checked={liveOnly} onChange={(e) => setLiveOnly(e.target.checked)} /> 🔴 live only</label>
           <label title="tasks sitting in the Review stage (replaces the needs-review tag)">
