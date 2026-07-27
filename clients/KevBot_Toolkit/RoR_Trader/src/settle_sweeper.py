@@ -252,18 +252,58 @@ def nightly_settle_retrue_enabled() -> bool:
         "1", "true", "yes", "on")
 
 
-def _settled_pointer_day() -> "datetime | None":
-    """The settled day the parity suite tests. MIRRORS
-    fidelity_parity_suite._settled_test_day (keep in sync): the first weekday
-    >= 3 days back with substantial TSLA 1Sec cache coverage (proves it's a
-    real trading day with data, not a weekend/holiday). Returns a UTC-midnight
-    datetime, or None if no settled day with data is found in the last 25."""
-    import bar_cache as bc
-    today = datetime.now(timezone.utc).date()
-    for back in range(3, 25):
+def _min_settled_tdays() -> int:
+    """#125 (V1.17): minimum FULL trading days (weekdays) that must have elapsed
+    after a candidate settled day before the suite/retrue may test it. The
+    legacy '3 calendar days back' is only T+2 TRADING days across a weekend —
+    inside Polygon's revision-churn window (all three drift recurrences #103/
+    #116/#125 hit days exactly T+2 trading days old; days >= T+3 measured
+    quiescent). 0/unset = legacy calendar walk. Suggested arm value: 4."""
+    try:
+        return max(0, int(os.environ.get("RORT_PARITY_SETTLED_MIN_TDAYS", "0")))
+    except ValueError:
+        return 0
+
+
+def _elapsed_weekdays(d, today) -> int:
+    """Weekdays strictly between candidate day `d` and `today` (both dates
+    excluded — today is in progress, the candidate is the day under test)."""
+    n = 0
+    cur = d + timedelta(days=1)
+    while cur < today:
+        if cur.weekday() < 5:
+            n += 1
+        cur += timedelta(days=1)
+    return n
+
+
+def iter_settled_candidates(today):
+    """Yield settled-day CANDIDATE dates, newest first — the single walk shared
+    by fidelity_parity_suite._settled_test_day and _settled_pointer_day so the
+    two can never disagree about which day the suite tests (#125). Legacy
+    (RORT_PARITY_SETTLED_MIN_TDAYS unset): weekdays 3..24 calendar days back,
+    byte-identical to the historical walk. Armed: weekdays with at least N full
+    weekdays elapsed since, so a weekend can't shrink the settle margin."""
+    n = _min_settled_tdays()
+    rng = range(1, 40) if n else range(3, 25)
+    for back in rng:
         d = today - timedelta(days=back)
         if d.weekday() >= 5:  # Sat/Sun
             continue
+        if n and _elapsed_weekdays(d, today) < n:
+            continue
+        yield d
+
+
+def _settled_pointer_day() -> "datetime | None":
+    """The settled day the parity suite tests. Same candidate walk as
+    fidelity_parity_suite._settled_test_day (via iter_settled_candidates):
+    first candidate with substantial TSLA 1Sec cache coverage (proves it's a
+    real trading day with data, not a weekend/holiday). Returns a UTC-midnight
+    datetime, or None if no settled day with data is found."""
+    import bar_cache as bc
+    today = datetime.now(timezone.utc).date()
+    for d in iter_settled_candidates(today):
         s = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
         try:
             df = bc.read_bars("TSLA", "1Sec", s, s + timedelta(days=1))
@@ -274,32 +314,73 @@ def _settled_pointer_day() -> "datetime | None":
     return None
 
 
+def _retrue_window_days() -> int:
+    """#125: how many trailing weekdays the nightly retrue heals (default 1 =
+    just the pointer day, the pre-#125 behavior). With a window, every young
+    day is re-trued nightly until it exits the churn zone, so the suite's
+    pointer never rolls onto a day whose last true-up predates a revision
+    batch (#103/#116 class). The pointer day itself is ALWAYS included."""
+    try:
+        return max(1, int(os.environ.get(
+            "RORT_NIGHTLY_SETTLE_RETRUE_WINDOW", "1")))
+    except ValueError:
+        return 1
+
+
+def _retrue_day_list(pointer_day: datetime, today) -> "list[datetime]":
+    """Weekdays to retrue this pass: the pointer day plus (window-1) of the
+    NEWEST weekdays in (pointer_day, yesterday] — the young end is where
+    revisions land. Window=1 → [pointer_day] (legacy single-day)."""
+    win = _retrue_window_days()
+    days = [pointer_day]
+    d = pointer_day.date() + timedelta(days=1)
+    while d < today:
+        if d.weekday() < 5:
+            days.append(datetime(d.year, d.month, d.day, tzinfo=timezone.utc))
+        d += timedelta(days=1)
+    if len(days) > win:
+        days = [days[0]] + days[-(win - 1):] if win > 1 else [days[0]]
+    return days
+
+
 def run_nightly_settled_retrue(symbols: "list[str] | None" = None) -> dict:
     """Re-true the parity suite's settled-day pointer for every maintained
     symbol so Polygon's T+3 revisions can't red the suite (#108 / V1.10).
-    Idempotent — the same operation as the manual `--retrue` heal, scoped to
-    the ONE settled day the suite compares. `symbols` defaults to the enabled
-    bar-cache capture targets (what the suite's cache is built from). Returns
-    {'day': iso|None, 'symbols': {sym: retrue_range_result}}."""
+    Idempotent — the same operation as the manual `--retrue` heal. #125: with
+    RORT_NIGHTLY_SETTLE_RETRUE_WINDOW > 1 it also re-trues the newest trailing
+    weekdays each night, so a day is freshly trued for its whole churn window
+    (a one-shot heal can't cover revisions that arrive AFTER it — proven
+    2026-07-25: SPY 07-22 retrued 00:20Z, revision landed 00:20–06:21Z).
+    `symbols` defaults to the enabled bar-cache capture targets (what the
+    suite's cache is built from). Returns
+    {'day': iso|None, 'days': [iso], 'symbols': {sym: {iso: result}}}."""
     os.environ.setdefault("RORT_BARCACHE_WRITETHROUGH", "1")  # same as --retrue
     day = _settled_pointer_day()
     if day is None:
         logger.warning("[NIGHTLY-RETRUE] no settled pointer day with cache data "
                        "— nothing to heal")
-        return {"day": None, "symbols": {}}
+        return {"day": None, "days": [], "symbols": {}}
+    days = _retrue_day_list(day, datetime.now(timezone.utc).date())
     syms = symbols if symbols is not None else _target_symbols()
     out: dict = {}
+    errors = 0
     for sym in syms:
-        try:
-            out[sym] = retrue_range(sym, day, day)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("[NIGHTLY-RETRUE] %s %s failed: %s", sym,
-                           day.date(), e)
-            out[sym] = {"error": str(e)}
-    healed = sum(1 for v in out.values() if "error" not in v)
-    logger.info("[NIGHTLY-RETRUE] settled-day %s: healed %d/%d symbol(s)",
-                day.date(), healed, len(syms))
-    return {"day": day.date().isoformat(), "symbols": out}
+        out[sym] = {}
+        for d in days:
+            try:
+                out[sym][d.date().isoformat()] = retrue_range(sym, d, d)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[NIGHTLY-RETRUE] %s %s failed: %s", sym,
+                               d.date(), e)
+                out[sym][d.date().isoformat()] = {"error": str(e)}
+                errors += 1
+    logger.info("[NIGHTLY-RETRUE] pointer %s window=%d day(s) %s: "
+                "%d symbol-day(s), %d error(s)",
+                day.date(), len(days),
+                [d.date().isoformat() for d in days],
+                len(syms) * len(days), errors)
+    return {"day": day.date().isoformat(),
+            "days": [d.date().isoformat() for d in days], "symbols": out}
 
 
 def _main() -> None:

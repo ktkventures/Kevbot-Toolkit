@@ -95,22 +95,40 @@ WRITETHROUGH_TFS = ["1Sec", "1Min"]  # the two NATIVE source layers the stream p
 
 def _settled_test_day(override: str | None) -> dt.date:
     """A settled TRADING day that actually has data — not a weekend OR a holiday.
-    Walks back from 3 days ago (past Polygon's revision + sub-penny residual window)
-    and picks the first weekday with substantial TSLA 1Sec coverage in the cache
-    (proves it's a real trading day with data). Avoids the silent holiday skip that
-    made an earlier version 'pass' while testing nothing."""
+    Candidate walk lives in settle_sweeper.iter_settled_candidates (shared with
+    the nightly retrue's pointer so the two can never target different days,
+    #125): legacy = first weekday >= 3 calendar days back; with
+    RORT_PARITY_SETTLED_MIN_TDAYS=N, first weekday with N full trading days
+    elapsed (3 calendar days is only T+2 TRADING days across a weekend — inside
+    Polygon's revision-churn window, the #103/#116/#125 false-red class). Picks
+    the first candidate with substantial TSLA 1Sec cache coverage (proves it's
+    a real trading day with data). Avoids the silent holiday skip that made an
+    earlier version 'pass' while testing nothing."""
     if override:
         return dt.date.fromisoformat(override)
     import bar_cache as bc
-    for back in range(3, 25):
-        d = dt.date.today() - dt.timedelta(days=back)
-        if d.weekday() >= 5:  # Sat/Sun
-            continue
+    from settle_sweeper import iter_settled_candidates
+    for d in iter_settled_candidates(dt.date.today()):
         s = dt.datetime(d.year, d.month, d.day, tzinfo=dt.timezone.utc)
         df = bc.read_bars("TSLA", "1Sec", s, s + dt.timedelta(days=1))
         if df is not None and len(df) > 10000:  # a real trading day's worth of 1s bars
             return d
-    raise RuntimeError("no settled trading day with cache data found in the last 25 days")
+    raise RuntimeError("no settled trading day with cache data found in the candidate window")
+
+
+def _self_heal_enabled() -> bool:
+    """#125 (V1.17): RORT_PARITY_SELF_HEAL=1 lets a cache-parity item that fails
+    with the revision-drift signature (pure OHLCV value diffs, rowMM=0, on the
+    settled day) re-true that symbol/day from Polygon REST and re-compare ONCE.
+    Rationale: the cache is a snapshot of Polygon-at-last-true-up; Polygon keeps
+    revising a day into its 3rd trading day after (measured #125), so no
+    scheduled heal can guarantee equality at an arbitrary later read — the only
+    deterministic point to true-up is comparison time. A REAL pipeline bug still
+    fails: diffs that survive a fresh REST true-up are ours, not Polygon's.
+    Heals via settle_sweeper.retrue_range (same op as the manual SOP); WRITES to
+    bar_cache, hence opt-in and default OFF."""
+    return os.environ.get("RORT_PARITY_SELF_HEAL", "").strip().lower() in (
+        "1", "true", "yes", "on")
 
 
 def _cache_parity(day: dt.date) -> list[tuple[str, bool, str]]:
@@ -121,25 +139,51 @@ def _cache_parity(day: dt.date) -> list[tuple[str, bool, str]]:
     s = dt.datetime(day.year, day.month, day.day, tzinfo=dt.timezone.utc)
     e = s + dt.timedelta(days=1) - dt.timedelta(seconds=1)
     results = []
+    healed_syms: set[str] = set()  # one retrue heals ALL of a symbol's TF items
+
+    def _compare(sym, tf, sess, nat):
+        cached = bc.cached_load_market_data(sym, timeframe=tf, start_date=s, end_date=e, session=sess)
+        if cached is None:
+            return None, None, cached
+        cols = ["open", "high", "low", "close", "volume"]
+        j = nat[cols].join(cached[cols], lsuffix="_n", rsuffix="_c", how="inner")
+        diffs = sum(int(((j[c + "_n"] - j[c + "_c"]).abs() > PRICE_TOL).sum()) for c in cols)
+        rowmm = abs(len(nat) - len(cached))
+        return diffs, rowmm, cached
+
     for sym, tf in CACHE_PARITY_MATRIX:
         for sess in ("24/7", "RTH"):
             label = f"cache-parity {sym}/{tf}/{sess}"
             try:
-                cached = bc.cached_load_market_data(sym, timeframe=tf, start_date=s, end_date=e, session=sess)
                 nat = dl.load_from_polygon(sym, timeframe=tf, start_date=s.replace(hour=0), end_date=s.replace(hour=0), session=sess)
                 nat = nat[(nat.index >= s) & (nat.index <= e)] if nat is not None else None
                 if nat is None or len(nat) == 0:
                     results.append((label, "SKIP", "no native data"))
                     continue
+                diffs, rowmm, cached = _compare(sym, tf, sess, nat)
                 if cached is None:
                     results.append((label, "FAIL", f"cache returned None, native has {len(nat)}"))
                     continue
-                cols = ["open", "high", "low", "close", "volume"]
-                j = nat[cols].join(cached[cols], lsuffix="_n", rsuffix="_c", how="inner")
-                diffs = sum(int(((j[c + "_n"] - j[c + "_c"]).abs() > PRICE_TOL).sum()) for c in cols)
-                rowmm = abs(len(nat) - len(cached))
+                detail = f"native={len(nat)} cached={len(cached)} OHLCVdiffs={diffs} rowMM={rowmm}"
+                # #125: revision-drift signature (value diffs only, no row gap)
+                # → true-up this symbol's day and re-compare once. The re-compare
+                # is against the SAME native pull, so a heal can't paper over a
+                # row-count hole or a real value bug (those survive the retrue).
+                if diffs and rowmm == 0 and _self_heal_enabled():
+                    if sym not in healed_syms:
+                        import settle_sweeper
+                        os.environ.setdefault("RORT_BARCACHE_WRITETHROUGH", "1")
+                        settle_sweeper.retrue_range(sym, s, s)
+                        healed_syms.add(sym)
+                    diffs2, rowmm2, cached2 = _compare(sym, tf, sess, nat)
+                    if cached2 is not None and diffs2 == 0 and rowmm2 == 0:
+                        results.append((label, "PASS",
+                                        f"native={len(nat)} cached={len(cached2)} OHLCVdiffs=0 rowMM=0 "
+                                        f"| self-healed revision drift (was OHLCVdiffs={diffs})"))
+                        continue
+                    detail += f" | self-heal attempted, still OHLCVdiffs={diffs2} rowMM={rowmm2}"
                 status = "PASS" if (diffs == 0 and rowmm == 0) else "FAIL"
-                results.append((label, status, f"native={len(nat)} cached={len(cached)} OHLCVdiffs={diffs} rowMM={rowmm}"))
+                results.append((label, status, detail))
             except Exception as ex:  # noqa: BLE001
                 results.append((label, "FAIL", f"EXC {str(ex)[:120]}"))
     return results

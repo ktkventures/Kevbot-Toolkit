@@ -188,8 +188,8 @@ def _nightly_settled_retrue() -> None:
         return
     try:
         r = settle_sweeper.run_nightly_settled_retrue()
-        logger.info("[NIGHTLY] settled-day retrue done: day=%s symbols=%d",
-                    r.get("day"), len(r.get("symbols") or {}))
+        logger.info("[NIGHTLY] settled-day retrue done: day=%s days=%s symbols=%d",
+                    r.get("day"), r.get("days"), len(r.get("symbols") or {}))
     except Exception as e:  # noqa: BLE001
         logger.exception("[NIGHTLY] settled-day retrue failed (non-fatal): %s", e)
 
