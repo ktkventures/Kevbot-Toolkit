@@ -37,6 +37,7 @@ import {
   STATUS_COLOR, STATUS_DEF, statusOptionsFor, withLegacy, input, tagChip, relTime, elapsedShort,
   RoleChip, NextChip, ProgressBar, RolePicker, RunButton, OutcomeChip,
   StampButtons, TwoTouchChip, ImpactSelect, IMPACT_DEF, defaultChain, StuckChip,
+  MENTION_ROLES,
 } from './taskBoardShared';
 import { Md, MD_CSS } from './taskMarkdown';
 
@@ -123,6 +124,10 @@ export default function TaskDetailModal({
   const [ctxPreview, setCtxPreview] = useState(false);
   const [draftDesc, setDraftDesc] = useState('');
   const [newStep, setNewStep] = useState('');
+  // @-mention compose picker (board #143): inserts an @token into the draft so
+  // a mention row gets written server-side and lands in the peer's Messages
+  // inbox. Simple insert — no inline autocomplete needed (spec).
+  const [mentionOpen, setMentionOpen] = useState(false);
   const feedRef = useRef<HTMLDivElement>(null);
 
   const loadThread = useCallback(async (id: number) => {
@@ -252,6 +257,15 @@ export default function TaskDetailModal({
     if (draftDesc !== (scoped.description || '')) patch(scoped.id, { description: draftDesc });
     setCtxEdit(false); setCtxPreview(false);
   };
+
+  // Append an @role token to the draft (board #143). Adds a leading space so
+  // it doesn't glue onto the previous word, and a trailing space to keep typing.
+  const insertMention = (role: string) => {
+    setDraftComment((d) => `${d}${d && !d.endsWith(' ') ? ' ' : ''}@${role} `);
+    setMentionOpen(false);
+  };
+  // Registry roles for the picker (falls back to the static token set).
+  const mentionRoles = roles.filter(Boolean).length ? roles.filter(Boolean) : MENTION_ROLES;
 
   // Checklist ops operate on the SCOPED item (the selected pipeline row, or
   // the task itself) — ALWAYS send the whole array (JSONB replace).
@@ -679,7 +693,34 @@ export default function TaskDetailModal({
               <RolePicker value={commentAuthor} pickTitle="comment as" up
                 options={withLegacy(roles.filter(Boolean), commentAuthor)}
                 onPick={onPickAuthor} />
-              <input style={{ ...input, flex: 1, minWidth: 0 }} placeholder="comment…" value={draftComment}
+              {/* @-mention inserter (board #143): tag a teammate so it lands in
+                  their Messages inbox. Simple insert picker — spec says no
+                  fancy autocomplete needed. */}
+              <span style={{ position: 'relative', display: 'inline-block' }}>
+                <button style={{ ...input, cursor: 'pointer', fontWeight: 700, padding: '4px 9px' }}
+                  title="mention a teammate (@) — it lands in their Messages inbox"
+                  onClick={() => setMentionOpen((o) => !o)}>@</button>
+                {mentionOpen && (
+                  <>
+                    <span onClick={() => setMentionOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 1500 }} />
+                    <span style={{
+                      position: 'absolute', bottom: '120%', left: 0, zIndex: 1600,
+                      display: 'flex', gap: 5, padding: '6px 8px', borderRadius: 8,
+                      border: '1px solid var(--border)', background: 'var(--bg-card, var(--bg-input))',
+                      boxShadow: '0 6px 20px rgba(0,0,0,0.4)',
+                    }}>
+                      {mentionRoles.map((r) => (
+                        <button key={r} title={`mention @${r}`}
+                          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', lineHeight: 1 }}
+                          onClick={() => insertMention(r)}>
+                          <RoleChip role={r} />
+                        </button>
+                      ))}
+                    </span>
+                  </>
+                )}
+              </span>
+              <input style={{ ...input, flex: 1, minWidth: 0 }} placeholder="comment… (@ to mention)" value={draftComment}
                 onChange={(e) => setDraftComment(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && postComment()} />
               <button style={{ ...input, cursor: 'pointer', background: 'var(--blue)', color: '#fff' }}

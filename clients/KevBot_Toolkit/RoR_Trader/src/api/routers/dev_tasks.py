@@ -4,6 +4,8 @@ Admin-gated CRUD over `dev_tasks` + `dev_task_comments` (see
 migrations/dev_tasks_table.sql). Uses the service-role admin client. Tasks sort
 by priority (phase, seq) ascending so 1.1 = "do next" surfaces first.
 """
+import logging
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -11,6 +13,60 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from api.deps import get_current_user
 
 router = APIRouter(prefix="/api/dev-tasks", tags=["dev-tasks"])
+
+log = logging.getLogger(__name__)
+
+# @-mention token: '@' followed by a letter then word chars. The negative
+# lookbehind (?<![\w@]) requires the '@' to start a token — so an email local
+# part like `ktkventures@gmail` (a word char precedes the '@') never matches,
+# and `@@x` doesn't either. Board #143.
+_MENTION_RE = re.compile(r"(?<![\w@])@([A-Za-z][A-Za-z0-9]*)")
+
+
+def _parse_mentions(body: str, valid_by_lower: dict) -> list:
+    """Distinct canonical mentions in `body`, in first-seen order.
+
+    `valid_by_lower` maps lower(letter) → canonical registry letter, so
+    `@f`/`@F` both resolve to 'F' and unknown tokens (`@gmail`, `@someone`)
+    are dropped. Case-insensitive per the spec.
+    """
+    out, seen = [], set()
+    for m in _MENTION_RE.finditer(body or ""):
+        canon = valid_by_lower.get(m.group(1).lower())
+        if canon and canon not in seen:
+            seen.add(canon)
+            out.append(canon)
+    return out
+
+
+def _write_mentions(c, comment_id: int, task_id: int, author: str, body: str):
+    """Fan a posted comment's @tokens out into task_mentions rows (board #143).
+
+    Best-effort by design: mentions are additive metadata, so a parse /
+    registry / missing-table error (e.g. the API shipping before the migration
+    lands) must NEVER break comment posting. The UNIQUE (comment_id, mentioned)
+    constraint makes a re-POST a no-op. Only real registry letters + kevin
+    become rows — unknown tokens are silently ignored (that's the spec, not a
+    hidden default: they simply aren't mentions).
+    """
+    if "@" not in (body or ""):
+        return  # common case — skip the registry round-trip entirely
+    try:
+        letters = c.table("agents").select("letter").execute().data or []
+        valid = {r["letter"].lower(): r["letter"]
+                 for r in letters if r.get("letter")}
+        valid.setdefault("kevin", "kevin")  # guard if the human row is absent
+        mentions = _parse_mentions(body, valid)
+        if not mentions:
+            return
+        c.table("task_mentions").insert([
+            {"comment_id": comment_id, "task_id": task_id,
+             "mentioned": mtn, "author": author}
+            for mtn in mentions
+        ]).execute()
+    except Exception as e:  # noqa: BLE001 — never let mentions break a comment
+        log.warning("mention write failed for comment %s on task %s: %s",
+                    comment_id, task_id, e)
 
 # Fields a caller may set on create / update (whitelist — ignore anything else).
 _EDITABLE = {
@@ -378,6 +434,12 @@ def add_comment(task_id: int, payload: dict = Body(...),
     if not body:
         raise HTTPException(status_code=400, detail="body is required")
     author = payload.get("author") or "claude"
-    res = _admin().table("dev_task_comments").insert(
+    c = _admin()
+    res = c.table("dev_task_comments").insert(
         {"task_id": task_id, "author": author, "body": body}).execute()
-    return res.data[0] if res.data else {"status": "added"}
+    row = res.data[0] if res.data else None
+    # Fan @tokens out to task_mentions so nothing rots un-circled-back-to
+    # (board #143). Best-effort — never breaks the comment.
+    if row:
+        _write_mentions(c, row["id"], task_id, author, body)
+    return row or {"status": "added"}
