@@ -16,10 +16,13 @@
  * header to re-sort. Filter chips at the top scope to a single flag.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Card from '@/components/Card';
 import { apiFetch } from '@/lib/api/client';
 import Last10PairingModal from '@/views/Last10PairingModal';
+import SimBasisModal, {
+  SIM_BADGE, simRatioColor, type SimScore,
+} from '@/views/SimBasisModal';
 import StrategyNotesModal from '@/views/StrategyNotesModal';
 import type { Task } from '@/views/taskBoardShared';
 import {
@@ -137,6 +140,78 @@ const ALGO_BADGE: React.CSSProperties = {
   letterSpacing: 0.4, verticalAlign: 'middle', marginRight: 4,
 };
 
+// board #144 — SIM (replay) basis cell. Teal SIM badge (see SimBasisModal)
+// keeps it visually DISTINCT from the violet ALGO lane. SIM is logic-would-fire
+// evidence, NEVER delivery — and cache-backed/on-demand, so most rows are
+// 'none' (a subdued Run affordance) until Kevin runs one.
+const simBtnBase: React.CSSProperties = {
+  background: 'transparent', border: 'none', cursor: 'pointer', padding: 0,
+  fontVariantNumeric: 'tabular-nums',
+};
+
+/** The compact SIM cell content — fail-loud (unres/error/none never render as a
+ *  0-score), score bands for ok/partial, ⟳ marker when a re-run is warranted. */
+function simCellContent(sim: SimScore | undefined,
+                        onOpen: () => void): React.ReactNode {
+  if (!sim) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
+  if (sim.status === 'none') {
+    return (
+      <button onClick={onOpen}
+              style={{ ...simBtnBase, fontSize: 11, fontWeight: 500, color: 'var(--text-muted)' }}>
+        <span style={SIM_BADGE}>SIM</span>▷ run
+      </button>
+    );
+  }
+  if (sim.status === 'unres' || sim.status === 'error') {
+    return (
+      <button onClick={onOpen} style={{ ...simBtnBase, fontSize: 11, color: '#ef5350' }}>
+        <span style={SIM_BADGE}>SIM</span>{sim.status === 'unres' ? 'unres' : 'err'}
+      </button>
+    );
+  }
+  const ratio = sim.denom && sim.denom > 0 ? (sim.points ?? 0) / sim.denom : null;
+  const attention = sim.flags_stale || sim.stale;
+  return (
+    <button onClick={onOpen}
+            style={{ ...simBtnBase, fontSize: 13, fontWeight: 600, color: simRatioColor(ratio) }}>
+      <span style={SIM_BADGE}>SIM</span>{sim.points ?? 0}/{sim.denom ?? 0}
+      {sim.status === 'partial' &&
+        <span style={{ color: '#ffc107', fontSize: 10, marginLeft: 2 }} title="partial basis">~</span>}
+      {attention &&
+        <span style={{ color: '#ffc107', fontSize: 10, marginLeft: 2 }} title="re-run warranted">⟳</span>}
+    </button>
+  );
+}
+
+/** Cell tooltip — surfaces the ledger summary next to the score (Kevin req 1). */
+function simCellTitle(sim: SimScore | undefined): string {
+  const base = ' Click for the full divergence ledger, on-demand Run, and the '
+    + 'nightly opt-in toggle.';
+  if (!sim) return 'SIM replay basis — loading…';
+  if (sim.status === 'none') {
+    return 'SIM replay basis (board #120/#144) — not run yet. The real engine '
+      + 'replayed over recorded decision-time bars (logic-would-fire, NEVER '
+      + 'delivery).' + base;
+  }
+  if (sim.status === 'unres') {
+    return 'SIM unavailable — the replay could not resolve a required ribbon '
+      + '(never scored 0).' + base;
+  }
+  if (sim.status === 'error') return 'SIM run errored.' + base;
+  const ratio = sim.denom && sim.denom > 0 ? (sim.points ?? 0) / sim.denom : null;
+  const parts: string[] = [
+    `${sim.points ?? 0}/${sim.denom ?? 0}`
+      + (ratio != null ? ` (${(ratio * 100).toFixed(0)}%)` : ''),
+  ];
+  if (sim.status === 'partial') parts.push('partial');
+  if (sim.coverage != null) parts.push(`coverage ${(sim.coverage * 100).toFixed(0)}%`);
+  if (sim.covered_of_total) parts.push(`covers ${sim.covered_of_total[0]}/${sim.covered_of_total[1]}`);
+  if (sim.flags_stale) parts.push('⟳ armed flags changed — re-run');
+  if (sim.stale) parts.push('⟳ window moved — re-run');
+  parts.push(`${sim.divergences?.length ?? 0} ledger entries`);
+  return `SIM ${parts.join(' · ')} — logic-would-fire, NEVER delivery.` + base;
+}
+
 // ── Sortable table ────────────────────────────────────────────────────
 
 type SortKey =
@@ -144,7 +219,7 @@ type SortKey =
   | 'btCurrent' | 'kpis' | 'lastTrade' | 'trades'
   | 'lastBt' | 'lastAlert' | 'barParity'
   | 'combined' | 'paired' | 'phantom' | 'missed' | 'tbd'
-  | 'sid' | 'last10' | 'last10Algo';
+  | 'sid' | 'last10' | 'last10Algo' | 'last10Sim';
 
 /** Last-10 score shape from /api/strategy-health-last10 (board #70).
  *  `points` = fired/delivery basis (default column); `points_algo` = board
@@ -166,6 +241,7 @@ function rowSortValue(
   key: SortKey,
   parityByPair?: Map<string, BarParityPair>,
   last10?: Map<number, Last10Score>,
+  simScores?: Map<number, SimScore>,
 ): number | string {
   switch (key) {
     case 'flags':     return -r.red_flags.length; // most flags first by default asc
@@ -180,6 +256,14 @@ function rowSortValue(
       // ALGO (#119): sort on the algo-basis ratio; no-data rows sort last.
       return s10 && s10.denom > 0 && s10.points_algo != null
         ? -(s10.points_algo / s10.denom) : 1;
+    }
+    case 'last10Sim': {
+      // SIM (#144): sort on the replay-basis ratio; not-run / unres / error
+      // rows sort last (they have no comparable score).
+      const s = simScores?.get(r.strategy_id);
+      return s && (s.status === 'ok' || s.status === 'partial')
+        && s.denom && s.denom > 0
+        ? -((s.points ?? 0) / s.denom) : 1;
     }
     case 'name':      return r.name ?? '';
     case 'symbol':    return r.symbol ?? '';
@@ -394,6 +478,45 @@ export default function StrategyHealthV1() {
       .catch(() => { /* keep '—' cells */ });
   }, [last10Sids]);
 
+  // SIM (replay) basis scores — board #144. The #120 contract exposes only a
+  // per-strategy cache READ (GET /api/strategy-health-sim/{sid}; there is no
+  // batch endpoint — coordinate with E if the fan-out ever matters). Each read
+  // is a light, indexed cache lookup that NEVER runs the replay, so we sweep
+  // the visible sids with a small concurrency cap, once per sid-set change
+  // (mount/Apply) — not a poll. Cells stay '—' until each lands; a failed read
+  // leaves '—' (never a silent 0). Most rows are 'none' (on-demand + opt-in).
+  const [simScores, setSimScores] = useState<Map<number, SimScore>>(new Map());
+  const [simSid, setSimSid] = useState<{ sid: number; name: string } | null>(null);
+  // Stable identity — the modal keeps this in a ref; a churning closure would
+  // re-fire the modal's initial-load effect on every sweep tick.
+  const onSimScoreChange = useCallback((s: SimScore) =>
+    setSimScores(prev => new Map(prev).set(s.strategy_id, s)), []);
+  useEffect(() => {
+    if (!last10Sids) return;
+    const sids = last10Sids.split(',').map(Number).filter(Boolean);
+    if (sids.length === 0) return;
+    let cancelled = false;
+    const acc = new Map<number, SimScore>();
+    let idx = 0;
+    const CONCURRENCY = 6;
+    const worker = async (): Promise<void> => {
+      while (idx < sids.length && !cancelled) {
+        const sid = sids[idx++];
+        try {
+          const s = await apiFetch<SimScore>(`/api/strategy-health-sim/${sid}`);
+          if (cancelled) return;
+          acc.set(sid, s);
+          setSimScores(new Map(acc));
+        } catch {
+          /* leave the cell '—' — never a silent 0 */
+        }
+      }
+    };
+    Promise.all(Array.from(
+      { length: Math.min(CONCURRENCY, sids.length) }, () => worker()));
+    return () => { cancelled = true; };
+  }, [last10Sids]);
+
   // Phase B (board #70): bug chips from open board tasks whose
   // affected_sids contains the row's sid, + per-sid notes counts.
   const [bugTasks, setBugTasks] = useState<Task[]>([]);
@@ -435,15 +558,15 @@ export default function StrategyHealthV1() {
       rows = rows.filter(r => r.red_flags.includes(activeFlag));
     }
     const sorted = [...rows].sort((a, b) => {
-      const av = rowSortValue(a, sortKey, parityByPair, last10);
-      const bv = rowSortValue(b, sortKey, parityByPair, last10);
+      const av = rowSortValue(a, sortKey, parityByPair, last10, simScores);
+      const bv = rowSortValue(b, sortKey, parityByPair, last10, simScores);
       const cmp = typeof av === 'number' && typeof bv === 'number'
         ? av - bv
         : String(av).localeCompare(String(bv));
       return sortDir === 'asc' ? cmp : -cmp;
     });
     return sorted;
-  }, [data, sortKey, sortDir, activeFlag, includeLegacy, parityByPair, last10]);
+  }, [data, sortKey, sortDir, activeFlag, includeLegacy, parityByPair, last10, simScores]);
 
   // Summary: counts by flag, scoped to non-legacy strategies.
   const summary = useMemo(() => {
@@ -711,6 +834,16 @@ export default function StrategyHealthV1() {
                              fontWeight: 500, whiteSpace: 'nowrap' }}>
                   <span style={ALGO_BADGE}>ALGO</span>Last 10{arrow('last10Algo')}
                 </th>
+                {/* board #144 — SIM (replay) basis. Teal SIM badge, distinct
+                     from the violet ALGO lane. Cache-backed + on-demand + opt-in;
+                     click a cell for the divergence ledger + Run + nightly toggle. */}
+                <th onClick={() => toggleSort('last10Sim')}
+                    title="SIM replay basis (board #120/#144): the SAME last-10 backtest edges paired against the REPLAY lane — the REAL engine replayed over recorded decision-time bars (logic-would-fire, NEVER delivery; SIM ≥ live by construction, no ops loss modeled). Cache-backed, on-demand (Run button), per-strategy nightly opt-in. Most rows read 'run' until a replay is queued. Click a cell for the enumerated divergence ledger."
+                    style={{ padding: '6px 8px', cursor: 'pointer',
+                             userSelect: 'none', textAlign: 'right',
+                             fontWeight: 500, whiteSpace: 'nowrap' }}>
+                  <span style={SIM_BADGE}>SIM</span>Last 10{arrow('last10Sim')}
+                </th>
                 <th style={{ padding: '6px 8px', fontWeight: 500 }}
                     title="Row context: notes (humans + nightly writers) and open board tasks affecting this sid.">
                   Context
@@ -932,6 +1065,16 @@ export default function StrategyHealthV1() {
                           <span style={ALGO_BADGE}>ALGO</span>{l10!.points_algo}/{l10!.denom}
                         </button>}
                   </td>
+                  {/* SIM (replay) basis (board #144): cache-backed logic-would-
+                       fire score. Fail-loud — 'none' shows a Run affordance,
+                       'unres'/'error' show their status, never a bare 0. Click
+                       opens the modal (score + divergence ledger + Run + opt-in). */}
+                  <td style={{ padding: '6px 8px', textAlign: 'right' }}
+                      title={simCellTitle(simScores.get(r.strategy_id))}>
+                    {simCellContent(simScores.get(r.strategy_id), () => setSimSid({
+                      sid: r.strategy_id,
+                      name: r.name || `sid ${r.strategy_id}` }))}
+                  </td>
                   {/* Context (Kevin 07-25): replaces the Flags chip column —
                        flag data still drives the summary/filter chips up top.
                        📝 notes on top, open affecting-task chips beneath. */}
@@ -967,7 +1110,7 @@ export default function StrategyHealthV1() {
               })}
               {filteredRows.length === 0 && (
                 <tr>
-                  <td colSpan={18} style={{ padding: 16, textAlign: 'center',
+                  <td colSpan={21} style={{ padding: 16, textAlign: 'center',
                                             color: 'var(--text-muted)' }}>
                     No strategies match the current filter.
                   </td>
@@ -989,6 +1132,14 @@ export default function StrategyHealthV1() {
       {notesSid && (
         <StrategyNotesModal sid={notesSid.sid} name={notesSid.name}
           onClose={() => setNotesSid(null)} onChanged={loadNotes} />
+      )}
+      {simSid && (
+        // board #144 — SIM basis detail: score + divergence ledger + on-demand
+        // Run + nightly opt-in. onScoreChange keeps the column cell in sync when
+        // a re-run lands or the cached read refreshes.
+        <SimBasisModal key={simSid.sid} sid={simSid.sid} name={simSid.name}
+          onClose={() => setSimSid(null)}
+          onScoreChange={onSimScoreChange} />
       )}
     </div>
   );
