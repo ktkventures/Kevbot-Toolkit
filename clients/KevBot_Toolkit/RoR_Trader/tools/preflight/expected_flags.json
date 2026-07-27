@@ -1,0 +1,33 @@
+{
+  "_meta": {
+    "owner": "E (Engine/Divergence lane owns ALL flag state — arm/disarm and this baseline)",
+    "purpose": "Baseline for preflight invariant (6): armed RORT_* flags on each Railway service must match this recorded set. Drift = someone armed or lost a flag without recording it.",
+    "populated": false,
+    "seeded_by": "M 2026-07-27 (task #153) — MECHANISM ONLY. M does not author flag truth; E fills `services` from the live Railway state, then sets populated=true.",
+    "how_to_update": "After every arm/disarm, edit the matching service map here IN THE SAME CHANGE, so `/preflight --full` stays green. An entry means 'this flag is expected at this value'; a live flag absent here is flagged as unrecorded drift.",
+    "services_note": "Keys must match the Railway service names used by `railway variables --service <name> --json` (e.g. Worker, api, batch). Values are strings ('1' = armed).",
+    "proposed_seed_from_project_memory": {
+      "_disclaimer": "NON-AUTHORITATIVE hints for E, drawn from MEMORY.md 'armed' notes as of 07-27. E confirms per-service placement against live Railway before promoting into `services`. Do NOT treat as truth.",
+      "likely_armed": {
+        "RORT_BAR_DUP_GUARD": "1",
+        "RORT_SUPPRESS_EOD_REENTRY": "1",
+        "RORT_APPEND_SUPERSEDE_OPEN": "1",
+        "RORT_HIFI_NO_PREBAR_FILL": "1",
+        "RORT_NIGHTLY_SETTLE_RETRUE": "1",
+        "RORT_CANONICAL_SUBMIN_STATE": "1",
+        "RORT_CANONICAL_FINE_TF_STATE": "1"
+      },
+      "known_NOT_armed": [
+        "RORT_MTF_PB_PREV_EPOCH",
+        "RORT_MASS_RECOVER_QUEUED",
+        "RORT_UAD_GUARD_EMPTY_LANE (default-ON in code — confirm whether also set as a var)",
+        "RORT_PRIME1S_CACHE_MAX_ROWS (validated, not yet armed)"
+      ]
+    }
+  },
+  "services": {
+    "Worker": {},
+    "api": {},
+    "batch": {}
+  }
+}

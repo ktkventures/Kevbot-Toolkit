@@ -30,6 +30,31 @@ Metric = the **"combined %"** on the Strategy Health dashboard, at a **tolerance
 - Use the dashboard's **by-hour** and **by-deploy** breakdowns to isolate divergence — filter out deploy-window noise (a strategy can dip right after a deploy and recover; don't chase that).
 - **Structural cure over whack-a-mole:** the dominant divergence class is gate-CONSTRUCTION (live vs backtest build the same secondary/coarse gate bar differently — warmup depth, gap-counting, session-keying). The M-RS2-P2 resampled bar store retires this class by making both lanes read ONE canonical bar; once it serves, residual divergence = real logic bugs. See [[project_mrs2_phase2_resampled_store]] and [[feedback_trading_target_90pct_gated_focus]].
 
+## 🔬 THE SETTLE-CONFOUND TRAP — read this before comparing ANY two days (the 2026-07-27 lesson)
+
+**Never compare a T+0 (today, unsettled) reading against a prior day's reading.** The dashboard's number for today is computed from the intraday APPEND lane; the number for any prior day is computed from the nightly SETTLE (a full delete→reinsert recompute over finalized bars, 00:20Z). Those are two different computations over two different bar states. Today will ALWAYS read worse. This is not a regression — it is the instrument.
+
+2026-07-27 cost an entire trading day to this. Kevin correctly built matched 6h windows (same clock positions, Friday vs Monday) and today still read ~10pt lower fleet-wide. Two agents and M produced three confident, wrong explanations before the right test was run. sid 321 read **69.1% persisted → 94.8% settled** — a 25-point artifact.
+
+### The correct instrument: score ONE recompute against EACH day's live alerts
+Run a single full recompute per strategy — same code, same flags, same moment — then score that one reference against each day's `alerts` separately. The settle confound cancels because every day is measured against an identically-produced backtest reference.
+
+```
+sid 321        PERSISTED (dashboard)   SETTLED (what tonight will show)
+WED 07-22      100.0%   93/93          97.9%  92/94
+THU 07-23       96.5%  111/115         91.5% 108/118
+FRI 07-24       96.2%  102/106         94.4% 101/107
+MON 07-27       69.1%   94/136         94.8% 109/115   <- artifact, not regression
+```
+Read the SETTLED column across days. If today lands inside the prior days' band, there is no regression — full stop, do not go hunting.
+
+### Corollaries
+- **"The lane has rows / TBD=0 / a recompute reproduces it" proves COMPLETENESS, not CORRECTNESS.** The nightly settle exists *because* intraday appends produce errors. A complete-looking lane can still be wrong.
+- **Do not use `trades.created_at` to date-stamp coverage.** The settle rewrites rows, so `created_at` is a REWRITE stamp — every prior day's rows carry last night's timestamp. It cannot distinguish "written live" from "written nightly."
+- **Scope by `data_source` or the counts lie.** `cache_cache_locked` (algo lane) is not always stored and is typically absent at T+0; `backtest_rest_hifi` is. Counting rows without scoping compares two lanes against one and manufactures a fake coverage gap.
+- **Equal alert VOLUME proves nothing.** A timing shift moves *which* bars fire while preserving *how many*. Compare edge timestamps, not counts.
+- **Fastest settle path is the UI button, not a local script.** `/admin/update-jobs` (or the "Update all" button on the Strategies page, `mode:'all'`) runs the same recompute as the nightly, on Railway, with prod's flags and prod's dependencies **by construction**. `local_update.py` must hand-mirror the environment and has silently drifted (2026-07-27: 6 of 26 flags mirrored, pandas 2.3.3 vs prod 3.0.3, smoke test green through all of it). Prefer the button.
+
 ## Modes
 - **Mode 1 — check-in (DEFAULT):** run SCAN + DIAGNOSE, then STOP and present findings + proposed fixes for the user's pushback before changing anything.
 - **Mode 2 — aggressive:** run the full loop autonomously, publishing fixes that pass the **validation gates** AND clear the **reversibility gate**, looping to the done criterion. Still checks in for irreversible changes (see gate).
