@@ -457,7 +457,107 @@ def _polygon_fetch_bars(ticker: str, multiplier: int, timespan: str,
 # HI-FI: 1-SECOND BAR FETCHING + DAY-LEVEL CACHING
 # =============================================================================
 
-_1s_cache: dict = {}  # In-memory cache: {ticker_YYYY-MM-DD: pd.DataFrame}
+from collections import OrderedDict as _OrderedDict
+
+# In-memory cache: {ticker_YYYY-MM-DD: pd.DataFrame}. Ordered = LRU order
+# (MRU at the end) so RORT_PRIME1S_CACHE_MAX_ROWS can bound it — see
+# _1s_cache_put. Plain-dict semantics are unchanged when the bound is off.
+_1s_cache: dict = _OrderedDict()
+
+
+def _prime1s_cache_max_rows() -> int:
+    """Row budget for _1s_cache across ALL day-frames/symbols. 0 = unbounded.
+
+    Board #68 (2026-07-25): the KPI-HiFi whole-history load-once
+    (_hifi_resolve_trades → prime_1s_cache_from_rest_bars over the full trade
+    span) pins every day-frame in _1s_cache for process life — NVDA = 7.4M
+    rows (~0.5+ GB), and the M-RS3 recompute pool multiplies that ×N
+    long-lived workers (the 345 ×8-pool OOM crash class, 07-22 forensics;
+    RORT_RECOMPUTE_PARALLELISM was dropped 8→6 as mitigation). Setting a
+    budget (e.g. 2000000 ≈ a few hundred MB peak) LRU-bounds the cache and
+    makes the prime stop reading past one budget's worth per call; the
+    unprimed tail loads on demand through each window's inline prime (small
+    direct-PG reads — same data, no Polygon regression, no re-read thrash on
+    the chronological HiFi sweep). The pool can then return to 8.
+    """
+    try:
+        return max(0, int(os.environ.get(
+            "RORT_PRIME1S_CACHE_MAX_ROWS", "0").strip() or "0"))
+    except ValueError:
+        return 0
+
+
+def _1s_cache_touch(cache_key: str) -> None:
+    """Mark a day-frame most-recently-used (no-op if absent / plain dict)."""
+    try:
+        _1s_cache.move_to_end(cache_key)
+    except (AttributeError, KeyError):
+        pass
+
+
+def _1s_cache_put(cache_key: str, day_df, cov_start=None, cov_end=None) -> None:
+    """Sole insert path for _1s_cache: store as MRU, then enforce the row
+    budget by evicting LRU day-frames (never the one just inserted). With
+    RORT_PRIME1S_CACHE_MAX_ROWS unset/0 this is exactly the legacy
+    ``_1s_cache[key] = df``.
+
+    cov_start/cov_end (optional) record the time interval this frame is
+    KNOWN to cover (df.attrs) — prime-sourced frames can be narrower than
+    the full day (reads clamp to the padded request span). The coverage
+    check (_1s_day_covered) is only consulted under the row budget, where
+    an evicted day can be re-primed by a WINDOW-sized request: without it,
+    that partial frame would look warm to a later window on the same day,
+    serve 0 rows, and Hi-Fi refinement would be skipped SILENTLY. Frames
+    without a stamp (per-day Polygon fetches, external pokes) keep legacy
+    always-warm semantics."""
+    if cov_start is not None and cov_end is not None:
+        try:
+            day_df.attrs['rort_1s_cov'] = (
+                pd.Timestamp(cov_start), pd.Timestamp(cov_end))
+        except Exception:  # noqa: BLE001 — coverage stamp is best-effort
+            pass
+    _1s_cache[cache_key] = day_df
+    _1s_cache_touch(cache_key)
+    cap = _prime1s_cache_max_rows()
+    if cap <= 0 or not isinstance(_1s_cache, _OrderedDict):
+        return
+    total = 0
+    for _df in _1s_cache.values():
+        try:
+            total += len(_df)
+        except TypeError:
+            continue
+    over = total
+    evicted = 0
+    evicted_rows = 0
+    while total > cap and len(_1s_cache) > 1:
+        _old_key, _old_df = _1s_cache.popitem(last=False)
+        _old_rows = len(_old_df) if _old_df is not None else 0
+        total -= _old_rows
+        evicted += 1
+        evicted_rows += _old_rows
+    if evicted:
+        logger.info(
+            "[HIFI] 1s cache over row budget (%d > cap %d) — LRU-evicted %d "
+            "day-frame(s)/%d rows; %d day(s)/%d rows resident",
+            over, cap, evicted, evicted_rows, len(_1s_cache), total)
+
+
+def _1s_day_covered(cache_key: str, need_start, need_end) -> bool:
+    """True if the cached frame's recorded coverage spans [need_start,
+    need_end]. Frames without a coverage stamp are treated as covering
+    (legacy warm semantics). Only consulted under the row budget."""
+    df = _1s_cache.get(cache_key)
+    if df is None:
+        return False
+    cov = getattr(df, 'attrs', {}).get('rort_1s_cov')
+    if not cov:
+        return True
+    try:
+        return cov[0] <= pd.Timestamp(need_start) and \
+            cov[1] >= pd.Timestamp(need_end)
+    except (TypeError, ValueError):
+        return True
 
 
 def fetch_1s_bars_for_window(
@@ -546,15 +646,30 @@ def fetch_1s_bars_for_window(
                         "— evicting + re-fetching",
                         ticker, d, cached_max, needed_end_ts)
                     del _1s_cache[cache_key]
+        if cache_key in _1s_cache and _prime1s_cache_max_rows() > 0:
+            # Row-budget mode: a partial (window-primed) frame must never
+            # satisfy a request beyond its recorded coverage — evict so the
+            # full-day Polygon fetch below (or a later prime) replaces it.
+            # Normally the inline prime above already handled this; this
+            # guard covers prime-skipped paths (breaker open, kill-switch).
+            _day0 = pd.Timestamp(d.isoformat(), tz='UTC')
+            _ns, _ne = pd.Timestamp(padded_start), pd.Timestamp(padded_end)
+            _ns = _ns.tz_localize('UTC') if _ns.tzinfo is None else _ns.tz_convert('UTC')
+            _ne = _ne.tz_localize('UTC') if _ne.tzinfo is None else _ne.tz_convert('UTC')
+            if not _1s_day_covered(cache_key, max(_ns, _day0),
+                                   min(_ne, _day0 + pd.Timedelta(days=1))):
+                logger.info("[HIFI] 1s day-frame %s under-covers the request "
+                            "— evicting + re-fetching full day", cache_key)
+                del _1s_cache[cache_key]
         if cache_key not in _1s_cache:
             from_str = d.isoformat()
             to_str = d.isoformat()
             logger.info("[HIFI] Fetching 1-second bars for %s on %s", ticker, from_str)
             results = _polygon_fetch_bars(poly_ticker, 1, 'second', from_str, to_str)
             if results:
-                _1s_cache[cache_key] = _polygon_bars_to_df(results)
+                _1s_cache_put(cache_key, _polygon_bars_to_df(results))
             else:
-                _1s_cache[cache_key] = pd.DataFrame()
+                _1s_cache_put(cache_key, pd.DataFrame())
 
     # Combine cached data for all needed dates
     frames = []
@@ -562,6 +677,7 @@ def fetch_1s_bars_for_window(
         cache_key = f"{poly_ticker}_{d.isoformat()}"
         df = _1s_cache.get(cache_key)
         if df is not None and not df.empty:
+            _1s_cache_touch(cache_key)  # in-use days stay MRU under the budget
             frames.append(df)
 
     if not frames:
@@ -631,6 +747,13 @@ def prime_1s_cache_from_rest_bars(
       - Kill-switch ``RORT_PRIME1S_CHUNKED=0`` restores the legacy
         single-statement whole-span read (no breaker).
 
+    2026-07-25 bounding (board #68 — the 345 ×8-pool OOM class):
+      - ``RORT_PRIME1S_CACHE_MAX_ROWS`` (default 0 = unbounded = legacy)
+        LRU-bounds the TOTAL rows _1s_cache may pin across all
+        day-frames/symbols, and stops this prime's chunk loop once one call
+        has read a budget's worth — the unprimed tail loads on demand via
+        each window's inline prime. See _prime1s_cache_max_rows.
+
     Safe + transparent: gated on BAR_CACHE_ENABLED + a DSN. Returns the number
     of day-frames primed; returns 0 on any miss (cache off, no DSN, no rows,
     error, breaker open) so the caller's existing fetch_1s_bars_for_window
@@ -686,7 +809,11 @@ def prime_1s_cache_from_rest_bars(
         for d, day_df in df.groupby(df.index.date):
             cache_key = f"{poly_ticker}_{d.isoformat()}"
             if cache_key not in _1s_cache:  # don't clobber a fresher Polygon fetch
-                _1s_cache[cache_key] = day_df
+                _day0 = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+                _1s_cache_put(cache_key, day_df,
+                              cov_start=max(pd.Timestamp(padded_start), _day0),
+                              cov_end=min(pd.Timestamp(padded_end),
+                                          _day0 + timedelta(days=1)))
                 primed += 1
             else:
                 warm += 1
@@ -697,14 +824,31 @@ def prime_1s_cache_from_rest_bars(
 
     # ── Chunked path (default) ──
     # 1. Cold-day set: only days NOT already in _1s_cache get queried.
+    #    Under the row budget, a warm day whose recorded coverage does NOT
+    #    span this request's slice of it is evicted and re-read as cold
+    #    (see _1s_cache_put — partial frames must never look warm).
+    cap = _prime1s_cache_max_rows()
     all_days: list = []
     cursor = padded_start.date()
     while cursor <= padded_end.date():
         all_days.append(cursor)
         cursor += timedelta(days=1)
-    cold_days = [d for d in all_days
-                 if f"{poly_ticker}_{d.isoformat()}" not in _1s_cache
-                 and f"{poly_ticker}_{d.isoformat()}" not in _prime_1s_empty_days]
+    cold_days: list = []
+    for d in all_days:
+        _ck = f"{poly_ticker}_{d.isoformat()}"
+        if _ck in _1s_cache:
+            if cap > 0:
+                _day0 = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+                if not _1s_day_covered(_ck, max(padded_start, _day0),
+                                       min(padded_end, _day0 + timedelta(days=1))):
+                    del _1s_cache[_ck]
+                    cold_days.append(d)
+                    continue
+            _1s_cache_touch(_ck)  # about-to-be-used days stay MRU under budget
+            continue
+        if _ck in _prime_1s_empty_days:
+            continue
+        cold_days.append(d)
     warm = len(all_days) - len(cold_days)
     if not cold_days:
         logger.info("[HIFI] load-once for %s: all %d day(s) already warm "
@@ -736,15 +880,40 @@ def prime_1s_cache_from_rest_bars(
 
     # 3. Read each window; first failure trips the breaker and abandons the
     #    rest — callers fall back to per-day Polygon for anything unprimed.
+    #    Under a row budget (board #68) the loop also stops once ONE call has
+    #    read a budget's worth: priming further would only evict what we just
+    #    primed (the HiFi sweep is chronological, windows are chronological),
+    #    so the unprimed tail loads on demand via each trade window's inline
+    #    prime — small direct-PG reads, one pass over the span, no thrash.
     primed = 0
     rows_total = 0
-    for w_start, w_end in windows:
-        q_start = max(padded_start,
-                      datetime(w_start.year, w_start.month, w_start.day,
-                               tzinfo=timezone.utc))
-        q_end = min(padded_end,
-                    datetime(w_end.year, w_end.month, w_end.day,
-                             tzinfo=timezone.utc) + timedelta(days=1))
+    budget_stopped = 0
+    for w_idx, (w_start, w_end) in enumerate(windows):
+        if cap > 0 and rows_total >= cap:
+            budget_stopped = len(windows) - w_idx
+            logger.info(
+                "[HIFI] load-once row budget reached for %s (%d rows ≥ cap "
+                "%d) — stopping prime; %d remaining window(s) [%s..] load "
+                "on demand", ticker, rows_total, cap, budget_stopped,
+                w_start.isoformat())
+            break
+        if cap > 0:
+            # Budget mode: read FULL-day bounds so every cached frame covers
+            # its whole day — a window-sized on-demand re-prime must never
+            # leave a partial frame that looks warm to a later window on the
+            # same day. One day ≈ ≤90k rows (NVDA 1Sec) — far below both the
+            # statement timeout and the budget granularity.
+            q_start = datetime(w_start.year, w_start.month, w_start.day,
+                               tzinfo=timezone.utc)
+            q_end = datetime(w_end.year, w_end.month, w_end.day,
+                             tzinfo=timezone.utc) + timedelta(days=1)
+        else:
+            q_start = max(padded_start,
+                          datetime(w_start.year, w_start.month, w_start.day,
+                                   tzinfo=timezone.utc))
+            q_end = min(padded_end,
+                        datetime(w_end.year, w_end.month, w_end.day,
+                                 tzinfo=timezone.utc) + timedelta(days=1))
         try:
             df = _bc.read_bars(ticker, "1Sec", q_start, q_end)
         except Exception as e:
@@ -758,7 +927,7 @@ def prime_1s_cache_from_rest_bars(
                 "[HIFI] load-once chunk FAILED for %s [%s..%s]: %s — breaker "
                 "OPEN for %.0fs, abandoning %d remaining chunk(s) → per-day "
                 "Polygon", ticker, w_start.isoformat(), w_end.isoformat(), e,
-                cooldown, len(windows) - windows.index((w_start, w_end)) - 1)
+                cooldown, len(windows) - w_idx - 1)
             break
         got_days = set()
         if df is not None and len(df) > 0:
@@ -767,7 +936,11 @@ def prime_1s_cache_from_rest_bars(
                 got_days.add(d)
                 cache_key = f"{poly_ticker}_{d.isoformat()}"
                 if cache_key not in _1s_cache:  # don't clobber a fresher fetch
-                    _1s_cache[cache_key] = day_df
+                    _day0 = datetime(d.year, d.month, d.day,
+                                     tzinfo=timezone.utc)
+                    _1s_cache_put(cache_key, day_df,
+                                  cov_start=max(q_start, _day0),
+                                  cov_end=min(q_end, _day0 + timedelta(days=1)))
                     primed += 1
         # Memoize settled-past days this read proved bar-less so later calls
         # skip them (see _prime_1s_empty_days). The still-settling edge is
@@ -779,16 +952,19 @@ def prime_1s_cache_from_rest_bars(
                 _prime_1s_empty_days.add(f"{poly_ticker}_{w_cursor.isoformat()}")
             w_cursor += timedelta(days=1)
     logger.info("[HIFI] load-once for %s: read %d rows from REST Bars "
-                "(direct-PG, %d chunk(s) of ≤%dd); primed %d new day(s), "
+                "(direct-PG, %d chunk(s) of ≤%dd%s); primed %d new day(s), "
                 "%d already warm in-process",
-                ticker, rows_total, len(windows), chunk_days, primed, warm)
+                ticker, rows_total, len(windows), chunk_days,
+                (", %d window(s) deferred to on-demand by row budget"
+                 % budget_stopped) if budget_stopped else "",
+                primed, warm)
     return primed
 
 
 def clear_1s_cache():
     """Clear the in-memory 1-second bar cache (and the empty-day memo)."""
     global _1s_cache
-    _1s_cache = {}
+    _1s_cache = _OrderedDict()
     _prime_1s_empty_days.clear()
 
 
