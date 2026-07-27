@@ -1692,6 +1692,11 @@ def get_strategy_trades(strat: dict, data_feed: str = "sip", model_override: str
         # daily_r denominator: count trading days in the VISIBLE window
         # (the helper-trimmed df), not the warmup-extended one.
         trades.attrs['trading_days'] = count_trading_days(df_full) if len(df_full) else 1
+        # source_bar_count: bars the fetch actually loaded. 0 == data did NOT
+        # load (transient Polygon miss / empty window) vs a genuine no-signal
+        # result. The full-UAD empty-lane guard (forward_test_service) reads
+        # this to avoid silently zeroing a populated lane on a fetch failure.
+        trades.attrs['source_bar_count'] = len(df_full)
         return trades
 
     # Non-forward-testing branch: backtest-only / lookback-range strategies.
@@ -1701,13 +1706,20 @@ def get_strategy_trades(strat: dict, data_feed: str = "sip", model_override: str
     bundle = load_strategy_data(
         strat, data_feed=data_feed, model_override=model_override)
     if len(bundle.df) == 0:
-        return pd.DataFrame()
+        # Bars did NOT load (transient fetch failure or empty window). Stamp
+        # source_bar_count=0 so the full-UAD empty-lane guard can distinguish
+        # this from a genuine no-signal recompute and refuse to zero a
+        # populated lane (board #12/#16).
+        empty = pd.DataFrame()
+        empty.attrs['source_bar_count'] = 0
+        return empty
     trades = unified_trades(bundle.df, strat)
     trades = trim_trades_to_visible(trades, bundle.visible_start)
     # daily_r denominator: trading days in visible window only.
     visible_df = trim_df_to_visible(bundle.df, bundle.visible_start)
     trades.attrs['trading_days'] = (
         count_trading_days(visible_df) if len(visible_df) else 1)
+    trades.attrs['source_bar_count'] = len(bundle.df)
     return trades
 
 

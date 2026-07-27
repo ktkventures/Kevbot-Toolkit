@@ -112,6 +112,79 @@ def _forward_divider_dt(strat: dict):
     return dt
 
 
+def _uad_empty_lane_guard_enabled() -> bool:
+    """RORT_UAD_GUARD_EMPTY_LANE (default ON) — board #12 / #16.
+
+    A full-UAD recompute REPLACES a lane (DELETE + INSERT). When the bar
+    fetch transiently fails (Polygon miss / empty window), the engine
+    produces ZERO trades and the persist path would then wipe the lane and
+    write nothing — silently zeroing accumulated history (and, on the
+    backtest path, the UNFILTERED `stored_trades=[]` redirect wipes BOTH the
+    backtest AND algo lanes for the strategy). This guard refuses that write
+    when the recompute is empty AND the bar fetch is unconfirmed/empty.
+
+    Default ON — pure-protective (only ever REFUSES a destructive write; can
+    never write bad data). Sibling of RORT_UAD_PRESERVE_RANGE. Set
+    RORT_UAD_GUARD_EMPTY_LANE=0 to disable (kill switch)."""
+    return os.getenv('RORT_UAD_GUARD_EMPTY_LANE', '1').strip().lower() not in (
+        '0', 'false', 'no', 'off')
+
+
+def _should_refuse_empty_lane(new_trade_count, existing_has_data, source_bar_count):
+    """Pure decision for the UAD empty-lane guard (no env, no I/O — unit-tested).
+
+    Refuse (return True) a full-recompute empty-write ONLY when it would
+    destroy data AND the bar fetch shows the transient-failure signature:
+
+      - new_trade_count == 0     (the fresh recompute produced nothing), AND
+      - source_bar_count is 0 / unconfirmed (bars did NOT demonstrably load), AND
+      - existing_has_data is True or None (there is — or may be — data to lose)
+
+    A genuine no-signal recompute has source_bar_count > 0 (bars loaded, engine
+    produced nothing) → NOT refused → the empty write proceeds normally. A
+    first-run strategy with no prior rows (existing_has_data is False) → NOT
+    refused. When existence can't be confirmed (None) we err toward refusing so
+    a transient blip surfaces loudly rather than silently wiping.
+
+    Args:
+        new_trade_count:   trades the fresh recompute produced (int).
+        existing_has_data: True / False / None(unknown) — is the lane populated?
+        source_bar_count:  bars the fetch loaded (from df.attrs), or None if
+                           the marker was not stamped.
+    """
+    if new_trade_count and int(new_trade_count) != 0:
+        return False
+    # Bars demonstrably loaded → genuine no-signal result → safe to persist empty.
+    if source_bar_count is not None and int(source_bar_count) > 0:
+        return False
+    # Here: recompute empty AND bar fetch produced 0 / unconfirmed bars.
+    if existing_has_data is None:
+        return True   # can't confirm there's nothing to lose → fail loud
+    return bool(existing_has_data)
+
+
+def _backtest_lane_has_trades(strategy_id: int):
+    """Whether any backtest-lane (`data_source LIKE 'backtest_%'`) trade exists.
+
+    Drives the empty-lane guard's "is there data to lose?" check. Returns
+    True/False on a successful query, or None if the query itself fails (the
+    guard treats None as 'unknown' → errs toward refusing the destructive
+    write). Read-only; admin client; single indexed row (light)."""
+    try:
+        from db import get_admin_client
+        rows = (get_admin_client().table('trades')
+                .select('id')
+                .eq('strategy_id', strategy_id)
+                .like('data_source', 'backtest_%')
+                .limit(1).execute().data)
+        return bool(rows)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[FT-RECOMPUTE] strategy=%s: backtest-lane existence "
+                       "query failed (%s) — empty-lane guard treats as unknown",
+                       strategy_id, e)
+        return None
+
+
 def recompute_and_persist_stored_trades(
     strategy_id: int,
     user_id: str,
@@ -313,6 +386,32 @@ def _do_recompute(
     refreshed_at = datetime.now(timezone.utc).isoformat()
 
     if len(all_trades) == 0:
+        # EMPTY-LANE GUARD (RORT_UAD_GUARD_EMPTY_LANE, default ON) — board #12/#16.
+        # An empty result here becomes `update_strategy_admin(stored_trades=[])`,
+        # which (via the Phase-40 redirect) runs an UNFILTERED
+        # replace_trades_for_strategy([]) → DELETEs every trades-table row for
+        # the strategy (BOTH backtest_% AND cache_% lanes) and inserts nothing.
+        # If the recompute is empty only because the bar fetch transiently
+        # FAILED, that silently zeros accumulated history. Distinguish a genuine
+        # no-signal recompute (bars loaded, engine produced nothing →
+        # source_bar_count > 0) from a data-load failure (source_bar_count 0 /
+        # unstamped) via the marker services.get_strategy_trades stamps on
+        # .attrs, and refuse to wipe a populated lane in the failure case.
+        # Webhook-origin strategies don't fetch bars — skip the guard for them.
+        _sbc = all_trades.attrs.get('source_bar_count') \
+            if hasattr(all_trades, 'attrs') else None
+        if (_uad_empty_lane_guard_enabled()
+                and strat.get('strategy_origin') != 'webhook_inbound'):
+            _existing = _backtest_lane_has_trades(strategy_id)
+            if _should_refuse_empty_lane(0, _existing, _sbc):
+                msg = (f"UAD empty-lane guard: recompute produced 0 trades and "
+                       f"the bar fetch loaded source_bar_count={_sbc} bars "
+                       f"(existing_backtest_rows={_existing}). Refusing to zero "
+                       f"the strategy's trades — likely a transient data-fetch "
+                       f"failure, not a genuine no-signal result. Set "
+                       f"RORT_UAD_GUARD_EMPTY_LANE=0 to override.")
+                logger.error("[FT-RECOMPUTE] strategy=%s: %s", strategy_id, msg)
+                raise RuntimeError(msg)
         # No trades to persist, but still mark the timestamp so the
         # caller knows we ran. update_strategy_admin handles the
         # flag-aware trades-table redirect automatically.
@@ -2665,6 +2764,32 @@ def recompute_and_persist_algo_trades(
                     'inserted': 0}
 
         if all_trades_df is None or len(all_trades_df) == 0:
+            # EMPTY-LANE GUARD (RORT_UAD_GUARD_EMPTY_LANE, default ON) — board #12/#16.
+            # The algo lane doesn't DELETE on an empty result (so it can't zero
+            # existing rows right here), but stamping last_recompute_until_ts on
+            # a TRANSIENT fetch failure tells the cron "recently processed" → it
+            # skips the retry, so a stale algo lane silently persists and never
+            # self-heals. If the bars didn't demonstrably load (source_bar_count
+            # 0 / unstamped), skip the stamp and surface an error so the next
+            # tick retries. A genuine no-signal recompute (source_bar_count > 0)
+            # keeps the original stamp + no_trades path unchanged.
+            _sbc = all_trades_df.attrs.get('source_bar_count') \
+                if (all_trades_df is not None and hasattr(all_trades_df, 'attrs')) \
+                else None
+            if (_uad_empty_lane_guard_enabled()
+                    and strat.get('strategy_origin') != 'webhook_inbound'
+                    and (_sbc is None or int(_sbc) <= 0)):
+                logger.error(
+                    "[ALGO-RECOMPUTE] strategy=%s empty-lane guard: 0 trades and "
+                    "bar fetch loaded source_bar_count=%s bars — NOT stamping the "
+                    "recompute pointer so the cron retries (likely transient "
+                    "data-fetch failure). Set RORT_UAD_GUARD_EMPTY_LANE=0 to override.",
+                    strategy_id, _sbc)
+                return {'status': 'error',
+                        'reason': f'empty-lane guard: source_bar_count={_sbc} '
+                                  f'(transient fetch failure?)',
+                        'inserted': 0,
+                        'elapsed_s': round(_time.time() - t0, 2)}
             cfg['last_recompute_until_ts'] = now_iso
             _stamp_config(strategy_id, user_id, cfg)
             return {'status': 'no_trades', 'inserted': 0,
