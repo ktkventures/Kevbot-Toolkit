@@ -21,6 +21,14 @@ local). Worker container restart time = ~30s build + ~30–60s warmup =
 
 ## 2026-07-26
 
+- **01:38 UTC 2026-07-27 (19:38 MT 07-26)** — `9d003b2a` Merge PR #96: salvage dependency pins + nightly bug-hunt SOP (board #150; **first board-dispatched release, R·auto**)
+  - Service(s) redeployed: api + Worker + frontend + batch-worker + Data Worker + streamlit + flat-file-cron (dev auto-deploy, watchPatterns=[] → all). **shadow-worker NOT redeployed** (off this path by design — commit `-`). All SUCCESS on `9d003b2a`; post-close Sun (market closed, live-trade dormant).
+  - ⚠️ **DEPENDENCY-PIN CHANGE — real rebuild (the payload):** requirements.txt pins pandas `>=2.0.0`→**`==3.0.3`**, numpy `>=1.24.0`→**`==2.5.1`**, adds **`pyarrow==24.0.0`**, supabase `>=2.0.0`→**`==2.31.0`** (match the known-good 07-09 shadow-worker image; loose `>=` ranges risked build drift). Worker build logs confirm all four cp312 wheels + supabase 2.31.0 sub-deps (realtime/auth/postgrest/storage3/functions) collected & installed clean — no ResolutionImpossible/conflict.
+  - Boot verification (per-service): api `Application startup complete` + `Uvicorn on :8000`, `/api/docs` **200**; frontend `/admin/tasks` **200**; Worker booted 01:39:19Z, pack registry loaded (10 general packs), pandas ResampledStore resampling live under the new pins, RORT flags read normally — no error/traceback on any service (api's two `regex`-deprecation warnings are pre-existing, non-fatal). RORT flag count unchanged (a git-only deploy cannot alter env-var flag config).
+  - Observed cache gap: ~1–2 min Worker warmup gap ~01:38–01:40 UTC (container restart; off-hours weekend, no live alerts — gap_healer backfilling).
+  - Gates (R·auto, all PASS): (1) commit-range `origin/dev..salvage` = **exactly 2** (`76a52117` deps, `b855c16d` nightly SOP); (2) parity suite **18/18 ALL PASS** from a clean origin/dev worktree (canary 267 symdiff=0, settled day 07-20); (3) pins == known-good shadow-worker versions; (4) code-review — **no CONFIRMED blockers** (docs+config only). Backup: `backup/dev-pre-salvage` @ `ad9a8640`.
+  - Rollback (unused): `gh pr revert 96` + merge the revert normally; pins are the risk surface. No rollback required — clean.
+
 - **~00:05 UTC (~18:05 MT 07-25)** — `5cce360c` Train 07-25 car 2: board polish + kanban lifecycle (#134/#136)
   - Service(s) redeployed: api + frontend (Worker/batch rebuild, no functional change). Post-close Sat.
   - Gates: parity 16 pass + 2 known SPY/10Sec revision-drift fails (E-lane verdicts on record ×3); npm/tsc green (F·auto, exact SHA); lifecycle migration applied pre-merge (additive).
