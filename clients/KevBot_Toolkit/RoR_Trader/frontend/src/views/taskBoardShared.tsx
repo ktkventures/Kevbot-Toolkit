@@ -361,6 +361,28 @@ export const RolePicker = ({ value, options, onPick, allowEmpty = false, pickTit
   );
 };
 
+/**
+ * Board #151 contradiction: a task in Todo whose next actor is Kevin. Todo
+ * means "queue-eligible", but the dispatcher's eligibility gate skips any task
+ * whose next_actor isn't its assignee — and Kevin is never an assignee — so a
+ * kevin-next Todo task silently sits undispatched (dispatchable=0), looking
+ * approved but going nowhere. The usual cause is a stamp that moved the task to
+ * Todo without ticking its Kevin checklist step (now fixed server-side); this
+ * tell catches any that slip through by other paths.
+ */
+export const isStuckInTodo = (t: Task, subtasks: Task[]): boolean =>
+  t.status === 'Todo' && nextActor(t, subtasks).next === 'kevin';
+
+/** Loud tell for the isStuckInTodo contradiction — renders wherever chips do. */
+export const StuckChip = ({ t, subtasks }: { t: Task; subtasks: Task[] }) =>
+  !isStuckInTodo(t, subtasks) ? null : (
+    <span title="contradiction: this task is in Todo (queue-eligible) but its next actor is Kevin — the dispatcher's next-actor gate skips it, so it sits undispatched. Tick the pending Kevin checklist step (or re-stamp) to release it."
+      style={{
+        ...tagChip, border: '1px solid var(--red)', color: 'var(--red)',
+        fontWeight: 700,
+      }}>⚠ stuck: Kevin-gated in Todo</span>
+  );
+
 /** Next-actor chip: quiet when next == assignee, alert-styled when a handoff is due. */
 export const NextChip = ({ t, subtasks }: { t: Task; subtasks: Task[] }) => {
   const { next, handoff } = nextActor(t, subtasks);
