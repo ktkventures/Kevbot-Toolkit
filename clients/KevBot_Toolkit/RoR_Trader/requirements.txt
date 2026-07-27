@@ -4,8 +4,13 @@
 alpaca-py>=0.21.0
 
 # Data Processing
-pandas>=2.0.0
-numpy>=1.24.0
+# PINNED to the known-good shadow-worker container versions (2026-07-18): the unpinned
+# `>=` ranges let a fresh build pull a newer pandas/numpy than the running 07-09 image
+# (pandas 3.0.3 / numpy 2.5.1), and the mismatch crashed the shadow-worker at startup.
+# Local dev venvs may lag (pandas 2.x) — keep them in sync when validating fidelity.
+pandas==3.0.3
+numpy==2.5.1
+pyarrow==24.0.0
 
 # Process metrics (data-worker memory instrumentation)
 psutil>=5.9.0
@@ -23,7 +28,7 @@ plotly>=5.18.0
 # Docker: handled in Dockerfile
 
 # Database & Auth (Supabase PostgreSQL + Row Level Security)
-supabase>=2.0.0
+supabase==2.31.0   # PINNED to known-good (see Data Processing note)
 
 # HTTP (webhooks)
 requests>=2.31.0
