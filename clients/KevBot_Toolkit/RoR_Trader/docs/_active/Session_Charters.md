@@ -21,6 +21,14 @@ Team assignment board: `docs/_active/Team_Board.md` (see §7).
 | **P — Packs** | User-pack accuracy (S/R pack first), new packs, pack-builder AI | Pack definitions, pack-builder code; its own plan docs | Same exclusions as F. **Plus:** pack edits change backtests → recomputes → shift paired-% baselines. Coordinate TIMING with E before any pack change lands. |
 | **R — Release** | Ephemeral gatekeeper: validate → merge → deploy-watch → log → die | Nothing persistent | Never starts feature work; never flips flags beyond what the brief specifies |
 
+**RELEASES GO THROUGH A DEDICATED R SESSION — ALWAYS (Kevin, 07-26, restating the rule).**
+M authors the brief; Kevin spawns R; R executes. M does NOT merge, even when authorized
+and even when it would be faster. The 07-25/07-26 M-as-R runs were a ONE-TIME exception
+granted while Kevin was away from the house and the permission layer was blocking the
+normal path — not a precedent. If M believes an exception is warranted again, M ASKS
+explicitly and names it as an exception; ambiguous go-aheads ("you're good to do the PR")
+mean "proceed via R", never "do it yourself".
+
 Expand the registry by adding a row + a roster entry. Keep letters short and boring.
 
 ## 2. Live roster (M curates; each session may update its own row)
@@ -28,12 +36,15 @@ Expand the registry by adding a row + a roster entry. Keep letters short and bor
 | Name | Session (sidebar title / id-prefix) | Status | Notes |
 |------|-------------------------------------|--------|-------|
 | M — Manager/Coordinator | "Evaluate Obsidian and Graphify…" (fff1fc59) | LIVE | Charter/roster/board owner; next: tasks-page + admin-roadmap specs |
-| E — Engine/Divergence | "RoR Trader divergence overnight…" (bf8b3056) | LIVE — lane parent | 339 live-vs-settled watch + nightly hunt (board V1.6); ⚠ context decay observed 07-22 (stale-read incidents ×2) — run /role-handoff at tomorrow's morning brief |
+| E — Engine/Divergence | "RoR Trader divergence overnight…" (bf8b3056) | RETIRED 07-22 → E — Engine/Divergence | Handed off at milestone boundary (V4.5 done, sub-min canonical closed) — moved up from the planned morning-brief handoff so the nightly runs in fresh context |
+| E — Engine/Divergence | (abe9f5c3) | RETIRED 07-23 → E — Engine/Divergence | Milestone boundary: nightly hunt (PR #73 BAR_DUP_GUARD) + task-#100 EOD-churn triage (armed SUPPRESS_EOD_REENTRY) + #103 revision-drift heal + #101 append-supersede (PR #75) all Done. Inherited E2's shadow-worker steady-state watch (board #57 comment 78) |
+| E — Engine/Divergence | (8b062a2b) | RETIRED 07-25 → E — Engine/Divergence | Monster session: nightly validation (3/3 arms passed) → #112 PREBAR evidence pack → #113 PREBAR armed post-close (VERIFIED 07-25 rebuild) → #114 carry-policy audit → #116 SPY revision-drift heal → #108 nightly settle-retrue shipped (PR #77) + armed (VERIFIED first run 00:20Z 07-25) → PR #78 health semantics sign-off + #118 340 diagnosis. Shadow-worker watch → successor |
+| E — Engine/Divergence | (da15073c) | LIVE 07-25 | Successor to 8b062a2b. First act: /bug-hunt nightly (07-25 nightly already ran; PREBAR + settle-retrue first runs both CONFIRMED context). Holds V1.6 watch + shadow-worker steady-state watch |
 | E1 — M-RS5a flip watch | "Build M-RS5a resident data window…" (1c7f99fb) | RETIRED 07-22 eve | Canary watch complete (loop self-stopped 21:18Z); leftovers → board V1.4/V1.5 |
-| E2 — M-RS5a rollout & shadow lane | "E2: build sub minute canonical sta…" (579ed274) | LIVE — subordinate of E, **delegated authority**: shadow-worker/M-RS5a lane flags + railway-up deploys (fingerprint SOP) | Un-retired by Kevin 07-22; worktree `/home/kevin/projects/kevbot-wt-submin`; blocked on Kevin's container-fix decision (board V1.1); retires after fix lands + POLL_S=5 restored |
+| E2 — M-RS5a rollout & shadow lane | (579ed274) | RETIRED 07-23 19:49Z — clean | M-RS5a COMPLETE (fleet 23/23 @POLL_S=5). Handoff = comment #78 on board #57 (steady-state config + fingerprint SOP); shadow-worker steady-state watch → E lane; delegated authority dissolved |
 | — | "Continue MRS2 P2 rollout…" (54f3a789) | RETIRED 07-22 | MRS2 P2 armed+serving |
 | — | Harness secondary-TF gap session (67106cca) | RETIRED 07-22 | Work committed 07-21 (b4d9a76); Kevin to add "(retired)" to title |
-| F — Frontend | (to spawn — worktree `../Kevbot-frontend`) | PLANNED | Start with health-overview UI, then portfolio pages; tasks-page build once M specs it |
+| F — Frontend | (97dd74e4, anchored main window, works in `../Kevbot-frontend`) | LIVE 07-22 | Shipped V2.4 (PR #71); V2.5 in final tweaks on `feat/task-detail-panels` — merge AFTER tonight's nightly completes; then V2.2/V2.3, V2.6 agents page queued |
 | P — Packs | (reserved) | HOLD | Spawn after M-RS5a flip settles + divergence board green |
 | R | (ephemeral, per release) | as-needed | Name: `R — release <branch> <MM-DD>`; killed after merge+log |
 
@@ -95,6 +106,15 @@ docs) have ONE writer: M. Other roles communicate via their own plan docs
 
 ## 6. Session lifecycle & handoff
 
+- **Spawning (Kevin's workflow: ONE window for the whole project):** all sessions are
+  started with New Session in the main Kevbot-Toolkit window; the opener paste defines
+  each session's ROLE. Branches are a property of checkouts, not sessions — a role
+  session does ALL its file work inside its lane's worktree via absolute paths
+  (`../Kevbot-frontend` = F on its branch; `../kevbot-wt-submin` = E2), and never edits
+  the main checkout's tree unless the main checkout IS its lane (M docs, E engine).
+  The SessionStart hook injects the whole open board grouped by role — act only on
+  your own rows. Worktree-anchored windows also work (role auto-detected via
+  `.claude/role` marker) but are not required.
 - Hand off at **milestone boundaries** (PR merged, flip validated), never mid-surgery.
   Also hand off when a session starts re-asking things it knew earlier (context decay).
 - Mechanism: run **`/role-handoff`** in the outgoing session. It produces a paste-block
@@ -103,23 +123,52 @@ docs) have ONE writer: M. Other roles communicate via their own plan docs
   from the handoff, check its lane's tasks in `Team_Board.md`, confirm its lane's
   "must not touch" list.
 
-## 7. Team coordination — the board
+## 7. Team coordination — the board (LIVE at /admin/tasks since 07-22, PR #71)
 
-**Interim (live now):** `docs/_active/Team_Board.md` is the team's home base — vision
-items (big picture) with subtasks, each assigned a role letter. Rules: fixes and
-follow-ups discovered mid-work get parented UNDER the vision item that spawned them
-(this is how the big picture stays visible through rabbit holes). Every role session
-checks its lane's rows at session start and updates status on completion — status
-updates on your own rows are the one edit non-M roles make to this file. M restructures.
+The team board is the app's **Tasks page** (`/admin/tasks`, `dev_tasks` table).
+Structure: vision items = top-level tasks titled `V# · …` tagged `vision`; work items =
+subtasks (`parent_id`). Fixes/follow-ups discovered mid-work are created as subtasks
+under the vision item that spawned them with `origin='discovered'` — never free-floating
+(this is how the big picture survives rabbit holes). Assignees = role letters (+ kevin).
 
-**Target (to build):** the app's Tasks page becomes the durable version of the board —
-role assignee, parent-task/subtask hierarchy, status, origin — visible in the admin UI
-alongside an M-owned roadmap page. M writes the spec (`Spec_Tasks_Team_Board.md`),
-F implements, M validates and migrates the markdown board into it.
+Each role session: the SessionStart hook injects your open queue automatically; update
+YOUR tasks' status as you work (UI, or API `PATCH /api/dev-tasks/{id}`); leave **task
+comments** for cross-session messages — the assignee sees them at their next check.
+M curates structure and priorities; `Team_Board.md` is a frozen fallback snapshot only.
+**Priority convention (Kevin, 07-23):** `priority_phase.seq` is M-MANAGED roadmap order
+— sorted board = what's next. Kevin reads it, M adjusts it; phase buckets related work,
+seq sequences within. Other roles don't edit priority except on their own new subtasks.
+**Status definitions — the kanban lifecycle (Kevin+M, 07-25; supersedes 07-23 set):**
+Backlog = captured, not next · Scoping = M fleshes out purpose/plan/impact so Kevin can
+judge it · Approval = awaiting Kevin's stamp; NOTHING runs from here (dispatcher is
+Todo-only by construction); Kevin stamps one of two ways: "Approve — M closes" or
+"Approve + I review before Done" (kevin_final) · Todo = approved and queued; dispatch-
+eligible · In Progress = actively worked or dispatch-claimed · Review = output done,
+awaiting sign-off (M always; Kevin closes iff kevin_final) · Staged = reviewed, brief
+held, waiting for a release train (trains ship everything Staged) · Done = shipped/
+closed, never self-set by the agent that did the work · Blocked = anywhere-exception,
+blocker named. EVERY task passes through Approval (universal, per Kevin — the impact
+chip [contained·app·engine·live] makes small stamps fast); standing_approval covers
+future recurring work (approved once for the series). Vision containers are exempt.
+**Process-chain convention (universal, Kevin 07-25):** EVERY task carries a process
+checklist — multi-role tasks spell their real handoff chain; simple tasks use the
+default 4-step (do → M review → Kevin approval if flagged → close). Next-actor chip
+derives from it.
+**Approval tags (Kevin 07-25, batch-review protocol):** `needs-approval` = M requests
+Kevin's eyes BEFORE execution (Kevin's inbox; renders amber). Kevin pre-approves by
+flipping to `kevin-ok` (tag edit or a "good to go" comment — M's board-watcher converts
+it) = run when bandwidth allows, no further check-ins absent surprises. `needs-review`
+stays what it was: OUTPUT awaiting sign-off after a run.
+**Assignee & sign-off (Kevin, 07-23):** assignee = whose hands the task is in RIGHT NOW
+(reassign at each handoff; system-logged). No "primary executor" column — the chain's
+role chips carry that. Sign-off tiers: assigned/next=M → M has full authority to mark
+Done; assigned/next=kevin → Kevin's explicit approval, used for anything he flags plus
+M's escalation criteria (user-facing UX, money-touching, scope decisions, releases).
+M surfaces every "Next: kevin" item in conversation — Kevin never hunts his own queue.
 
 **Sessions do not talk to each other directly** (no live channel exists between VS Code
-sessions). Coordination is async through this file, the board, plan docs, and Kevin.
-Design work items accordingly: self-contained, with the context written down.
+sessions). Coordination is async through the board, plan docs, and Kevin. Design work
+items accordingly: self-contained, with the context written down.
 
 ## 8. Release protocol (ephemeral R sessions)
 
