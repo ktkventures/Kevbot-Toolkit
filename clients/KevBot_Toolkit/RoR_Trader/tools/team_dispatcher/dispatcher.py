@@ -248,6 +248,15 @@ foreground to completion, budgeted against the lease — never backgrounded to "
 on later". Anything you cannot finish in-process goes in your final report as
 remaining work, not into the background.
 
+GIT CONTRACT (board #153 — cut from a clean base): if you create a branch, cut it
+from LATEST origin/dev, never from your worktree's current HEAD:
+`git fetch origin && git branch <name> origin/dev` (or `git checkout -b <name> origin/dev`).
+A branch cut from worktree HEAD inherits whatever unmerged commits sit there and
+carries them into your diff (tonight one branch dragged in 10 unrelated commits).
+`git log origin/dev..HEAD --oneline` must show ONLY your own commits before you report
+ready. You cannot push (headless) — name any branch you created in your final report so
+it is not lost; do NOT background a push.
+
 Do the task. Your FINAL message becomes a comment on task #{task['id']} — make it a
 self-contained result report (what you did, files touched, what needs review). If you
 completed checklist steps, list them as 'STEP DONE: <text>' lines. Do not change task
