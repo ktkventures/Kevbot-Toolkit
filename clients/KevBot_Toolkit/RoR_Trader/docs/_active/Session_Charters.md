@@ -35,7 +35,8 @@ Expand the registry by adding a row + a roster entry. Keep letters short and bor
 
 | Name | Session (sidebar title / id-prefix) | Status | Notes |
 |------|-------------------------------------|--------|-------|
-| M — Manager/Coordinator | "Evaluate Obsidian and Graphify…" (fff1fc59) | LIVE | Charter/roster/board owner; next: tasks-page + admin-roadmap specs |
+| M — Manager/Coordinator | "Evaluate Obsidian and Graphify…" (fff1fc59) | RETIRED 07-27 → M — Manager/Coordinator | Founding M. Built the charter/board/dispatcher/registry arc 07-22→07-27; handed off at a clean boundary (all releases shipped, nothing Staged, checkout+charter synced) |
+| M — Manager/Coordinator | (successor — awaiting spawn) | PLANNED | Board = SSOT at /admin/tasks. FIRST ACT: restart the dispatcher loop (it died with the previous session) |
 | E — Engine/Divergence | "RoR Trader divergence overnight…" (bf8b3056) | RETIRED 07-22 → E — Engine/Divergence | Handed off at milestone boundary (V4.5 done, sub-min canonical closed) — moved up from the planned morning-brief handoff so the nightly runs in fresh context |
 | E — Engine/Divergence | (abe9f5c3) | RETIRED 07-23 → E — Engine/Divergence | Milestone boundary: nightly hunt (PR #73 BAR_DUP_GUARD) + task-#100 EOD-churn triage (armed SUPPRESS_EOD_REENTRY) + #103 revision-drift heal + #101 append-supersede (PR #75) all Done. Inherited E2's shadow-worker steady-state watch (board #57 comment 78) |
 | E — Engine/Divergence | (8b062a2b) | RETIRED 07-25 → E — Engine/Divergence | Monster session: nightly validation (3/3 arms passed) → #112 PREBAR evidence pack → #113 PREBAR armed post-close (VERIFIED 07-25 rebuild) → #114 carry-policy audit → #116 SPY revision-drift heal → #108 nightly settle-retrue shipped (PR #77) + armed (VERIFIED first run 00:20Z 07-25) → PR #78 health semantics sign-off + #118 340 diagnosis. Shadow-worker watch → successor |
@@ -66,6 +67,27 @@ Expand the registry by adding a row + a roster entry. Keep letters short and bor
   state its adopted name ("I am F — Frontend") so Kevin can set the sidebar title.
 
 ## 4. Shared guardrails (all roles)
+
+**THE ASSIGNEE IS WHOEVER THE TASK IS WAITING ON (Kevin, 2026-07-27 — binding).**
+The `assignee` field is not a label for who *owns the topic*; it names the single person or
+role the task is **blocked on right now**. Whoever is assigned owns the next action. If a
+task is NOT assigned to you, acting on it is optional.
+- **Need someone's input before you can progress? REASSIGN THE TASK TO THEM, then comment
+  saying what you need.** A comment alone is not a handoff — the assignee is. Leaving a
+  task on yourself while you are blocked is the failure mode this rule exists to kill.
+- Kevin does the same in reverse. If he does not know who is next, **he assigns to M**, and
+  M routes it — so M should read an unrouted task as a routing request, not a work request.
+- **Before ending any turn on a task, set `assignee` to whoever it now waits on.** This
+  applies to every role and every headless `*·auto` agent.
+- **The checklist / progress bar is a GUIDELINE, never a gate.** It is shorthand for how
+  the process usually goes; surprises happen and it will not always be followed. Where a
+  checklist role and the assignee disagree, **the assignee wins.**
+- Payoff: Kevin sorts the board by `assignee = kevin` and sees exactly what is blocked on
+  him. Anything not assigned to him is not yet his problem.
+- Cost of getting this wrong, measured: the dispatcher used to treat the checklist as
+  authoritative (`next_actor()` overriding `assignee`), which silently made the **entire
+  Todo queue undispatchable for ~41 hours** on 07-26/27 with no error, log, or comment.
+  See memory `feedback_assignee_is_the_waiting_on`.
 
 **Git** (learned the hard way — see memory `feedback_multiagent_git_workflow`):
 - Each role works in its own worktree/branch. Branch from **latest** `origin/dev`:
