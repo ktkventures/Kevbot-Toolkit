@@ -47,7 +47,7 @@ Two sids tripped the below-band check; **neither is a real regression**:
 | sid | @10s | three-lane verdict | class | evidence |
 |-----|------|--------------------|-------|----------|
 | 267 | 77.2 | **algo≈bt, live≠both** (bt↔algo 220/222) | **PLUMBING / live-process-state** | missed spread across EVERY hour (13:2 14:6 15:2 16:4 17:8 18:6 19:4) — diffuse, not deploy- or stall-clustered. Same signature as 07-23. Missed 13→32 as volume grew 191→222 edges. |
-| 331 | 77.4 | **algo≈bt, live≠both** (all 8 phantoms algo-absent) | **PLUMBING / live-only** *(new)* | 8 live-only edges; 2 of 3 missed were taken by algo ⇒ live path. ⚠️ **duplicate-dispatch smell:** phantom PAIRS 8–11s apart (14:01:00+14:01:08, 15:32:30+15:32:41) and off-boundary fills (:08/:41) on a **30Sec** strategy, where every edge should land on :00/:30. |
+| 331 | 77.4 | **algo≈bt, live≠both** (all 8 phantoms algo-absent) | **LOGIC / coarse-gate class** *(new)* | 8 live-only edges = **4 complete round-trips** live took and backtest didn't; 2 of 3 missed were taken by algo ⇒ live path. Every entry is on a 30Sec boundary (`exec_type=C`); every exit is an intrabar swing-stop (`exec_type=L`). ⚠️ I first read the off-boundary :08/:41 fills as a duplicate-dispatch signature — **that was wrong**: `exec_type=L` stop fills are *supposed* to land intrabar, and the "pairs 8–11s apart" are just entry→fast-stop-out. The real divergence is 4 spurious live **entries**, i.e. a gate disagreement (331 gates on **4h**-SWING_123 + 10m-SWING_123 → the known coarse-gate construction class, which the replay harness cannot reconstruct). |
 | 314 | 93.8 | algo≈bt (124/124), live +6/−2 | PLUMBING (mild) | passes Goal-1; no action |
 
 **Common thread (unchanged):** every laggard is `algo ≈ backtest, live ≠ both` — the
@@ -122,20 +122,21 @@ reconstruct → diagnose + hold, never auto-arm. No code was pushed; no flags fl
    untested. Revert if ever needed: `railway variables --set "RORT_NIGHTLY_SETTLE_RETRUE_WINDOW=1" --service batch-worker`
    (and `RORT_PARITY_SETTLED_MIN_TDAYS=0`, `RORT_PARITY_SELF_HEAL=0`).
 2. **#121 — hold in Review** until an NVDA spike day.
-3. **331's duplicate-dispatch smell** — off-boundary + paired phantoms on a 30Sec strategy
-   is the sharpest *new* lead in the fleet; worth a targeted look even though the aggregate
-   class is process-state. `RORT_BAR_DUP_GUARD` is already armed, so this is either a
-   different mechanism or the guard not covering the 30Sec path.
+3. **331 (new gated laggard, 77.4%)** — 4 spurious live entries vs backtest on a **4h**
+   coarse gate. Same construction class the harness can't reconstruct ⇒ diagnose + hold,
+   no auto-arm. (No dispatch bug here — I checked and retracted that reading; see the
+   table note. `RORT_BAR_DUP_GUARD` is not implicated.)
 4. **Snapshot freeze** — fleet-wide for 6.3d; the alarm is dead. Pointer above.
 
 ### Outliers
-No individual >30s-late fills inside a passing strategy. 331's paired phantoms (8–11s
-apart) are the only anomalous timing shape.
+**None.** No individual >30s-late fills inside a passing strategy, and no anomalous timing
+shapes once 331's intrabar `exec_type=L` stop fills were correctly identified as expected
+behavior rather than late/duplicate dispatches.
 
 ### Open / next
 - Re-run the #125 check on the next night a revision lands (watch for a
   `self-healed revision drift` annotation — that's layer 3's first real firing).
-- 331: walk the 8 live-only edges against the 10m/4h SWING_123 gate ribbons.
+- 331: walk the 4 spurious live ENTRIES against the 10m/4h SWING_123 gate ribbons.
 - 267: unchanged structural class — no offline fix; M-RS5 direction.
 
 ## 🌙 MORNING BRIEF — nightly bug-hunt 2026-07-23 (Mode 3; E successor abe9f5c3, first act)
