@@ -5,7 +5,68 @@
  */
 import React from 'react';
 
-export interface ChecklistStep { text: string; done: boolean; role: string | null; }
+/**
+ * A per-step approval gate (board #182): a stamp carried in the step's own
+ * real estate, with its own state — replaces the task-level `kevin_final` for
+ * longer chains ("approve THIS step", not "approve the task").
+ */
+export interface StepStamp {
+  required?: boolean;
+  state?: 'pending' | 'approved' | 'rejected' | null;
+  by?: string | null;
+  at?: string | null;
+}
+
+/**
+ * A process-chain step (board #182). The legacy shape was {text, done, role};
+ * the chain widens it with a stable `id`, an `owner` (role or 'kevin'), a
+ * one-line `title` (the substance, shown even when collapsed), a markdown
+ * `body` (the SOP), a per-step `mode` (execute|discuss) and `stamp`, plus
+ * completion provenance. Every new field is OPTIONAL and `text`/`role` are
+ * retained, so the 42 legacy checklists render byte-for-byte — a checklist is
+ * treated as a chain only once a step carries a new-shape key (isProcessChain,
+ * mirroring the API's opt-in signal). Completion fields are server-owned
+ * (POST /steps/complete), never toggled by a checklist PATCH.
+ */
+export interface ChecklistStep {
+  done: boolean;
+  // legacy (still emitted by defaultChain / simple tasks)
+  text?: string;
+  role?: string | null;
+  // #182 process chain
+  id?: string;
+  owner?: string | null;
+  title?: string;
+  body?: string;
+  mode?: 'execute' | 'discuss';
+  origin?: 'planned' | 'audible';
+  stamp?: StepStamp | null;
+  completed_at?: string | null;
+  completed_by?: string | null;
+}
+
+// A checklist becomes a #182 process chain once ANY step carries a new-shape
+// key — the exact opt-in signal the API uses (dev_tasks._NEW_SHAPE_KEYS).
+// Legacy {text,role,done} checklists stay legacy and behave as before #182.
+const NEW_SHAPE_KEYS: (keyof ChecklistStep)[] = ['id', 'owner', 'title', 'body', 'mode', 'origin', 'stamp'];
+export const isProcessChain = (cl?: ChecklistStep[] | null): boolean =>
+  Array.isArray(cl) && cl.some((s) => !!s && NEW_SHAPE_KEYS.some((k) => s[k] != null));
+
+/** Who acts on a step — new `owner`, falling back to legacy `role` (mirrors
+ *  the API's _step_owner). */
+export const stepOwner = (s: ChecklistStep): string | null => s.owner ?? s.role ?? null;
+
+/** One line of substance — new `title`, falling back to legacy `text`
+ *  (mirrors the API's _step_title). */
+export const stepTitle = (s: ChecklistStep): string => s.title || s.text || '';
+
+/** Per-step mode tooltips (board #182). Execute steps are dispatchable; a
+ *  discuss step is a human review point and must never dispatch to a headless
+ *  agent (enforced by the dispatcher, Step 7). */
+export const MODE_DEF: Record<string, string> = {
+  execute: 'execution step — dispatchable to a headless agent',
+  discuss: 'discussion step — a human reviews here; never dispatched to a headless agent',
+};
 
 export interface Task {
   id: number;
@@ -305,7 +366,7 @@ export function nextActor(t: Task, subtasks: Task[]): { next: string | null; han
     next = 'R'; // the next release train ships everything Staged
   } else {
     const firstStep = (t.checklist || []).find((s) => !s.done);
-    next = (firstStep && firstStep.role) || t.assignee || null;
+    next = (firstStep && stepOwner(firstStep)) || t.assignee || null;
   }
   const handoff = !!next && !!t.assignee && next !== t.assignee;
   return { next, handoff };
@@ -450,13 +511,15 @@ export const HandoffChain = ({ task, size = 15 }: { task: Task; size?: number })
   if (steps.length === 0) return null;
   const current = steps.findIndex((s) => !s.done);        // -1 → every step done
   const cur = current >= 0 ? steps[current] : null;
-  const nowOwner = cur ? (cur.role ? roleAbbrev(cur.role) : '—') : null;
+  const curOwner = cur ? stepOwner(cur) : null;
+  const nowOwner = curOwner ? roleAbbrev(curOwner) : cur ? '—' : null;
   const tip = [
-    'Process chain (hover-only; edit in the Process tab):',
+    'Process chain (hover-only; expand it in the Summary tab):',
     ...steps.map((s, i) => {
-      const owner = s.role ? roleAbbrev(s.role) : '—';
+      const o = stepOwner(s);
+      const owner = o ? roleAbbrev(o) : '—';
       const mark = s.done ? '✓' : i === current ? '▶' : '·';
-      return `  ${mark} ${i + 1}. ${s.text}  (${owner})`;
+      return `  ${mark} ${i + 1}. ${stepTitle(s)}  (${owner})`;
     }),
     nowOwner ? `  ▶ now: ${nowOwner}` : '  — all steps complete',
   ].join('\n');
@@ -474,8 +537,9 @@ export const HandoffChain = ({ task, size = 15 }: { task: Task; size?: number })
     }}>
       {steps.map((s, i) => {
         const state = i === current ? 'current' : s.done ? 'done' : 'upcoming';
-        const col = s.role ? roleColor(s.role) : '#64748b';
-        const letter = s.role ? roleAbbrev(s.role) : '·';
+        const o = stepOwner(s);
+        const col = o ? roleColor(o) : '#64748b';
+        const letter = o ? roleAbbrev(o) : '·';
         const skin: React.CSSProperties =
           state === 'current'
             ? { background: col, color: '#fff',

@@ -33,11 +33,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { apiFetch } from '@/lib/api/client';
 import {
-  Task, Comment, ChecklistStep, RunRow, AREAS, ASSIGNEES, ORIGINS,
+  Task, Comment, ChecklistStep, StepStamp, RunRow, AREAS, ASSIGNEES, ORIGINS,
   STATUS_COLOR, STATUS_DEF, statusOptionsFor, withLegacy, input, tagChip, relTime, elapsedShort,
-  RoleChip, NextChip, ProgressBar, RolePicker, RunButton, OutcomeChip,
+  RoleChip, EmptyRoleCircle, roleColor, NextChip, ProgressBar, RolePicker, RunButton, OutcomeChip,
   StampButtons, TwoTouchChip, ImpactSelect, IMPACT_DEF, defaultChain, StuckChip,
-  MENTION_ROLES, HandoffChain,
+  MENTION_ROLES, HandoffChain, isProcessChain, stepOwner, stepTitle, MODE_DEF,
 } from './taskBoardShared';
 import { Md, MD_CSS } from './taskMarkdown';
 
@@ -173,6 +173,62 @@ export default function TaskDetailModal({
     onPollTick?.();
   };
 
+  // ── Process-chain steps (board #182) ───────────────────────────────────────
+  // Which accordion sections are expanded. Default-expand is re-derived on
+  // scope/viewer change (the effect below); a manual toggle or a checklist edit
+  // does NOT yank sections open again.
+  const [openSteps, setOpenSteps] = useState<Set<string>>(new Set());
+  const toggleStep = useCallback((key: string) => {
+    setOpenSteps((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
+  // Step 4: the step whose owner matches the acting role expands by default;
+  // every other section stays freely collapsible. Fall back to the current
+  // (first-incomplete) step so something is always open — Kevin: "I'm not
+  // saying we should collapse it and lock it so no one else can access it."
+  useEffect(() => {
+    const cl = scoped.checklist || [];
+    if (!isProcessChain(cl)) { setOpenSteps(new Set()); return; }
+    const next = new Set<string>();
+    const cur = cl.findIndex((s) => !s.done);
+    cl.forEach((s, i) => {
+      if (!s.done && stepOwner(s) && stepOwner(s) === commentAuthor) next.add(s.id || String(i));
+    });
+    if (next.size === 0 && cur >= 0) next.add(cl[cur].id || String(cur));
+    setOpenSteps(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scoped.id, commentAuthor]);
+
+  // Step 5: the three server-owned step actions (complete-and-hand-off, stamp
+  // approve/reject, raise-issue → M). Completion/hand-off/stamps are NOT a
+  // checklist PATCH — they hit dedicated endpoints whose transition rules are
+  // API refusals. After any of them, refresh the thread and FORCE a board
+  // refetch (no-arg onPollTick) so the task prop's checklist + reassigned
+  // assignee update in place.
+  const [stepBusy, setStepBusy] = useState(false);
+  const [stepErr, setStepErr] = useState<string | null>(null);
+  const stepAction = async (
+    action: 'complete' | 'stamp' | 'raise-issue', body: Record<string, unknown> = {},
+  ) => {
+    setStepErr(null); setStepBusy(true);
+    try {
+      await apiFetch(`/api/dev-tasks/${scoped.id}/steps/${action}`, {
+        method: 'POST', body: JSON.stringify({ ...body, actor: commentAuthor }),
+      });
+      loadThread(scoped.id);
+      onPollTick?.();
+    } catch (e) { setStepErr(String(e)); }
+    finally { setStepBusy(false); }
+  };
+  const completeStep = () => stepAction('complete');
+  const stampStep = (decision: 'approve' | 'reject') => stepAction('stamp', { decision });
+  const raiseIssue = (issueBody: string) => {
+    if (issueBody.trim()) stepAction('raise-issue', { body: issueBody.trim() });
+  };
+
   useEffect(() => { loadThread(scoped.id); loadRuns(scoped.id); setCtxEdit(false); setCtxPreview(false); }, [scoped.id, loadThread, loadRuns]);
   useEffect(() => { setDraftDesc(scoped.description || ''); }, [scoped.id, scoped.description]);
   const thread = threads[scoped.id] || [];
@@ -270,6 +326,7 @@ export default function TaskDetailModal({
   // Checklist ops operate on the SCOPED item (the selected pipeline row, or
   // the task itself) — ALWAYS send the whole array (JSONB replace).
   const steps: ChecklistStep[] = scoped.checklist || [];
+  const isChain = isProcessChain(steps);   // #182 rich chain vs legacy checklist
   const setSteps = (next: ChecklistStep[]) => patch(scoped.id, { checklist: next });
   const addStep = () => {
     if (!newStep.trim()) return;
@@ -427,29 +484,44 @@ export default function TaskDetailModal({
                         placeholder="markdown + sanitized inline HTML…" />
                     )}
                     {ctxEdit && ctxPreview && <Md text={draftDesc} fallback="_no description yet — click Edit_" />}
+                    {/* Board #182 Step 4: the process chain IS the body of the
+                        summary tab — summary text above, the ordered accordion
+                        below. Only for #182 chains; legacy checklists keep the
+                        flat Process tab untouched (feature detection). */}
+                    {!ctxEdit && isChain && scopedIsLeaf && (
+                      <ProcessChain steps={steps} viewer={commentAuthor}
+                        openSteps={openSteps} onToggle={toggleStep}
+                        busy={stepBusy} err={stepErr}
+                        onComplete={completeStep} onStamp={stampStep} onRaiseIssue={raiseIssue} />
+                    )}
                   </>
                 )}
 
                 {effTab === 'process' && scopedIsLeaf && (
                   <>
                     <div style={{ ...cfgHint, marginBottom: 8 }}>
-                      Handoff pipeline — each step&apos;s chip is its owner; reassign the task at each
-                      handoff point. A step that needs its own thread gets promoted to a subtask.
+                      {isChain
+                        ? 'Structural editor — reorder, delete, or reassign steps here; the SOP body, stamps and completion live in the accordion on the Summary tab (Complete & hand off ticks a step, never this checkbox).'
+                        : 'Handoff pipeline — each step’s chip is its owner; reassign the task at each handoff point. A step that needs its own thread gets promoted to a subtask.'}
                     </div>
                     {steps.map((s, i) => (
                       <div key={i} style={{
                         display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px',
                         borderRadius: 8, fontSize: 13, marginBottom: 2,
                       }}>
-                        <input type="checkbox" checked={s.done}
+                        <input type="checkbox" checked={s.done} disabled={isChain}
+                          title={isChain
+                            ? 'completion is managed on the Summary tab (Complete & hand off) — the API refuses a checklist PATCH that ticks a chain step'
+                            : undefined}
                           onChange={(e) => setSteps(steps.map((x, j) => j === i ? { ...x, done: e.target.checked } : x))} />
                         <span style={{
                           flex: 1, minWidth: 0,
                           textDecoration: s.done ? 'line-through' : 'none', opacity: s.done ? 0.6 : 1,
-                        }}>{s.text}</span>
-                        <RolePicker value={s.role} pickTitle="step owner" allowEmpty
+                        }}>{stepTitle(s)}</span>
+                        <RolePicker value={stepOwner(s)} pickTitle="step owner" allowEmpty
                           options={roles.filter(Boolean)}
-                          onPick={(r) => setSteps(steps.map((x, j) => j === i ? { ...x, role: r || null } : x))} />
+                          onPick={(r) => setSteps(steps.map((x, j) => j === i
+                            ? (isChain ? { ...x, owner: r || null } : { ...x, role: r || null }) : x))} />
                         <span style={{ cursor: 'pointer', opacity: 0.6 }} title="move up" onClick={() => moveStep(i, -1)}>↑</span>
                         <span style={{ cursor: 'pointer', opacity: 0.6 }} title="move down" onClick={() => moveStep(i, 1)}>↓</span>
                         <span style={{ cursor: 'pointer', color: 'var(--red)' }} title="delete step"
@@ -741,5 +813,181 @@ export default function TaskDetailModal({
       </div>
     </div>,
     document.body,
+  );
+}
+
+/** A step's approval-gate chip (board #182). Renders only for a stamp that is
+ *  actually required; color + label track its state. */
+function StampChip({ stamp }: { stamp?: StepStamp | null }) {
+  if (!stamp?.required) return null;
+  const state = stamp.state || 'pending';
+  const map: Record<string, { c: string; label: string }> = {
+    pending: { c: '#c9a227', label: '🔏 needs stamp' },
+    approved: { c: 'var(--green)', label: '🔏 stamped' },
+    rejected: { c: 'var(--red)', label: '🔏 rejected' },
+  };
+  const m = map[state] || map.pending;
+  const tip = `${m.label}${stamp.by ? ` — by ${stamp.by}` : ''}${stamp.at ? ` · ${relTime(stamp.at)}` : ''}`;
+  return (
+    <span style={{ ...tagChip, borderColor: m.c, color: m.c, fontWeight: 700 }} title={tip}>
+      {m.label}
+    </span>
+  );
+}
+
+/**
+ * The process chain rendered as ordered accordion steps (board #182, Step 4) —
+ * the body of the Summary tab. Each section's header carries one line of
+ * substance even when collapsed (owner avatar · number · title · mode/audible/
+ * stamp/completion chips); the body holds that step's SOP (markdown) and, on
+ * the current step, the Step-5 actions (Complete & hand off, stamp approve/
+ * reject, raise-issue → M). Expansion is caller-owned (default-expand the
+ * viewer's step); this component is otherwise a pure read of the chain plus the
+ * three action callbacks — the transition rules themselves live server-side.
+ */
+function ProcessChain({
+  steps, viewer, openSteps, onToggle, onComplete, onStamp, onRaiseIssue, busy, err,
+}: {
+  steps: ChecklistStep[];
+  viewer: string;
+  openSteps: Set<string>;
+  onToggle: (key: string) => void;
+  onComplete: () => void;
+  onStamp: (decision: 'approve' | 'reject') => void;
+  onRaiseIssue: (body: string) => void;
+  busy: boolean;
+  err: string | null;
+}) {
+  const [issueFor, setIssueFor] = useState<string | null>(null);
+  const [issueDraft, setIssueDraft] = useState('');
+  const currentIdx = steps.findIndex((s) => !s.done);   // -1 → chain complete
+  const complete = currentIdx < 0;
+
+  return (
+    <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.6, color: 'var(--text-tertiary)', textTransform: 'uppercase' }}>
+          Process
+        </span>
+        <span style={cfgHint}>
+          {complete
+            ? 'chain complete'
+            : `step ${currentIdx + 1} of ${steps.length} · the owner acts, then hands off to the next`}
+        </span>
+      </div>
+      {steps.map((s, i) => {
+        const key = s.id || String(i);
+        const owner = stepOwner(s);
+        const isCurrent = i === currentIdx;
+        const open = openSteps.has(key);
+        const audible = s.origin === 'audible';
+        const accent = owner ? roleColor(owner) : '#64748b';
+        const mark = s.done ? '✓' : isCurrent ? '▶' : '·';
+        const stampBlocks = !!s.stamp?.required && s.stamp?.state !== 'approved';
+        return (
+          <div key={key} style={{
+            border: '1px solid var(--border)',
+            borderLeft: `3px solid ${audible ? '#a855f7' : isCurrent ? accent : 'var(--border)'}`,
+            borderRadius: 8, marginBottom: 6, overflow: 'hidden',
+            background: isCurrent ? 'var(--bg-input)' : 'transparent',
+            opacity: !s.done && !isCurrent ? 0.9 : 1,
+          }}>
+            {/* Header — always one line of substance, even collapsed. */}
+            <button onClick={() => onToggle(key)} style={{
+              display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+              padding: '7px 9px', background: 'none', border: 'none', cursor: 'pointer',
+              textAlign: 'left', color: 'inherit',
+            }}>
+              <span style={{ fontSize: 11, color: 'var(--text-tertiary)', width: 12, flex: 'none' }}>{open ? '▾' : '▸'}</span>
+              <span style={{ flex: 'none' }} title={owner ? `owner: ${owner}` : 'no owner set'}>
+                {owner ? <RoleChip role={owner} /> : <EmptyRoleCircle />}
+              </span>
+              <span style={{
+                flex: 1, minWidth: 0, fontSize: 13, fontWeight: isCurrent ? 700 : 500,
+                textDecoration: s.done ? 'line-through' : 'none',
+                color: s.done ? 'var(--text-tertiary)' : 'var(--text-primary)',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: open ? 'normal' : 'nowrap',
+              }}>
+                <span style={{ color: accent, marginRight: 6, fontWeight: 700 }}>{mark} {i + 1}.</span>
+                {stepTitle(s)}
+              </span>
+              {s.mode === 'discuss' &&
+                <span style={{ ...tagChip, borderColor: '#0ea5e9', color: '#0ea5e9', flex: 'none' }} title={MODE_DEF.discuss}>💬 discuss</span>}
+              {audible &&
+                <span style={{ ...tagChip, borderColor: '#a855f7', color: '#a855f7', fontWeight: 700, flex: 'none' }}
+                  title="inserted mid-flight as an audible (origin=audible) — a course-correction recorded by the chain's own rules">🔀 audible</span>}
+              <StampChip stamp={s.stamp} />
+              {s.done && s.completed_by &&
+                <span style={{ ...cfgHint, whiteSpace: 'nowrap', flex: 'none' }}
+                  title={`completed by ${s.completed_by}${s.completed_at ? ` ${relTime(s.completed_at)}` : ''}`}>
+                  ✓ {s.completed_by}
+                </span>}
+            </button>
+            {/* Body — the SOP + (current step) the Step-5 actions. */}
+            {open && (
+              <div style={{ padding: '2px 12px 12px 34px', fontSize: 13 }}>
+                {s.body
+                  ? <Md text={s.body} />
+                  : <span style={cfgHint}>_no SOP written for this step yet_</span>}
+                {isCurrent && owner && owner !== viewer && (
+                  <div style={{ ...cfgHint, marginTop: 8 }}>
+                    you’re acting as <b style={{ color: roleColor(viewer) }}>{viewer}</b>; this step is owned by{' '}
+                    <b style={{ color: accent }}>{owner}</b>
+                  </div>
+                )}
+                {isCurrent && (
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10, alignItems: 'center' }}>
+                    {stampBlocks && (
+                      <>
+                        <button disabled={busy} onClick={() => onStamp('approve')}
+                          style={{ ...input, cursor: busy ? 'default' : 'pointer', color: 'var(--green)', borderColor: 'var(--green)', fontWeight: 600 }}
+                          title="approve this step's stamp — unblocks Complete & hand off">✅ Approve stamp</button>
+                        <button disabled={busy} onClick={() => onStamp('reject')}
+                          style={{ ...input, cursor: busy ? 'default' : 'pointer', color: 'var(--red)', borderColor: 'var(--red)', fontWeight: 600 }}
+                          title="reject the stamp — records it and routes the task to M (T9)">⛔ Reject</button>
+                      </>
+                    )}
+                    <button disabled={busy || stampBlocks} onClick={onComplete}
+                      style={{
+                        ...input, cursor: busy || stampBlocks ? 'default' : 'pointer', fontWeight: 700,
+                        color: '#fff', background: 'var(--blue)', borderColor: 'var(--blue)',
+                        opacity: stampBlocks ? 0.4 : 1,
+                      }}
+                      title={stampBlocks
+                        ? 'this step needs an approved stamp first (T8)'
+                        : 'mark this step complete and hand the task to the next owner — one action'}>
+                      ✓ Complete &amp; hand off
+                    </button>
+                    {issueFor === key ? (
+                      <span style={{ display: 'flex', gap: 6, alignItems: 'center', flex: 1, minWidth: 220 }}>
+                        <input autoFocus style={{ ...input, flex: 1 }} placeholder="what's the problem? (routes the task to M)"
+                          value={issueDraft} onChange={(e) => setIssueDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && issueDraft.trim()) {
+                              onRaiseIssue(issueDraft); setIssueDraft(''); setIssueFor(null);
+                            }
+                          }} />
+                        <button disabled={busy || !issueDraft.trim()}
+                          onClick={() => { onRaiseIssue(issueDraft); setIssueDraft(''); setIssueFor(null); }}
+                          style={{ ...input, cursor: 'pointer' }}>send</button>
+                        <button onClick={() => { setIssueFor(null); setIssueDraft(''); }}
+                          style={{ ...input, cursor: 'pointer' }}>✕</button>
+                      </span>
+                    ) : (
+                      <button disabled={busy} onClick={() => setIssueFor(key)}
+                        style={{ ...input, cursor: busy ? 'default' : 'pointer', color: '#c9a227', borderColor: '#c9a227' }}
+                        title="raise a blocking issue on this step — posts a comment and routes the task to M without ticking anything (T9)">
+                        ⚠ Raise issue → M
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {err && <div style={{ color: 'var(--red)', fontSize: 11, marginTop: 6 }} title={err}>{err}</div>}
+    </div>
   );
 }
