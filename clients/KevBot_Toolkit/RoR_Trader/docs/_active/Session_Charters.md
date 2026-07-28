@@ -15,11 +15,28 @@ Team assignment board: `docs/_active/Team_Board.md` (see §7).
 
 | Role | Scope | Owns (exclusive) | Must NOT touch |
 |------|-------|------------------|----------------|
-| **M — Manager/Coordinator** | Cross-session coordination, doc/roadmap hygiene, big-picture tracking | This charter + roster; `Team_Board.md`; roadmap/organization docs; specs for org tooling (tasks-page upgrade, admin roadmap page) | Engine/data code; flags; deploys; heavy prod-DB; E's operational logs (`STATUS.md`, `Deploy_Log.md`, hunt logs) — M proposes restructures via spec, never live-edits E's logs |
+| **M — Project Manager** (was "Manager/Coordinator", retitled 07-28) | Cross-session coordination, doc/roadmap hygiene, big-picture tracking, ROUTING. Asks *"is this actually right?"* — the thorough look, where one is warranted | This charter + roster; `Team_Board.md`; roadmap/organization docs; specs for org tooling (tasks-page upgrade, admin roadmap page) | Engine/data code; flags; deploys; heavy prod-DB; E's operational logs (`STATUS.md`, `Deploy_Log.md`, hunt logs) — M proposes restructures via spec, never live-edits E's logs |
 | **E — Engine/Divergence** | Divergence debugging, bar integrity, fidelity, recomputes, bug-hunt loop, M-RS roadmap | Engine/data-path code; ALL flag flips; Railway deploys (`railway variables`, `railway up`); heavy prod-DB analysis; operational logs: `STATUS.md`, `Deploy_Log.md`, `Divergence_Hunt_Log.md`; project memory | — |
 | **F — Frontend** | Portfolio pages, Strategy Health / health-overview UI, reporting UI, tasks-page implementation (per M's spec) | Next.js app UI code; its own plan docs | Engine/data files (e.g. `bar_cache.py`, `strategy_data.py`, `forward_test_service.py`, `fidelity_parity_suite.py`, worker/recompute lanes); flags; deploys; E's operational logs |
 | **P — Packs** | User-pack accuracy (S/R pack first), new packs, pack-builder AI | Pack definitions, pack-builder code; its own plan docs | Same exclusions as F. **Plus:** pack edits change backtests → recomputes → shift paired-% baselines. Coordinate TIMING with E before any pack change lands. |
+| **TM — Task Manager** (planned, board #182) | Gates every process-chain hand-off. Asks *"was what was asked for actually delivered?"* — narrow, time-boxed, three outcomes only: **PASS** / **BOUNCE** (back to submitter with a reason) / **ESCALATE** (insert an audible PM step). Never performs the deep investigation; it ROUTES to one. **Gates M's steps too — that is the point.** | Board writes: tick steps, reassign, insert audible steps | Code; flags; deploys; prod-DB; never investigates — escalating is its answer to "this needs more" |
 | **R — Release** | Ephemeral gatekeeper: validate → merge → deploy-watch → log → die | Nothing persistent | Never starts feature work; never flips flags beyond what the brief specifies |
+
+**PM vs TM — the split (Kevin, 07-28).** `M` was doing both jobs and could not do the second
+honestly: an agent that gates its own hand-offs is self-review wearing a badge. On 07-28 M made
+four errors in one day — an invalid `created_at` inference, a lane-count comparison mixing one
+lane against two, a query that silently truncated at 20,000 of 74,210 rows, and a backwards claim
+about which lane flattens daily. M caught three; **Kevin caught the fourth.** Nothing structural
+caught any of them. TM exists to close that gap. Second reason: context hygiene — M carries the
+day's design conversations, release trains and investigations, so asking it a narrow operational
+question filters the answer through all of it. TM opens fresh with only the step SOP and the
+submission. **Letter unchanged** (`M`, not `PM`): renaming would touch the agent registry, every
+prompt template, 16 board assignees and a pile of memory files for no functional payoff.
+
+**TM rails:** time-boxed · bounce limit of two, then escalate to PM · **FAILS OPEN** (if TM cannot
+run, the hand-off proceeds flagged "unreviewed" — the dispatcher died twice in two days, once
+silently for 41 hours, and a hard gate would stall every task mid-chain) · silent on pass, loud on
+problem.
 
 **RELEASES GO THROUGH A DEDICATED R SESSION — ALWAYS (Kevin, 07-26, restating the rule).**
 M authors the brief; Kevin spawns R; R executes. M does NOT merge, even when authorized
