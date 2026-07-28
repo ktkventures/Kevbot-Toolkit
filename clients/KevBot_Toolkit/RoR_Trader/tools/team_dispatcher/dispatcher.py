@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Team dispatcher (V4.15) — dispatches board tasks to headless Claude agents.
+"""Team dispatcher (V4.16) — dispatches board tasks to headless Claude agents.
+
+V4.16 (board #171): `assignee` is authoritative — the checklist no longer gates
+dispatch (the `next_actor()` override silently killed the Todo queue for ~41h on
+07-26/27), and organic-queue skips are now LOUD + deduped (log-on-change, comment-
+once, staleness tripwire) instead of a silent `continue`.
 
 DRY-RUN BY DEFAULT: prints/logs what it WOULD dispatch, makes ZERO writes.
 Live mode requires --live. Runs on Kevin's machine only (never Railway).
@@ -46,6 +51,8 @@ REAP_TAIL = 3000           # chars of log tail reap works from
 LEASE_COMMENT_TAIL = 800   # chars of tail quoted in the lease-expired comment
 RESULT_COMMENT_MAX = 6000  # chars of agent result posted as a task comment
 LOG_TAIL_DB_MAX = 4000     # chars of log tail stored in run_history
+STALE_SKIP_S = 4 * 3600    # board #171 tripwire: a STUCK Todo (headless-assigned,
+                           # hard-gated) non-dispatchable this long → one-time flag
 
 # Board #109 (Registry Phase 2): the Run button is DECLARATIVE — the API adds
 # this tag + a run_history row (outcome='requested'); this --loop is what
@@ -118,32 +125,114 @@ def active_runs(st):
     return [r for r in st["runs"] if r.get("active") and now - r["t0"] < RUN_TIMEOUT_S]
 
 
-def next_actor(task):
-    for step in (task.get("checklist") or []):
-        if not step.get("done"):
-            return step.get("role") or task.get("assignee")
-    return task.get("assignee")
+def triage_todo(agents, done_ids):
+    """Classify the Todo queue → (dispatchable, skipped).
 
+    Board #171 — ASSIGNEE IS AUTHORITATIVE, the checklist is advisory. The old
+    `next_actor()` gate let an un-ticked checklist step OVERRIDE the assignee and
+    silently made the WHOLE Todo queue undispatchable for ~41h on 07-26/27 (no
+    error, log or comment). That gate is gone: a Todo task dispatches iff its
+    `assignee` is a headless agent and no HARD gate blocks it. Nothing reads the
+    checklist for control flow any more, which also makes the #151 stamp-tick bug
+    non-blocking retroactively.
 
-def dispatchable(agents, done_ids):
+    `skipped` is [(task, reason, is_stuck)] for LOUD reporting (silence was the
+    deeper defect — see process_skips):
+      is_stuck=False → assignee is not a headless agent (kevin/human). The task
+                       NATURALLY waits; this is the designed behaviour, and it is
+                       exactly what Kevin sorts on. Quiet.
+      is_stuck=True  → assignee IS a headless lane but a hard gate blocks it
+                       (blocked_by / needs-review|scoping / empty description). A
+                       real blocker or an unforeseen gate bug hides here → loud."""
     tasks = api("GET", "dev_tasks?status=eq.Todo&select=*"
                        "&order=is_urgent.desc,priority_phase,priority_seq")
-    out = []
+    out, skipped = [], []
     for t in tasks:
         a = t.get("assignee")
         if a not in agents:
+            skipped.append((t, f"waiting on {a or '—'} (not a headless agent)", False))
             continue
         tags = t.get("tags") or []
-        if "needs-review" in tags or "needs-scoping" in tags:
+        held = [x for x in ("needs-review", "needs-scoping") if x in tags]
+        if held:
+            skipped.append((t, f"tagged {'+'.join(held)}", True))
             continue
         if not (t.get("description") or "").strip():
-            continue  # never dispatch unscoped work
-        if any(b not in done_ids for b in (t.get("blocked_by") or [])):
+            skipped.append((t, "description is empty — unscoped, never dispatched", True))
             continue
-        if next_actor(t) != a:
+        unmet = [b for b in (t.get("blocked_by") or []) if b not in done_ids]
+        if unmet:
+            skipped.append((t, f"blocked by {unmet} (not Done)", True))
             continue
         out.append(t)
-    return out
+    return out, skipped
+
+
+def dispatchable(agents, done_ids):
+    """Back-compat shim: the dispatchable subset only. one_pass() calls
+    triage_todo() directly because it also needs the skip diagnostics."""
+    return triage_todo(agents, done_ids)[0]
+
+
+def process_skips(st, skipped, live, exclude_ids):
+    """LOUD, deduped skip reporting for the ORGANIC queue (board #171).
+
+    The pre-#171 queue skipped tasks with a bare `continue` — a task could fail a
+    gate every poll for days emitting NOTHING; there was no signal separating "the
+    queue is empty" from "the queue is full of permanently-stuck work". This gives
+    the organic queue the same loud treatment run_requested() already gives button
+    presses. Per pass:
+      • log a skip whose reason CHANGED since last pass (dedupe = not spam);
+      • comment ONCE per STUCK task (headless-assigned but hard-gated), mirroring
+        clear_run_request()'s loud cleanup so the thread records it;
+      • staleness tripwire: a stuck task non-dispatchable > STALE_SKIP_S gets a
+        one-time flag comment — the backstop for gate bugs nobody predicted.
+    `exclude_ids` = tasks the run-request path already reported loudly, so we do
+    not double-comment. Dedupe state lives in st['skips'] (survives restarts)."""
+    skips = st.setdefault("skips", {})
+    seen, now = set(), time.time()
+    stuck_ids, waiting_ids = [], []
+    for t, reason, is_stuck in skipped:
+        tid = str(t["id"])
+        seen.add(tid)
+        if t["id"] in exclude_ids:
+            continue  # already reported by the run-request path this pass
+        (stuck_ids if is_stuck else waiting_ids).append(t["id"])
+        prev = skips.get(tid)
+        if prev is None or prev.get("reason") != reason:
+            skips[tid] = {"reason": reason, "since": now,
+                          "commented": False, "flagged": False}
+            print(f"  SKIP #{t['id']} ({t.get('assignee') or '—'}): {reason}"
+                  f"{' [STUCK]' if is_stuck else ''}", flush=True)
+        rec = skips[tid]
+        if not is_stuck:
+            continue  # human-waiting is the designed state: no comment, no tripwire
+        if live and not rec["commented"]:
+            api("POST", "dev_task_comments", body={
+                "task_id": t["id"], "author": "system",
+                "body": f"⛔ dispatch skipped: {reason}. assignee "
+                        f"'{t.get('assignee') or '—'}' is a headless lane, so this is a real "
+                        f"blocker — clear it or reassign. (Won't re-comment until the reason "
+                        f"changes; board #171.)"})
+            rec["commented"] = True
+        age_h = (now - rec["since"]) / 3600.0
+        if live and not rec["flagged"] and (now - rec["since"]) >= STALE_SKIP_S:
+            api("POST", "dev_task_comments", body={
+                "task_id": t["id"], "author": "system",
+                "body": f"⚠️ STALENESS TRIPWIRE (board #171): this Todo has been "
+                        f"non-dispatchable for ~{age_h:.1f}h — reason: {reason}. Flagging as a "
+                        f"possible stuck-queue / gate bug; needs a human look."})
+            print(f"  TRIPWIRE #{t['id']} stuck ~{age_h:.1f}h: {reason}", flush=True)
+            rec["flagged"] = True
+    # Forget entries no longer skipped (dispatched or gate cleared) so a future
+    # re-stick re-comments and the dedupe map can't grow unbounded.
+    for tid in [k for k in skips if k not in seen]:
+        print(f"  UNSTUCK #{tid} (dispatched or gate cleared)", flush=True)
+        del skips[tid]
+    if stuck_ids or waiting_ids:
+        print(f"  skips: {len(stuck_ids) + len(waiting_ids)} "
+              f"(stuck={stuck_ids or '—'} · waiting={waiting_ids or '—'})", flush=True)
+    save_state(st)
 
 
 def run_requested(agents, done_ids):
@@ -234,7 +323,7 @@ Charter (read first): {CHARTER}
 YOUR TASK — board #{task['id']}: {task['title']}
 Description:
 {task.get('description') or '(none)'}
-Process checklist:
+Process checklist (advisory — the assignee, not this list, drives dispatch; board #171):
 {steps or '(none)'}
 Recent thread:
 {thread or '(none)'}
@@ -256,6 +345,16 @@ carries them into your diff (tonight one branch dragged in 10 unrelated commits)
 `git log origin/dev..HEAD --oneline` must show ONLY your own commits before you report
 ready. You cannot push (headless) — name any branch you created in your final report so
 it is not lost; do NOT background a push.
+
+ASSIGNEE CONTRACT (board #171 — assignee = whoever the task is WAITING ON): the dispatcher
+now routes on `assignee` alone; the checklist is advisory display only. Before your final
+message, set this task's `assignee` to whoever it now waits on:
+  • blocked on Kevin's input/decision before it can progress → set assignee to `kevin` and
+    state exactly what you need (a comment ALONE is not a handoff — the reassignment is);
+  • handing to another lane → set assignee to that letter (M/E/F/P/R);
+  • done and awaiting M sign-off → leave assignee as-is; the dispatcher moves you to Review.
+Leaving the task assigned to YOU while you are blocked is the failure mode this rule kills.
+Reassign via `PATCH /api/dev-tasks/<id>` setting `assignee` ONLY — do NOT change status.
 
 Do the task. Your FINAL message becomes a comment on task #{task['id']} — make it a
 self-contained result report (what you did, files touched, what needs review). If you
@@ -372,17 +471,26 @@ def one_pass(live, only_task=None):
     # Button presses first (priority-jump), then the organic Todo queue.
     requested, bad_requests = run_requested(agents, done_ids)
     req_ids = {t["id"] for t in requested}
-    cands = requested + [t for t in dispatchable(agents, done_ids)
-                         if t["id"] not in req_ids]
+    organic, skipped = triage_todo(agents, done_ids)
+    cands = requested + [t for t in organic if t["id"] not in req_ids]
+    # Board #171: LOUD, deduped reporting for the organic queue's skips — only in
+    # the continuous --loop (a one-shot --task run must not comment on unrelated
+    # tasks). Excludes ids the run-request path already reported this pass.
+    if only_task is None:
+        process_skips(st, skipped, live,
+                      req_ids | {t["id"] for t, _ in bad_requests})
     if only_task is not None:
         hit = [t for t in cands if t["id"] == only_task]
         if not hit:
-            print(f"task #{only_task} is NOT eligible (not Todo / wrong lane / blocked / "
-                  f"awaiting review / next-actor mismatch) — nothing dispatched", flush=True)
+            why = next((r for t, r, _ in skipped if t["id"] == only_task), None)
+            detail = (f" — {why}" if why else
+                      " (not Todo / wrong lane / blocked / awaiting review)")
+            print(f"task #{only_task} is NOT eligible{detail} — nothing dispatched",
+                  flush=True)
         cands = hit
     now = datetime.now(timezone.utc).strftime("%H:%M:%SZ")
     print(f"[{now}] agents={list(agents)} ({source}) · dispatchable={len(cands)} "
-          f"(button-requested={len(requested)}) "
+          f"(button-requested={len(requested)}, skipped={len(skipped)}) "
           f"· slots={slots} · cap_left={cap_left} · mode={'LIVE' if live else 'DRY-RUN'}",
           flush=True)
     for t, reason in bad_requests:
