@@ -424,6 +424,71 @@ export const NextChip = ({ t, subtasks }: { t: Task; subtasks: Task[] }) => {
   );
 };
 
+/**
+ * Handoff-chain avatar sequence (board #169, Kevin 07-27). Draws a leaf task's
+ * process checklist as a compact left-to-right row of owner avatars — one per
+ * step, in order — so the handoff pipeline is visible on the card at a glance
+ * instead of hidden behind the Process tab. An invisible process stops being
+ * followed; this is the at-a-glance reminder, the hover tooltip is the detail.
+ *
+ * It is a PURE READ of `task.checklist` — the same object the Process tab edits
+ * and #167's state-machine defines — so the drawing and the chain stay in sync
+ * by construction, not by discipline. (The "assignee auto-advances" behavior
+ * Kevin asked for is #167's transition rule; it is intentionally NOT wired here
+ * until that table exists, so the UI never hard-codes an implicit process.)
+ *
+ * State encoding (Kevin's "I need to see where to check myself off"):
+ *   done      → filled, faded (spent)
+ *   current   → filled, full-strength, haloed ring (you-are-here)
+ *   upcoming  → hollow outline (not yet)
+ * The whole row shares one hover tooltip spelling the chain out in words.
+ * Renders nothing without a chain (e.g. vision rows, which pipeline via
+ * subtasks rather than a checklist).
+ */
+export const HandoffChain = ({ task, size = 15 }: { task: Task; size?: number }) => {
+  const steps: ChecklistStep[] = task.checklist || [];
+  if (steps.length === 0) return null;
+  const current = steps.findIndex((s) => !s.done);        // -1 → every step done
+  const cur = current >= 0 ? steps[current] : null;
+  const nowOwner = cur ? (cur.role ? roleAbbrev(cur.role) : '—') : null;
+  const tip = [
+    'Process chain (hover-only; edit in the Process tab):',
+    ...steps.map((s, i) => {
+      const owner = s.role ? roleAbbrev(s.role) : '—';
+      const mark = s.done ? '✓' : i === current ? '▶' : '·';
+      return `  ${mark} ${i + 1}. ${s.text}  (${owner})`;
+    }),
+    nowOwner ? `  ▶ now: ${nowOwner}` : '  — all steps complete',
+  ].join('\n');
+
+  const base: React.CSSProperties = {
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    width: size, height: size, borderRadius: '50%', flex: 'none',
+    fontSize: Math.round(size * 0.55), fontWeight: 700, letterSpacing: -0.3,
+    boxSizing: 'border-box', whiteSpace: 'nowrap',
+  };
+  return (
+    <span title={tip} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
+      verticalAlign: 'middle', marginLeft: 6, cursor: 'default',
+    }}>
+      {steps.map((s, i) => {
+        const state = i === current ? 'current' : s.done ? 'done' : 'upcoming';
+        const col = s.role ? roleColor(s.role) : '#64748b';
+        const letter = s.role ? roleAbbrev(s.role) : '·';
+        const skin: React.CSSProperties =
+          state === 'current'
+            ? { background: col, color: '#fff',
+                boxShadow: `0 0 0 1.5px var(--bg-card, var(--bg-input)), 0 0 0 3px ${col}` }
+            : state === 'done'
+              ? { background: col, color: '#fff', opacity: 0.4 }
+              : { background: 'transparent', color: col, border: `1.5px solid ${col}`, opacity: 0.85 };
+        return <span key={i} style={{ ...base, ...skin }}>{letter}</span>;
+      })}
+    </span>
+  );
+};
+
 /* ── Run button + run history (board #109, Registry Phase 2) ──────────── */
 
 export const OUTCOME_STYLE: Record<string, { color: string; icon: string; label: string }> = {

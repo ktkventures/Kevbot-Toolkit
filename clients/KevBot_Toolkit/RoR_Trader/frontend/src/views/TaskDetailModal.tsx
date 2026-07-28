@@ -37,7 +37,7 @@ import {
   STATUS_COLOR, STATUS_DEF, statusOptionsFor, withLegacy, input, tagChip, relTime, elapsedShort,
   RoleChip, NextChip, ProgressBar, RolePicker, RunButton, OutcomeChip,
   StampButtons, TwoTouchChip, ImpactSelect, IMPACT_DEF, defaultChain, StuckChip,
-  MENTION_ROLES,
+  MENTION_ROLES, HandoffChain,
 } from './taskBoardShared';
 import { Md, MD_CSS } from './taskMarkdown';
 
@@ -361,6 +361,9 @@ export default function TaskDetailModal({
             options={withLegacy(roles, task.assignee || '').filter(Boolean)}
             onPick={(r) => patchTracked({ assignee: r })} />
           <NextChip t={task} subtasks={subtasks} />
+          {/* board #169 — handoff chain as owner avatars (mirrors the board card);
+              a compact read of the same checklist the Process tab edits */}
+          <HandoffChain task={task} />
           {/* board #151 tell — Todo + Kevin-next = queue-eligible but undispatchable */}
           <StuckChip t={task} subtasks={subtasks} />
           <ProgressBar done={doneCount} total={totalCount} />

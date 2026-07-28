@@ -26,7 +26,7 @@ import {
   COLLAPSED_LS_KEY, RUN_REQUESTED_TAG, STATUS_DEF, STATUSES, withLegacy,
   statusOptionsFor, cell, input, badge, tagChip, NextChip, ProgressBar, RunButton,
   RETIRED_TAGS, StampButtons, TwoTouchChip, ImpactSelect, defaultChain,
-  groupBoard, isVisionTask, StuckChip, isStuckInTodo,
+  groupBoard, isVisionTask, StuckChip, isStuckInTodo, HandoffChain,
 } from './taskBoardShared';
 
 export default function AdminTasksPage() {
@@ -362,6 +362,9 @@ export default function AdminTasksPage() {
         {view === 'flat' && t.parent_id != null &&
           <span style={{ ...tagChip, marginLeft: 6 }} title="subtask of this vision item">↳ #{t.parent_id}</span>}
         <TagChips t={t} />
+        {/* board #169 — the handoff chain as owner avatars, so the process is
+            visible on the card instead of hidden behind the Process tab */}
+        <HandoffChain task={t} />
         <NextChip t={t} subtasks={byParent.get(t.id) || []} />
         {/* board #151 tell — Todo task whose next actor is Kevin sits undispatched */}
         <StuckChip t={t} subtasks={byParent.get(t.id) || []} />
