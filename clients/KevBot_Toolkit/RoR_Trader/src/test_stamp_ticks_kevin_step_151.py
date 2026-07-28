@@ -12,6 +12,13 @@ Fix: stamp_approval marks the FIRST un-done kevin checklist step done (that
 step IS the stamp) and names it in the system comment. Guard: only the first
 such step — a later two-touch review step must stay open.
 
+Board #171 UPDATE: the dispatcher's next-actor gate was later REMOVED entirely
+(assignee is authoritative; the checklist is advisory). A missed tick can no
+longer strand a task — so this bug class is deleted, not just fixed. The stamp
+still ticks the step for the board's progress bar (walks 1/3/4, unchanged);
+walk 2 now asserts the gate is GONE and dispatch holds with an un-ticked
+checklist either way.
+
 Offline + hermetic, same shape as test_board_lifecycle_136.py: the real
 `api.routers.dev_tasks` router functions run against an in-memory fake Supabase
 client, and the real `tools/team_dispatcher/dispatcher.py` gate functions run
@@ -160,27 +167,34 @@ ok("stamp comment names the ticked step",
 ok("still exactly ONE system comment for the stamp",
    sum("stamp: approved" in b for b in comments_for(tid)) == 1)
 
-# ── walk 2: the exact regression — dispatcher can now dispatch it ──────────
-
-print("― walk 2: dispatcher next-actor gate no longer blocks the stamped task ―")
+# ── walk 2: board #171 — the checklist no longer gates dispatch ────────────
+# Pre-#171 this walk proved the stamp HAD to tick the Kevin step or the
+# dispatcher's next_actor() gate skipped the task. That gate is deleted: the
+# dispatcher routes on `assignee` alone. So the trap that stranded the queue for
+# ~41h — an un-ticked Kevin-first checklist — is now harmless, and we assert
+# dispatchability holds EVEN with the checklist left un-ticked.
+print("― walk 2: dispatcher routes on assignee; the checklist does not gate ―")
 spec = importlib.util.spec_from_file_location(
     "team_dispatcher",
     os.path.join(ROOT, "tools", "team_dispatcher", "dispatcher.py"))
 disp = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(disp)
 
-stamped = task_row(tid)
-ok("BEFORE-fix simulation: an unticked Kevin-first checklist → next_actor=kevin",
-   disp.next_actor({**stamped, "checklist": CHECKLIST}) == "kevin")
-ok("AFTER stamp: next_actor is the assignee F, not kevin",
-   disp.next_actor(stamped) == "F")
+ok("next_actor gate is GONE — the checklist no longer drives control flow",
+   not hasattr(disp, "next_actor"))
 
 agents = {"F": {"letter": "F", "status": "headless", "worktree": ".",
                 "scope": "s", "boundaries": "b"}}
-disp.api = lambda m, p, b=None, prefer=None: [dict(stamped)]
-got = disp.dispatchable(agents, set())
-ok("stamped task is now DISPATCHABLE (dispatchable != 0)",
-   [t2["id"] for t2 in got] == [tid])
+stamped = task_row(tid)
+# Force the DELIBERATELY-UNTICKED Kevin-first checklist — the exact pre-#171 trap.
+untick = {**stamped, "checklist": CHECKLIST}
+disp.api = lambda m, p, b=None, prefer=None: [dict(untick)]
+got, skipped = disp.triage_todo(agents, set())
+ok("assignee-F Todo is DISPATCHABLE despite an un-ticked Kevin-first checklist "
+   "(the ~41h dead-queue bug cannot recur)",
+   [t2["id"] for t2 in got] == [tid] and skipped == [])
+ok("back-compat dispatchable() shim returns the same subset",
+   [t2["id"] for t2 in disp.dispatchable(agents, set())] == [tid])
 
 # ── walk 3: back-compat — no Kevin step means no checklist write / tick note
 
