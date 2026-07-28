@@ -757,6 +757,12 @@ def main():
     # in-horizon. Independent of the streaming flag by design.
     import settle_sweeper
     settle_sweeper.start_sweeper_thread(threading.Event())
+    # Daily T+0 health snapshot (board #160, default OFF): once per weekday at a
+    # fixed clock mark (~15:00Z), record + RETAIN per-strategy fidelity so
+    # "is today abnormal?" becomes a T+0-vs-T+0 lookup instead of the structurally-
+    # doomed T+0-vs-settled comparison. Inert unless RORT_T0_HEALTH_SNAPSHOT=1.
+    import t0_health_snapshot
+    t0_health_snapshot.start_capture_thread(threading.Event())
     DataWorkerManager().run()
 
 
