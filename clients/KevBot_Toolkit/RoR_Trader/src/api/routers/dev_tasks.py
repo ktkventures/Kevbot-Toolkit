@@ -6,6 +6,8 @@ by priority (phase, seq) ascending so 1.1 = "do next" surfaces first.
 """
 import logging
 import re
+import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -95,6 +97,189 @@ _ORIGINS = {"planned", "discovered", "kevin"}
 # reach Kevin's machine). Cleared by the dispatcher on claim.
 RUN_REQUESTED_TAG = "run-requested"
 
+# ── Process chain (board #182) ───────────────────────────────────────────────
+# The checklist widens from legacy {role,text,done} into an ordered PROCESS
+# CHAIN of richer step objects (see migrations/dev_tasks_process_chain.sql).
+# A checklist is treated as a chain — with strict-order completion, per-step
+# stamps and auto hand-off — only once a step carries one of the new keys.
+# Legacy {role,text,done}-only checklists keep their exact pre-#182 behavior so
+# the 42 existing tasks are untouched (retrofit is Step 9, deferred).
+_STEP_MODES = {"execute", "discuss"}
+_STEP_ORIGINS = {"planned", "audible"}
+_STAMP_STATES = {"pending", "approved", "rejected"}
+_NEW_SHAPE_KEYS = ("id", "owner", "title", "body", "mode", "origin", "stamp")
+# Completion state is server-owned (managed by the /steps/* action endpoints);
+# a generic PATCH may edit structure but never these fields on an existing step.
+_STEP_COMPLETION_FIELDS = ("done", "completed_at", "completed_by")
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _is_process_chain(checklist) -> bool:
+    """True once ANY step carries a new-shape key — the opt-in signal that a
+    checklist is a #182 process chain rather than a legacy checklist."""
+    return isinstance(checklist, list) and any(
+        isinstance(s, dict) and any(k in s for k in _NEW_SHAPE_KEYS)
+        for s in checklist)
+
+
+def _step_owner(step: dict):
+    """Who acts on a step — new `owner`, falling back to legacy `role`."""
+    owner = step.get("owner")
+    return owner if owner is not None else step.get("role")
+
+
+def _step_title(step: dict) -> str:
+    """One line of substance — new `title`, falling back to legacy `text`."""
+    return step.get("title") or step.get("text") or ""
+
+
+def _current_step_index(checklist) -> Optional[int]:
+    """Index of the first incomplete step (the only completable one — T3),
+    or None when the whole chain is done."""
+    for i, s in enumerate(checklist or []):
+        if isinstance(s, dict) and not s.get("done"):
+            return i
+    return None
+
+
+def _next_assignee(checklist, current):
+    """T1/T2: owner of the first incomplete step; 'M' when the chain is
+    complete (never kevin — closing is M's follow-through, per
+    feedback_kevin_reviews_m_closes). An empty owner leaves assignee as-is."""
+    idx = _current_step_index(checklist)
+    if idx is None:
+        return "M"
+    owner = _step_owner(checklist[idx])
+    return owner if owner else current
+
+
+def _derive_kevin_final(checklist, existing) -> bool:
+    """kevin_final is derived (spec #182): TRUE if any kevin-owned step carries
+    a REQUIRED stamp. It NEVER clears an existing TRUE — the #136 two-touch
+    guard set task-level by /stamp must survive on legacy tasks that have no
+    per-step stamps (clearing it would silently drop a Review gate)."""
+    if existing:
+        return True
+    for s in (checklist or []):
+        if not isinstance(s, dict):
+            continue
+        stamp = s.get("stamp") or {}
+        if (str(_step_owner(s) or "").strip().lower() == "kevin"
+                and stamp.get("required")):
+            return True
+    return False
+
+
+def _ensure_step_ids(checklist):
+    """Assign a stable id to any chain step that lacks one, so reorder/insert
+    keeps track of which steps are already complete. Legacy steps are only
+    touched once the checklist has opted into the chain shape."""
+    for s in (checklist or []):
+        if isinstance(s, dict) and not s.get("id"):
+            s["id"] = uuid.uuid4().hex[:12]
+    return checklist
+
+
+def _prepare_checklist_patch(c, task_id: int, row: dict):
+    """Guard + normalize a PATCH that changes `checklist` (board #182).
+
+    Legacy checklists pass straight through (pre-#182 free-toggle behavior).
+    For a process chain the generic PATCH is STRUCTURE ONLY: it may add, edit,
+    reorder or delete not-yet-done steps, but completion state (done /
+    completed_* / stamp.state) is owned by the /steps/* action endpoints and
+    cannot be changed here (T3 strict order + T4' immutability are API
+    refusals, not UI niceties). Assignee is deliberately NOT recomputed on a
+    structural edit — a manual override (T6) must survive an SOP edit, and the
+    next /steps/complete recomputes it. kevin_final is re-derived."""
+    incoming = row["checklist"]
+    if not _is_process_chain(incoming):
+        return  # legacy checklist — untouched, exactly as before #182
+    stored_rows = c.table("dev_tasks").select("checklist,kevin_final") \
+        .eq("id", task_id).execute().data
+    stored = (stored_rows[0].get("checklist") if stored_rows else None) or []
+    stored_by_id = {s["id"]: s for s in stored
+                    if isinstance(s, dict) and s.get("id")}
+    incoming_ids = set()
+    for s in incoming:
+        sid = s.get("id")
+        prev = stored_by_id.get(sid) if sid else None
+        if prev is not None:
+            incoming_ids.add(sid)
+            if bool(s.get("done")) != bool(prev.get("done")) or any(
+                    s.get(f) != prev.get(f)
+                    for f in _STEP_COMPLETION_FIELDS if f != "done"):
+                raise HTTPException(
+                    status_code=409,
+                    detail="completion is managed by /steps/complete — a PATCH "
+                           "cannot tick or untick a step (course-correct by "
+                           "inserting an origin='audible' step instead)")
+            if ((s.get("stamp") or {}).get("state")
+                    != (prev.get("stamp") or {}).get("state")):
+                raise HTTPException(
+                    status_code=409,
+                    detail="stamp state is managed by /steps/stamp — a PATCH "
+                           "cannot approve or reject a step")
+        elif s.get("done"):
+            raise HTTPException(
+                status_code=400,
+                detail="a newly inserted step cannot start completed "
+                       "(done must be false)")
+    for sid, prev in stored_by_id.items():
+        if sid not in incoming_ids and prev.get("done"):
+            raise HTTPException(
+                status_code=409,
+                detail="cannot delete a completed step — it is part of the "
+                       "audit trail (course-correct by inserting an "
+                       "origin='audible' revision step, T4')")
+    _ensure_step_ids(incoming)
+    row["kevin_final"] = _derive_kevin_final(
+        incoming, stored_rows[0].get("kevin_final") if stored_rows else False)
+
+
+def _task_row(c, task_id: int) -> dict:
+    res = c.table("dev_tasks").select("*").eq("id", task_id).execute().data
+    if not res:
+        raise HTTPException(status_code=404, detail="task not found")
+    return res[0]
+
+
+def _sys_comment(c, task_id: int, body: str, step_order: Optional[int] = None):
+    c.table("dev_task_comments").insert({
+        "task_id": task_id, "author": "system", "body": body,
+        "step_order": step_order}).execute()
+
+
+def _validate_step_shape(s) -> bool:
+    """Accept both legacy {role,text,done} and #182 chain steps. Every new
+    field is optional; a step just needs a string label (title or text)."""
+    if not isinstance(s, dict):
+        return False
+    if not isinstance(s.get("title", s.get("text")), str):
+        return False
+    if "done" in s and not isinstance(s["done"], bool):
+        return False
+    owner = s.get("owner", s.get("role"))
+    if owner is not None and not isinstance(owner, str):
+        return False
+    if "body" in s and not isinstance(s["body"], str):
+        return False
+    if "mode" in s and s["mode"] not in _STEP_MODES:
+        return False
+    if "origin" in s and s["origin"] not in _STEP_ORIGINS:
+        return False
+    stamp = s.get("stamp")
+    if stamp is not None:
+        if not isinstance(stamp, dict):
+            return False
+        if "required" in stamp and not isinstance(stamp["required"], bool):
+            return False
+        if stamp.get("state") is not None and stamp["state"] not in _STAMP_STATES:
+            return False
+    return True
+
 
 def _validate_team_fields(c, row: dict, task_id: Optional[int] = None):
     """Enforce origin values and ONE nesting level (vision → subtask).
@@ -123,17 +308,14 @@ def _validate_team_fields(c, row: dict, task_id: Optional[int] = None):
                 detail="affected_sids must be a list of integers")
     if "checklist" in row:
         cl = row["checklist"]
-        ok = isinstance(cl, list) and all(
-            isinstance(s, dict)
-            and isinstance(s.get("text"), str)
-            and isinstance(s.get("done"), bool)
-            and (s.get("role") is None or isinstance(s.get("role"), str))
-            for s in cl)
+        ok = isinstance(cl, list) and all(_validate_step_shape(s) for s in cl)
         if not ok:
             raise HTTPException(
                 status_code=400,
-                detail='checklist must be a list of '
-                       '{"text": str, "done": bool, "role": str|null} '
+                detail='checklist must be a list of process-chain steps — at '
+                       'minimum a string title (or legacy "text"); optional '
+                       'owner/body, mode (execute|discuss), origin '
+                       '(planned|audible), stamp, done:bool '
                        '(send the WHOLE array — JSONB is replaced, not merged)')
     parent_id = row.get("parent_id")
     if parent_id is None:
@@ -194,6 +376,12 @@ def create_task(payload: dict = Body(...), user=Depends(get_current_user)):
     row = {k: v for k, v in payload.items() if k in _EDITABLE}
     c = _admin()
     _validate_team_fields(c, row)
+    # Give a process chain stable step ids + derived kevin_final at birth
+    # (board #182); legacy checklists are left untouched.
+    if _is_process_chain(row.get("checklist")):
+        _ensure_step_ids(row["checklist"])
+        row["kevin_final"] = _derive_kevin_final(
+            row["checklist"], row.get("kevin_final"))
     res = c.table("dev_tasks").insert(row).execute()
     return res.data[0] if res.data else {"status": "created"}
 
@@ -212,6 +400,10 @@ def update_task(task_id: int, payload: dict = Body(...),
     c = _admin()
     if row:
         _validate_team_fields(c, row, task_id=task_id)
+        # Process-chain PATCH (board #182): keep completion server-owned and
+        # re-derive kevin_final. Legacy checklists pass through untouched.
+        if "checklist" in row:
+            _prepare_checklist_patch(c, task_id, row)
         tracked = {k: row[k] for k in ("status", "assignee") if k in row}
         prev = None
         if tracked:
@@ -381,6 +573,149 @@ def stamp_approval(task_id: int, payload: dict = Body(...),
     return res[0] if res else {"status": "stamped"}
 
 
+# ── Process-chain step actions (board #182) ──────────────────────────────────
+# The server side of the three step buttons (Step 5 UI). Completion state and
+# hand-off live here — NOT in the generic checklist PATCH — so the transition
+# rules (T1/T2/T3/T4'/T8/T9) are API refusals, not UI conventions.
+
+@router.post("/{task_id}/steps/complete")
+def complete_step(task_id: int, payload: dict = Body(default={}),
+                  user=Depends(get_current_user)):
+    """Complete the current step and hand off (T1/T2/T3/T8).
+
+    Ticks the FIRST incomplete step only — you cannot complete a later step out
+    of order (T3). A step that gates on a stamp cannot be completed until the
+    stamp is approved (T8). Records completed_at/by and reassigns the task to
+    the next incomplete step's owner — 'M' when the chain finishes, never kevin
+    (T2). One action, one write.
+    """
+    actor = (payload.get("actor") or "").strip() or "system"
+    c = _admin()
+    task = _task_row(c, task_id)
+    cl = task.get("checklist") or []
+    idx = _current_step_index(cl)
+    if idx is None:
+        raise HTTPException(
+            status_code=409, detail="every step is already complete")
+    step = cl[idx]
+    stamp = step.get("stamp") or {}
+    if stamp.get("required") and stamp.get("state") != "approved":
+        raise HTTPException(
+            status_code=409,
+            detail=f'step "{_step_title(step)}" needs an approved stamp before '
+                   "it can be completed (T8) — use /steps/stamp")
+    step["done"] = True
+    step["completed_at"] = _now_iso()
+    step["completed_by"] = actor
+    _ensure_step_ids(cl)
+    old_assignee = task.get("assignee")
+    new_assignee = _next_assignee(cl, old_assignee)
+    kevin_final = _derive_kevin_final(cl, task.get("kevin_final"))
+    c.table("dev_tasks").update(
+        {"checklist": cl, "assignee": new_assignee,
+         "kevin_final": kevin_final}).eq("id", task_id).execute()
+    if _current_step_index(cl) is None:
+        tail = f"chain complete → assignee {new_assignee} (close)"
+    elif (old_assignee or None) != (new_assignee or None):
+        tail = f"handed off: {old_assignee or '—'} → {new_assignee}"
+    else:
+        tail = f"still on {new_assignee}"
+    _sys_comment(
+        c, task_id,
+        f'step {idx + 1} "{_step_title(step)}" complete (by {actor}) · {tail}',
+        step_order=idx)
+    return _task_row(c, task_id)
+
+
+@router.post("/{task_id}/steps/raise-issue")
+def raise_issue(task_id: int, payload: dict = Body(...),
+                user=Depends(get_current_user)):
+    """Raise an issue on the current step and route to M (T9).
+
+    Requires a comment explaining the problem, posts it (tagged to the current
+    step), and reassigns the task to M — the router — WITHOUT ticking any step
+    or altering the chain. M then decides whether to rewrite the summary,
+    insert an origin='audible' revision step, reorder, or escalate to Kevin.
+    """
+    body = (payload.get("body") or "").strip()
+    if not body:
+        raise HTTPException(
+            status_code=400,
+            detail="raising an issue requires a comment explaining it")
+    actor = (payload.get("actor") or "").strip() or "system"
+    c = _admin()
+    task = _task_row(c, task_id)
+    idx = _current_step_index(task.get("checklist") or [])
+    res = c.table("dev_task_comments").insert(
+        {"task_id": task_id, "author": actor, "body": body,
+         "step_order": idx}).execute()
+    crow = res.data[0] if res.data else None
+    if crow:
+        _write_mentions(c, crow["id"], task_id, actor, body)
+    old = task.get("assignee")
+    if (old or None) != "M":
+        c.table("dev_tasks").update({"assignee": "M"}).eq("id", task_id).execute()
+        _sys_comment(c, task_id,
+                     f"⚠️ issue raised (by {actor}) · assignee: "
+                     f"{old or '—'} → M", step_order=idx)
+    else:
+        _sys_comment(c, task_id,
+                     f"⚠️ issue raised (by {actor}) · already with M",
+                     step_order=idx)
+    return _task_row(c, task_id)
+
+
+@router.post("/{task_id}/steps/stamp")
+def stamp_step(task_id: int, payload: dict = Body(...),
+               user=Depends(get_current_user)):
+    """Approve or reject the current step's stamp (T8/T9).
+
+    Approve unblocks completion (the owner then hits /steps/complete). Reject
+    records the rejection and routes to M — the escalation path — without
+    ticking the step. Only the current step, and only one that gates on a stamp.
+    """
+    decision = payload.get("decision")
+    if decision not in ("approve", "reject"):
+        raise HTTPException(
+            status_code=400, detail="decision must be 'approve' or 'reject'")
+    actor = (payload.get("actor") or "").strip() or "system"
+    c = _admin()
+    task = _task_row(c, task_id)
+    cl = task.get("checklist") or []
+    idx = _current_step_index(cl)
+    if idx is None:
+        raise HTTPException(
+            status_code=409, detail="the chain is complete — no step to stamp")
+    step = cl[idx]
+    stamp = step.get("stamp") or {}
+    if not stamp.get("required"):
+        raise HTTPException(
+            status_code=409,
+            detail=f'step "{_step_title(step)}" does not gate on a stamp')
+    stamp["state"] = "approved" if decision == "approve" else "rejected"
+    stamp["by"] = actor
+    stamp["at"] = _now_iso()
+    step["stamp"] = stamp
+    _ensure_step_ids(cl)
+    update = {"checklist": cl}
+    old = task.get("assignee")
+    if decision == "reject" and (old or None) != "M":
+        update["assignee"] = "M"  # T9 escalation
+    c.table("dev_tasks").update(update).eq("id", task_id).execute()
+    if decision == "approve":
+        _sys_comment(
+            c, task_id,
+            f'stamp approved on step {idx + 1} "{_step_title(step)}" '
+            f"(by {actor}) — owner may now complete it", step_order=idx)
+    else:
+        tail = "" if (old or None) == "M" else f" · assignee: {old or '—'} → M"
+        _sys_comment(
+            c, task_id,
+            f'stamp REJECTED on step {idx + 1} "{_step_title(step)}" '
+            f"(by {actor}) — routed to M{tail}", step_order=idx)
+    return _task_row(c, task_id)
+
+
 @router.get("/{task_id}/poll")
 def poll_task(task_id: int, scoped_id: Optional[int] = None,
               user=Depends(get_current_user)):
@@ -435,8 +770,21 @@ def add_comment(task_id: int, payload: dict = Body(...),
         raise HTTPException(status_code=400, detail="body is required")
     author = payload.get("author") or "claude"
     c = _admin()
+    # Tag the comment with the task's current step (board #182, decision 11).
+    # Unrecoverable if not captured at write time; best-effort so a read hiccup
+    # never blocks a comment. NULL for legacy tasks and finished chains.
+    step_order = None
+    try:
+        crow = c.table("dev_tasks").select("checklist") \
+            .eq("id", task_id).execute().data
+        cl = (crow[0].get("checklist") if crow else None) or []
+        if _is_process_chain(cl):
+            step_order = _current_step_index(cl)
+    except Exception as e:  # noqa: BLE001 — never let step tagging break a comment
+        log.warning("step_order stamp failed for task %s: %s", task_id, e)
     res = c.table("dev_task_comments").insert(
-        {"task_id": task_id, "author": author, "body": body}).execute()
+        {"task_id": task_id, "author": author, "body": body,
+         "step_order": step_order}).execute()
     row = res.data[0] if res.data else None
     # Fan @tokens out to task_mentions so nothing rots un-circled-back-to
     # (board #143). Best-effort — never breaks the comment.
