@@ -1,7 +1,18 @@
-# Fidelity Gate — per-push synthetic parity suite (hermetic, no secrets).
-# Catches engine-logic drift on every commit. The heavier real-bar golden
-# suite (fidelity/golden.py) runs locally/nightly where Supabase is reachable
+# Fidelity Gate — synthetic parity suite (hermetic, no secrets).
+# Catches engine-logic drift. The heavier real-bar golden suite
+# (fidelity/golden.py) runs locally/nightly where Supabase is reachable
 # — see docs/Fidelity_Gate.md.
+#
+# Merge-queue design (board #166):
+#   - Triggers on pull_request AND merge_group so it runs when a PR enters the
+#     queue and when the queue validates the merged result.
+#   - The job ALWAYS runs and ALWAYS reports a conclusion, so it is safe to mark
+#     as a REQUIRED status check without stuck PRs. A trigger-level `paths:`
+#     filter would make GitHub leave the check "pending" on frontend/docs PRs
+#     and block the merge forever — so path scoping is done INSIDE the job.
+#   - The expensive suite only runs when engine source (src/**.py) actually
+#     changed in the diff. Detection is FAIL-CLOSED: if the base can't be
+#     resolved, the suite runs. The gate can never *wrongly* skip an engine PR.
 name: Fidelity Gate (synthetic parity)
 
 on:
@@ -9,6 +20,7 @@ on:
     paths:
       - 'clients/KevBot_Toolkit/RoR_Trader/src/**.py'
   pull_request:
+  merge_group:
 
 jobs:
   synthetic-parity:
@@ -18,14 +30,56 @@ jobs:
         working-directory: clients/KevBot_Toolkit/RoR_Trader
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      - name: Detect engine (src/**.py) changes
+        id: changes
+        run: |
+          set -euo pipefail
+          case "${{ github.event_name }}" in
+            pull_request) BASE="${{ github.event.pull_request.base.sha }}" ;;
+            merge_group)  BASE="${{ github.event.merge_group.base_sha }}" ;;
+            push)         BASE="${{ github.event.before }}" ;;
+            *)            BASE="" ;;
+          esac
+          HEAD="$(git rev-parse HEAD)"
+          # Fail-closed: no resolvable base → run the suite.
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            echo "No base sha for event '${{ github.event_name }}' → running suite (fail-closed)."
+            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$BASE" 2>/dev/null || true
+          if ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            echo "Base ${BASE} unavailable → running suite (fail-closed)."
+            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          CHANGED="$(git diff --name-only "$BASE" "$HEAD")"
+          if printf '%s\n' "$CHANGED" | grep -qE '^clients/KevBot_Toolkit/RoR_Trader/src/.*\.py$'; then
+            echo "Engine source changed → running synthetic parity suite:"
+            printf '%s\n' "$CHANGED" | grep -E '^clients/KevBot_Toolkit/RoR_Trader/src/.*\.py$' | sed 's/^/  /'
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No src/**.py changes in this diff → suite skipped (gate reports green)."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Python
+        if: steps.changes.outputs.run == 'true'
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Install deps
+        if: steps.changes.outputs.run == 'true'
         run: pip install -r requirements.txt
+
       - name: Synthetic parity suite (hermetic)
+        if: steps.changes.outputs.run == 'true'
         working-directory: clients/KevBot_Toolkit/RoR_Trader/src
         run: |
           python test_unified_parity.py
           python test_parity_regression.py
           python test_mass_builder_fidelity_parity.py
+
+      - name: No engine changes — gate passes trivially
+        if: steps.changes.outputs.run != 'true'
+        run: echo "No engine (src/**.py) changes in this diff — synthetic parity suite skipped; gate green."
