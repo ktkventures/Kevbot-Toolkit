@@ -19,10 +19,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Card from '@/components/Card';
 import { apiFetch } from '@/lib/api/client';
-import Last10PairingModal from '@/views/Last10PairingModal';
-import SimBasisModal, {
-  SIM_BADGE, simRatioColor, type SimScore,
-} from '@/views/SimBasisModal';
+import Last10PairingModal, { type Basis } from '@/views/Last10PairingModal';
+import { SIM_BADGE, simRatioColor, type SimScore } from '@/views/SimBasisModal';
 import StrategyNotesModal from '@/views/StrategyNotesModal';
 import type { Task } from '@/views/taskBoardShared';
 import {
@@ -149,11 +147,35 @@ const simBtnBase: React.CSSProperties = {
   fontVariantNumeric: 'tabular-nums',
 };
 
-/** The compact SIM cell content — fail-loud (unres/error/none never render as a
- *  0-score), score bands for ok/partial, ⟳ marker when a re-run is warranted. */
+/** The compact SIM cell content — fail-loud (board #177 / #175). THREE distinct
+ *  states never collapse into a dead, non-clickable '—':
+ *    • loading  — undefined (fetch in flight): subdued clickable skeleton;
+ *    • error    — 'fetch_error' (the GET failed): red clickable chip;
+ *    • no data  — 'none' (never run): the ▷ run affordance.
+ *  The whole cell is ALWAYS clickable — the modal is the diagnostic surface and
+ *  self-fetches, so a failed column read must never remove the only way in. */
 function simCellContent(sim: SimScore | undefined,
                         onOpen: () => void): React.ReactNode {
-  if (!sim) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
+  // loading — key not yet in the map. Clickable: the modal fetches fresh.
+  if (!sim) {
+    return (
+      <button onClick={onOpen} title="SIM basis — loading… (click to open)"
+              style={{ ...simBtnBase, fontSize: 11, color: 'var(--text-muted)' }}>
+        <span style={SIM_BADGE}>SIM</span><span style={{ opacity: 0.6 }}>…</span>
+      </button>
+    );
+  }
+  // error — the read itself failed (outage / tables missing). LOUD, not silent.
+  if (sim.status === 'fetch_error') {
+    return (
+      <button onClick={onOpen}
+              title={`SIM read failed — click to open the modal and retry/inspect${sim.error ? `: ${sim.error}` : ''}`}
+              style={{ ...simBtnBase, fontSize: 10.5, fontWeight: 700, color: '#ef5350',
+                       border: '1px solid #ef5350', borderRadius: 3, padding: '0 4px' }}>
+        <span style={SIM_BADGE}>SIM</span>⚠ err
+      </button>
+    );
+  }
   if (sim.status === 'none') {
     return (
       <button onClick={onOpen}
@@ -175,6 +197,9 @@ function simCellContent(sim: SimScore | undefined,
     <button onClick={onOpen}
             style={{ ...simBtnBase, fontSize: 13, fontWeight: 600, color: simRatioColor(ratio) }}>
       <span style={SIM_BADGE}>SIM</span>{sim.points ?? 0}/{sim.denom ?? 0}
+      {sim.phantom != null && sim.phantom > 0 &&
+        <span style={{ color: '#ffc107', fontSize: 9.5, marginLeft: 2 }}
+              title={`${sim.phantom} SIM fire(s) paired to NO backtest edge (phantom / precision miss)`}>+{sim.phantom}φ</span>}
       {sim.status === 'partial' &&
         <span style={{ color: '#ffc107', fontSize: 10, marginLeft: 2 }} title="partial basis">~</span>}
       {attention &&
@@ -188,6 +213,11 @@ function simCellTitle(sim: SimScore | undefined): string {
   const base = ' Click for the full divergence ledger, on-demand Run, and the '
     + 'nightly opt-in toggle.';
   if (!sim) return 'SIM replay basis — loading…';
+  if (sim.status === 'fetch_error') {
+    return 'SIM read FAILED (outage / missing tables) — this is a load error, '
+      + 'not a 0 and not "no data". Click to open the modal and retry/inspect.'
+      + (sim.error ? ` (${sim.error})` : '') + base;
+  }
   if (sim.status === 'none') {
     return 'SIM replay basis (board #120/#144) — not run yet. The real engine '
       + 'replayed over recorded decision-time bars (logic-would-fire, NEVER '
@@ -456,8 +486,10 @@ export default function StrategyHealthV1() {
   // Last-10 health scores (board #70) — independent fetch so a slow score
   // computation never blocks the main table; cells show '—' until it lands.
   const [last10, setLast10] = useState<Map<number, Last10Score>>(new Map());
+  // The ONE unified modal opens from every last-10 column (fired/theo/algo/SIM)
+  // seeded to that basis (board #177). timeframe drives the SIM Run ETA.
   const [last10Sid, setLast10Sid] = useState<
-    { sid: number; name: string; basis?: 'fired' | 'theo' | 'algo' } | null>(null);
+    { sid: number; name: string; basis?: Basis; timeframe?: string | null } | null>(null);
   // Board #122: scope the batch call to the sids actually on the page. The
   // no-sids form scores EVERY strategy in the strategies table (two
   // sequential DB reads each) — slow enough at fleet scale that the
@@ -486,9 +518,9 @@ export default function StrategyHealthV1() {
   // (mount/Apply) — not a poll. Cells stay '—' until each lands; a failed read
   // leaves '—' (never a silent 0). Most rows are 'none' (on-demand + opt-in).
   const [simScores, setSimScores] = useState<Map<number, SimScore>>(new Map());
-  const [simSid, setSimSid] = useState<{ sid: number; name: string } | null>(null);
-  // Stable identity — the modal keeps this in a ref; a churning closure would
-  // re-fire the modal's initial-load effect on every sweep tick.
+  // Keeps the column cell in sync when the unified modal's SIM tab re-reads the
+  // cache (a run lands / run-nav). Stable identity so the modal's effect deps
+  // don't churn on every parent re-render.
   const onSimScoreChange = useCallback((s: SimScore) =>
     setSimScores(prev => new Map(prev).set(s.strategy_id, s)), []);
   useEffect(() => {
@@ -507,8 +539,15 @@ export default function StrategyHealthV1() {
           if (cancelled) return;
           acc.set(sid, s);
           setSimScores(new Map(acc));
-        } catch {
-          /* leave the cell '—' — never a silent 0 */
+        } catch (e) {
+          // FAIL LOUD (board #177 / #175): store a fetch_error sentinel rather
+          // than leaving the key absent. An absent key renders an indistinguish-
+          // able dead '—' and removes the ONLY way into the modal — exactly the
+          // 07-27 outage where every GET 500'd and no cell was clickable.
+          if (cancelled) return;
+          acc.set(sid, { strategy_id: sid, status: 'fetch_error',
+                         error: String((e as Error)?.message ?? e) });
+          setSimScores(new Map(acc));
         }
       }
     };
@@ -1027,21 +1066,25 @@ export default function StrategyHealthV1() {
                        so shrunk denominators color consistently. */}
                   <td style={{ padding: '6px 8px', textAlign: 'right' }}
                       title="Last-10 completed backtest trades: 1 pt per entry/exit pairing to a live alert within ±10s. Click for per-trade detail.">
-                    {l10Ratio == null
-                      ? <span style={{ color: 'var(--text-muted)' }}>—</span>
-                      : <button
-                          onClick={() => setLast10Sid({
-                            sid: r.strategy_id,
-                            name: r.name || `sid ${r.strategy_id}`,
-                            basis: 'fired' })}
-                          style={{ background: 'transparent', border: 'none',
-                                   cursor: 'pointer', padding: 0, fontSize: 13,
-                                   fontWeight: 600,
-                                   fontVariantNumeric: 'tabular-nums',
-                                   color: l10Ratio >= 0.9 ? '#66bb6a'
-                                     : l10Ratio >= 0.7 ? '#ffc107' : '#ef5350' }}>
-                          {l10!.points}/{l10!.denom}
-                        </button>}
+                    {/* Always clickable (board #177 fail-loud sweep): even when
+                        the batch score fetch failed or is pending, the cell must
+                        still open the modal — the modal self-fetches per-sid, so
+                        a swallowed batch error never strands the user. */}
+                    <button
+                      onClick={() => setLast10Sid({
+                        sid: r.strategy_id,
+                        name: r.name || `sid ${r.strategy_id}`,
+                        basis: 'fired' })}
+                      title={l10Ratio == null ? 'no score yet — click to open the modal' : undefined}
+                      style={{ background: 'transparent', border: 'none',
+                               cursor: 'pointer', padding: 0, fontSize: 13,
+                               fontWeight: 600,
+                               fontVariantNumeric: 'tabular-nums',
+                               color: l10Ratio == null ? 'var(--text-muted)'
+                                 : l10Ratio >= 0.9 ? '#66bb6a'
+                                 : l10Ratio >= 0.7 ? '#ffc107' : '#ef5350' }}>
+                      {l10Ratio == null ? '—' : `${l10!.points}/${l10!.denom}`}
+                    </button>
                   </td>
                   {/* Last-10 ALGO basis (board #119): same score shape + color
                        bands as delivery Last 10, but a violet ALGO badge and a
@@ -1049,21 +1092,23 @@ export default function StrategyHealthV1() {
                        would-fire signal, not delivery. */}
                   <td style={{ padding: '6px 8px', textAlign: 'right' }}
                       title="Algo-lane basis (#119): 1 pt per last-10 backtest entry/exit that pairs to an ALGO-lane trade edge (cache_%) within ±10s — logic-would-fire, never delivery. Click for per-trade detail.">
-                    {l10AlgoRatio == null
-                      ? <span style={{ color: 'var(--text-muted)' }}>—</span>
-                      : <button
-                          onClick={() => setLast10Sid({
-                            sid: r.strategy_id,
-                            name: r.name || `sid ${r.strategy_id}`,
-                            basis: 'algo' })}
-                          style={{ background: 'transparent', border: 'none',
-                                   cursor: 'pointer', padding: 0, fontSize: 13,
-                                   fontWeight: 600,
-                                   fontVariantNumeric: 'tabular-nums',
-                                   color: l10AlgoRatio >= 0.9 ? '#66bb6a'
-                                     : l10AlgoRatio >= 0.7 ? '#ffc107' : '#ef5350' }}>
-                          <span style={ALGO_BADGE}>ALGO</span>{l10!.points_algo}/{l10!.denom}
-                        </button>}
+                    {/* Always clickable (board #177 fail-loud sweep). */}
+                    <button
+                      onClick={() => setLast10Sid({
+                        sid: r.strategy_id,
+                        name: r.name || `sid ${r.strategy_id}`,
+                        basis: 'algo' })}
+                      title={l10AlgoRatio == null ? 'no score yet — click to open the modal' : undefined}
+                      style={{ background: 'transparent', border: 'none',
+                               cursor: 'pointer', padding: 0, fontSize: 13,
+                               fontWeight: 600,
+                               fontVariantNumeric: 'tabular-nums',
+                               color: l10AlgoRatio == null ? 'var(--text-muted)'
+                                 : l10AlgoRatio >= 0.9 ? '#66bb6a'
+                                 : l10AlgoRatio >= 0.7 ? '#ffc107' : '#ef5350' }}>
+                      <span style={ALGO_BADGE}>ALGO</span>
+                      {l10AlgoRatio == null ? '—' : `${l10!.points_algo}/${l10!.denom}`}
+                    </button>
                   </td>
                   {/* SIM (replay) basis (board #144): cache-backed logic-would-
                        fire score. Fail-loud — 'none' shows a Run affordance,
@@ -1071,9 +1116,10 @@ export default function StrategyHealthV1() {
                        opens the modal (score + divergence ledger + Run + opt-in). */}
                   <td style={{ padding: '6px 8px', textAlign: 'right' }}
                       title={simCellTitle(simScores.get(r.strategy_id))}>
-                    {simCellContent(simScores.get(r.strategy_id), () => setSimSid({
+                    {simCellContent(simScores.get(r.strategy_id), () => setLast10Sid({
                       sid: r.strategy_id,
-                      name: r.name || `sid ${r.strategy_id}` }))}
+                      name: r.name || `sid ${r.strategy_id}`,
+                      basis: 'sim', timeframe: r.timeframe }))}
                   </td>
                   {/* Context (Kevin 07-25): replaces the Flags chip column —
                        flag data still drives the summary/filter chips up top.
@@ -1122,24 +1168,18 @@ export default function StrategyHealthV1() {
       </Card>
 
       {last10Sid && (
-        // key on sid+basis so re-opening from a different cell remounts with
-        // the correct initial basis (board #119).
+        // The ONE unified modal (board #177): 3 tabs (fired/theo/SIM) + algo
+        // diagnostic, shared pairing table. key on sid+basis so re-opening from
+        // a different column remounts on the correct initial tab.
         <Last10PairingModal key={`${last10Sid.sid}:${last10Sid.basis ?? 'fired'}`}
           sid={last10Sid.sid} name={last10Sid.name}
-          initialBasis={last10Sid.basis}
+          initialBasis={last10Sid.basis} timeframe={last10Sid.timeframe}
+          onSimScore={onSimScoreChange}
           onClose={() => setLast10Sid(null)} />
       )}
       {notesSid && (
         <StrategyNotesModal sid={notesSid.sid} name={notesSid.name}
           onClose={() => setNotesSid(null)} onChanged={loadNotes} />
-      )}
-      {simSid && (
-        // board #144 — SIM basis detail: score + divergence ledger + on-demand
-        // Run + nightly opt-in. onScoreChange keeps the column cell in sync when
-        // a re-run lands or the cached read refreshes.
-        <SimBasisModal key={simSid.sid} sid={simSid.sid} name={simSid.name}
-          onClose={() => setSimSid(null)}
-          onScoreChange={onSimScoreChange} />
       )}
     </div>
   );

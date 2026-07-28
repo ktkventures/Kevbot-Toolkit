@@ -164,11 +164,21 @@ def _score_sid(c, sid: int, tolerance: float,
     paired = {b: _greedy_pair(edge_ts, basis_alerts[b], tolerance)
               for b in _BASES}
     points = {b: len(paired[b]) for b in _BASES}
+    # PHANTOM per basis (board #177): all bases walk BT edges and ask "did
+    # anything pair to this?" — that is RECALL only (points/denom). A lane can
+    # fire N extra times and still score full marks. Phantom = lane events in
+    # the pairing window that paired to NO bt edge (precision miss): total lane
+    # edges minus the pairs consumed (greedy 1:1 ⇒ one lane edge per paired bt
+    # edge). Surfaced next to n/20 so over-firing is visible, not hidden.
+    phantom = {b: max(0, len(basis_alerts[b]) - len(paired[b]))
+               for b in _BASES}
     denom = 2 * len(trades)
 
     out: Dict[str, Any] = {
         "strategy_id": sid, "points": points["fired"],
         "points_theo": points["theo"], "points_algo": points["algo"],
+        "phantom": phantom["fired"], "phantom_theo": phantom["theo"],
+        "phantom_algo": phantom["algo"],
         "denom": denom, "trade_count": len(trades),
         "tolerance_seconds": tolerance,
     }
