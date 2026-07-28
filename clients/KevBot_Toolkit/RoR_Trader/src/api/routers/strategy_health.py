@@ -12,6 +12,7 @@ RoR_Trader is solo SaaS today, no separate role gating).
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -38,6 +39,28 @@ def _age_sec(ts: datetime | None, now: datetime) -> int | None:
     if ts is None:
         return None
     return int((now - ts).total_seconds())
+
+
+def _hb_supersedes_snapshot() -> bool:
+    """#157 kill switch: when ON, a FRESH shadow heartbeat suppresses the
+    `snapshot_stale` / `snapshot_missing` red flag.
+
+    `config.engine_snapshot_at` is written ONLY by the legacy data_worker
+    Phase-2 flush (data_worker.py:_flush_all_snapshots). When the fleet moved
+    to the M-RS5a resident/shadow engine (~2026-07-21) that flush stopped
+    advancing for resident strategies, so `snapshot_stale` tripped fleet-wide
+    ("0 healthy") even though the engine is provably current — it just
+    publishes freshness via `shadow_heartbeats` now (W2-0). A fresh heartbeat
+    (hb_fresh) IS that proof, so it supersedes the deprecated snapshot signal.
+    Genuine stalls still fire: if the heartbeat is ALSO stale/absent the
+    snapshot flag stands. The staleness threshold is deliberately NOT widened.
+
+    Per-call env read so the flag flips on Railway without a redeploy. Default
+    OFF preserves the pre-fix behaviour (kill switch).
+    """
+    return os.environ.get(
+        "RORT_HEALTH_HB_SUPERSEDES_SNAPSHOT", "").strip().lower() in (
+        "1", "true", "yes", "on")
 
 
 # How stale before we light up a red flag, by signal.
@@ -70,6 +93,30 @@ _HEARTBEAT_FRESH_SEC = 30 * 60
 _WINDOW_HOURS_DEFAULT = 24
 _WINDOW_HOURS_MIN = 1
 _WINDOW_HOURS_MAX = 168                     # 7 days max
+
+
+def _snapshot_red_flag(snapshot_at: datetime | None,
+                       snapshot_age: int | None,
+                       hb_fresh: bool,
+                       hb_supersedes: bool) -> str | None:
+    """The engine-freshness red flag for one strategy, or None if fresh.
+
+    #157: when `hb_supersedes` is on, a FRESH shadow heartbeat (`hb_fresh`)
+    proves the resident engine is current and supersedes the legacy
+    `engine_snapshot_at` signal — which stopped advancing for the resident
+    fleet ~2026-07-21 (see `_hb_supersedes_snapshot`). Otherwise fall back to
+    the snapshot age: missing → 'snapshot_missing', older than
+    `_STALE_SNAPSHOT_SEC` → 'snapshot_stale'. A genuine stall (heartbeat ALSO
+    stale/absent) still fires. The threshold is deliberately NOT widened.
+    """
+    if hb_supersedes and hb_fresh:
+        return None
+    if snapshot_at is None:
+        return "snapshot_missing"
+    if snapshot_age is not None and snapshot_age > _STALE_SNAPSHOT_SEC:
+        return "snapshot_stale"
+    return None
+
 
 # Supabase REST returns up to ~50k rows per request when no .range() is set.
 # The fleet has > 50k backtest trades total; an unpaginated select silently
@@ -455,6 +502,9 @@ def get_strategy_health(
                 or _strat_cutoff < _global_fair_cutoff_dt):
             _global_fair_cutoff_dt = _strat_cutoff
 
+    # #157: read the heartbeat-supersedes-snapshot kill switch once per request.
+    _hb_supersedes = _hb_supersedes_snapshot()
+
     out_rows: List[Dict[str, Any]] = []
     for s in strats:
         sid = s.get("id")
@@ -645,10 +695,15 @@ def get_strategy_health(
         else:
             # Active strategies only — flag staleness against the data-
             # worker / recompute cadences.
-            if snapshot_at is None:
-                red_flags.append("snapshot_missing")
-            elif snapshot_age is not None and snapshot_age > _STALE_SNAPSHOT_SEC:
-                red_flags.append("snapshot_stale")
+            #
+            # #157: a FRESH shadow heartbeat proves the resident engine is
+            # current, so it supersedes the legacy engine_snapshot_at signal
+            # (deprecated for the resident fleet since ~2026-07-21 — see
+            # _snapshot_red_flag / _hb_supersedes_snapshot).
+            _snap_flag = _snapshot_red_flag(
+                snapshot_at, snapshot_age, hb_fresh, _hb_supersedes)
+            if _snap_flag is not None:
+                red_flags.append(_snap_flag)
 
             if kpis_age is not None and kpis_age > _STALE_KPIS_SEC:
                 red_flags.append("kpis_stale")
