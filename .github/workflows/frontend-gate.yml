@@ -1,0 +1,95 @@
+# Frontend Gate — fast Next.js build check (board #166).
+# Purpose: give frontend PRs a cheap gate of their own (~2-4 min) so a
+# frontend/docs tweak never pays the engine parity-suite cost, while still
+# blocking a PR that breaks the production build (Terser TDZ, bad imports,
+# missing modules — the class of failures that has actually broken prod;
+# see CLAUDE.md "React Hooks Rules").
+#
+# Why `next build` and NOT `tsc --noEmit`:
+#   next.config.mjs sets `typescript.ignoreBuildErrors: true` and
+#   `eslint.ignoreDuringBuilds: true`, and the codebase currently has ~45
+#   pre-existing type errors. A blocking `tsc --noEmit` would be red from day
+#   one and block EVERY frontend PR. `next build` respects those ignore flags,
+#   is green today (Railway deploys via this same `npm ci && npm run build`),
+#   and catches build/bundling failures that a typecheck does not.
+#   → A typecheck gate is viable only after the pre-existing errors are cleared;
+#     tracked as follow-up debt in board #166.
+#
+# Merge-queue design: same always-report pattern as fidelity-gate.yml — the job
+# always runs and always reports, so it is safe as a REQUIRED check; the build
+# only runs when frontend/** actually changed in the diff.
+name: Frontend Gate (build)
+
+on:
+  push:
+    paths:
+      - 'clients/KevBot_Toolkit/RoR_Trader/frontend/**'
+  pull_request:
+  merge_group:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/KevBot_Toolkit/RoR_Trader/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect frontend changes
+        id: changes
+        run: |
+          set -euo pipefail
+          case "${{ github.event_name }}" in
+            pull_request) BASE="${{ github.event.pull_request.base.sha }}" ;;
+            merge_group)  BASE="${{ github.event.merge_group.base_sha }}" ;;
+            push)         BASE="${{ github.event.before }}" ;;
+            *)            BASE="" ;;
+          esac
+          HEAD="$(git rev-parse HEAD)"
+          # Fail-closed: no resolvable base → run the build.
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            echo "No base sha for event '${{ github.event_name }}' → running build (fail-closed)."
+            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$BASE" 2>/dev/null || true
+          if ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            echo "Base ${BASE} unavailable → running build (fail-closed)."
+            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          CHANGED="$(git diff --name-only "$BASE" "$HEAD")"
+          if printf '%s\n' "$CHANGED" | grep -qE '^clients/KevBot_Toolkit/RoR_Trader/frontend/'; then
+            echo "Frontend changed → running build."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No frontend/** changes in this diff → build skipped (gate reports green)."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node
+        if: steps.changes.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: clients/KevBot_Toolkit/RoR_Trader/frontend/package-lock.json
+
+      - name: Install (npm ci)
+        if: steps.changes.outputs.run == 'true'
+        run: npm ci
+
+      - name: Build (next build)
+        if: steps.changes.outputs.run == 'true'
+        env:
+          # Placeholders so build-time reads don't crash. Real values are
+          # injected by Railway at deploy build; the gate only needs the build
+          # to compile, not to reach any live service.
+          NEXT_PUBLIC_SUPABASE_URL: "https://placeholder.supabase.co"
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: "placeholder-anon-key"
+          NEXT_PUBLIC_API_URL: "https://placeholder.invalid"
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+
+      - name: No frontend changes — gate passes trivially
+        if: steps.changes.outputs.run != 'true'
+        run: echo "No frontend/** changes in this diff — build skipped; gate green."
