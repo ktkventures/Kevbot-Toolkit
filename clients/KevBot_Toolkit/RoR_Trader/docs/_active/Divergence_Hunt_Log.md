@@ -5,6 +5,139 @@ Standing record. Metric = Strategy Health `combined_pct` @5s (screen-faithful vi
 ≥95% @5s (or ≥95%@10s w/ note), OR root-caused + replay-validated fix. Ledger cross-ref:
 `Bug_Hunt_Wave1_2026-07-06.md`.
 
+## 🌙 MORNING BRIEF — nightly bug-hunt 2026-07-27→28 (Mode 3)
+
+**Headline: MON 07-27 was NOT a regression — the ~10pt "drop" that cost 07-27 was
+100% the settle-confound. Re-read post-settle, the fleet is 92.3%@10s vs a
+92.7/94.1/93.0 pre-flag band (0.4pt below band min = flat within noise). #125's
+machinery ran end-to-end and the suite is 18/18 (the recurring SPY/10Sec false-red
+is gone) — BUT tonight was a no-revision night, so #125 is NOT yet adversarially
+proven. #121 is NO-SIGNAL for a 2nd day (NVDA silent in BOTH lanes). ARMED: NOTHING
+(no provable candidate — rail 2).**
+
+### Phase 0 — nightly recompute: CLEAN ✅
+Fleet `data_refreshed_at` advanced 00:25:00Z → 00:54:14Z (23/23 active strategies),
+matching the 00:20Z `RORT_NIGHTLY_RECOMPUTE` fire. `bt_current_through` = 07-27T19:59:50Z,
+heartbeat 04:28Z. No partial/aborted signature. (Nightly runs via batch-worker, not
+`update_jobs` — that table's newest row is 07-21, which is expected, not a miss.)
+
+### ⭐ THE 07-27 "REGRESSION" WAS THE SETTLE-CONFOUND — closed
+All four days are now settled, so the comparison is finally apples-to-apples:
+
+| combined_pct @10s | WED 07-22 | THU 07-23 | FRI 07-24 | **MON 07-27** |
+|---|---|---|---|---|
+| FLEET | 92.7 | 94.1 | 93.0 | **92.3** |
+
+0.4pt below the band minimum — flat. The ~10pt gap seen on 07-27 was the intraday
+APPEND lane being compared against prior days' nightly SETTLE, exactly as the skill's
+settle-confound section predicts. **No fleet regression happened.** Goal-1 (gated
+≥90%@10s) = **6/12** with data, unchanged from the 07-23 read; @5s also 6/12.
+
+Per-sid @10s (gated): 136=100.0 · 314=93.8 · 325=100.0 · 330=100.0 · 338=99.1 ·
+342=100.0 ✅ | 267=77.2 · 271=81.8 · 331=77.4 · 310=54.5 · 194=50.0 · 309=0.0 ✗.
+Non-gated (deprioritized): 263=98.1 · 321=98.1 · 269=97.4. NVDA 341/343/344/345 = no
+data (both lanes silent — see #121).
+
+Two sids tripped the below-band check; **neither is a real regression**:
+- **314 (93.8 vs 97.5)** — its "band" was a single day (07-22, N=81); 07-27 ran N=130.
+  Larger sample, still passes Goal-1. Variance, not regression.
+- **267 (77.2 vs 80.5)** — real but modest, and the known class (below).
+
+### Bugs found + CLASSIFIED
+| sid | @10s | three-lane verdict | class | evidence |
+|-----|------|--------------------|-------|----------|
+| 267 | 77.2 | **algo≈bt, live≠both** (bt↔algo 220/222) | **PLUMBING / live-process-state** | missed spread across EVERY hour (13:2 14:6 15:2 16:4 17:8 18:6 19:4) — diffuse, not deploy- or stall-clustered. Same signature as 07-23. Missed 13→32 as volume grew 191→222 edges. |
+| 331 | 77.4 | **algo≈bt, live≠both** (all 8 phantoms algo-absent) | **PLUMBING / live-only** *(new)* | 8 live-only edges; 2 of 3 missed were taken by algo ⇒ live path. ⚠️ **duplicate-dispatch smell:** phantom PAIRS 8–11s apart (14:01:00+14:01:08, 15:32:30+15:32:41) and off-boundary fills (:08/:41) on a **30Sec** strategy, where every edge should land on :00/:30. |
+| 314 | 93.8 | algo≈bt (124/124), live +6/−2 | PLUMBING (mild) | passes Goal-1; no action |
+
+**Common thread (unchanged):** every laggard is `algo ≈ backtest, live ≠ both` — the
+offline engine is faithful, the residual is accumulated live-process state. Structural
+cure = canonical live serving / state re-true (M-RS5), not per-sid patches.
+
+### 🔎 Kevin's two questions — answered
+**Q1: did SPY revision-drift recur? → NO.** 64 independent cache-vs-fresh-Polygon
+comparisons (SPY 10Sec/1Min + TSLA 1Sec/1Min/10Sec, both sessions) across 07-17, 07-20,
+07-21, 07-22, 07-23, 07-24, 07-27: **OHLCVdiffs=0, rowMM=0 everywhere.** The parity suite
+independently returned **18/18**, with both SPY/10Sec items — last night's 2 FAILs —
+clean at first compare.
+
+**Q2: did self-heal fire? → NO, and it never needed to.** No item hit the drift signature,
+so layer 3 never engaged (no `self-healed revision drift` annotation anywhere). Self-heal
+remains **unexercised in production**; it is proven only by unit test
+(`_test_parity_self_heal.py`, 8/8 — including the critical property that a diff which
+SURVIVES the retrue still FAILs, so it cannot paper over a real bug).
+
+**What DID demonstrably run — #125 layers 1 and 2 (DB-effect proof, since logs had rolled off):**
+- **Layer 1 (pointer, `MIN_TDAYS=4`)** — suite tested settled day **07-21** (T+4 trading
+  days). Under legacy it would have tested **07-24** (T+1) — deep in the churn zone.
+- **Layer 2 (window, `RETRUE_WINDOW=5`)** — `bar_cache.revised_at` shows 07-21/22/23/24/27
+  all re-trued at **00:21:33–00:24:00Z tonight**, across NVDA/SPY/TSLA, sequenced exactly
+  as `run_nightly_settled_retrue` loops. **07-20 was NOT touched** (still 07-27T22:20Z) —
+  the window boundary is precisely correct, not over-broad.
+
+**⚠️ But the honest caveat — tonight did not TEST #125.** Counterfactual: 07-17 and 07-20
+sit *outside* the retrue window and hadn't been trued in days; if revisions were still
+arriving they should have drifted. **Both are perfectly clean too.** So no revision landed
+anywhere — the green proves the machinery executed correctly, not that it prevented
+anything. **#125 = EXECUTED CORRECTLY, NO-SIGNAL on efficacy.** Keep armed; it needs a
+night where a revision actually arrives (prior rate: 3 in 4 days, so likely soon).
+
+### #121 (NVDA MTF PB-prev-epoch) — NO-SIGNAL, 2nd consecutive session
+341/343/344/345 each: **0 backtest trades AND 0 alerts** on 07-27 (vs 5/5/5/1 trades and
+8/8/8/2 alerts on 07-24). Both lanes silent ⇒ a genuinely quiet day, not a miss. Still
+needs an NVDA RVOL-spike day. Correctly held in Review.
+
+### 🆕 Engine-snapshot freeze — now FLEET-WIDE, and the write path is identified
+Board has this as "'0 healthy' is a dead alarm … 22 of 24 since ~07-21". Tonight it is
+**23/23 active strategies stale** (339 has *no* snapshot at all). New precision: every
+snapshot is frozen at **07-21 22:21:55Z → 22:40:09Z, sequential by sid** — a single ~19-min
+sweep, after which nothing has written one for **6.3 days**.
+- **Write path = `data_worker_engine.flush_snapshot()` (line 776), the STREAMING loop** —
+  *not* the recompute path. **This exonerates the nightly recompute and
+  `RORT_UPDATE_ALL_SKIP_ALGO`** (that flag gates `recompute_and_persist_algo_trades`, a
+  different lane) — I checked that hypothesis and it is wrong.
+- Two silent-freeze candidates to check next, both fail without an error:
+  `if not state.snapshot_dirty or state.snapshot_b64 is None: return True` (returns
+  **success** when nothing is dirty), and `if not circuit.allow()` (open DB circuit breaker
+  → `record_circuit_skip`, no raise).
+- Not chased further tonight (E-lane board item, and no provable fix available).
+
+### 🆕 Local parity runs test the WRONG day off-UTC (measurement hazard, not a prod bug)
+`fidelity_parity_suite._settled_test_day()` walks from `dt.date.today()` (**local**) while
+`settle_sweeper._settled_pointer_day()` / `run_nightly_settled_retrue()` use
+`datetime.now(timezone.utc).date()` (**UTC**). On this box (America/Denver) a suite run
+between 18:00–24:00 MDT picks a day **one earlier** than the retrue covered — tonight that
+was 07-20 vs prod's 07-21. Railway containers are UTC so prod is unaffected, but #125's own
+docstring claims the shared walk means the two "can never target different days" — that
+claim is false off-UTC. **All measurements in this brief were taken with `TZ=UTC` forced**
+so they mirror prod. Cheap fix: have the suite pass a UTC date.
+
+### ARMED last night: **NOTHING** (0/3 flag budget — live behavior untouched)
+Correct per rail 2: no fix was built tonight because no laggard is in a provable class.
+267/331/310 are live-process-state and coarse-gate (4h) classes the replay harness cannot
+reconstruct → diagnose + hold, never auto-arm. No code was pushed; no flags flipped.
+
+### Held for Kevin
+1. **#125 — keep armed, needs one revision-bearing night.** Machinery verified; efficacy
+   untested. Revert if ever needed: `railway variables --set "RORT_NIGHTLY_SETTLE_RETRUE_WINDOW=1" --service batch-worker`
+   (and `RORT_PARITY_SETTLED_MIN_TDAYS=0`, `RORT_PARITY_SELF_HEAL=0`).
+2. **#121 — hold in Review** until an NVDA spike day.
+3. **331's duplicate-dispatch smell** — off-boundary + paired phantoms on a 30Sec strategy
+   is the sharpest *new* lead in the fleet; worth a targeted look even though the aggregate
+   class is process-state. `RORT_BAR_DUP_GUARD` is already armed, so this is either a
+   different mechanism or the guard not covering the 30Sec path.
+4. **Snapshot freeze** — fleet-wide for 6.3d; the alarm is dead. Pointer above.
+
+### Outliers
+No individual >30s-late fills inside a passing strategy. 331's paired phantoms (8–11s
+apart) are the only anomalous timing shape.
+
+### Open / next
+- Re-run the #125 check on the next night a revision lands (watch for a
+  `self-healed revision drift` annotation — that's layer 3's first real firing).
+- 331: walk the 8 live-only edges against the 10m/4h SWING_123 gate ribbons.
+- 267: unchanged structural class — no offline fix; M-RS5 direction.
+
 ## 🌙 MORNING BRIEF — nightly bug-hunt 2026-07-23 (Mode 3; E successor abe9f5c3, first act)
 
 **Headline: a NEW live-engine bug was found, repro'd, and fixed tonight — `BarBuilder`
