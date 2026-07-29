@@ -1,0 +1,64 @@
+-- Process chain — accordion step schema (2026-07-28, board #182, Step 3).
+--
+-- Turns the task checklist into an ordered PROCESS CHAIN: each step carries its
+-- own SOP, owner, mode and (optional) approval stamp, and completing a step
+-- hands the task to the next step's owner. See the #182 thread (SPEC v2 + v3 +
+-- DECISION LOG) for the full design; this migration is the data layer only
+-- (accordion UI = Step 4, buttons = Step 5, slash-menu = Step 6, dispatcher =
+-- Step 7 are separate steps).
+--
+-- ADDITIVE + IDEMPOTENT + BACK-COMPATIBLE. The 42 existing tasks are NOT
+-- migrated: their legacy `{role, text, done}` steps keep rendering and keep
+-- their pre-#182 free-toggle behavior. A checklist only becomes a "process
+-- chain" (strict-order completion, per-step stamps, auto hand-off) once a step
+-- carries one of the new keys — feature-detected in the API, not by a column.
+-- Retrofit of the old tasks is Step 9 and stays DEFERRED.
+
+-- ── 1. Widened checklist step shape (dev_tasks.checklist, already JSONB) ──────
+-- No DDL: `checklist` is JSONB (added in dev_tasks_checklist.sql) and already
+-- whitelisted for PATCH. The step object widens from
+--     {role, text, done}
+-- to (every new field OPTIONAL, with a read-time default so legacy steps are
+-- interpreted unchanged — nothing is written back into existing rows):
+--     {
+--       id            : text     -- server-assigned stable identity (new steps).
+--                                 -- lets reorder/insert keep track of which
+--                                 -- steps are already complete.
+--       owner         : text     -- role letter (M/E/F/P/R) or 'kevin'. Who acts.
+--                                 -- Falls back to legacy `role`.
+--       title         : text     -- one line of substance, shown collapsed.
+--                                 -- Falls back to legacy `text`.
+--       body          : markdown -- the step's SOP.                 default ""
+--       mode          : text     -- 'execute' | 'discuss'.          default 'execute'
+--                                 -- 'discuss' steps must NEVER dispatch to a
+--                                 -- headless agent (enforced in Step 7).
+--       origin        : text     -- 'planned' | 'audible'.          default 'planned'
+--                                 -- 'audible' = inserted mid-flight to course-
+--                                 -- correct; rendered distinctly (Step 4).
+--       stamp         : object   -- {required:bool, state:pending|approved|
+--                                 --  rejected, by:text, at:tstz} | null
+--       done          : bool                                        default false
+--       completed_at  : tstz                                        default null
+--       completed_by  : text                                        default null
+--     }
+-- JSONB semantics unchanged: the API/UI always write the WHOLE array on PATCH
+-- (partial merges wipe — memory feedback_jsonb_partial_updates).
+
+-- ── 2. Comment → step association (dev_task_comments.step_order) ──────────────
+-- Auto-stamped with the task's current step (first-incomplete index) at INSERT
+-- time. TIME-CRITICAL, per decision 11: once the chain moves on you cannot
+-- recover which step a comment belonged to — same lesson as #160's T+0 snapshot.
+-- Capture now; the per-step comment FILTER UI comes later and the data will be
+-- waiting. NULL for legacy (non-chain) tasks and for comments posted with no
+-- incomplete step. Caller-set values are ignored — the API computes it.
+ALTER TABLE dev_task_comments
+    ADD COLUMN IF NOT EXISTS step_order INTEGER;
+
+-- No index added. dev_task_comments is a small, admin-only table already
+-- indexed by task_id (idx_dev_task_comments_task); the future per-step filter
+-- reads a single task's thread (already index-covered) and filters step_order
+-- in memory. If a hot index is ever needed here, add it with
+-- CREATE INDEX CONCURRENTLY per board #180.
+
+-- RLS unchanged: both tables already have RLS enabled with no public policy;
+-- only the service-role (admin) client reaches them via admin-gated endpoints.
