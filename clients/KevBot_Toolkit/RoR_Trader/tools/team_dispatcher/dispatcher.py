@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Team dispatcher (V4.19) — dispatches board tasks to headless Claude agents.
+"""Team dispatcher (V4.20) — dispatches board tasks to headless Claude agents.
+
+V4.20 (board #195): PUSH AT RUN END. A headless agent can build, test and COMMIT
+but structurally CANNOT push, so until now EVERY successful headless run ended
+with its work on local disk only — visible solely to whoever happened to read
+preflight invariant (2). reap() now pushes the run's own branch. Rails, each with
+a test that fails without it: never a protected branch (dev/main/master), never
+--force, never a dirty worktree, never a branch this run did not create (HEAD must
+have moved OFF the branch the run started on AND the branch must not already exist
+on origin), and FAIL OPEN + LOUD — a failed push logs and leaves preflight (2) to
+catch the remainder, it never fails the run or the reap. Kill switch: touch
+tools/team_dispatcher/NO_PUSH. The pushed branch is recorded on run_history
+(pushed_branch/pushed_at) so the #193 dashboard can show built → pushed → PR'd →
+merged without re-deriving it from git.
 
 V4.19 (board #143, V2.12): @-MENTION DELIVERY. A dispatched agent's prompt now
 carries that lane's UNSEEN mentions — the same `task_mentions` rows F's Messages
@@ -38,6 +51,7 @@ Usage:
   python3 dispatcher.py --live --loop --poll 20   # serve Run buttons (board #109)
 
 Kill switches: touch tools/team_dispatcher/PAUSE (idles the loop);
+touch tools/team_dispatcher/NO_PUSH (disables push-at-run-end, #195);
 per-agent: registry status must be 'headless' to be dispatchable at all.
 Design: docs/_active/Design_Agent_Dispatcher.md (decisions approved 2026-07-23).
 """
@@ -56,6 +70,7 @@ REPO = "/home/kevin/projects/Kevbot-Toolkit/clients/KevBot_Toolkit/RoR_Trader"
 ENV = f"{REPO}/src/.env"
 CHARTER = f"{REPO}/docs/_active/Session_Charters.md"
 PAUSE_FILE = f"{HERE}/PAUSE"
+NO_PUSH_FILE = f"{HERE}/NO_PUSH"   # board #195 kill switch, PAUSE family
 STATE_FILE = f"{HERE}/state.json"
 LOG_DIR = f"{HERE}/logs"
 
@@ -88,6 +103,9 @@ RESULT_COMMENT_MAX = 6000  # chars of agent result posted as a task comment
 LOG_TAIL_DB_MAX = 4000     # chars of log tail stored in run_history
 STALE_SKIP_S = 4 * 3600    # board #171 tripwire: a STUCK Todo (headless-assigned,
                            # hard-gated) non-dispatchable this long → one-time flag
+GIT_TIMEOUT_S = 120        # board #195: any single git call in the push leg
+PUSH_BASE = "origin/dev"   # "has this branch got work on it?" is measured vs dev
+PROTECTED_BRANCHES = ("dev", "main", "master")  # never pushed by the loop, ever
 
 # Board #109 (Registry Phase 2): the Run button is DECLARATIVE — the API adds
 # this tag + a run_history row (outcome='requested'); this --loop is what
@@ -544,8 +562,10 @@ from LATEST origin/dev, never from your worktree's current HEAD:
 A branch cut from worktree HEAD inherits whatever unmerged commits sit there and
 carries them into your diff (tonight one branch dragged in 10 unrelated commits).
 `git log origin/dev..HEAD --oneline` must show ONLY your own commits before you report
-ready. You cannot push (headless) — name any branch you created in your final report so
-it is not lost; do NOT background a push.
+ready. You cannot push (headless) and must NOT try to background one — COMMIT your work
+and name any branch you created in your final report. When your run ends the dispatcher
+pushes that branch for you (board #195) IF the worktree is clean and the branch is your
+own; an uncommitted change is the one thing that makes your work unpushable.
 
 ASSIGNEE CONTRACT (board #171 — assignee = whoever the task is WAITING ON): the dispatcher
 now routes on `assignee` alone; the checklist is advisory display only. Before your final
@@ -567,7 +587,7 @@ def spawn(agent, task, prompt, log_path):
     with open(log_path, "w") as lf:
         return subprocess.Popen(
             [CLAUDE_BIN, "-p", prompt, "--output-format", "json"],
-            cwd=agent.get("worktree") or REPO, stdout=lf,
+            cwd=agent_worktree(agent), stdout=lf,
             stderr=subprocess.STDOUT, start_new_session=True)
 
 
@@ -607,6 +627,159 @@ def parse_terminal(full):
         if isinstance(obj, dict) and (obj.get("type") == "result" or "result" in obj):
             return obj
     return None
+
+
+# ── board #195: push at run end ──────────────────────────────────────────────
+# A headless agent commits but cannot push. Without this leg every successful
+# run leaves its branch on local disk until a human reads preflight (2) — which
+# is a lucky catch, not a process. Everything here is advisory: it may decline,
+# and it may fail, but it must NEVER fail a run or a reap.
+
+def _git(worktree, *args, timeout=GIT_TIMEOUT_S):
+    """(rc, stdout, stderr) of one git call in `worktree`. Raises only on
+    timeout/OS failure — every caller sits under try_push_run_branch()."""
+    p = subprocess.run(["git", "-C", worktree, *args],
+                       capture_output=True, text=True, timeout=timeout)
+    return p.returncode, p.stdout.strip(), p.stderr.strip()
+
+
+def agent_worktree(agent):
+    return agent.get("worktree") or REPO
+
+
+def current_branch(worktree):
+    """Checked-out branch name, or None if detached / not a git worktree /
+    anything at all went wrong. Used at DISPATCH time too, where it must not be
+    able to stop a spawn."""
+    try:
+        rc, out, _ = _git(worktree, "rev-parse", "--abbrev-ref", "HEAD")
+    except Exception:  # noqa: BLE001 — never blocks a dispatch
+        return None
+    if rc != 0 or out in ("", "HEAD"):
+        return None
+    return out
+
+
+def _decline(tag, reason, msg):
+    print(f"  {tag}: {msg}", flush=True)
+    return {"pushed": False, "branch": None, "reason": reason}
+
+
+def push_run_branch(r):
+    """Push this run's OWN branch, or explain (loudly) why not.
+
+    Returns {"pushed": bool, "branch": str|None, "reason": str}. Every refusal
+    is a named reason so the reap log reads as a decision, not a silence.
+    """
+    tag = f"push[{r.get('run_id')}]"
+    if os.path.exists(NO_PUSH_FILE):
+        return _decline(tag, "kill-switch",
+                        "SKIP — NO_PUSH kill switch present "
+                        "(rm tools/team_dispatcher/NO_PUSH to re-enable)")
+    wt = r.get("worktree")
+    if not wt or not os.path.isdir(wt):
+        return _decline(tag, "no-worktree",
+                        f"SKIP — no usable worktree on the run record ({wt!r}); "
+                        "pre-#195 run → preflight (2) still covers it")
+    # "A branch this run did not create", half 1: HEAD must have MOVED. A run
+    # that never left the branch it started on is working on someone else's
+    # branch (or on the lane's long-lived tree) — not ours to push.
+    if "branch0" not in r:
+        return _decline(tag, "no-start-branch",
+                        "SKIP — the run recorded no start branch, so 'did this "
+                        "run create it?' is unanswerable")
+    branch = current_branch(wt)
+    if branch is None:
+        return _decline(tag, "detached", f"SKIP — {wt} is on a detached HEAD")
+    if branch in PROTECTED_BRANCHES:
+        return _decline(tag, "protected",
+                        f"REFUSED — {branch} is a protected branch; the loop "
+                        "pushes agent branches only")
+    if r["branch0"] is not None and branch == r["branch0"]:
+        return _decline(tag, "not-this-runs-branch",
+                        f"REFUSED — worktree never left {branch}, the branch the "
+                        "run started on; this run did not create it")
+    # A dirty tree means the agent did not finish cleanly. Pushing the committed
+    # half of an unfinished state is worse than pushing nothing.
+    rc, out, err = _git(wt, "status", "--porcelain")
+    if rc != 0:
+        return _decline(tag, "status-failed",
+                        f"SKIP — `git status` failed in {wt}: {err[:200]}")
+    if out:
+        return _decline(tag, "dirty",
+                        f"REFUSED — {branch} has {len(out.splitlines())} uncommitted "
+                        "path(s); a partial state is worse than no push")
+    rc, out, err = _git(wt, "rev-list", "--count", f"{PUSH_BASE}..{branch}")
+    if rc != 0 or not out.isdigit():
+        return _decline(tag, "rev-list-failed",
+                        f"SKIP — cannot count {PUSH_BASE}..{branch}: {err[:200]}")
+    if int(out) == 0:
+        return _decline(tag, "nothing-ahead",
+                        f"SKIP — {branch} has no commits ahead of {PUSH_BASE}")
+    ahead = int(out)
+    # "A branch this run did not create", half 2: it must be new to origin.
+    # Anything already published is someone else's history to advance.
+    rc, out, err = _git(wt, "ls-remote", "--heads", "origin", branch)
+    if rc != 0:
+        return _decline(tag, "ls-remote-failed",
+                        f"SKIP — cannot prove {branch} is new on origin: {err[:200]}")
+    if out:
+        return _decline(tag, "exists-on-origin",
+                        f"REFUSED — {branch} already exists on origin; advancing a "
+                        "published branch is not this loop's job")
+    # Plain push. No --force, ever: the branch is provably new on origin, so
+    # there is nothing to force past.
+    rc, out, err = _git(wt, "push", "-u", "origin", branch)
+    if rc != 0:
+        detail = (err or out)[-400:]
+        print(f"  {tag}: PUSH FAILED for {branch} — {detail}", flush=True)
+        return {"pushed": False, "branch": branch, "reason": f"push-failed: {detail}"}
+    print(f"  {tag}: PUSHED {branch} ({ahead} commit(s) ahead of {PUSH_BASE})",
+          flush=True)
+    return {"pushed": True, "branch": branch, "reason": "ok"}
+
+
+def try_push_run_branch(r):
+    """FAIL-OPEN wrapper — the outer rail. push_run_branch() handles the
+    failures it foresaw; this one exists for the rest (git missing, subprocess
+    timeout, a worktree that vanished mid-reap). A reap must complete."""
+    try:
+        return push_run_branch(r)
+    except Exception as e:  # noqa: BLE001 — a push can never fail a reap
+        print(f"  push[{r.get('run_id')}]: ERROR — {e} (run reported normally; "
+              f"preflight (2) still covers the branch)", flush=True)
+        return {"pushed": False, "branch": None, "reason": f"error: {e}"}
+
+
+def rh_record_push(run_id, branch):
+    """Record the pushed branch on run_history so #193's dashboard can show
+    built → pushed → PR'd → merged without re-deriving it from git. Its OWN
+    try/except: an un-migrated DB (no pushed_branch column → PostgREST 400)
+    must not be able to break a reap that has already reported."""
+    try:
+        api("PATCH", f"run_history?run_id=eq.{run_id}", body={
+            "pushed_branch": branch,
+            "pushed_at": datetime.now(timezone.utc).isoformat()})
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"  push[{run_id}]: pushed {branch} but run_history did not record it "
+              f"({e}) — apply src/migrations/run_history_pushed_branch.sql", flush=True)
+        return False
+
+
+def report_push_failure(task_id, run_id, branch, reason):
+    """LOUD half of fail-open: a push that ERRORED is the one outcome a human has
+    to act on, so it lands on the thread next to the agent's report. Refusals
+    (dirty, protected, not-ours) stay in the log — they are the design working."""
+    try:
+        api("POST", "dev_task_comments", body={
+            "task_id": task_id, "author": "system",
+            "body": f"⚠️ auto-push FAILED (run {run_id}, branch `{branch}`) — the "
+                    f"work is COMMITTED BUT UNPUSHED on local disk. Reason:\n"
+                    f"```\n{reason[:1000]}\n```"})
+    except Exception as e:  # noqa: BLE001 — reporting the failure can't be fatal
+        print(f"  push[{run_id}]: could not post the push-failure comment ({e})",
+              flush=True)
 
 
 def reap(st):
@@ -654,6 +827,17 @@ def reap(st):
                 "body": f"status: In Progress → Review (by dispatcher — "
                         f"run {r['run_id']} finished, output awaiting sign-off)"})
             rh_finish(r["run_id"], outcome, tail)
+        # Board #195 — LAST, and after rh_finish: reporting is the job, the push
+        # is the follow-through. Runs on the lease-expired leg too (a run that
+        # committed and then hung is exactly the work most likely to be lost;
+        # the dirty-tree rail declines the ones that were killed mid-edit).
+        res = try_push_run_branch(r)
+        if res["pushed"]:
+            r["pushed_branch"] = res["branch"]
+            rh_record_push(r["run_id"], res["branch"])
+        elif res["reason"].startswith("push-failed"):
+            report_push_failure(r["task_id"], r["run_id"], res["branch"],
+                                res["reason"])
     save_state(st)
 
 
@@ -740,8 +924,14 @@ def one_pass(live, only_task=None):
             "body": f"dispatched to {t['assignee']}·auto (run {run_id})"})
         rh_claim(t, run_id)
         p = spawn(agent, t, prompt, log_path)
+        # Board #195 — the run records WHERE it ran and WHICH branch it started
+        # on. reap()'s push leg needs both: the worktree to act in, and the
+        # start branch to answer "did this run create the branch it is on?".
+        # Captured at dispatch because by reap time the answer is unknowable.
+        wt = agent_worktree(agent)
         st["runs"].append({"run_id": run_id, "task_id": t["id"], "agent": t["assignee"],
                            "pid": p.pid, "t0": time.time(), "log": log_path,
+                           "worktree": wt, "branch0": current_branch(wt),
                            "ts": datetime.now(timezone.utc).isoformat(), "active": True})
         save_state(st)
         # ONLY NOW are the mentions delivered — spawn() has the prompt and the
