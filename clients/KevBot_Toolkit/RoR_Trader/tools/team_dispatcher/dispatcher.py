@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Team dispatcher (V4.18) — dispatches board tasks to headless Claude agents.
+"""Team dispatcher (V4.19) — dispatches board tasks to headless Claude agents.
+
+V4.19 (board #143, V2.12): @-MENTION DELIVERY. A dispatched agent's prompt now
+carries that lane's UNSEEN mentions — the same `task_mentions` rows F's Messages
+tab reads — and they are marked seen only AFTER spawn() has the prompt. Every leg
+fails open: mentions are optional context and must never be able to stall a
+dispatch. See tools/team_dispatcher/mentions.py.
 
 V4.18 (board #182 Step 7, second half): THE INBOUND CHECK. Before starting its own
 step, a dispatched agent first verifies that the PREVIOUS step delivered what its
@@ -52,6 +58,19 @@ CHARTER = f"{REPO}/docs/_active/Session_Charters.md"
 PAUSE_FILE = f"{HERE}/PAUSE"
 STATE_FILE = f"{HERE}/state.json"
 LOG_DIR = f"{HERE}/logs"
+
+# Board #143 — @-mention delivery. Imported DEFENSIVELY: mentions are optional
+# context, so even an import failure (file removed, syntax error, half-applied
+# deploy) has to leave dispatch behaving exactly as it did in V4.18. Every call
+# site is guarded by `if mentions is not None`.
+try:
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import mentions
+except Exception as _mentions_import_err:  # pragma: no cover — belt and braces
+    mentions = None
+    print(f"WARN: @-mention injection disabled ({_mentions_import_err}); "
+          f"dispatch continues", flush=True)
 
 CONCURRENCY = 3          # Kevin 07-23; blocked_by is the long-term governor
 DAILY_CAP = 24           # circuit breaker only
@@ -383,7 +402,40 @@ def rh_finish(run_id, outcome, log_tail):
         "outcome": outcome, "log_tail": (log_tail or "")[-LOG_TAIL_DB_MAX:]})
 
 
-def build_prompt(agent, task):
+def mentions_for(role):
+    """This lane's unseen @-mentions as (block_text, ids_to_mark). Board #143.
+
+    Belt AND braces: mentions.for_dispatch() already fails open internally, but
+    the CALL SITE swallows too — the rail is that no state of that module (broken,
+    stubbed, half-deployed, refactored) can stall a dispatch, and internal
+    fail-open only protects against the failures its author foresaw."""
+    if mentions is None:
+        return "", []
+    try:
+        return mentions.for_dispatch(role)
+    except Exception as e:  # noqa: BLE001 — optional context, never fatal
+        print(f"  mentions: lookup failed for {role} ({e}) — dispatching without",
+              flush=True)
+        return "", []
+
+
+def mentions_delivered(role, ids):
+    """Mark delivered mentions seen. Call ONLY after the prompt has reached
+    spawn(). Fail-open: an unmarked mention is shown twice; a mention marked
+    before delivery is lost."""
+    if mentions is None or not ids:
+        return 0
+    try:
+        marked = mentions.mark_seen(ids)
+        print(f"  mentions: {marked}/{len(ids)} marked seen for {role}", flush=True)
+        return marked
+    except Exception as e:  # noqa: BLE001 — re-delivers next pass, never fatal
+        print(f"  mentions: mark-seen failed for {role} ({e}) — will re-deliver",
+              flush=True)
+        return 0
+
+
+def build_prompt(agent, task, mentions_block=""):
     """Board #135: the ONE-SHOT CONTRACT block exists because two real runs
     (#121/#68) armed background suite-watchers and ended their turn — a
     headless `claude -p` process exits with its final message and reap kills
@@ -476,7 +528,7 @@ Process chain (assignee drives dispatch — board #171; the chain scopes the wor
 {step_block}
 Recent thread:
 {thread or '(none)'}
-
+{(chr(10) + mentions_block + chr(10)) if mentions_block else ''}
 ONE-SHOT CONTRACT: you are a single headless process on a {RUN_TIMEOUT_S // 60}-minute
 lease. The moment your final message ends, the process exits and its whole process
 group is KILLED — background shells, watchers, monitors, scheduled wakeups and
@@ -667,7 +719,10 @@ def one_pass(live, only_task=None):
         busy.add(t["assignee"])
         budget -= 1
         agent = agents[t["assignee"]]
-        prompt = build_prompt(agent, t)
+        # Board #143 — this lane's unseen @-mentions ride along in the prompt.
+        # Nothing is marked seen here: the prompt has not reached a process yet.
+        m_block, m_ids = mentions_for(t["assignee"])
+        prompt = build_prompt(agent, t, mentions_block=m_block)
         run_id = f"r{int(time.time())}-{t['id']}"
         log_path = f"{LOG_DIR}/{run_id}.log"
         flag = " [run-requested]" if t["id"] in req_ids else ""
@@ -689,6 +744,11 @@ def one_pass(live, only_task=None):
                            "pid": p.pid, "t0": time.time(), "log": log_path,
                            "ts": datetime.now(timezone.utc).isoformat(), "active": True})
         save_state(st)
+        # ONLY NOW are the mentions delivered — spawn() has the prompt and the
+        # run is recorded. Marking earlier would lose a message on any failure
+        # between here and there; marking later (or never, if this errors) only
+        # costs a duplicate showing on the next dispatch.
+        mentions_delivered(t["assignee"], m_ids)
         print(f"  DISPATCHED #{t['id']} → {t['assignee']}·auto pid={p.pid}", flush=True)
 
 
