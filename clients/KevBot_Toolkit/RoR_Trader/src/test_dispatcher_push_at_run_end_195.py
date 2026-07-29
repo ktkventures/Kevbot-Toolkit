@@ -28,6 +28,23 @@ for the wrong reason cannot notice its rail being deleted.
  13  reap integration       report + push + run_history.pushed_branch, one pass
  14  dispatch-side capture  one_pass() records worktree + branch0 on the run
 
+Cases 15-21 are THE REGRESSION SET for the first cut of this feature, which
+passed all of 1-14 and never once pushed anything. It anchored the push to the
+agent's REGISTERED worktree; charter §4 has each lane work in a FRESH worktree
+cut after dispatch, leaving the registered one parked on dev — so every real run
+declined as `protected`. Cases 1-14 could not see it: they handed
+push_run_branch() a worktree that was ALREADY on the feature branch, a shape no
+real dispatch produces. These build the real one — a lane tree on dev, plus a
+`git worktree add` after the dispatch snapshot.
+
+ 15  THE BUG           §4 shape — work in a post-dispatch worktree IS pushed
+ 16  rails still hold  every rail re-applied to a DISCOVERED worktree
+ 17  ambiguous owner   a worktree a peer run could also have created is left
+ 18  reap, §4 shape    end-to-end: reap of a lane-on-dev run pushes + records
+ 19  reap wires rivals an in-flight peer blocks the push through reap() itself
+ 20  both legs         registered tree moved AND a fresh worktree → both pushed
+ 21  discovery is off  no snapshot / unlistable worktrees → decline, no crash
+
 Hermetic: real git against a LOCAL bare repo (no network, no GitHub), the
 Supabase api() replaced with a recorder (ZERO board writes).
 
@@ -398,6 +415,249 @@ ok("14 dispatch records the START branch", rec.get("branch0") == "dev", rec)
 prompt_calls = [b for m, p, b in CALLS if m == "POST" and p == "dev_task_comments"]
 ok("14 dispatch still announced the run",
    any("dispatched to M·auto" in (b.get("body") or "") for b in prompt_calls))
+
+# ── the REAL shape: charter §4 fresh worktrees (cases 15-21) ───────────────
+# Everything above hands push_run_branch() a worktree already sitting on the
+# feature branch. No dispatch produces that. What a dispatch produces is a lane
+# worktree parked on dev, and — some minutes later — a SECOND directory the
+# agent cut with `git worktree add`. These helpers build exactly that.
+
+def lane_tree():
+    """An agent's REGISTERED worktree, as the registry hands it to the loop and
+    as the charter leaves it between runs: on dev, nothing local."""
+    return agent_tree(branch=None, commits=0)
+
+
+def snapshot(lane):
+    """What the dispatcher records at spawn time."""
+    return disp.list_worktrees(lane)
+
+
+def add_worktree(lane, branch, commits=1, dirty=None, base="origin/dev"):
+    """The charter §4 move, performed AFTER the dispatch snapshot:
+    `git worktree add ../Kevbot-<lane> -b <branch> origin/dev`."""
+    TREES[0] += 1
+    path = f"{TMP}/linked{TREES[0]}"
+    git(lane, "worktree", "add", "--quiet", "-b", branch, path, base)
+    for i in range(commits):
+        open(f"{path}/work{i}.txt", "w").write(f"work {i}\n")
+        git(path, "add", "-A")
+        git(path, "commit", "--quiet", "-m", f"work {i}")
+    if dirty == "modified":
+        open(f"{path}/README.md", "a").write("half-finished edit\n")
+    elif dirty == "untracked":
+        open(f"{path}/scratch.txt", "w").write("left behind\n")
+    return os.path.realpath(path)
+
+
+def dispatched(lane, run_id="rWT-195", task_id=195, branch0="dev"):
+    """A run record as one_pass() writes it: worktree + branch0 + worktrees0."""
+    r = run_rec(lane, branch0, run_id=run_id, task_id=task_id)
+    r["worktrees0"] = snapshot(lane)
+    return r
+
+
+# 15 ── THE BUG: the work is in a worktree created after dispatch ───────────
+# Under the first cut this pushed NOTHING: the registered tree is on dev, so the
+# protected rail declined and the leg ended there. The branch has to be
+# DISCOVERED. This case is the whole reason for the rework — it must fail if the
+# push ever goes back to assuming r["worktree"] holds the work.
+lane = lane_tree()
+r = dispatched(lane)                             # snapshot taken FIRST...
+FRESH = add_worktree(lane, "feat/fresh-195")     # ...then the agent cuts its tree
+dev_before = git(SEED, "ls-remote", ORIGIN, "refs/heads/dev").split()[0]
+res = disp.push_run_branch(r)
+ok("15 §4 shape: PUSHED", res["pushed"], res)
+ok("15 §4 shape: the fresh worktree's branch is on origin",
+   origin_has("feat/fresh-195"))
+ok("15 §4 shape: branch reported back", res["branch"] == "feat/fresh-195", res)
+ok("15 §4 shape: it was the DISCOVERED tree that pushed",
+   any(x["pushed"] and x["worktree"] == FRESH for x in res["results"]), res)
+# ...and the registered tree still declined, which is precisely what used to end
+# the leg. Both facts in one run: the old anchor is wrong AND still guarded.
+ok("15 §4 shape: the registered tree declined AS PROTECTED",
+   any(x["worktree"] == lane and x["reason"] == "protected"
+       for x in res["results"]), res)
+ok("15 §4 shape: origin/dev did not move",
+   git(SEED, "ls-remote", ORIGIN, "refs/heads/dev").split()[0] == dev_before)
+
+# 16 ── every rail re-applied to a DISCOVERED worktree ──────────────────────
+# A discovered target is not a trusted target. Same rails, same named reasons.
+def fresh_case(branch, **kw):
+    lane = lane_tree()
+    r = dispatched(lane)
+    add_worktree(lane, branch, **kw)
+    return disp.push_run_branch(r), r
+
+
+def reasons(res, exclude_lane):
+    return [x["reason"] for x in res["results"] if x["worktree"] != exclude_lane]
+
+
+res, r = fresh_case("feat/fresh-dirty-195", dirty="modified")
+ok("16 discovered+dirty: refused AS DIRTY",
+   reasons(res, r["worktree"]) == ["dirty"], res)
+ok("16 discovered+dirty: not on origin", not origin_has("feat/fresh-dirty-195"))
+res, r = fresh_case("feat/fresh-untracked-195", dirty="untracked")
+ok("16 discovered+untracked: refused AS DIRTY",
+   reasons(res, r["worktree"]) == ["dirty"], res)
+res, r = fresh_case("main")                      # absent from origin: only the
+ok("16 discovered `main`: refused AS PROTECTED",  # protected rail can decline it
+   reasons(res, r["worktree"]) == ["protected"], res)
+ok("16 discovered `main`: not on origin", not origin_has("main"))
+res, r = fresh_case("feat/fresh-empty-195", commits=0)
+ok("16 discovered+no commits: declined AS NOTHING-AHEAD",
+   reasons(res, r["worktree"]) == ["nothing-ahead"], res)
+ok("16 discovered+no commits: not on origin", not origin_has("feat/fresh-empty-195"))
+# already published → advancing it is not this loop's job
+lane = lane_tree()
+r = dispatched(lane)
+pub = add_worktree(lane, "feat/fresh-published-195")
+git(pub, "push", "--quiet", "origin", "feat/fresh-published-195")
+head_before = git(SEED, "ls-remote", ORIGIN,
+                  "refs/heads/feat/fresh-published-195").split()[0]
+open(f"{pub}/extra.txt", "w").write("more\n")
+git(pub, "add", "-A")
+git(pub, "commit", "--quiet", "-m", "extra")
+res = disp.push_run_branch(r)
+ok("16 discovered+published: refused AS EXISTS-ON-ORIGIN",
+   reasons(res, lane) == ["exists-on-origin"], res)
+ok("16 discovered+published: it did not advance",
+   git(SEED, "ls-remote", ORIGIN,
+       "refs/heads/feat/fresh-published-195").split()[0] == head_before)
+# the kill switch beats discovery too
+lane = lane_tree()
+r = dispatched(lane)
+add_worktree(lane, "feat/fresh-killswitch-195")
+open(disp.NO_PUSH_FILE, "w").close()
+res = disp.push_run_branch(r)
+os.remove(disp.NO_PUSH_FILE)
+ok("16 discovered+NO_PUSH: declined AS KILL-SWITCH", res["reason"] == "kill-switch", res)
+ok("16 discovered+NO_PUSH: nothing pushed", not origin_has("feat/fresh-killswitch-195"))
+ok("16 discovered: pushes once the switch is gone",
+   disp.push_run_branch(r)["pushed"] and origin_has("feat/fresh-killswitch-195"))
+
+# 17 ── a worktree a PEER run could also have created is not ours ───────────
+# The dispatcher runs lanes concurrently. Pushing a peer's branch mid-run is the
+# one genuinely harmful outcome available here: it publishes unfinished work AND
+# poisons that peer's own push at reap (it would then decline exists-on-origin).
+lane = lane_tree()
+before = snapshot(lane)
+mine = dispatched(lane, run_id="rMINE-195")
+peer_older = {"run_id": "rPEER-OLD", "worktrees0": before}   # predates the tree
+AMB = add_worktree(lane, "feat/ambiguous-195")
+peer_newer = {"run_id": "rPEER-NEW", "worktrees0": snapshot(lane)}  # postdates it
+ok("17 ambiguous: a peer that predates the worktree blocks it",
+   disp.fresh_worktrees(mine, lane, "t", [peer_older]) == [], AMB)
+res = disp.push_run_branch(mine, [peer_older])
+ok("17 ambiguous: nothing pushed while that peer is in flight", not res["pushed"], res)
+ok("17 ambiguous: peer's branch did NOT reach origin", not origin_has("feat/ambiguous-195"))
+ok("17 ambiguous: a peer dispatched AFTER it cannot have created it",
+   disp.fresh_worktrees(mine, lane, "t", [peer_newer]) == [AMB])
+ok("17 ambiguous: a peer with NO snapshot is treated as a rival (conservative)",
+   disp.fresh_worktrees(mine, lane, "t", [{"run_id": "rLEGACY"}]) == [])
+ok("17 ambiguous: pushes once the rival is no longer in flight",
+   disp.push_run_branch(mine, [peer_newer])["pushed"])
+ok("17 ambiguous: ...and only THEN reaches origin", origin_has("feat/ambiguous-195"))
+
+# 18 ── reap end-to-end in the §4 shape ─────────────────────────────────────
+CALLS.clear()
+lane = lane_tree()
+run = finished_run(lane, "dev", "rS4-195")
+run["worktrees0"] = snapshot(lane)
+add_worktree(lane, "feat/reap-fresh-195")
+st = {"runs": [run]}
+disp.reap(st)
+ok("18 reap §4: the discovered branch reached origin", origin_has("feat/reap-fresh-195"))
+ok("18 reap §4: recorded on the run record",
+   st["runs"][0].get("pushed_branch") == "feat/reap-fresh-195", st["runs"][0])
+ok("18 reap §4: run_history.pushed_branch recorded (dashboard #193 input)",
+   any(b.get("pushed_branch") == "feat/reap-fresh-195" and b.get("pushed_at")
+       for m, p, b in CALLS if m == "PATCH" and p.startswith("run_history?")), CALLS)
+ok("18 reap §4: the agent result was still reported",
+   any(m == "POST" and p == "dev_task_comments" and b["author"] == "M·auto"
+       for m, p, b in CALLS))
+ok("18 reap §4: no push-failure noise", not any(
+    "auto-push FAILED" in (b.get("body") or "") for m, p, b in CALLS if m == "POST"))
+
+# 19 ── reap() itself supplies the in-flight peers ──────────────────────────
+# The rail is only real if reap wires it; passing other_active by hand (case 17)
+# would not notice reap forgetting to.
+CALLS.clear()
+lane = lane_tree()
+snap = snapshot(lane)
+run = finished_run(lane, "dev", "rRIVAL-195")
+run["worktrees0"] = snap
+alive = subprocess.Popen(["sleep", "60"], start_new_session=True)
+peer_log = f"{disp.LOG_DIR}/rPEER-195.log"
+open(peer_log, "w").write("still working\n")     # no terminal JSON → still running
+peer = {"run_id": "rPEER-195", "task_id": 196, "agent": "E", "worktree": lane,
+        "branch0": "dev", "worktrees0": snap, "pid": alive.pid,
+        "t0": disp.time.time(), "log": peer_log, "active": True}
+add_worktree(lane, "feat/rival-195")
+st = {"runs": [run, peer]}
+disp.reap(st)
+alive.kill()
+ok("19 reap: the in-flight peer blocked the push", not origin_has("feat/rival-195"))
+ok("19 reap: the finished run was still collected", not st["runs"][0]["active"])
+ok("19 reap: the peer is still in flight", st["runs"][1]["active"])
+ok("19 reap: the finished run still reported",
+   any(m == "PATCH" and p.startswith("run_history?") and b.get("outcome") == "ok"
+       for m, p, b in CALLS))
+
+# 20 ── both legs at once: it moved its own tree AND cut a fresh one ────────
+lane = agent_tree(branch="feat/inplace-195")     # registered tree moved off dev
+r = run_rec(lane, "dev")
+r["worktrees0"] = snapshot(lane)
+add_worktree(lane, "feat/alongside-195")
+res = disp.push_run_branch(r)
+ok("20 both: two targets considered", len(res["results"]) == 2, res)
+ok("20 both: in-place branch on origin", origin_has("feat/inplace-195"))
+ok("20 both: fresh-worktree branch on origin", origin_has("feat/alongside-195"))
+ok("20 both: both reported, comma-joined for run_history",
+   res["branch"] == "feat/inplace-195,feat/alongside-195", res)
+
+# 21 ── discovery unavailable → decline, never crash, never guess ───────────
+# A pre-#195 run record has no snapshot, so "which worktree did this run create?"
+# has no answer and the fresh leg must stay OFF rather than push what it finds.
+lane = lane_tree()
+add_worktree(lane, "feat/legacy-fresh-195")
+res = disp.push_run_branch({"run_id": "rOLD2", "task_id": 1,
+                            "worktree": lane, "branch0": "dev"})
+ok("21 no snapshot: declines on the registered tree only",
+   res["reason"] == "protected" and len(res["results"]) == 1, res)
+ok("21 no snapshot: did NOT push the worktree it happened to find",
+   not origin_has("feat/legacy-fresh-195"))
+# snapshot but no branch0 (a run that started detached): fresh leg still works,
+# and with nothing to push the run says so by name rather than silently.
+lane = lane_tree()
+r = {"run_id": "rDETACHED-195", "task_id": 1, "worktree": lane,
+     "worktrees0": snapshot(lane)}
+ok("21 no branch0: no candidate at all is NAMED",
+   disp.push_run_branch(r)["reason"] == "no-candidate", r)
+add_worktree(lane, "feat/detached-run-195")
+ok("21 no branch0: the fresh leg still pushes",
+   disp.push_run_branch(r)["pushed"] and origin_has("feat/detached-run-195"))
+# git worktree list blowing up must disable the leg, not the reap
+lane = lane_tree()
+r = dispatched(lane)
+add_worktree(lane, "feat/unlistable-195")
+real_git = disp._git
+
+
+def no_worktree_list(wt, *a, **k):
+    if a and a[0] == "worktree":
+        raise RuntimeError("git worktree exploded")
+    return real_git(wt, *a, **k)
+
+
+disp._git = no_worktree_list
+res = disp.try_push_run_branch(r)
+disp._git = real_git
+ok("21 unlistable: leg went quiet, run did not crash", not res["pushed"], res)
+ok("21 unlistable: nothing pushed", not origin_has("feat/unlistable-195"))
+ok("21 unlistable: list_worktrees() itself is total",
+   disp.list_worktrees(f"{TMP}/does-not-exist") == [])
 
 shutil.rmtree(TMP, ignore_errors=True)
 print(f"\nALL {PASS} CHECKS PASSED — board #195 push-at-run-end")
