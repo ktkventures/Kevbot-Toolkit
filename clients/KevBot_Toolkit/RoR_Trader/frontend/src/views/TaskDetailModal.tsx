@@ -38,6 +38,8 @@ import {
   RoleChip, EmptyRoleCircle, roleColor, NextChip, ProgressBar, RolePicker, RunButton, OutcomeChip,
   StampButtons, TwoTouchChip, ImpactSelect, IMPACT_DEF, defaultChain, StuckChip,
   MENTION_ROLES, HandoffChain, isProcessChain, stepOwner, stepTitle, MODE_DEF,
+  SlashItem, SlashMenu, filterSlashItems, applySlashInsert, detectSlash,
+  makeChainStep, chainStarted,
 } from './taskBoardShared';
 import { Md, MD_CSS } from './taskMarkdown';
 
@@ -129,6 +131,13 @@ export default function TaskDetailModal({
   // inbox. Simple insert — no inline autocomplete needed (spec).
   const [mentionOpen, setMentionOpen] = useState(false);
   const feedRef = useRef<HTMLDivElement>(null);
+  // Board #182 Step 6 — the ClickUp-style `/` insert menu in the description
+  // editor, and the structured step form (process-module insert / step edit).
+  // descRef restores the caret after a content insert replaces the `/trigger`.
+  const descRef = useRef<HTMLTextAreaElement>(null);
+  const [slash, setSlash] = useState<{ open: boolean; filter: string; start: number; end: number; active: number }>(
+    { open: false, filter: '', start: 0, end: 0, active: 0 });
+  const [stepForm, setStepForm] = useState<{ mode: 'insert' | 'edit'; index: number } | null>(null);
 
   const loadThread = useCallback(async (id: number) => {
     try {
@@ -330,7 +339,11 @@ export default function TaskDetailModal({
   const setSteps = (next: ChecklistStep[]) => patch(scoped.id, { checklist: next });
   const addStep = () => {
     if (!newStep.trim()) return;
-    setSteps([...steps, { text: newStep.trim(), done: false, role: null }]);
+    // On a #182 chain a quick-add is a real chain step (audible if the chain is
+    // under way); legacy checklists keep their {text,done,role} shape (Step 6).
+    setSteps(isChain
+      ? [...steps, makeChainStep({ title: newStep.trim(), owner: null }, chainStarted(steps))]
+      : [...steps, { text: newStep.trim(), done: false, role: null }]);
     setNewStep('');
   };
   const moveStep = (i: number, d: number) => {
@@ -339,6 +352,80 @@ export default function TaskDetailModal({
     const next = [...steps];
     [next[i], next[j]] = [next[j], next[i]];
     setSteps(next);
+  };
+
+  // ── Step 6: structured insert / edit / remove of chain steps ────────────────
+  // All route through setSteps → the whole-array checklist PATCH, which the API
+  // accepts as a STRUCTURAL edit (add/edit/reorder of not-done steps) while
+  // completion stays server-owned. Inserting while the chain is under way
+  // auto-marks origin='audible' (makeChainStep) so course-corrections show.
+  const started = chainStarted(steps);
+  const currentIdx = steps.findIndex((s) => !s.done);   // -1 → chain complete
+  const submitStepForm = (f: {
+    owner: string | null; title: string; mode: 'execute' | 'discuss'; body: string;
+  }) => {
+    if (!stepForm) return;
+    if (stepForm.mode === 'insert') {
+      const step = makeChainStep(f, started);
+      setSteps([...steps.slice(0, stepForm.index), step, ...steps.slice(stepForm.index)]);
+    } else {
+      // Edit touches only owner/title/mode/body — id, origin, stamp, done and
+      // completion provenance are preserved so the PATCH stays a structural edit.
+      setSteps(steps.map((s, i) => i === stepForm.index
+        ? { ...s, owner: f.owner, title: f.title, mode: f.mode, body: f.body } : s));
+    }
+    setStepForm(null);
+  };
+  const removeStep = (i: number) => {
+    if (steps[i]?.done) return;   // completed steps are immutable (T4'; API 409s too)
+    setSteps(steps.filter((_, j) => j !== i));
+  };
+
+  // Slash menu: detect a `/trigger` at the caret while editing the description,
+  // filter the insert menu live, and act on a pick — content blocks drop text at
+  // the caret; the process module opens the step form (insert after the current
+  // step). Arrow/Enter/Escape are handled on the textarea while the menu is open.
+  // The process module is offered only where inserting a chain step is SAFE and
+  // intended: an existing chain, or an empty checklist (starting a fresh chain).
+  // On a legacy checklist that already has steps the API would refuse the insert
+  // (its done-but-idless legacy steps trip the "inserted step can't start done"
+  // guard), and silently converting a legacy task is exactly what "legacy tasks
+  // render unchanged" forbids — so it stays hidden there. Content inserts (text
+  // only) are always available.
+  const allowStepInsert = isChain || steps.length === 0;
+  const slashItems = slash.open
+    ? filterSlashItems(slash.filter).filter((it) => it.kind !== 'step' || allowStepInsert)
+    : [];
+  const onDescChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    setDraftDesc(val);
+    const hit = detectSlash(val, e.target.selectionStart ?? val.length);
+    if (hit) setSlash({ open: true, filter: hit.filter, start: hit.start, end: hit.end, active: 0 });
+    else if (slash.open) setSlash((s) => ({ ...s, open: false }));
+  };
+  const pickSlash = (item: SlashItem) => {
+    if (item.kind === 'text') {
+      const { text, caret } = applySlashInsert(draftDesc, slash.start, slash.end, item);
+      setDraftDesc(text);
+      setSlash((s) => ({ ...s, open: false }));
+      requestAnimationFrame(() => {
+        const el = descRef.current;
+        if (el) { el.focus(); el.setSelectionRange(caret, caret); }
+      });
+    } else {
+      // process module — strip the `/trigger`, then open the insert form after
+      // the current step (a course-correction enters "as the following step").
+      setDraftDesc(draftDesc.slice(0, slash.start) + draftDesc.slice(slash.end));
+      setSlash((s) => ({ ...s, open: false }));
+      setStepForm({ mode: 'insert', index: currentIdx < 0 ? steps.length : currentIdx + 1 });
+    }
+  };
+  const onDescKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (!slash.open || slashItems.length === 0) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); setSlash((s) => ({ ...s, active: (s.active + 1) % slashItems.length })); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setSlash((s) => ({ ...s, active: (s.active - 1 + slashItems.length) % slashItems.length })); }
+    else if (e.key === 'Enter') { e.preventDefault(); pickSlash(slashItems[Math.min(slash.active, slashItems.length - 1)]); }
+    else if (e.key === 'Escape') { e.preventDefault(); setSlash((s) => ({ ...s, open: false })); }
   };
 
   const parseIds = (s: string) =>
@@ -479,9 +566,16 @@ export default function TaskDetailModal({
                     <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>{scoped.title}</div>
                     {!ctxEdit && <Md text={scoped.description} fallback="_no description yet — click Edit_" />}
                     {ctxEdit && !ctxPreview && (
-                      <textarea style={{ ...input, width: '100%', minHeight: 180, fontFamily: 'monospace', fontSize: 12.5 }}
-                        value={draftDesc} onChange={(e) => setDraftDesc(e.target.value)}
-                        placeholder="markdown + sanitized inline HTML…" />
+                      <div style={{ position: 'relative' }}>
+                        <textarea ref={descRef}
+                          style={{ ...input, width: '100%', minHeight: 180, fontFamily: 'monospace', fontSize: 12.5 }}
+                          value={draftDesc} onChange={onDescChange} onKeyDown={onDescKeyDown}
+                          placeholder="markdown + sanitized inline HTML…   ·   type / to insert" />
+                        {slash.open && (
+                          <SlashMenu items={slashItems} filter={slash.filter} active={slash.active}
+                            onPick={pickSlash} onClose={() => setSlash((s) => ({ ...s, open: false }))} />
+                        )}
+                      </div>
                     )}
                     {ctxEdit && ctxPreview && <Md text={draftDesc} fallback="_no description yet — click Edit_" />}
                     {/* Board #182 Step 4: the process chain IS the body of the
@@ -492,7 +586,10 @@ export default function TaskDetailModal({
                       <ProcessChain steps={steps} viewer={commentAuthor}
                         openSteps={openSteps} onToggle={toggleStep}
                         busy={stepBusy} err={stepErr}
-                        onComplete={completeStep} onStamp={stampStep} onRaiseIssue={raiseIssue} />
+                        onComplete={completeStep} onStamp={stampStep} onRaiseIssue={raiseIssue}
+                        onInsert={(i) => setStepForm({ mode: 'insert', index: i })}
+                        onEdit={(i) => setStepForm({ mode: 'edit', index: i })}
+                        onRemove={removeStep} onMove={moveStep} />
                     )}
                   </>
                 )}
@@ -811,6 +908,19 @@ export default function TaskDetailModal({
           <button style={{ ...input, cursor: 'pointer', color: 'var(--red)' }} onClick={() => del(task.id)}>Delete task</button>
         </div>
       </div>
+
+      {/* Board #182 Step 6 — the structured step form (portals to body), used by
+          both the slash "process module" and the accordion insert/edit. */}
+      {stepForm && (
+        <StepForm
+          heading={stepForm.mode === 'insert' ? 'Insert process step' : 'Edit process step'}
+          initial={stepForm.mode === 'edit' ? steps[stepForm.index] : undefined}
+          roles={roles.filter(Boolean)}
+          audible={stepForm.mode === 'insert' && started}
+          submitLabel={stepForm.mode === 'insert' ? 'Insert step' : 'Save step'}
+          onSubmit={submitStepForm}
+          onCancel={() => setStepForm(null)} />
+      )}
     </div>,
     document.body,
   );
@@ -843,10 +953,18 @@ function StampChip({ stamp }: { stamp?: StepStamp | null }) {
  * the current step, the Step-5 actions (Complete & hand off, stamp approve/
  * reject, raise-issue → M). Expansion is caller-owned (default-expand the
  * viewer's step); this component is otherwise a pure read of the chain plus the
- * three action callbacks — the transition rules themselves live server-side.
+ * action callbacks — the transition rules themselves live server-side.
+ *
+ * Board #182 Step 6 adds STRUCTURED EDITING in the accordion itself: each
+ * incomplete step carries edit / reorder / insert-after / remove controls, and
+ * the chain ends with an "add step" — so revising the chain is as cheap AND as
+ * safe as ticking it (no hand-edited JSON, the fragility that dropped a step
+ * mid-flight). Completed steps stay immutable (T4'); the API refuses their
+ * deletion/reorder-into anyway, so those controls are shown only on open steps.
  */
 function ProcessChain({
   steps, viewer, openSteps, onToggle, onComplete, onStamp, onRaiseIssue, busy, err,
+  onInsert, onEdit, onRemove, onMove,
 }: {
   steps: ChecklistStep[];
   viewer: string;
@@ -857,11 +975,18 @@ function ProcessChain({
   onRaiseIssue: (body: string) => void;
   busy: boolean;
   err: string | null;
+  onInsert: (index: number) => void;
+  onEdit: (index: number) => void;
+  onRemove: (index: number) => void;
+  onMove: (index: number, dir: number) => void;
 }) {
   const [issueFor, setIssueFor] = useState<string | null>(null);
   const [issueDraft, setIssueDraft] = useState('');
   const currentIdx = steps.findIndex((s) => !s.done);   // -1 → chain complete
   const complete = currentIdx < 0;
+  const iconBtn: React.CSSProperties = {
+    ...input, cursor: 'pointer', fontSize: 11, padding: '1px 7px', lineHeight: 1.6,
+  };
 
   return (
     <div style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 10 }}>
@@ -929,6 +1054,22 @@ function ProcessChain({
                 {s.body
                   ? <Md text={s.body} />
                   : <span style={cfgHint}>_no SOP written for this step yet_</span>}
+                {/* Step 6 — structured editing on open (not-yet-done) steps.
+                    Completed steps are immutable (T4'), so no controls there. */}
+                {!s.done && (
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10, alignItems: 'center' }}>
+                    <button style={iconBtn} disabled={busy} onClick={() => onEdit(i)}
+                      title="edit this step's owner / title / mode / SOP (structured — never hand-edit JSON)">✎ edit</button>
+                    <button style={iconBtn} disabled={busy || i <= currentIdx} onClick={() => onMove(i, -1)}
+                      title={i <= currentIdx ? 'already first among the open steps' : 'move earlier in the chain'}>↑</button>
+                    <button style={iconBtn} disabled={busy || i >= steps.length - 1} onClick={() => onMove(i, 1)}
+                      title={i >= steps.length - 1 ? 'already last' : 'move later in the chain'}>↓</button>
+                    <button style={iconBtn} disabled={busy} onClick={() => onInsert(i + 1)}
+                      title="insert a new step after this one (auto-marked audible if the chain is under way)">＋ insert after</button>
+                    <button style={{ ...iconBtn, color: 'var(--red)', borderColor: 'var(--red)' }} disabled={busy}
+                      onClick={() => onRemove(i)} title="remove this step (only not-yet-done steps can be removed)">🗑 remove</button>
+                  </div>
+                )}
                 {isCurrent && owner && owner !== viewer && (
                   <div style={{ ...cfgHint, marginTop: 8 }}>
                     you’re acting as <b style={{ color: roleColor(viewer) }}>{viewer}</b>; this step is owned by{' '}
@@ -987,7 +1128,109 @@ function ProcessChain({
           </div>
         );
       })}
+      {/* Step 6 — append a step to the end of the chain (the last valid insert
+          point; per-step "insert after" covers the rest). Audible once under way. */}
+      <div style={{ marginTop: 4 }}>
+        <button style={{ ...input, cursor: 'pointer', fontSize: 12, color: 'var(--blue)', borderColor: 'var(--blue)' }}
+          onClick={() => onInsert(steps.length)}
+          title={complete
+            ? 'add a step to the end of the chain'
+            : 'add a step to the end of the chain (auto-marked audible — the chain is under way)'}>
+          ＋ Add step
+        </button>
+      </div>
       {err && <div style={{ color: 'var(--red)', fontSize: 11, marginTop: 6 }} title={err}>{err}</div>}
     </div>
+  );
+}
+
+/**
+ * The structured step form (board #182 Step 6) — the ClickUp-style "process
+ * module". Opened by the slash menu ("/process module") and by the accordion's
+ * insert / edit controls, so a chain step is authored through fields (owner ·
+ * title · mode · SOP) rather than by hand-editing JSON. It only edits those four
+ * fields; id / origin / stamp / completion are preserved by the caller so the
+ * PATCH stays a structural edit. Portals to <body> so it works from either the
+ * accordion view or the description editor. `audible` is a preview flag — the
+ * actual origin is stamped by makeChainStep at insert time.
+ */
+function StepForm({ heading, initial, roles, audible, submitLabel, onSubmit, onCancel }: {
+  heading: string;
+  initial?: ChecklistStep;
+  roles: string[];
+  audible: boolean;
+  submitLabel: string;
+  onSubmit: (f: { owner: string | null; title: string; mode: 'execute' | 'discuss'; body: string }) => void;
+  onCancel: () => void;
+}) {
+  const [owner, setOwner] = useState<string | null>(initial?.owner ?? initial?.role ?? null);
+  const [title, setTitle] = useState<string>(initial?.title ?? initial?.text ?? '');
+  const [mode, setMode] = useState<'execute' | 'discuss'>(initial?.mode ?? 'execute');
+  const [body, setBody] = useState<string>(initial?.body ?? '');
+  const canSave = title.trim().length > 0;
+  const submit = () => { if (canSave) onSubmit({ owner, title: title.trim(), mode, body }); };
+  const modeBtn = (m: 'execute' | 'discuss'): React.CSSProperties => ({
+    ...input, cursor: 'pointer', fontSize: 12, fontWeight: mode === m ? 700 : 400,
+    borderColor: mode === m ? (m === 'discuss' ? '#0ea5e9' : 'var(--blue)') : 'var(--border)',
+    color: mode === m ? (m === 'discuss' ? '#0ea5e9' : 'var(--blue)') : 'var(--text-secondary)',
+  });
+  return createPortal(
+    <div onClick={onCancel} style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+    }}>
+      <div onClick={(e) => e.stopPropagation()} style={{
+        width: 'min(560px, 94vw)', maxHeight: '86vh', overflowY: 'auto',
+        background: 'var(--bg-card, var(--bg-input))', border: '1px solid var(--border)',
+        borderRadius: 12, padding: 16, boxShadow: '0 12px 40px rgba(0,0,0,0.5)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <span style={{ fontSize: 14, fontWeight: 700 }}>{heading}</span>
+          {audible && (
+            <span style={{ ...tagChip, borderColor: '#a855f7', color: '#a855f7', fontWeight: 700 }}
+              title="the chain is under way — this insert is recorded as an audible (origin=audible) and renders distinctly">
+              🔀 audible
+            </span>
+          )}
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={cfgLabel}>owner</span>
+              <RolePicker value={owner} pickTitle="step owner" allowEmpty options={roles}
+                onPick={(r) => setOwner(r || null)} />
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span style={cfgLabel}>mode</span>
+              <button type="button" style={modeBtn('execute')} title={MODE_DEF.execute}
+                onClick={() => setMode('execute')}>execute</button>
+              <button type="button" style={modeBtn('discuss')} title={MODE_DEF.discuss}
+                onClick={() => setMode('discuss')}>💬 discuss</button>
+            </span>
+          </div>
+          <label style={cfgLabel}>title <span style={cfgHint}>— one line of substance (shown even when collapsed)</span>
+            <input autoFocus style={{ ...input, width: '100%', marginTop: 2 }} value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } }}
+              placeholder="e.g. Wire the export button to the new endpoint" />
+          </label>
+          <label style={cfgLabel}>SOP body <span style={cfgHint}>— what this step requires (markdown)</span>
+            <textarea style={{ ...input, width: '100%', minHeight: 120, marginTop: 2, fontFamily: 'monospace', fontSize: 12.5 }}
+              value={body} onChange={(e) => setBody(e.target.value)}
+              placeholder="constraint set · verification story · known traps…" />
+          </label>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
+          <button type="button" style={{ ...input, cursor: 'pointer' }} onClick={onCancel}>Cancel</button>
+          <button type="button" disabled={!canSave}
+            style={{
+              ...input, cursor: canSave ? 'pointer' : 'default', fontWeight: 700,
+              color: '#fff', background: 'var(--blue)', borderColor: 'var(--blue)', opacity: canSave ? 1 : 0.4,
+            }}
+            onClick={submit}>{submitLabel}</button>
+        </div>
+      </div>
+    </div>,
+    document.body,
   );
 }

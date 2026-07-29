@@ -68,6 +68,160 @@ export const MODE_DEF: Record<string, string> = {
   discuss: 'discussion step — a human reviews here; never dispatched to a headless agent',
 };
 
+// ── Step 6: slash-command insertion (board #182) ─────────────────────────────
+// Editing the chain must be as cheap AND as safe as ticking it — a hand-edited
+// JSON checklist is exactly the fragility M hit (dropped a step, duplicated a
+// row). These helpers back the ClickUp-style `/` insert menu and the accordion's
+// structured insert/edit; every path routes through the API's structural PATCH
+// (add/edit/reorder of NOT-done steps is allowed; completion stays server-owned).
+
+/**
+ * A chain is "under way" once any step is complete — a step inserted past that
+ * point is a mid-flight course-correction and is auto-tagged origin='audible'
+ * (Kevin's ruling 5: audibles must be visible). A fresh chain still being
+ * authored (nothing done) inserts as origin='planned'.
+ */
+export const chainStarted = (steps?: ChecklistStep[] | null): boolean =>
+  Array.isArray(steps) && steps.some((s) => !!s && s.done);
+
+/**
+ * Mint a NEW chain step for a structured insert (slash "process module" or the
+ * accordion "+ insert step"). No `id` — the server assigns a stable one on PATCH
+ * (dev_tasks._ensure_step_ids); `done:false` always (the API refuses an inserted
+ * step that starts complete, T4'). `origin` is audible when the chain is under
+ * way. This is the ONLY sanctioned way to add a step — never hand-edit the JSON.
+ */
+export const makeChainStep = (
+  fields: { owner?: string | null; title: string; mode?: 'execute' | 'discuss'; body?: string },
+  started: boolean,
+): ChecklistStep => ({
+  owner: fields.owner || null,
+  title: fields.title.trim(),
+  body: fields.body || '',
+  mode: fields.mode || 'execute',
+  origin: started ? 'audible' : 'planned',
+  done: false,
+});
+
+export type SlashKind = 'step' | 'text';
+export interface SlashItem {
+  key: string;
+  icon: string;
+  label: string;
+  hint: string;
+  kind: SlashKind;
+  /** text inserts only: the snippet dropped in; '|' marks where the caret lands. */
+  template?: string;
+}
+
+// The insert menu (Kevin's ClickUp screenshot is the reference). PROCESS MODULE
+// FIRST — that is the headline: inserting a step must be as cheap as ticking one.
+// The rest are ordinary markdown content blocks dropped at the caret.
+export const SLASH_ITEMS: SlashItem[] = [
+  { key: 'process', icon: '⛓', label: 'Process module', kind: 'step',
+    hint: 'insert a chain step — owner · title · mode · SOP' },
+  { key: 'image', icon: '🖼', label: 'Image', kind: 'text',
+    hint: 'embed an image by URL', template: '![|](https://)' },
+  { key: 'code', icon: '{ }', label: 'Code block', kind: 'text',
+    hint: 'fenced code block', template: '```\n|\n```\n' },
+  { key: 'banner', icon: '▤', label: 'Banner', kind: 'text',
+    hint: 'callout / note banner', template: '> **Note:** |\n' },
+  { key: 'list', icon: '•', label: 'List', kind: 'text',
+    hint: 'bulleted list', template: '- |\n- ' },
+];
+
+/** Filter the insert menu by the text typed after `/`, matching label or key. */
+export const filterSlashItems = (filter: string): SlashItem[] => {
+  const f = (filter || '').toLowerCase();
+  if (!f) return SLASH_ITEMS;
+  return SLASH_ITEMS.filter(
+    (it) => it.label.toLowerCase().includes(f) || it.key.includes(f));
+};
+
+/**
+ * Apply a text-insert slash item to a body string: replace the `/trigger` range
+ * [start,end) with the item's template, returning the new text and the caret
+ * position (where the template's '|' marker was). Pure — the slash wiring in
+ * TaskDetailModal calls this and then restores focus/selection.
+ */
+export const applySlashInsert = (
+  text: string, start: number, end: number, item: SlashItem,
+): { text: string; caret: number } => {
+  const tpl = item.template || '';
+  const marker = tpl.indexOf('|');
+  const body = marker >= 0 ? tpl.replace('|', '') : tpl;
+  const next = text.slice(0, start) + body + text.slice(end);
+  const caret = start + (marker >= 0 ? marker : body.length);
+  return { text: next, caret };
+};
+
+/**
+ * Detect a live slash-command trigger at the caret: a `/` that starts a token
+ * (line-start or after whitespace) followed by optional word chars, and nothing
+ * after it up to the caret. Returns the trigger's char range + the filter text,
+ * or null when there is no active trigger. Board #182 Step 6.
+ */
+export const detectSlash = (
+  value: string, caret: number,
+): { start: number; end: number; filter: string } | null => {
+  const before = value.slice(0, caret);
+  const m = before.match(/(?:^|\s)\/([\w-]*)$/);
+  if (!m) return null;
+  const filter = m[1] || '';
+  return { start: caret - (filter.length + 1), end: caret, filter };
+};
+
+/**
+ * The slash-command insert menu (board #182 Step 6) — a ClickUp-style dropdown
+ * that opens when you type `/` in a task body. Presentational: the parent owns
+ * trigger detection, the filter text, and the active index (arrow-key nav on the
+ * textarea). Anchored just under the field rather than at the exact caret pixel
+ * — robust across fonts, and the menu is short. `onMouseDown`+preventDefault so
+ * a click doesn't blur the textarea before the pick handler runs.
+ */
+export const SlashMenu = ({ items, filter, active, onPick, onClose }: {
+  items: SlashItem[];
+  filter: string;
+  active: number;
+  onPick: (item: SlashItem) => void;
+  onClose: () => void;
+}) => {
+  if (items.length === 0) return null;
+  return (
+    <>
+      <span onMouseDown={onClose} style={{ position: 'fixed', inset: 0, zIndex: 1500 }} />
+      <div role="listbox" aria-label="insert menu" style={{
+        position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 1600,
+        minWidth: 264, maxWidth: 360, padding: 4, borderRadius: 8,
+        border: '1px solid var(--border)', background: 'var(--bg-card, var(--bg-input))',
+        boxShadow: '0 8px 28px rgba(0,0,0,0.45)',
+      }}>
+        <div style={{ fontSize: 10, color: 'var(--text-tertiary)', padding: '3px 8px', letterSpacing: 0.4 }}>
+          INSERT{filter ? ` · /${filter}` : ''}
+        </div>
+        {items.map((it, i) => (
+          <button key={it.key} type="button"
+            onMouseDown={(e) => { e.preventDefault(); onPick(it); }}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+              padding: '6px 8px', borderRadius: 6, cursor: 'pointer', textAlign: 'left',
+              border: 'none', color: 'inherit',
+              background: i === active ? 'var(--bg-input)' : 'transparent',
+            }}>
+            <span style={{ width: 24, textAlign: 'center', fontSize: 12, fontFamily: 'monospace' }}>{it.icon}</span>
+            <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+              <span style={{ fontSize: 13, fontWeight: it.kind === 'step' ? 700 : 500 }}>
+                {it.label}{it.kind === 'step' ? ' ⭐' : ''}
+              </span>
+              <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{it.hint}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </>
+  );
+};
+
 export interface Task {
   id: number;
   title: string;
