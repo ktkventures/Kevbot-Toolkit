@@ -5,7 +5,222 @@
  */
 import React from 'react';
 
-export interface ChecklistStep { text: string; done: boolean; role: string | null; }
+/**
+ * A per-step approval gate (board #182): a stamp carried in the step's own
+ * real estate, with its own state — replaces the task-level `kevin_final` for
+ * longer chains ("approve THIS step", not "approve the task").
+ */
+export interface StepStamp {
+  required?: boolean;
+  state?: 'pending' | 'approved' | 'rejected' | null;
+  by?: string | null;
+  at?: string | null;
+}
+
+/**
+ * A process-chain step (board #182). The legacy shape was {text, done, role};
+ * the chain widens it with a stable `id`, an `owner` (role or 'kevin'), a
+ * one-line `title` (the substance, shown even when collapsed), a markdown
+ * `body` (the SOP), a per-step `mode` (execute|discuss) and `stamp`, plus
+ * completion provenance. Every new field is OPTIONAL and `text`/`role` are
+ * retained, so the 42 legacy checklists render byte-for-byte — a checklist is
+ * treated as a chain only once a step carries a new-shape key (isProcessChain,
+ * mirroring the API's opt-in signal). Completion fields are server-owned
+ * (POST /steps/complete), never toggled by a checklist PATCH.
+ */
+export interface ChecklistStep {
+  done: boolean;
+  // legacy (still emitted by defaultChain / simple tasks)
+  text?: string;
+  role?: string | null;
+  // #182 process chain
+  id?: string;
+  owner?: string | null;
+  title?: string;
+  body?: string;
+  mode?: 'execute' | 'discuss';
+  origin?: 'planned' | 'audible';
+  stamp?: StepStamp | null;
+  completed_at?: string | null;
+  completed_by?: string | null;
+}
+
+// A checklist becomes a #182 process chain once ANY step carries a new-shape
+// key — the exact opt-in signal the API uses (dev_tasks._NEW_SHAPE_KEYS).
+// Legacy {text,role,done} checklists stay legacy and behave as before #182.
+const NEW_SHAPE_KEYS: (keyof ChecklistStep)[] = ['id', 'owner', 'title', 'body', 'mode', 'origin', 'stamp'];
+export const isProcessChain = (cl?: ChecklistStep[] | null): boolean =>
+  Array.isArray(cl) && cl.some((s) => !!s && NEW_SHAPE_KEYS.some((k) => s[k] != null));
+
+/** Who acts on a step — new `owner`, falling back to legacy `role` (mirrors
+ *  the API's _step_owner). */
+export const stepOwner = (s: ChecklistStep): string | null => s.owner ?? s.role ?? null;
+
+/** One line of substance — new `title`, falling back to legacy `text`
+ *  (mirrors the API's _step_title). */
+export const stepTitle = (s: ChecklistStep): string => s.title || s.text || '';
+
+/** Per-step mode tooltips (board #182). Execute steps are dispatchable; a
+ *  discuss step is a human review point and must never dispatch to a headless
+ *  agent (enforced by the dispatcher, Step 7). */
+export const MODE_DEF: Record<string, string> = {
+  execute: 'execution step — dispatchable to a headless agent',
+  discuss: 'discussion step — a human reviews here; never dispatched to a headless agent',
+};
+
+// ── Step 6: slash-command insertion (board #182) ─────────────────────────────
+// Editing the chain must be as cheap AND as safe as ticking it — a hand-edited
+// JSON checklist is exactly the fragility M hit (dropped a step, duplicated a
+// row). These helpers back the ClickUp-style `/` insert menu and the accordion's
+// structured insert/edit; every path routes through the API's structural PATCH
+// (add/edit/reorder of NOT-done steps is allowed; completion stays server-owned).
+
+/**
+ * A chain is "under way" once any step is complete — a step inserted past that
+ * point is a mid-flight course-correction and is auto-tagged origin='audible'
+ * (Kevin's ruling 5: audibles must be visible). A fresh chain still being
+ * authored (nothing done) inserts as origin='planned'.
+ */
+export const chainStarted = (steps?: ChecklistStep[] | null): boolean =>
+  Array.isArray(steps) && steps.some((s) => !!s && s.done);
+
+/**
+ * Mint a NEW chain step for a structured insert (slash "process module" or the
+ * accordion "+ insert step"). No `id` — the server assigns a stable one on PATCH
+ * (dev_tasks._ensure_step_ids); `done:false` always (the API refuses an inserted
+ * step that starts complete, T4'). `origin` is audible when the chain is under
+ * way. This is the ONLY sanctioned way to add a step — never hand-edit the JSON.
+ */
+export const makeChainStep = (
+  fields: { owner?: string | null; title: string; mode?: 'execute' | 'discuss'; body?: string },
+  started: boolean,
+): ChecklistStep => ({
+  owner: fields.owner || null,
+  title: fields.title.trim(),
+  body: fields.body || '',
+  mode: fields.mode || 'execute',
+  origin: started ? 'audible' : 'planned',
+  done: false,
+});
+
+export type SlashKind = 'step' | 'text';
+export interface SlashItem {
+  key: string;
+  icon: string;
+  label: string;
+  hint: string;
+  kind: SlashKind;
+  /** text inserts only: the snippet dropped in; '|' marks where the caret lands. */
+  template?: string;
+}
+
+// The insert menu (Kevin's ClickUp screenshot is the reference). PROCESS MODULE
+// FIRST — that is the headline: inserting a step must be as cheap as ticking one.
+// The rest are ordinary markdown content blocks dropped at the caret.
+export const SLASH_ITEMS: SlashItem[] = [
+  { key: 'process', icon: '⛓', label: 'Process module', kind: 'step',
+    hint: 'insert a chain step — owner · title · mode · SOP' },
+  { key: 'image', icon: '🖼', label: 'Image', kind: 'text',
+    hint: 'embed an image by URL', template: '![|](https://)' },
+  { key: 'code', icon: '{ }', label: 'Code block', kind: 'text',
+    hint: 'fenced code block', template: '```\n|\n```\n' },
+  { key: 'banner', icon: '▤', label: 'Banner', kind: 'text',
+    hint: 'callout / note banner', template: '> **Note:** |\n' },
+  { key: 'list', icon: '•', label: 'List', kind: 'text',
+    hint: 'bulleted list', template: '- |\n- ' },
+];
+
+/** Filter the insert menu by the text typed after `/`, matching label or key. */
+export const filterSlashItems = (filter: string): SlashItem[] => {
+  const f = (filter || '').toLowerCase();
+  if (!f) return SLASH_ITEMS;
+  return SLASH_ITEMS.filter(
+    (it) => it.label.toLowerCase().includes(f) || it.key.includes(f));
+};
+
+/**
+ * Apply a text-insert slash item to a body string: replace the `/trigger` range
+ * [start,end) with the item's template, returning the new text and the caret
+ * position (where the template's '|' marker was). Pure — the slash wiring in
+ * TaskDetailModal calls this and then restores focus/selection.
+ */
+export const applySlashInsert = (
+  text: string, start: number, end: number, item: SlashItem,
+): { text: string; caret: number } => {
+  const tpl = item.template || '';
+  const marker = tpl.indexOf('|');
+  const body = marker >= 0 ? tpl.replace('|', '') : tpl;
+  const next = text.slice(0, start) + body + text.slice(end);
+  const caret = start + (marker >= 0 ? marker : body.length);
+  return { text: next, caret };
+};
+
+/**
+ * Detect a live slash-command trigger at the caret: a `/` that starts a token
+ * (line-start or after whitespace) followed by optional word chars, and nothing
+ * after it up to the caret. Returns the trigger's char range + the filter text,
+ * or null when there is no active trigger. Board #182 Step 6.
+ */
+export const detectSlash = (
+  value: string, caret: number,
+): { start: number; end: number; filter: string } | null => {
+  const before = value.slice(0, caret);
+  const m = before.match(/(?:^|\s)\/([\w-]*)$/);
+  if (!m) return null;
+  const filter = m[1] || '';
+  return { start: caret - (filter.length + 1), end: caret, filter };
+};
+
+/**
+ * The slash-command insert menu (board #182 Step 6) — a ClickUp-style dropdown
+ * that opens when you type `/` in a task body. Presentational: the parent owns
+ * trigger detection, the filter text, and the active index (arrow-key nav on the
+ * textarea). Anchored just under the field rather than at the exact caret pixel
+ * — robust across fonts, and the menu is short. `onMouseDown`+preventDefault so
+ * a click doesn't blur the textarea before the pick handler runs.
+ */
+export const SlashMenu = ({ items, filter, active, onPick, onClose }: {
+  items: SlashItem[];
+  filter: string;
+  active: number;
+  onPick: (item: SlashItem) => void;
+  onClose: () => void;
+}) => {
+  if (items.length === 0) return null;
+  return (
+    <>
+      <span onMouseDown={onClose} style={{ position: 'fixed', inset: 0, zIndex: 1500 }} />
+      <div role="listbox" aria-label="insert menu" style={{
+        position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 1600,
+        minWidth: 264, maxWidth: 360, padding: 4, borderRadius: 8,
+        border: '1px solid var(--border)', background: 'var(--bg-card, var(--bg-input))',
+        boxShadow: '0 8px 28px rgba(0,0,0,0.45)',
+      }}>
+        <div style={{ fontSize: 10, color: 'var(--text-tertiary)', padding: '3px 8px', letterSpacing: 0.4 }}>
+          INSERT{filter ? ` · /${filter}` : ''}
+        </div>
+        {items.map((it, i) => (
+          <button key={it.key} type="button"
+            onMouseDown={(e) => { e.preventDefault(); onPick(it); }}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+              padding: '6px 8px', borderRadius: 6, cursor: 'pointer', textAlign: 'left',
+              border: 'none', color: 'inherit',
+              background: i === active ? 'var(--bg-input)' : 'transparent',
+            }}>
+            <span style={{ width: 24, textAlign: 'center', fontSize: 12, fontFamily: 'monospace' }}>{it.icon}</span>
+            <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+              <span style={{ fontSize: 13, fontWeight: it.kind === 'step' ? 700 : 500 }}>
+                {it.label}{it.kind === 'step' ? ' ⭐' : ''}
+              </span>
+              <span style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>{it.hint}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </>
+  );
+};
 
 export interface Task {
   id: number;
@@ -305,7 +520,7 @@ export function nextActor(t: Task, subtasks: Task[]): { next: string | null; han
     next = 'R'; // the next release train ships everything Staged
   } else {
     const firstStep = (t.checklist || []).find((s) => !s.done);
-    next = (firstStep && firstStep.role) || t.assignee || null;
+    next = (firstStep && stepOwner(firstStep)) || t.assignee || null;
   }
   const handoff = !!next && !!t.assignee && next !== t.assignee;
   return { next, handoff };
@@ -450,13 +665,15 @@ export const HandoffChain = ({ task, size = 15 }: { task: Task; size?: number })
   if (steps.length === 0) return null;
   const current = steps.findIndex((s) => !s.done);        // -1 → every step done
   const cur = current >= 0 ? steps[current] : null;
-  const nowOwner = cur ? (cur.role ? roleAbbrev(cur.role) : '—') : null;
+  const curOwner = cur ? stepOwner(cur) : null;
+  const nowOwner = curOwner ? roleAbbrev(curOwner) : cur ? '—' : null;
   const tip = [
-    'Process chain (hover-only; edit in the Process tab):',
+    'Process chain (hover-only; expand it in the Summary tab):',
     ...steps.map((s, i) => {
-      const owner = s.role ? roleAbbrev(s.role) : '—';
+      const o = stepOwner(s);
+      const owner = o ? roleAbbrev(o) : '—';
       const mark = s.done ? '✓' : i === current ? '▶' : '·';
-      return `  ${mark} ${i + 1}. ${s.text}  (${owner})`;
+      return `  ${mark} ${i + 1}. ${stepTitle(s)}  (${owner})`;
     }),
     nowOwner ? `  ▶ now: ${nowOwner}` : '  — all steps complete',
   ].join('\n');
@@ -474,8 +691,9 @@ export const HandoffChain = ({ task, size = 15 }: { task: Task; size?: number })
     }}>
       {steps.map((s, i) => {
         const state = i === current ? 'current' : s.done ? 'done' : 'upcoming';
-        const col = s.role ? roleColor(s.role) : '#64748b';
-        const letter = s.role ? roleAbbrev(s.role) : '·';
+        const o = stepOwner(s);
+        const col = o ? roleColor(o) : '#64748b';
+        const letter = o ? roleAbbrev(o) : '·';
         const skin: React.CSSProperties =
           state === 'current'
             ? { background: col, color: '#fff',
