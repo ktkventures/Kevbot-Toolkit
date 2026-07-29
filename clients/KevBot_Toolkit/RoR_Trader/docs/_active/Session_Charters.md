@@ -195,7 +195,23 @@ future recurring work (approved once for the series). Vision containers are exem
 **Process-chain convention (universal, Kevin 07-25):** EVERY task carries a process
 checklist — multi-role tasks spell their real handoff chain; simple tasks use the
 default 4-step (do → M review → Kevin approval if flagged → close). Next-actor chip
-derives from it.
+derives from it. A step carries `id · owner · title · body · mode · origin · stamp`;
+a checklist becomes a process chain the moment ANY step carries one of those keys,
+so conversion is opt-in per task with no migration and no flag day. `mode=discuss`
+marks a step that wants a human REPLY — the dispatcher refuses to hand one to a
+headless agent. The step's `body` IS the SOP the dispatcher sends that agent, which
+is the whole payoff: context lives in the task instead of being hand-written at
+dispatch time.
+**Retrofit rule (Kevin, 07-29 — #182 Step 9's decision):** existing tasks are **NOT
+batch-converted**. A task gets a real chain **when someone touches it** — written
+before the work starts, if the absence of a chain would create a gap. Kevin's
+reasoning, verbatim: *"if we do it one by one, it'll probably get better quality.
+Sometimes I think when we do things in batches, we get a little lazy."* Legacy
+`{role,text,done}` checklists keep rendering and dispatching untouched, so there is
+no deadline and nothing rots. **Judgement applies:** a small contained task does not
+need nine steps — a chain exists to carry a real hand-off, not to be ceremony. Write
+the SOP bodies as *what the step is for, what "done" means, and what it must not do*;
+retroactive steps also record what actually came out.
 **Approval tags (Kevin 07-25, batch-review protocol):** `needs-approval` = M requests
 Kevin's eyes BEFORE execution (Kevin's inbox; renders amber). Kevin pre-approves by
 flipping to `kevin-ok` (tag edit or a "good to go" comment — M's board-watcher converts
