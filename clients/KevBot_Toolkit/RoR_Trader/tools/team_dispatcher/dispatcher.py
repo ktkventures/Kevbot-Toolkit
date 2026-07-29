@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Team dispatcher (V4.16) — dispatches board tasks to headless Claude agents.
+"""Team dispatcher (V4.17) — dispatches board tasks to headless Claude agents.
+
+V4.17 (board #182 Step 7): STEP-LEVEL DISPATCH. For a #182 process chain the
+dispatcher sends the CURRENT STEP — its title + its own SOP body — instead of "the
+whole task", and refuses to hand a `mode='discuss'` step to a headless agent (it
+would build something nobody asked for). Assignee stays authoritative; the chain
+adds a second, narrower gate ON TOP of it, never instead of it.
 
 V4.16 (board #171): `assignee` is authoritative — the checklist no longer gates
 dispatch (the `next_actor()` override silently killed the Todo queue for ~41h on
@@ -125,6 +131,44 @@ def active_runs(st):
     return [r for r in st["runs"] if r.get("active") and now - r["t0"] < RUN_TIMEOUT_S]
 
 
+
+# ── #182 process-chain helpers ───────────────────────────────────────────────
+# Mirrors api/routers/dev_tasks.py (_NEW_SHAPE_KEYS / _is_process_chain /
+# _step_owner / _current_step_index) so the dispatcher and the API can never
+# disagree about which step is current. Keep the two in sync.
+_NEW_SHAPE_KEYS = ("id", "owner", "title", "body", "mode", "origin", "stamp")
+
+
+def is_process_chain(checklist):
+    """True once ANY step carries a new-shape key — the opt-in signal that a
+    checklist is a #182 process chain and not a legacy {role,text,done} list."""
+    return isinstance(checklist, list) and any(
+        isinstance(s, dict) and any(k in s for k in _NEW_SHAPE_KEYS)
+        for s in checklist)
+
+
+def step_owner(step):
+    o = step.get("owner")
+    return o if o is not None else step.get("role")
+
+
+def step_title(step):
+    t = step.get("title")
+    return t if t is not None else (step.get("text") or "")
+
+
+def current_step(task):
+    """(index, step) of the first incomplete step, or (None, None) when the
+    chain is finished or the task has no chain."""
+    cl = task.get("checklist") or []
+    if not is_process_chain(cl):
+        return None, None
+    for i, s in enumerate(cl):
+        if isinstance(s, dict) and not s.get("done"):
+            return i, s
+    return None, None
+
+
 def triage_todo(agents, done_ids):
     """Classify the Todo queue → (dispatchable, skipped).
 
@@ -164,6 +208,25 @@ def triage_todo(agents, done_ids):
         if unmet:
             skipped.append((t, f"blocked by {unmet} (not Done)", True))
             continue
+        # #182 Step 7 — chain gates. Only for process chains; legacy checklists
+        # are untouched (they gate on assignee alone, exactly as in V4.16).
+        idx, step = current_step(t)
+        if step is not None:
+            owner = step_owner(step)
+            if owner != a:
+                # Assignee and the chain disagree. NOT a silent skip — that is
+                # the #171 bug. Loud, because one of the two is wrong.
+                skipped.append((t, f"step {idx + 1} is owned by {owner or '—'} "
+                                   f"but assignee is {a} — chain/assignee disagree", True))
+                continue
+            if (step.get("mode") or "execute") == "discuss":
+                # SAFETY-CRITICAL: a headless agent handed a discussion step
+                # builds something nobody asked for. Waiting, not stuck — so it
+                # never trips the 4h staleness tripwire.
+                skipped.append((t, f"step {idx + 1} is mode=discuss — needs a REPLY, "
+                                   f"not a build; never dispatched to a headless agent",
+                                False))
+                continue
         out.append(t)
     return out, skipped
 
@@ -313,8 +376,39 @@ def build_prompt(agent, task):
     comments = api("GET", f"dev_task_comments?task_id=eq.{task['id']}"
                           f"&order=created_at.desc&limit={THREAD_COMMENTS}&select=author,body")
     thread = "\n".join(f"- {c['author']}: {c['body'][:COMMENT_SNIP]}" for c in reversed(comments or []))
-    steps = "\n".join(f"- [{'x' if s.get('done') else ' '}] ({s.get('role','')}) {s['text']}"
-                      for s in (task.get("checklist") or []))
+    cl = task.get("checklist") or []
+    idx, cur = current_step(task)
+    steps = "\n".join(
+        f"- [{'x' if s.get('done') else ' '}] ({step_owner(s) or ''}) {step_title(s)}"
+        for s in cl)
+    # #182 Step 7 — STEP-LEVEL DISPATCH. When the task is a process chain the
+    # agent is told to do ONE step and stop, and is handed that step's own SOP
+    # plus what earlier steps concluded. This is the agent-quality payoff: M was
+    # hand-writing per-dispatch context that the task already contained.
+    if cur is not None:
+        prior = [f"  {i + 1}. ({step_owner(s) or '—'}) {step_title(s)}"
+                 for i, s in enumerate(cl) if s.get("done")]
+        step_block = f"""
+=== YOUR STEP — STEP {idx + 1} of {len(cl)} — DO THIS ONE AND STOP ===
+Owner: {step_owner(cur) or '—'}   Mode: {cur.get('mode') or 'execute'}\
+{'   [AUDIBLE — inserted mid-flight, not in the original plan]' if cur.get('origin') == 'audible' else ''}
+
+{step_title(cur)}
+
+SOP for this step:
+{(cur.get('body') or '(no SOP body written for this step — if that leaves the '
+  'requirement ambiguous, DO NOT GUESS: reassign to M and say what is missing.)')}
+
+Already completed on this task (their conclusions are in the thread below):
+{chr(10).join(prior) or '  (none — this is the first step)'}
+
+SCOPE: do step {idx + 1} only. Do NOT start later steps, even if they look
+adjacent or trivially related. If you believe the chain is wrong — steps should
+be merged, split or reordered — RAISE IT: reassign to M with the reason. Do not
+expand scope unilaterally. M owns the chain (board #182 authoring standard).
+=== END OF YOUR STEP ==="""
+    else:
+        step_block = ""
     return f"""You are {agent['letter']}·auto, a headless dispatched agent on the RoR Trader team.
 Identity/scope: {agent.get('scope','')}
 HARD BOUNDARIES (violating any = abort and report): {agent.get('boundaries','')}
@@ -323,8 +417,9 @@ Charter (read first): {CHARTER}
 YOUR TASK — board #{task['id']}: {task['title']}
 Description:
 {task.get('description') or '(none)'}
-Process checklist (advisory — the assignee, not this list, drives dispatch; board #171):
+Process chain (assignee drives dispatch — board #171; the chain scopes the work — board #182):
 {steps or '(none)'}
+{step_block}
 Recent thread:
 {thread or '(none)'}
 
