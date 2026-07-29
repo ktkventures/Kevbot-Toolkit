@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Team dispatcher (V4.17) — dispatches board tasks to headless Claude agents.
+"""Team dispatcher (V4.18) — dispatches board tasks to headless Claude agents.
+
+V4.18 (board #182 Step 7, second half): THE INBOUND CHECK. Before starting its own
+step, a dispatched agent first verifies that the PREVIOUS step delivered what its
+SOP promised; if something explicitly promised is missing it raises an issue to M
+and stops instead of building on a bad hand-off. This replaces the separate "TM
+gate" agent design (see docs/_active/TM_Gate_Verification_2026-07-29.md): the goal
+never required a new agent class, and giving the job to the next agent in line adds
+no spawn, no concurrency pool, no daily-cap bypass and no unenforceable tool-less
+guarantee — while giving the checker BETTER context, since it is the consumer of
+the hand-off. Skipped for the first step of a chain and for kevin-owned steps.
 
 V4.17 (board #182 Step 7): STEP-LEVEL DISPATCH. For a #182 process chain the
 dispatcher sends the CURRENT STEP — its title + its own SOP body — instead of "the
@@ -66,6 +76,11 @@ STALE_SKIP_S = 4 * 3600    # board #171 tripwire: a STUCK Todo (headless-assigne
 # gated); the tag is cleared on claim. Ineligible requests are cleared LOUDLY
 # (comment + run_history 'ignored') instead of rotting on the task.
 RUN_REQUESTED_TAG = "run-requested"
+
+# #182 Step 7 — inbound check. Owners whose completed steps are NOT re-checked by
+# the next agent. Kevin's stamps are approvals, not deliverables; gating them would
+# put an agent in the position of auditing his sign-off.
+INBOUND_SKIP_OWNERS = ("kevin",)
 
 # Fallback roster until the agents registry (V2.6) is live. Only lanes listed
 # here can dispatch in fallback mode — Phase B = docs lane only.
@@ -388,7 +403,46 @@ def build_prompt(agent, task):
     if cur is not None:
         prior = [f"  {i + 1}. ({step_owner(s) or '—'}) {step_title(s)}"
                  for i, s in enumerate(cl) if s.get("done")]
-        step_block = f"""
+        # #182 Step 7 (second half) — THE INBOUND CHECK. Kevin's goal was "a quick
+        # check that what was promised was delivered, before it goes to the next
+        # agent". The first design gave that job to a separate TM agent; this gives
+        # it to the agent that was already being dispatched. Two reasons it is
+        # better, not just cheaper: (1) it adds NO new agent — no extra spawn, no
+        # second concurrency pool, no daily-cap bypass, no run_history gap, and no
+        # tool-posture guarantee that the CLI cannot actually enforce; (2) the next
+        # agent is the CONSUMER of the hand-off, so it can ask the question that
+        # matters — "did step N give me what I need?" — where a blinded gate could
+        # only ask "does this text look like it addresses the SOP?".
+        # Deliberately NOT gated: the last step of a chain (no successor — Review
+        # covers it) and steps owned by kevin (his stamps are not operationally
+        # gated, carried over from the TM design).
+        inbound = ""
+        if idx > 0:
+            p = cl[idx - 1]
+            p_owner = step_owner(p) or "—"
+            if p_owner not in INBOUND_SKIP_OWNERS:
+                p_sop = (p.get("body") or "").strip()
+                inbound = f"""
+=== FIRST — INBOUND CHECK ON STEP {idx} (do this before anything else) ===
+Step {idx} ({p_owner}) — "{step_title(p)}" — was handed to you as complete.
+What that step promised:
+{p_sop or '(no SOP body — judge against what the thread says it set out to do; '
+          'if that is not determinable, proceed)'}
+
+Ask ONE question: did step {idx} deliver what it promised — enough for you to do YOUR step?
+  • YES — or it is merely imperfect, debatable or unpolished → say nothing and proceed.
+    You are checking DELIVERY, not correctness. Depth is not your job here.
+  • NO — something it EXPLICITLY promised is missing → do NOT start your step. Post a
+    comment beginning "⚠️ Raise-an-issue: step {idx} hand-off", name the SPECIFIC missing
+    thing, set `assignee` to `M`, and stop.
+
+RAISING AN ISSUE IS A SUCCESS, NOT A FAILURE. You are not being obstructive, and you are
+not graded on reaching your own step. A bad hand-off caught here costs minutes; the same
+one caught three steps later costs the chain. But if it is genuinely ambiguous, PROCEED —
+do not block on a maybe.
+=== END INBOUND CHECK ===
+"""
+        step_block = f"""{inbound}
 === YOUR STEP — STEP {idx + 1} of {len(cl)} — DO THIS ONE AND STOP ===
 Owner: {step_owner(cur) or '—'}   Mode: {cur.get('mode') or 'execute'}\
 {'   [AUDIBLE — inserted mid-flight, not in the original plan]' if cur.get('origin') == 'audible' else ''}
