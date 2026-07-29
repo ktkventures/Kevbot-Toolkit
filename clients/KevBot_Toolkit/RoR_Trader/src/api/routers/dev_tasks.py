@@ -76,7 +76,7 @@ _EDITABLE = {
     "is_urgent", "impacts_live", "needs_live_validation", "area",
     "assignee", "blocked_by", "tags", "notes", "parent_id", "origin",
     "checklist", "affected_sids", "impact", "kevin_final",
-    "standing_approval",
+    "standing_approval", "ai_eligible",
 }
 
 # Blast-radius chip values (board #136) — see migrations/dev_tasks_lifecycle.sql.
@@ -295,7 +295,7 @@ def _validate_team_fields(c, row: dict, task_id: Optional[int] = None):
         raise HTTPException(
             status_code=400,
             detail=f"impact must be one of {sorted(_IMPACTS)}")
-    for f in ("kevin_final", "standing_approval"):
+    for f in ("kevin_final", "standing_approval", "ai_eligible"):
         if f in row and not isinstance(row[f], bool):
             raise HTTPException(
                 status_code=400, detail=f"{f} must be a boolean")
@@ -521,9 +521,10 @@ def stamp_approval(task_id: int, payload: dict = Body(...),
     """Record Kevin's approval stamp on a task sitting in Approval.
 
     Atomic replacement for the hand flow M ran on board #136 itself: sets
-    kevin_final per the stamp mode, moves Approval → Todo, and writes one
-    system comment naming the stamp and who recorded it (M relaying Kevin's
-    verbal OK passes author='kevin' and says so on the thread).
+    kevin_final per the stamp mode, arms `ai_eligible` (board #198), moves
+    Approval → Todo, and writes one system comment naming the stamp and who
+    recorded it (M relaying Kevin's verbal OK passes author='kevin' and says so
+    on the thread).
     """
     mode = payload.get("mode")
     if mode not in _STAMP_MODES:
@@ -542,7 +543,14 @@ def stamp_approval(task_id: int, payload: dict = Body(...),
             detail=f"task is {rows[0].get('status')} — stamps only apply "
                    "to tasks in Approval")
     kevin_final = _STAMP_MODES[mode]
-    update = {"status": "Todo", "kevin_final": kevin_final}
+    # The stamp ARMS the task for AI work (board #198). Kevin's review stays the
+    # arming gate — nothing runs unapproved — but the guarantee now rides on
+    # `ai_eligible` instead of on the task sitting in `Todo`, so the chain can
+    # re-arm itself between steps without shoving the card back across the
+    # board. Both stamp modes arm: 'final' vs 'delegate' decides who CLOSES the
+    # task, not whether an agent may work it.
+    update = {"status": "Todo", "kevin_final": kevin_final,
+              "ai_eligible": True}
 
     # The stamp IS the completion of the first pending Kevin checklist step
     # (board #151). Without ticking it, next_actor() keeps returning 'kevin'
@@ -568,7 +576,8 @@ def stamp_approval(task_id: int, payload: dict = Body(...),
     c.table("dev_task_comments").insert({
         "task_id": task_id, "author": "system",
         "body": f"stamp: approved — {label} (by {author}) · "
-                f"status: Approval → Todo{tick_note}"}).execute()
+                f"status: Approval → Todo · ai_eligible: true"
+                f"{tick_note}"}).execute()
     res = c.table("dev_tasks").select("*").eq("id", task_id).execute().data
     return res[0] if res else {"status": "stamped"}
 

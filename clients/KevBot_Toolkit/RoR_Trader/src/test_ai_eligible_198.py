@@ -1,0 +1,304 @@
+"""Acceptance test — board #198, Step 2: the `ai_eligible` column + API.
+
+#198 splits the two jobs the kanban `status` had been doing at once — WHERE a
+task sits in its lifecycle, and MAY an AI agent run it. Step 2 is the data +
+API half only:
+
+  • round-trip   — ai_eligible is settable at create, readable back, and
+                   flips both ways through PATCH;
+  • default OFF  — a task created without it is FALSE (the migration's
+                   `NOT NULL DEFAULT false`), so no existing task is newly armed;
+  • fail loud    — a non-boolean is a 400, not a silent coerce
+                   (feedback_no_silent_defaults);
+  • the stamp arms it — Kevin's Approval stamp sets ai_eligible=true in BOTH
+                   modes and names it on the system comment. His review stays
+                   the arming gate; the guarantee just stops riding on `Todo`;
+  • INERT until Step 4 — the dispatcher still gates on `status=eq.Todo`, so an
+                   ai_eligible task parked anywhere else does NOT dispatch yet
+                   and a Todo task with ai_eligible=false STILL does. This is
+                   the "no existing task's behaviour changed" proof: Step 2
+                   changes nothing about what runs.
+
+Offline + hermetic, same shape as test_stamp_ticks_kevin_step_151.py: the real
+`api.routers.dev_tasks` router functions run against an in-memory fake Supabase
+client, and the real `tools/team_dispatcher/dispatcher.py` gate runs against a
+recorded fake `api()` that honours the `status=eq.` filter. No DB, no network.
+
+Run:  .venv/bin/python src/test_ai_eligible_198.py   (from RoR_Trader root)
+"""
+import copy
+import importlib.util
+import os
+import re
+import sys
+import types
+
+from fastapi import HTTPException
+
+SRC = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(SRC)
+sys.path.insert(0, SRC)
+
+PASS = 0
+
+
+def ok(label, cond, detail=""):
+    global PASS
+    if not cond:
+        print(f"FAIL: {label} {detail}")
+        sys.exit(1)
+    PASS += 1
+    print(f"  ok: {label}")
+
+
+def raises(label, code, fn):
+    try:
+        fn()
+    except HTTPException as e:
+        ok(f"{label} (HTTP {code})", e.status_code == code,
+           f"got {e.status_code}: {e.detail}")
+        return
+    ok(f"{label} (HTTP {code})", False, "no HTTPException raised")
+
+
+# ── In-memory fake Supabase (query-builder subset the router uses) ─────────
+
+def _deep(row):
+    return copy.deepcopy(row)
+
+
+class _Res:
+    def __init__(self, data):
+        self.data = data
+
+
+class _Query:
+    def __init__(self, store, tname):
+        self.store, self.tname = store, tname
+        self.op, self.payload, self.filters = "select", None, []
+
+    def select(self, *_):
+        self.op = "select"
+        return self
+
+    def insert(self, row):
+        self.op, self.payload = "insert", dict(row)
+        return self
+
+    def update(self, row):
+        self.op, self.payload = "update", dict(row)
+        return self
+
+    def eq(self, k, v):
+        self.filters.append((k, v))
+        return self
+
+    def order(self, *_, **__):
+        return self
+
+    def limit(self, *_):
+        return self
+
+    def _match(self, row):
+        return all(row.get(k) == v for k, v in self.filters)
+
+    def execute(self):
+        rows = self.store.setdefault(self.tname, [])
+        if self.op == "insert":
+            row = dict(self.payload)
+            row["id"] = self.store["_seq"] = self.store.get("_seq", 0) + 1
+            if self.tname == "dev_tasks":
+                # Column defaults, mirroring the migrations — ai_eligible's
+                # `NOT NULL DEFAULT false` is dev_tasks_ai_eligible.sql.
+                for k, v in (("status", "Backlog"), ("impact", "contained"),
+                             ("kevin_final", False),
+                             ("standing_approval", False),
+                             ("ai_eligible", False),
+                             ("tags", []), ("checklist", []),
+                             ("blocked_by", []), ("origin", "planned"),
+                             ("assignee", None), ("description", ""),
+                             ("is_urgent", False), ("priority_phase", 1),
+                             ("priority_seq", 99), ("parent_id", None)):
+                    row.setdefault(k, v)
+            rows.append(row)
+            return _Res([_deep(row)])
+        if self.op == "update":
+            hit = [r for r in rows if self._match(r)]
+            for r in hit:
+                r.update(_deep(self.payload))
+            return _Res([_deep(r) for r in hit])
+        return _Res([_deep(r) for r in rows if self._match(r)])
+
+
+class FakeSupabase:
+    def __init__(self):
+        self.store = {}
+
+    def table(self, name):
+        return _Query(self.store, name)
+
+
+FAKE = FakeSupabase()
+
+db_stub = types.ModuleType("db")
+db_stub.set_current_user = lambda *a, **k: None
+db_stub.get_admin_client = lambda: FAKE
+sys.modules["db"] = db_stub
+
+from api.routers import dev_tasks as dt                # noqa: E402
+
+
+def comments_for(tid):
+    return [c["body"] for c in FAKE.store.get("dev_task_comments", [])
+            if c["task_id"] == tid]
+
+
+def mk(title, **kw):
+    """Create a task with the fields the dispatcher gate needs to pass."""
+    payload = {"title": title, "description": "scoped", "assignee": "F"}
+    payload.update(kw)
+    return dt.create_task(payload, user=None)
+
+
+# ── walk 1: the column round-trips through the API ─────────────────────────
+
+print("― walk 1: ai_eligible round-trips (create → read → PATCH both ways) ―")
+t = mk("armed at birth", ai_eligible=True)
+ok("create accepts ai_eligible=true and returns it",
+   t["ai_eligible"] is True)
+
+off = dt.update_task(t["id"], {"ai_eligible": False}, user=None)
+ok("PATCH disarms it (true → false)", off["ai_eligible"] is False)
+
+on = dt.update_task(t["id"], {"ai_eligible": True}, user=None)
+ok("PATCH re-arms it (false → true)", on["ai_eligible"] is True)
+
+ok("a plain read sees the persisted value",
+   dt.update_task(t["id"], {}, user=None)["ai_eligible"] is True)
+
+ok("arming does NOT move the card — status is untouched",
+   on["status"] == "Backlog")
+
+
+# ── walk 2: default OFF — nothing is armed by the migration landing ────────
+
+print("― walk 2: default OFF (no existing task is newly armed) ―")
+plain = mk("untouched legacy task")
+ok("a task created without the field is FALSE, not None",
+   plain["ai_eligible"] is False)
+
+legacy = dt.update_task(plain["id"], {"status": "Todo", "actor": "M"},
+                        user=None)
+ok("editing other fields never sets it implicitly",
+   legacy["ai_eligible"] is False and legacy["status"] == "Todo")
+
+
+# ── walk 3: fail loud on a non-boolean (no silent coercion) ────────────────
+
+print("― walk 3: non-boolean is a 400, never coerced ―")
+for bad in ("true", 1, None, [], {"on": True}):
+    raises(f"create with ai_eligible={bad!r} refused", 400,
+           lambda b=bad: dt.create_task(
+               {"title": "bad", "ai_eligible": b}, user=None))
+raises("PATCH with ai_eligible='yes' refused", 400,
+       lambda: dt.update_task(plain["id"], {"ai_eligible": "yes"}, user=None))
+ok("the refused PATCH left the row alone",
+   dt.update_task(plain["id"], {}, user=None)["ai_eligible"] is False)
+
+
+# ── walk 4: Kevin's Approval stamp arms it (both modes) ────────────────────
+
+print("― walk 4: the Approval stamp sets ai_eligible=true ―")
+for mode, label in (("final", "two-touch"), ("delegate", "M closes")):
+    st = mk(f"awaiting stamp ({mode})",
+            checklist=[{"text": "Kevin stamps", "done": False,
+                        "role": "kevin"},
+                       {"text": "Build", "done": False, "role": "F"}])
+    sid = st["id"]
+    ok(f"[{mode}] unstamped task starts disarmed",
+       st["ai_eligible"] is False)
+    dt.update_task(sid, {"status": "Approval", "actor": "M"}, user=None)
+    ok(f"[{mode}] still disarmed while it sits in Approval",
+       dt.update_task(sid, {}, user=None)["ai_eligible"] is False)
+
+    r = dt.stamp_approval(sid, {"mode": mode, "author": "kevin"}, user=None)
+    ok(f"[{mode}] the stamp ARMS the task", r["ai_eligible"] is True)
+    ok(f"[{mode}] the stamp still moves Approval → Todo (unchanged)",
+       r["status"] == "Todo")
+    ok(f"[{mode}] kevin_final unchanged by #198",
+       r["kevin_final"] is (mode == "final"))
+    ok(f"[{mode}] the system comment names the arming",
+       any("ai_eligible: true" in b and "stamp: approved" in b
+           for b in comments_for(sid)))
+    ok(f"[{mode}] still exactly ONE stamp comment",
+       sum("stamp: approved" in b for b in comments_for(sid)) == 1)
+    ok(f"[{mode}] #151 checklist tick survives (comment keeps both notes)",
+       any('checklist: ticked "Kevin stamps"' in b
+           for b in comments_for(sid)))
+
+raises("stamping a task that is not in Approval is still a 409", 409,
+       lambda: dt.stamp_approval(plain["id"], {"mode": "final"}, user=None))
+
+
+# ── walk 5: INERT until Step 4 — today's dispatcher still gates on Todo ────
+# The whole point of the additive design: after Step 2 the board behaves
+# EXACTLY as it did. Proven against the real dispatcher, not a description of
+# it. Step 4 (a different lane's file) is what makes ai_eligible load-bearing.
+
+print("― walk 5: the live dispatcher gate is unchanged by this step ―")
+spec = importlib.util.spec_from_file_location(
+    "team_dispatcher",
+    os.path.join(ROOT, "tools", "team_dispatcher", "dispatcher.py"))
+disp = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(disp)
+
+armed_elsewhere = mk("armed but Staged", ai_eligible=True)
+dt.update_task(armed_elsewhere["id"], {"status": "Staged", "actor": "M"},
+               user=None)
+todo_unarmed = mk("plain Todo, never armed")
+dt.update_task(todo_unarmed["id"], {"status": "Todo", "actor": "M"},
+               user=None)
+
+STATUS_RE = re.compile(r"status=eq\.([^&]+)")
+
+
+def fake_api(method, path, body=None, prefer=None):
+    """Serve the dispatcher's PostgREST query from the fake board, HONOURING
+    the status filter — so a gate that ignored `status` would be caught."""
+    board = [_deep(r) for r in FAKE.store["dev_tasks"]]
+    m = STATUS_RE.search(path)
+    if m:
+        board = [r for r in board if r.get("status") == m.group(1)]
+    return board
+
+
+disp.api = fake_api
+agents = {"F": {"letter": "F", "status": "headless", "worktree": ".",
+                "scope": "s", "boundaries": "b"}}
+got, _skipped = disp.triage_todo(agents, set())
+got_ids = [x["id"] for x in got]
+
+ok("ai_eligible=true on a NON-Todo task does NOT dispatch yet "
+   "(the gate is still status=eq.Todo — Step 4 changes that)",
+   armed_elsewhere["id"] not in got_ids)
+ok("a Todo task with ai_eligible=false STILL dispatches "
+   "(today's queue is untouched)",
+   todo_unarmed["id"] in got_ids)
+ok("the stamped tasks from walk 4 are in the Todo queue as before",
+   len(got_ids) >= 3)
+ok("dispatcher module has no ai_eligible logic yet — Step 4 owns that",
+   "ai_eligible" not in
+   open(os.path.join(ROOT, "tools", "team_dispatcher",
+                     "dispatcher.py")).read())
+
+
+# ── walk 6: whitelist discipline holds ─────────────────────────────────────
+
+print("― walk 6: unknown fields are still dropped ―")
+ok("ai_eligible is on the PATCH whitelist", "ai_eligible" in dt._EDITABLE)
+w = dt.update_task(plain["id"],
+                   {"ai_eligible": True, "bogus_column": "x"}, user=None)
+ok("the real field landed", w["ai_eligible"] is True)
+ok("the unknown field never reached the row", "bogus_column" not in w)
+
+print(f"\nALL PASS ({PASS} checks)")
