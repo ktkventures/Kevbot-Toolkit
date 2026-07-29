@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Team dispatcher (V4.17) — dispatches board tasks to headless Claude agents.
+"""Team dispatcher (V4.18) — dispatches board tasks to headless Claude agents.
+
+V4.18 (board #182 Step 7, second half): THE TM GATE. Every step hand-off is
+reviewed by TM — Task Manager — a fresh, tool-less, time-boxed agent that asks
+exactly one question: *was what the step asked for actually delivered?* Three
+outcomes and nothing else (PASS / BOUNCE / ESCALATE), a bounce limit of two,
+and it FAILS OPEN — if TM cannot run, the hand-off proceeds flagged
+"unreviewed". Silent on pass, loud on problem. It gates M's steps too; that is
+the point (see the charter's PM-vs-TM section). Ships in `observe` mode: TM
+posts real verdicts but takes NO board action until TM_GATE=enforce.
 
 V4.17 (board #182 Step 7): STEP-LEVEL DISPATCH. For a #182 process chain the
 dispatcher sends the CURRENT STEP — its title + its own SOP body — instead of "the
@@ -20,8 +29,11 @@ Usage:
   python3 dispatcher.py --loop             # dry-run every POLL_S seconds
   python3 dispatcher.py --live             # real dispatching (claims, spawns, reports)
   python3 dispatcher.py --live --loop --poll 20   # serve Run buttons (board #109)
+  python3 dispatcher.py --tm-review 182:4         # evaluate ONE hand-off, print verdict
+  python3 dispatcher.py --tm-review 182:4:569     # ...against a named submission comment
 
 Kill switches: touch tools/team_dispatcher/PAUSE (idles the loop);
+touch tools/team_dispatcher/TM_OFF (or TM_GATE=off) to disable the TM gate;
 per-agent: registry status must be 'headless' to be dispatchable at all.
 Design: docs/_active/Design_Agent_Dispatcher.md (decisions approved 2026-07-23).
 """
@@ -40,6 +52,7 @@ REPO = "/home/kevin/projects/Kevbot-Toolkit/clients/KevBot_Toolkit/RoR_Trader"
 ENV = f"{REPO}/src/.env"
 CHARTER = f"{REPO}/docs/_active/Session_Charters.md"
 PAUSE_FILE = f"{HERE}/PAUSE"
+TM_OFF_FILE = f"{HERE}/TM_OFF"
 STATE_FILE = f"{HERE}/state.json"
 LOG_DIR = f"{HERE}/logs"
 
@@ -66,6 +79,24 @@ STALE_SKIP_S = 4 * 3600    # board #171 tripwire: a STUCK Todo (headless-assigne
 # gated); the tag is cleared on claim. Ineligible requests are cleared LOUDLY
 # (comment + run_history 'ignored') instead of rotting on the task.
 RUN_REQUESTED_TAG = "run-requested"
+
+# ── TM gate (board #182 Step 7, second half) ─────────────────────────────────
+# TM_GATE=off      no gate at all (equivalent to touching TM_OFF)
+# TM_GATE=observe  DEFAULT — TM runs and posts its real verdict, but takes ZERO
+#                  board action. This is the calibration mode: read a week of
+#                  verdicts before letting it move anything.
+# TM_GATE=enforce  verdicts act: BOUNCE reassigns to the submitter, ESCALATE
+#                  inserts an origin='audible' PM step.
+TM_MODE = (os.environ.get("TM_GATE") or "observe").strip().lower()
+TM_TIMEOUT_S = 300         # hard time box — rail 1 ("narrow, cannot creep")
+TM_CONCURRENCY = 2         # own pool; TM must never starve agent dispatch
+TM_MAX_BOUNCES = 2         # rail 2 — third strike is an ESCALATE, not a loop
+TM_SKIP_OWNERS = ("kevin",)  # Kevin's stamps are not operationally gated
+TM_PER_PASS = 2            # tick-scan enqueue budget per pass
+TM_SUB_MAX = 12000         # chars of submission handed to TM
+TM_DESC_MAX = 14000        # chars of task description handed to TM
+TM_THREAD_LOOKBACK = 8     # comments scanned to reconstruct a manual submission
+TM_VERDICTS = ("PASS", "BOUNCE", "ESCALATE")
 
 # Fallback roster until the agents registry (V2.6) is live. Only lanes listed
 # here can dispatch in fallback mode — Phase B = docs lane only.
@@ -167,6 +198,382 @@ def current_step(task):
         if isinstance(s, dict) and not s.get("done"):
             return i, s
     return None, None
+
+
+# ── TM — Task Manager: the hand-off gate (board #182 Step 7) ─────────────────
+# TM asks ONE question — "was what the step asked for actually delivered?" — and
+# answers with a route, never an investigation. PM asks "is this actually right?";
+# TM asks "is this what was asked?". The separation exists because an agent that
+# gates its own hand-offs is self-review wearing a badge (charter §1, PM vs TM).
+#
+# The reviewed-marker is a TM-AUTHORED COMMENT CARRYING `step_order` — the column
+# F added in Step 3. That one choice means: no schema change, no F cycle, the
+# verdict lives in the thread where the next owner will read it anyway, and the
+# same row is the idempotency key ("has this hand-off been reviewed?"). Do not
+# replace it with a state-file flag; state.json does not survive a fresh clone
+# and a hand-off must not be re-reviewed just because the loop was restarted.
+
+def tm_mode():
+    """Effective mode. The TM_OFF file beats the env var so the gate can be
+    killed without restarting the loop (same ergonomics as PAUSE)."""
+    if os.path.exists(TM_OFF_FILE):
+        return "off"
+    return TM_MODE if TM_MODE in ("off", "observe", "enforce") else "observe"
+
+
+def tm_verdicts(task_id):
+    """Every TM verdict on a task → {step_order: [verdict, ...]} in thread order.
+    Parsed from the comment's FIRST LINE, which the dispatcher writes (never the
+    TM agent) precisely so the format cannot drift."""
+    rows = api("GET", f"dev_task_comments?task_id=eq.{task_id}&author=eq.TM"
+                      "&order=created_at&select=body,step_order") or []
+    out = {}
+    for r in rows:
+        so = r.get("step_order")
+        if so is None:
+            continue
+        head = (r.get("body") or "").strip().splitlines()
+        first = head[0].strip() if head else ""
+        v = first[3:].strip().rstrip(".") if first.upper().startswith("TM:") else ""
+        out.setdefault(int(so), []).append(v.upper())
+    return out
+
+
+def tm_submission_from_thread(task_id):
+    """Reconstruct the submission for a hand-off nobody dispatched (an M or F
+    step ticked by hand). Everything the humans/agents said since the last TM
+    verdict, system rows dropped. Deliberately NOT "the whole thread": TM judges
+    a submission, and a submission is what was said after the previous gate."""
+    rows = api("GET", f"dev_task_comments?task_id=eq.{task_id}"
+                      f"&order=created_at.desc&limit={TM_THREAD_LOOKBACK}"
+                      "&select=author,body") or []
+    out = []
+    for r in rows:                      # newest → oldest
+        if r.get("author") == "TM":
+            break                       # previous gate: stop, that is the window edge
+        if r.get("author") == "system":
+            continue
+        out.append(f"[{r.get('author')}]\n{r.get('body') or ''}")
+    return "\n\n".join(reversed(out))
+
+
+def tm_build_prompt(task, idx, step, submission, prior):
+    """TM's whole world. No tools are granted, so anything not in here does not
+    exist for TM — which is the context-hygiene argument for a separate agent
+    (charter §1): it carries the step and the submission and nothing else."""
+    cl = task.get("checklist") or []
+    sop = (step.get("body") or "").strip()
+    if sop:
+        sop_block = sop
+        sop_note = ""
+    else:
+        # #182's own chain predates step bodies: its SOPs live in the description
+        # under "# PROCESS CHAIN". Say so rather than letting TM guess at intent
+        # — a guessed SOP is worse than no gate (the audible said exactly this).
+        sop_block = "(this step object carries no SOP body)"
+        sop_note = ("\nThe step object has NO SOP body. Find this step's SOP in the task "
+                    "description below, under the 'PROCESS CHAIN' section, by matching the "
+                    "step title. If you cannot find it, or what you find is too vague to "
+                    "judge a submission against, answer ESCALATE with that as the reason — "
+                    "do NOT invent the requirement.")
+    hist = "\n".join(f"- earlier verdict on this step: {v}" for v in prior) or "- none (first review)"
+    return f"""You are TM — Task Manager on the RoR Trader team board. You are a GATE, not a reviewer.
+
+YOUR ONE QUESTION: was what this step ASKED FOR actually delivered by this submission?
+
+You are NOT the Project Manager. You do NOT investigate, read code, run tests, check out
+branches or verify claims. You have NO tools — everything you may consider is in this
+prompt. You do not judge whether the work is a good idea, whether the approach is optimal,
+or whether the code is correct. Someone else does that. You judge DELIVERY against the SOP,
+then route. Escalating IS your answer to "this needs a deeper look."
+
+=== THE STEP THAT WAS ASSIGNED — step {idx + 1} of {len(cl)} ===
+Owner: {step_owner(step) or '—'}
+Mode: {step.get('mode') or 'execute'}
+Title: {step_title(step)}
+SOP:
+{sop_block}{sop_note}
+
+=== TASK CONTEXT (background, and where an absent SOP lives) ===
+Board #{task['id']}: {task['title']}
+Description:
+{(task.get('description') or '(none)')[:TM_DESC_MAX]}
+
+=== THE SUBMISSION YOU ARE JUDGING ===
+{submission[:TM_SUB_MAX] or '(the submitter left no report — that alone is a finding)'}
+
+=== PRIOR TM VERDICTS ON THIS SAME STEP ===
+{hist}
+
+=== HOW TO DECIDE — exactly three outcomes ===
+PASS — the submission addresses what the SOP asked for. Imperfection, extra polish,
+  debatable style and unverified claims are all PASS: depth is the next owner's job, not
+  yours. Default to PASS when the submission plausibly covers the SOP.
+BOUNCE — something the SOP explicitly asked for is missing or was skipped, AND the
+  submitter can fix it by resubmitting. You must name the specific missing thing. Do not
+  bounce for things the SOP did not ask for.
+ESCALATE — a resubmission will not fix it; a human/PM look is needed. Use it for: work
+  that is good but is NOT what the step asked for (scope mismatch — extra steps done,
+  a different approach taken, a step's boundaries crossed); an SOP constraint that appears
+  violated; an SOP you cannot find or that is too vague to judge against; and any case
+  where bouncing would clearly be worse than accepting the work as-is.
+
+Bounce limits and all board actions are handled for you. Judge, do not act.
+
+OUTPUT CONTRACT: reply with ONLY a JSON object — no prose before or after, no code fence:
+{{"verdict": "PASS" | "BOUNCE" | "ESCALATE", "reason": "<1-2 specific sentences>", "missing": "<what must be fixed; BOUNCE only, else empty string>"}}"""
+
+
+def tm_spawn(prompt, log_path):
+    """A fresh, tool-less, single-shot judge. --disallowedTools is what keeps
+    rail 1 honest: TM *cannot* wander into an investigation, prompt or no."""
+    with open(log_path, "w") as lf:
+        return subprocess.Popen(
+            [CLAUDE_BIN, "-p", prompt, "--output-format", "json",
+             "--disallowedTools", "Bash", "Read", "Write", "Edit", "Glob", "Grep",
+             "WebFetch", "WebSearch", "Task", "TodoWrite", "NotebookEdit"],
+            cwd=REPO, stdout=lf, stderr=subprocess.STDOUT, start_new_session=True)
+
+
+def tm_parse(full):
+    """(verdict, reason, missing) from a finished TM log, or None if the run has
+    not produced a terminal result yet. A malformed verdict returns None-verdict
+    so the caller FAILS OPEN — never guess what TM meant."""
+    last = parse_terminal(full)
+    if last is None:
+        return None
+    txt = str(last.get("result", "")).strip()
+    if txt.startswith("```"):                       # tolerate a fenced answer
+        txt = txt.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        obj = json.loads(txt[txt.index("{"):txt.rindex("}") + 1])
+    except Exception:
+        return (None, f"TM returned unparseable output: {txt[:200]}", "")
+    v = str(obj.get("verdict", "")).strip().upper()
+    if v not in TM_VERDICTS:
+        return (None, f"TM returned an unknown verdict {v!r}", "")
+    return (v, str(obj.get("reason", "")).strip(), str(obj.get("missing", "")).strip())
+
+
+def tm_comment(task_id, step_order, verdict, reason, missing, mode, submitter):
+    """The verdict row — the reviewed-marker AND the human-readable outcome.
+    Silent on pass / loud on problem (rail 4): PASS is one line, everything else
+    gets real estate. The first line is machine-parsed by tm_verdicts()."""
+    if verdict == "PASS":
+        body = f"TM: PASS · step {step_order} — {reason}"
+    elif verdict == "BOUNCE":
+        body = (f"TM: BOUNCE · step {step_order}\n\n"
+                f"**Not what the step asked for — back to `{submitter}` to resubmit.**\n\n"
+                f"**Why:** {reason}\n\n**Fix and resubmit:** {missing or '(see above)'}\n\n"
+                f"_TM gates delivery, not depth: this is *the step asked for X and X is not "
+                f"here*, not a judgement on the quality of what is here. Bounce "
+                f"{len(mode['prior']) + 1} of {TM_MAX_BOUNCES}; the next one escalates to M "
+                f"instead of bouncing again._")
+    elif verdict == "ESCALATE":
+        body = (f"TM: ESCALATE · step {step_order}\n\n"
+                f"**This needs a real look — routing to M.** A resubmission would not fix it.\n\n"
+                f"**Why:** {reason}\n\n"
+                f"_TM never investigates; escalating IS its answer to \"this needs more\"._")
+    else:
+        body = (f"TM: UNREVIEWED · step {step_order}\n\n"
+                f"⚠️ The gate **failed open** — this hand-off proceeded WITHOUT review. "
+                f"Reason: {reason}\n\n_Fail-open is deliberate (rail 3): losing the check on "
+                f"one transition beats stalling every task mid-chain. Nothing is blocked; "
+                f"the next owner just has no TM verdict to lean on._")
+    if mode["mode"] == "observe" and verdict in ("BOUNCE", "ESCALATE"):
+        body += ("\n\n> **OBSERVE MODE — no board action taken.** TM did not reassign or "
+                 "insert anything; this is the verdict it *would* have acted on. "
+                 "Set `TM_GATE=enforce` to arm it.")
+    api("POST", "dev_task_comments", body={
+        "task_id": task_id, "author": "TM", "step_order": step_order, "body": body})
+
+
+def tm_apply(task_id, step_order, verdict, submitter, live):
+    """The board writes — enforce mode only. BOUNCE puts the task back in the
+    submitter's queue (Todo → the dispatcher re-runs it, with the bounce reason
+    now in the thread). ESCALATE inserts an origin='audible' PM step right after
+    the reviewed one and hands the task to M."""
+    if not live or verdict not in ("BOUNCE", "ESCALATE"):
+        return
+    if verdict == "BOUNCE":
+        api("PATCH", f"dev_tasks?id=eq.{task_id}",
+            body={"status": "Todo", "assignee": submitter})
+        return
+    # ESCALATE — re-read the chain so a concurrent edit is not clobbered, and
+    # insert AFTER the reviewed step. Completed steps are never touched (T4':
+    # course-correct by inserting an audible, never by reopening).
+    rows = api("GET", f"dev_tasks?id=eq.{task_id}&select=checklist") or []
+    cl = list((rows[0].get("checklist") if rows else None) or [])
+    at = min(step_order, len(cl))
+    cl.insert(at, {"owner": "M", "role": "M", "origin": "audible", "done": False,
+                   "title": f"PM look: TM escalated step {step_order}",
+                   "text": f"PM look: TM escalated step {step_order}",
+                   "mode": "execute",
+                   "body": ("TM escalated the hand-off on this step — it judged that a "
+                            "resubmission would not fix the problem. Read TM's verdict "
+                            "comment above, then decide: accept as-is, re-scope the chain, "
+                            "or insert the corrective step. TM routes; M decides.")})
+    api("PATCH", f"dev_tasks?id=eq.{task_id}",
+        body={"checklist": cl, "assignee": "M"})
+
+
+def tm_active(st):
+    now = time.time()
+    return [r for r in st.get("tm_runs", []) if r.get("active")
+            and now - r["t0"] < TM_TIMEOUT_S]
+
+
+def tm_enqueue(st, task, idx, step, submission, live, why):
+    """Spawn one TM evaluation. Non-blocking by construction: a synchronous gate
+    in the poll loop would stall Run buttons and every other reap behind a
+    judgement call — and rail 3 says never trade the pipeline for the check."""
+    if tm_mode() == "off":
+        return False
+    if len(tm_active(st)) >= TM_CONCURRENCY:
+        return False
+    if step_owner(step) in TM_SKIP_OWNERS:
+        return False
+    tid, so = task["id"], idx + 1
+    prior = tm_verdicts(tid).get(so, [])
+    if prior:
+        return False                    # already gated — the marker is the key
+    prompt = tm_build_prompt(task, idx, step, submission, prior)
+    os.makedirs(LOG_DIR, exist_ok=True)
+    run_id = f"tm{int(time.time())}-{tid}s{so}"
+    log_path = f"{LOG_DIR}/{run_id}.log"
+    if not live:
+        open(f"{LOG_DIR}/{run_id}.DRY.prompt.txt", "w").write(prompt)
+        print(f"  WOULD TM-REVIEW #{tid} step {so} ({why}) → {run_id}.DRY.prompt.txt", flush=True)
+        return True
+    p = tm_spawn(prompt, log_path)
+    st.setdefault("tm_runs", []).append({
+        "run_id": run_id, "task_id": tid, "step_order": so, "pid": p.pid,
+        "t0": time.time(), "log": log_path, "active": True,
+        "submitter": step_owner(step) or "M", "prior": prior})
+    save_state(st)
+    print(f"  TM-REVIEW #{tid} step {so} ({why}) pid={p.pid} mode={tm_mode()}", flush=True)
+    return True
+
+
+def tm_reap(st, live):
+    """Collect finished TM judgements. Every exit path posts a verdict row —
+    including the failures — because that row is the idempotency key: without it
+    a crashed gate would re-review the same hand-off on every single poll."""
+    for r in [x for x in st.get("tm_runs", []) if x.get("active")]:
+        alive = os.path.exists(f"/proc/{r['pid']}")
+        full = open(r["log"]).read() if os.path.exists(r["log"]) else ""
+        parsed = tm_parse(full) if full else None
+        expired = time.time() - r["t0"] >= TM_TIMEOUT_S
+        if alive and not expired and parsed is None:
+            continue
+        r["active"] = False
+        if alive:
+            kill_run_group(r["pid"])
+        if parsed is None:
+            verdict, reason, missing = None, (
+                f"TM hit its {TM_TIMEOUT_S // 60}-minute time box without answering"
+                if expired else "the TM run died without producing a verdict"), ""
+        else:
+            verdict, reason, missing = parsed
+        # Rail 2 — the third strike is not a third bounce. Without this the gate
+        # is a loop with no exit: TM bounces, the lane resubmits, TM bounces.
+        if verdict == "BOUNCE" and len(r["prior"]) >= TM_MAX_BOUNCES:
+            verdict = "ESCALATE"
+            reason = (f"bounce limit reached ({TM_MAX_BOUNCES}) — TM's finding still "
+                      f"stands and resubmission is not converging: {reason}")
+        if live:
+            tm_comment(r["task_id"], r["step_order"], verdict, reason, missing,
+                       {"mode": tm_mode(), "prior": r["prior"]}, r["submitter"])
+            if tm_mode() == "enforce":
+                tm_apply(r["task_id"], r["step_order"], verdict, r["submitter"], live)
+        print(f"  TM VERDICT #{r['task_id']} step {r['step_order']}: "
+              f"{verdict or 'UNREVIEWED (failed open)'} — {reason[:120]}", flush=True)
+    runs = st.get("tm_runs", [])
+    st["tm_runs"] = [x for x in runs if x.get("active")] + \
+                    [x for x in runs if not x.get("active")][-50:]
+    save_state(st)
+
+
+def tm_scan(st, live):
+    """Trigger B — hand-offs nobody dispatched. A dispatched run is gated at reap
+    (trigger A, on SUBMISSION, so TM's read reaches M *before* M reviews). This
+    covers the rest: a step ticked by hand, which is how M's own steps complete —
+    and gating M is explicitly the point.
+
+    Only steps carrying `completed_at` are eligible. That is not a nicety: it is
+    the line between a hand-off TM can date and a submission it would have to
+    guess at. Historical steps ticked before the step-action API shipped have no
+    timestamp, so TM leaves them alone instead of inventing a window. Review one
+    on purpose with --tm-review."""
+    if tm_mode() == "off":
+        return
+    budget = TM_PER_PASS
+    rows = api("GET", "dev_tasks?select=id,title,description,checklist"
+                      "&checklist=not.is.null&order=updated_at.desc&limit=60") or []
+    for t in rows:
+        if budget <= 0:
+            break
+        cl = t.get("checklist") or []
+        if not is_process_chain(cl):
+            continue
+        reviewed = tm_verdicts(t["id"])
+        for i, s in enumerate(cl):
+            if budget <= 0:
+                break
+            if not (isinstance(s, dict) and s.get("done") and s.get("completed_at")):
+                continue
+            if (i + 1) in reviewed or step_owner(s) in TM_SKIP_OWNERS:
+                continue
+            if tm_enqueue(st, t, i, s, tm_submission_from_thread(t["id"]), live,
+                          "ticked by hand"):
+                budget -= 1
+
+
+def tm_review_one(spec, live):
+    """`--tm-review <task>:<step>[:<comment_id>]` — gate one hand-off on purpose.
+    Two jobs: calibration against hand-offs that already happened, and the way M
+    puts its OWN step through the gate today (M's ticks predate completed_at, so
+    trigger B cannot see them). Synchronous — you asked for one answer."""
+    parts = spec.split(":")
+    tid, so = int(parts[0]), int(parts[1])
+    cid = int(parts[2]) if len(parts) > 2 else None
+    task = (api("GET", f"dev_tasks?id=eq.{tid}&select=*") or [None])[0]
+    if task is None:
+        print(f"task #{tid} not found", flush=True); return
+    cl = task.get("checklist") or []
+    if not 1 <= so <= len(cl):
+        print(f"#{tid} has {len(cl)} steps — step {so} is out of range", flush=True); return
+    idx, step = so - 1, cl[so - 1]
+    if cid is not None:
+        rows = api("GET", f"dev_task_comments?id=eq.{cid}&select=author,body") or []
+        submission = (f"[{rows[0]['author']}]\n{rows[0]['body']}" if rows
+                      else f"(comment {cid} not found)")
+    else:
+        submission = tm_submission_from_thread(tid)
+    prior = tm_verdicts(tid).get(so, [])
+    prompt = tm_build_prompt(task, idx, step, submission, prior)
+    os.makedirs(LOG_DIR, exist_ok=True)
+    run_id = f"tm{int(time.time())}-{tid}s{so}"
+    log_path = f"{LOG_DIR}/{run_id}.log"
+    print(f"TM reviewing #{tid} step {so} ({step_owner(step)}: {step_title(step)[:60]}) "
+          f"· submission={'comment ' + str(cid) if cid else 'thread window'} "
+          f"· {len(submission)} chars · mode={tm_mode()} · live={live}", flush=True)
+    p = tm_spawn(prompt, log_path)
+    try:
+        p.wait(timeout=TM_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        kill_run_group(p.pid)
+    parsed = tm_parse(open(log_path).read() if os.path.exists(log_path) else "")
+    verdict, reason, missing = parsed if parsed else (
+        None, "the TM run produced no verdict", "")
+    print(f"\n  VERDICT: {verdict or 'UNREVIEWED (failed open)'}\n  REASON:  {reason}"
+          f"{chr(10) + '  MISSING: ' + missing if missing else ''}\n", flush=True)
+    if live:
+        tm_comment(tid, so, verdict, reason, missing,
+                   {"mode": tm_mode(), "prior": prior}, step_owner(step) or "M")
+        if tm_mode() == "enforce":
+            tm_apply(tid, so, verdict, step_owner(step) or "M", live)
+        print("  posted to the thread", flush=True)
 
 
 def triage_todo(agents, done_ids):
@@ -503,6 +910,25 @@ def parse_terminal(full):
     return None
 
 
+def tm_gate_submission(st, run, report):
+    """Trigger A — a dispatched agent just submitted. This fires on SUBMISSION,
+    not on the tick, so TM's read is already in the thread when M opens the task
+    to review it. That ordering is the whole value: it is also what lets TM catch
+    an M that would otherwise rubber-stamp its own lane's hand-off."""
+    so = run.get("step_order")
+    if so is None or tm_mode() == "off":
+        return
+    rows = api("GET", f"dev_tasks?id=eq.{run['task_id']}&select=*") or []
+    if not rows:
+        return
+    task = rows[0]
+    cl = task.get("checklist") or []
+    if not (is_process_chain(cl) and 1 <= so <= len(cl)):
+        return
+    tm_enqueue(st, task, so - 1, cl[so - 1], f"[{run['agent']}·auto]\n{report}",
+               True, "agent submission")
+
+
 def reap(st):
     """Collect finished live runs → post comments, move the task to Review.
     Runs in state were always live-dispatched, so reporting is unconditional.
@@ -548,6 +974,10 @@ def reap(st):
                 "body": f"status: In Progress → Review (by dispatcher — "
                         f"run {r['run_id']} finished, output awaiting sign-off)"})
             rh_finish(r["run_id"], outcome, tail)
+            if outcome == "ok":
+                # #182 Step 7 — gate the hand-off. A failed run has nothing to
+                # judge; that is a dispatch problem, not a delivery problem.
+                tm_gate_submission(st, r, str(result)[:RESULT_COMMENT_MAX])
     save_state(st)
 
 
@@ -560,6 +990,8 @@ def one_pass(live, only_task=None):
     agents, source = headless_agents()
     st = load_state()
     reap(st)
+    if live:
+        tm_reap(st, live)
     slots = CONCURRENCY - len(active_runs(st))
     cap_left = DAILY_CAP - today_run_count(st)
     done_ids = {t["id"] for t in api("GET", "dev_tasks?status=eq.Done&select=id")}
@@ -583,10 +1015,13 @@ def one_pass(live, only_task=None):
             print(f"task #{only_task} is NOT eligible{detail} — nothing dispatched",
                   flush=True)
         cands = hit
+    if only_task is None:
+        tm_scan(st, live)      # trigger B — hand-offs nobody dispatched
     now = datetime.now(timezone.utc).strftime("%H:%M:%SZ")
     print(f"[{now}] agents={list(agents)} ({source}) · dispatchable={len(cands)} "
           f"(button-requested={len(requested)}, skipped={len(skipped)}) "
-          f"· slots={slots} · cap_left={cap_left} · mode={'LIVE' if live else 'DRY-RUN'}",
+          f"· slots={slots} · cap_left={cap_left} · tm={tm_mode()}"
+          f"({len(tm_active(st))} active) · mode={'LIVE' if live else 'DRY-RUN'}",
           flush=True)
     for t, reason in bad_requests:
         if live:
@@ -631,8 +1066,14 @@ def one_pass(live, only_task=None):
             "body": f"dispatched to {t['assignee']}·auto (run {run_id})"})
         rh_claim(t, run_id)
         p = spawn(agent, t, prompt, log_path)
+        # Stamp WHICH step this run was dispatched for, at dispatch time. Reading
+        # it back at reap would re-derive `current_step` from a chain that may
+        # have been edited in the meantime — and TM must judge the step the agent
+        # was actually handed, not the one that happens to be current later.
+        d_idx, _ = current_step(t)
         st["runs"].append({"run_id": run_id, "task_id": t["id"], "agent": t["assignee"],
                            "pid": p.pid, "t0": time.time(), "log": log_path,
+                           "step_order": (d_idx + 1) if d_idx is not None else None,
                            "ts": datetime.now(timezone.utc).isoformat(), "active": True})
         save_state(st)
         print(f"  DISPATCHED #{t['id']} → {t['assignee']}·auto pid={p.pid}", flush=True)
@@ -647,7 +1088,13 @@ def main():
     ap.add_argument("--poll", type=int, default=POLL_S,
                     help="seconds between --loop passes (lower it when the "
                          "loop is serving Run buttons — board #109)")
+    ap.add_argument("--tm-review", default=None, metavar="TASK:STEP[:COMMENT_ID]",
+                    help="run the TM gate on ONE hand-off and print the verdict "
+                         "(posts to the thread only with --live). Board #182.")
     args = ap.parse_args()
+    if args.tm_review:
+        tm_review_one(args.tm_review, args.live)
+        return
     while True:
         one_pass(args.live, only_task=args.task)
         if not args.loop:
