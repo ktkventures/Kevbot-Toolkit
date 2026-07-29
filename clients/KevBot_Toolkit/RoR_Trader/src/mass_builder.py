@@ -1754,6 +1754,15 @@ _MAX_AUTO_RESUMES = 3  # retry cap: if a search fails to complete after
                         # a manual Edit+Restart. Prevents infinite retry
                         # loops on fundamentally broken searches.
 
+# Wall-clock DB heartbeat (board #31). _HB_FLUSH_SECS mirrors the 60s throttle
+# _progress already applies, so the two paths share one write budget; the
+# heartbeat merely guarantees the flush happens even when no callback fires.
+# _HB_POLL_SECS is the wake interval — short enough that the thread stops
+# promptly at the end of a search, and cheap because a wake that finds the
+# window unexpired does no I/O at all. Module-level so tests can shrink them.
+_HB_POLL_SECS = 15
+_HB_FLUSH_SECS = 60
+
 
 def cleanup_orphaned_mass_searches() -> dict:
     """Recover mass_searches rows left behind by a dead API process on startup.
@@ -1989,6 +1998,34 @@ def start_mass_search_async(search_id, search_config: dict,
         }
 
     def _worker():
+        # ── Board #31: DB liveness during the cold-cache first load ──────────
+        # A fresh-start worker used to write 'running' to the DB only from
+        # inside _progress's 60s flush. But a cold-cache data load fires NO
+        # progress callbacks for its whole duration (365-day 30Sec measured at
+        # ~42 min), so the row stayed 'queued' the entire time: /progress read
+        # the in-memory map and looked healthy, while the DB row and every
+        # external monitor read a live worker as stuck. Two additions, both
+        # behind RORT_MASS_SEARCH_HEARTBEAT (OFF == legacy, byte-identical):
+        #   1. flip the row to 'running' up front — a status-only update skips
+        #      the config_data SELECT+merge in db.update_mass_search, so it is
+        #      one cheap UPDATE. Mirrors the resume path in
+        #      api/routers/mass_builder.py, which already flips before launch.
+        #   2. a daemon thread that flushes the in-memory snapshot on a wall
+        #      clock, sharing last_db_flush with _progress so the two never
+        #      double-write inside the same window. The periodic write budget
+        #      is unchanged; it just stops depending on a callback firing.
+        # Declared before the try so the terminal handlers below can always
+        # reference them, even if the try body dies on its very first line.
+        import os
+        _hb_enabled = os.getenv('RORT_MASS_SEARCH_HEARTBEAT', '0') == '1'
+        _hb_stop = threading.Event()
+        # Serializes a heartbeat 'running' write against the terminal
+        # (completed/cancelled/failed) write. Without it a heartbeat already
+        # in flight when the search finishes could land AFTER the terminal
+        # status and resurrect the row as 'running' — which the orphan sweeper
+        # would then reap or auto-resume, re-running a finished search.
+        _hb_write_lock = threading.Lock()
+
         try:
             # Always admin-mode on this thread. JWT-bearing user
             # context would expire mid-run on long searches; admin
@@ -2119,6 +2156,54 @@ def start_mass_search_async(search_id, search_config: dict,
                 except Exception as e:
                     logger.warning("Partial results flush failed (non-fatal): %s", e)
 
+            if _hb_enabled:
+                # (1) Take the row off 'queued' now, before the blocking load.
+                try:
+                    update_mass_search(search_id, {'status': 'running'})
+                except Exception as e:
+                    logger.warning("Mass search %s initial 'running' flip "
+                                   "failed (non-fatal): %s", search_id, e)
+
+                # (2) Wall-clock heartbeat, independent of progress callbacks.
+                def _heartbeat():
+                    nonlocal last_db_flush
+                    while not _hb_stop.wait(_HB_POLL_SECS):
+                        with _search_lock:
+                            info = dict(_active_searches.get(search_id, {}))
+                        # In-memory status is set to its terminal value before
+                        # the terminal DB write, so this is the first place a
+                        # finished search is noticed.
+                        if info.get('status') != 'running':
+                            break
+                        if _time.monotonic() - last_db_flush <= _HB_FLUSH_SECS:
+                            continue
+                        # Claim the window BEFORE writing: a _progress flush
+                        # racing us then skips instead of double-writing. Worst
+                        # case on a lost race is one redundant flush, and every
+                        # flush is already best-effort.
+                        last_db_flush = _time.monotonic()
+                        with _hb_write_lock:
+                            if _hb_stop.is_set():
+                                break
+                            try:
+                                update_mass_search(search_id, {
+                                    'status': 'running',
+                                    'progress': {
+                                        'current_step': info.get('current_step', 0),
+                                        'total_steps': info.get('total_steps', 0),
+                                        'current_label': info.get('current_label', ''),
+                                        'phase': info.get('phase'),
+                                        'phase_detail': info.get('phase_detail'),
+                                    },
+                                })
+                            except Exception as e:
+                                logger.warning("Mass search %s heartbeat flush "
+                                               "failed (non-fatal): %s",
+                                               search_id, e)
+
+                threading.Thread(target=_heartbeat, daemon=True,
+                                 name=f"mass_hb_{search_id}").start()
+
             raw = run_mass_search(
                 search_config,
                 progress_callback=_progress,
@@ -2165,20 +2250,24 @@ def start_mass_search_async(search_id, search_config: dict,
                 else:
                     db_results.append(r)
 
+            # Stop the heartbeat and take its write lock so no in-flight
+            # 'running' flush can land after this terminal status (board #31).
+            _hb_stop.set()
             try:
-                update_mass_search(search_id, {
-                    'status': 'completed',
-                    'results': db_results,
-                    'progress': {},
-                    'summary': {
-                        'results_stored': len(db_results),
-                        'best_daily_r': max(
-                            (r.get('kpis', {}).get('daily_r', 0) for r in db_results
-                             if isinstance(r, dict)),
-                            default=0),
-                        'diagnostics': diagnostics,
-                    },
-                })
+                with _hb_write_lock:
+                    update_mass_search(search_id, {
+                        'status': 'completed',
+                        'results': db_results,
+                        'progress': {},
+                        'summary': {
+                            'results_stored': len(db_results),
+                            'best_daily_r': max(
+                                (r.get('kpis', {}).get('daily_r', 0) for r in db_results
+                                 if isinstance(r, dict)),
+                                default=0),
+                            'diagnostics': diagnostics,
+                        },
+                    })
             except Exception as _save_err:
                 logger.error("Mass search %s DB save error: %s", search_id, _save_err)
             logger.info("Mass search %s completed: %d results", search_id, len(results))
@@ -2187,9 +2276,11 @@ def start_mass_search_async(search_id, search_config: dict,
             with _search_lock:
                 if search_id in _active_searches:
                     _active_searches[search_id]['status'] = 'cancelled'
+            _hb_stop.set()
             try:
                 from db import update_mass_search
-                update_mass_search(search_id, {'status': 'cancelled'})
+                with _hb_write_lock:
+                    update_mass_search(search_id, {'status': 'cancelled'})
             except Exception:
                 pass
             logger.info("Mass search %s cancelled", search_id)
@@ -2199,14 +2290,19 @@ def start_mass_search_async(search_id, search_config: dict,
                 if search_id in _active_searches:
                     _active_searches[search_id]['status'] = 'failed'
                     _active_searches[search_id]['error'] = str(exc)
+            _hb_stop.set()
             try:
                 from db import update_mass_search
-                update_mass_search(search_id, {'status': 'failed'})
+                with _hb_write_lock:
+                    update_mass_search(search_id, {'status': 'failed'})
             except Exception:
                 pass
             logger.exception("Mass search %s failed", search_id)
 
         finally:
+            # Belt-and-braces: every terminal path above already sets this, but
+            # an unexpected escape must not leak the heartbeat thread.
+            _hb_stop.set()
             # Clean up after a delay so the UI can read final status
             def _cleanup():
                 _time.sleep(60)
