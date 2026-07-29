@@ -14,6 +14,17 @@ tools/team_dispatcher/NO_PUSH. The pushed branch is recorded on run_history
 (pushed_branch/pushed_at) so the #193 dashboard can show built → pushed → PR'd →
 merged without re-deriving it from git.
 
+WHERE the branch is is DISCOVERED, not assumed — the fix for the first cut, which
+passed every test and never once fired. It anchored the push to the agent's
+REGISTERED worktree, but charter §4 has each lane work in a FRESH worktree
+(`git worktree add ../Kevbot-<lane> -b <branch> origin/dev`), so at reap the
+registered tree was still parked on dev and every push declined as `protected`.
+So: `git worktree list` is snapshotted at DISPATCH, and reap pushes from the
+worktrees that were not in that snapshot (plus the registered one, if the run did
+move it). Ownership is inferred conservatively — a worktree another in-flight run
+could equally have created is left alone, because publishing a peer's unfinished
+branch would also poison that peer's own push (`exists-on-origin`).
+
 V4.19 (board #143, V2.12): @-MENTION DELIVERY. A dispatched agent's prompt now
 carries that lane's UNSEEN mentions — the same `task_mentions` rows F's Messages
 tab reads — and they are marked seen only AFTER spawn() has the prompt. Every leg
@@ -660,16 +671,165 @@ def current_branch(worktree):
     return out
 
 
-def _decline(tag, reason, msg):
+def list_worktrees(path):
+    """Every worktree root of the repo containing `path`, realpath'd.
+
+    [] on ANY failure — like current_branch() this runs at DISPATCH time, where
+    it must never be able to stop a spawn. An empty snapshot degrades the
+    fresh-worktree leg to "off" for that run, never to "push anything".
+    """
+    try:
+        rc, out, _ = _git(path, "worktree", "list", "--porcelain")
+    except Exception:  # noqa: BLE001 — never blocks a dispatch
+        return []
+    if rc != 0:
+        return []
+    return [os.path.realpath(ln[len("worktree "):].strip())
+            for ln in out.splitlines() if ln.startswith("worktree ")]
+
+
+def _decline(tag, reason, msg, worktree=None):
     print(f"  {tag}: {msg}", flush=True)
-    return {"pushed": False, "branch": None, "reason": reason}
+    return {"pushed": False, "branch": None, "reason": reason,
+            "worktree": worktree, "results": []}
 
 
-def push_run_branch(r):
-    """Push this run's OWN branch, or explain (loudly) why not.
+def push_worktree_branch(wt, tag, branch0=None):
+    """Every rail, applied to ONE worktree. Returns the same dict shape as
+    push_run_branch(): {"pushed", "branch", "reason", "worktree"}.
 
-    Returns {"pushed": bool, "branch": str|None, "reason": str}. Every refusal
-    is a named reason so the reap log reads as a decision, not a silence.
+    `branch0` is the branch this worktree was on at dispatch, and is only
+    meaningful for the run's REGISTERED worktree — half 1 of "a branch this run
+    did not create" is "HEAD moved off it". None means the rail does not apply,
+    which is the case for a worktree that did not exist at dispatch (its very
+    existence is a stronger half 1) and for a run that started detached.
+    """
+    branch = current_branch(wt)
+    if branch is None:
+        return _decline(tag, "detached", f"SKIP — {wt} is on a detached HEAD", wt)
+    if branch in PROTECTED_BRANCHES:
+        return _decline(tag, "protected",
+                        f"REFUSED — {branch} ({wt}) is a protected branch; the "
+                        "loop pushes agent branches only", wt)
+    if branch0 is not None and branch == branch0:
+        return _decline(tag, "not-this-runs-branch",
+                        f"REFUSED — {wt} never left {branch}, the branch the run "
+                        "started on; this run did not create it", wt)
+    # A dirty tree means the agent did not finish cleanly. Pushing the committed
+    # half of an unfinished state is worse than pushing nothing.
+    rc, out, err = _git(wt, "status", "--porcelain")
+    if rc != 0:
+        return _decline(tag, "status-failed",
+                        f"SKIP — `git status` failed in {wt}: {err[:200]}", wt)
+    if out:
+        return _decline(tag, "dirty",
+                        f"REFUSED — {branch} has {len(out.splitlines())} uncommitted "
+                        "path(s); a partial state is worse than no push", wt)
+    rc, out, err = _git(wt, "rev-list", "--count", f"{PUSH_BASE}..{branch}")
+    if rc != 0 or not out.isdigit():
+        return _decline(tag, "rev-list-failed",
+                        f"SKIP — cannot count {PUSH_BASE}..{branch}: {err[:200]}", wt)
+    if int(out) == 0:
+        return _decline(tag, "nothing-ahead",
+                        f"SKIP — {branch} has no commits ahead of {PUSH_BASE}", wt)
+    ahead = int(out)
+    # "A branch this run did not create", half 2: it must be new to origin.
+    # Anything already published is someone else's history to advance.
+    rc, out, err = _git(wt, "ls-remote", "--heads", "origin", branch)
+    if rc != 0:
+        return _decline(tag, "ls-remote-failed",
+                        f"SKIP — cannot prove {branch} is new on origin: {err[:200]}",
+                        wt)
+    if out:
+        return _decline(tag, "exists-on-origin",
+                        f"REFUSED — {branch} already exists on origin; advancing a "
+                        "published branch is not this loop's job", wt)
+    # Plain push. No --force, ever: the branch is provably new on origin, so
+    # there is nothing to force past.
+    rc, out, err = _git(wt, "push", "-u", "origin", branch)
+    if rc != 0:
+        detail = (err or out)[-400:]
+        print(f"  {tag}: PUSH FAILED for {branch} — {detail}", flush=True)
+        return {"pushed": False, "branch": branch, "worktree": wt,
+                "reason": f"push-failed: {detail}"}
+    print(f"  {tag}: PUSHED {branch} from {wt} "
+          f"({ahead} commit(s) ahead of {PUSH_BASE})", flush=True)
+    return {"pushed": True, "branch": branch, "worktree": wt, "reason": "ok"}
+
+
+def fresh_worktrees(r, anchor, tag, other_active=()):
+    """Worktree roots that did not exist when this run was dispatched.
+
+    THIS is the shape that matters, and the one the first cut of #195 missed:
+    charter §4 has every lane work in a FRESH worktree
+    (`git worktree add ../Kevbot-<lane> -b <branch> origin/dev`), so at reap the
+    agent's REGISTERED worktree is still parked on dev — the push anchored to it
+    declined as `protected` and the feature never fired. The work is in a
+    directory that did not exist at dispatch, so that is what we look for.
+
+    Ownership is inferred, not known, so it is inferred CONSERVATIVELY: a
+    worktree is only this run's if no other run still in flight could also have
+    created it. Another active run whose own dispatch snapshot lacks the
+    worktree predates it too — ambiguous, decline and let preflight (2) have it.
+    Pushing a peer's branch mid-run is the one genuinely harmful outcome here:
+    it would publish unfinished work AND poison that peer's own push at reap
+    (`exists-on-origin`).
+    """
+    if "worktrees0" not in r:
+        return []                                    # pre-#195 run record
+    before = set(r["worktrees0"] or ())
+    now = list_worktrees(anchor)
+    if not now:
+        print(f"  {tag}: SKIP fresh-worktree leg — cannot list worktrees "
+              f"under {anchor}", flush=True)
+        return []
+    out = []
+    for w in now:
+        if w in before:
+            continue
+        rival = next((o for o in other_active
+                      if w not in set(o.get("worktrees0") or ())), None)
+        if rival is not None:
+            print(f"  {tag}: SKIP {w} — run {rival.get('run_id')} is still in "
+                  "flight and predates it too; owner ambiguous", flush=True)
+            continue
+        out.append(w)
+    return out
+
+
+def _aggregate(tag, results):
+    """Collapse per-worktree results into the run-level answer reap() acts on.
+
+    Normally there is exactly one target and this is a pass-through. A run CAN
+    produce two (it moved its registered tree AND cut a fresh worktree), so
+    `branch` is comma-joined; `results` always carries the full detail.
+    """
+    pushed = [x for x in results if x["pushed"]]
+    if pushed:
+        return {"pushed": True, "reason": "ok", "results": results,
+                "branch": ",".join(x["branch"] for x in pushed),
+                "worktree": pushed[0]["worktree"]}
+    if not results:
+        return _decline(tag, "no-candidate",
+                        "SKIP — no worktree carries this run's work (registered "
+                        "tree still on its start branch, none created since "
+                        "dispatch)")
+    # A push that ERRORED outranks a refusal: it is the one outcome that needs
+    # a human, so it must be the reason reap() sees.
+    failed = [x for x in results if x["reason"].startswith("push-failed")]
+    lead = failed[0] if failed else results[0]
+    return {"pushed": False, "branch": lead["branch"], "reason": lead["reason"],
+            "worktree": lead["worktree"], "results": results}
+
+
+def push_run_branch(r, other_active=()):
+    """Push this run's OWN branch(es), or explain (loudly) why not.
+
+    Returns {"pushed": bool, "branch": str|None, "reason": str, "results": [...]}.
+    Every refusal is a named reason so the reap log reads as a decision, not a
+    silence. Two places the work can be, and both are checked:
+      A. the run's REGISTERED worktree, if the run moved it onto a new branch;
+      B. a worktree created AFTER dispatch — the charter §4 default.
     """
     tag = f"push[{r.get('run_id')}]"
     if os.path.exists(NO_PUSH_FILE):
@@ -681,74 +841,30 @@ def push_run_branch(r):
         return _decline(tag, "no-worktree",
                         f"SKIP — no usable worktree on the run record ({wt!r}); "
                         "pre-#195 run → preflight (2) still covers it")
-    # "A branch this run did not create", half 1: HEAD must have MOVED. A run
-    # that never left the branch it started on is working on someone else's
-    # branch (or on the lane's long-lived tree) — not ours to push.
-    if "branch0" not in r:
+    if "branch0" not in r and "worktrees0" not in r:
         return _decline(tag, "no-start-branch",
-                        "SKIP — the run recorded no start branch, so 'did this "
-                        "run create it?' is unanswerable")
-    branch = current_branch(wt)
-    if branch is None:
-        return _decline(tag, "detached", f"SKIP — {wt} is on a detached HEAD")
-    if branch in PROTECTED_BRANCHES:
-        return _decline(tag, "protected",
-                        f"REFUSED — {branch} is a protected branch; the loop "
-                        "pushes agent branches only")
-    if r["branch0"] is not None and branch == r["branch0"]:
-        return _decline(tag, "not-this-runs-branch",
-                        f"REFUSED — worktree never left {branch}, the branch the "
-                        "run started on; this run did not create it")
-    # A dirty tree means the agent did not finish cleanly. Pushing the committed
-    # half of an unfinished state is worse than pushing nothing.
-    rc, out, err = _git(wt, "status", "--porcelain")
-    if rc != 0:
-        return _decline(tag, "status-failed",
-                        f"SKIP — `git status` failed in {wt}: {err[:200]}")
-    if out:
-        return _decline(tag, "dirty",
-                        f"REFUSED — {branch} has {len(out.splitlines())} uncommitted "
-                        "path(s); a partial state is worse than no push")
-    rc, out, err = _git(wt, "rev-list", "--count", f"{PUSH_BASE}..{branch}")
-    if rc != 0 or not out.isdigit():
-        return _decline(tag, "rev-list-failed",
-                        f"SKIP — cannot count {PUSH_BASE}..{branch}: {err[:200]}")
-    if int(out) == 0:
-        return _decline(tag, "nothing-ahead",
-                        f"SKIP — {branch} has no commits ahead of {PUSH_BASE}")
-    ahead = int(out)
-    # "A branch this run did not create", half 2: it must be new to origin.
-    # Anything already published is someone else's history to advance.
-    rc, out, err = _git(wt, "ls-remote", "--heads", "origin", branch)
-    if rc != 0:
-        return _decline(tag, "ls-remote-failed",
-                        f"SKIP — cannot prove {branch} is new on origin: {err[:200]}")
-    if out:
-        return _decline(tag, "exists-on-origin",
-                        f"REFUSED — {branch} already exists on origin; advancing a "
-                        "published branch is not this loop's job")
-    # Plain push. No --force, ever: the branch is provably new on origin, so
-    # there is nothing to force past.
-    rc, out, err = _git(wt, "push", "-u", "origin", branch)
-    if rc != 0:
-        detail = (err or out)[-400:]
-        print(f"  {tag}: PUSH FAILED for {branch} — {detail}", flush=True)
-        return {"pushed": False, "branch": branch, "reason": f"push-failed: {detail}"}
-    print(f"  {tag}: PUSHED {branch} ({ahead} commit(s) ahead of {PUSH_BASE})",
-          flush=True)
-    return {"pushed": True, "branch": branch, "reason": "ok"}
+                        "SKIP — the run recorded neither a start branch nor a "
+                        "worktree snapshot, so 'did this run create it?' is "
+                        "unanswerable")
+    results = []
+    if "branch0" in r:
+        results.append(push_worktree_branch(wt, tag, branch0=r["branch0"]))
+    for new_wt in fresh_worktrees(r, wt, tag, other_active):
+        results.append(push_worktree_branch(new_wt, tag))
+    return _aggregate(tag, results)
 
 
-def try_push_run_branch(r):
+def try_push_run_branch(r, other_active=()):
     """FAIL-OPEN wrapper — the outer rail. push_run_branch() handles the
     failures it foresaw; this one exists for the rest (git missing, subprocess
     timeout, a worktree that vanished mid-reap). A reap must complete."""
     try:
-        return push_run_branch(r)
+        return push_run_branch(r, other_active)
     except Exception as e:  # noqa: BLE001 — a push can never fail a reap
         print(f"  push[{r.get('run_id')}]: ERROR — {e} (run reported normally; "
               f"preflight (2) still covers the branch)", flush=True)
-        return {"pushed": False, "branch": None, "reason": f"error: {e}"}
+        return {"pushed": False, "branch": None, "worktree": None,
+                "reason": f"error: {e}", "results": []}
 
 
 def rh_record_push(run_id, branch):
@@ -831,7 +947,11 @@ def reap(st):
         # is the follow-through. Runs on the lease-expired leg too (a run that
         # committed and then hung is exactly the work most likely to be lost;
         # the dirty-tree rail declines the ones that were killed mid-edit).
-        res = try_push_run_branch(r)
+        # The still-active runs go with it: a worktree they could also have
+        # created is not this run's to push (see fresh_worktrees). `r` is no
+        # longer active by here, so it cannot be its own rival.
+        res = try_push_run_branch(
+            r, [x for x in st["runs"] if x is not r and x.get("active")])
         if res["pushed"]:
             r["pushed_branch"] = res["branch"]
             rh_record_push(r["run_id"], res["branch"])
@@ -924,14 +1044,18 @@ def one_pass(live, only_task=None):
             "body": f"dispatched to {t['assignee']}·auto (run {run_id})"})
         rh_claim(t, run_id)
         p = spawn(agent, t, prompt, log_path)
-        # Board #195 — the run records WHERE it ran and WHICH branch it started
-        # on. reap()'s push leg needs both: the worktree to act in, and the
-        # start branch to answer "did this run create the branch it is on?".
-        # Captured at dispatch because by reap time the answer is unknowable.
+        # Board #195 — the run records WHERE it ran, WHICH branch it started on,
+        # and WHICH worktrees already existed. reap()'s push leg needs all three:
+        # the worktree to act in, the start branch to answer "did this run move
+        # off it?", and the snapshot to answer "which worktree did this run
+        # create?" — charter §4 has agents cut a fresh one, so that is where the
+        # work usually is. All captured at dispatch: by reap time none of it is
+        # recoverable.
         wt = agent_worktree(agent)
         st["runs"].append({"run_id": run_id, "task_id": t["id"], "agent": t["assignee"],
                            "pid": p.pid, "t0": time.time(), "log": log_path,
                            "worktree": wt, "branch0": current_branch(wt),
+                           "worktrees0": list_worktrees(wt),
                            "ts": datetime.now(timezone.utc).isoformat(), "active": True})
         save_state(st)
         # ONLY NOW are the mentions delivered — spawn() has the prompt and the
