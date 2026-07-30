@@ -39,11 +39,20 @@ real dispatch produces. These build the real one — a lane tree on dev, plus a
 
  15  THE BUG           §4 shape — work in a post-dispatch worktree IS pushed
  16  rails still hold  every rail re-applied to a DISCOVERED worktree
- 17  ambiguous owner   a worktree a peer run could also have created is left
+ 17  not ours          a worktree another run DECLARED (board #218) is left
+                      alone — alive or dead — and our own is taken regardless
  18  reap, §4 shape    end-to-end: reap of a lane-on-dev run pushes + records
- 19  reap wires rivals an in-flight peer blocks the push through reap() itself
+ 19  reap wires runs   reap supplies the run set; a live peer no longer blocks
+                      our push, and its own tree is still untouched (#218)
  20  both legs         registered tree moved AND a fresh worktree → both pushed
  21  discovery is off  no snapshot / unlistable worktrees → decline, no crash
+
+Cases 17 and 19 were rewritten by board #218: V4.23 decided ownership by
+ELIMINATING the other in-flight runs, which declined whenever any older peer was
+alive (the normal case at CONCURRENCY=4) and ADOPTED a worktree once its owner
+DIED. Ownership is now DECLARED in the worktree's directory name, so add_worktree()
+takes an `owner`. The principle both cases defend is unchanged; the full #218 set
+lives in src/test_dispatcher_worktree_ownership_218.py.
 
 Hermetic: real git against a LOCAL bare repo (no network, no GitHub), the
 Supabase api() replaced with a recorder (ZERO board writes).
@@ -433,11 +442,19 @@ def snapshot(lane):
     return disp.list_worktrees(lane)
 
 
-def add_worktree(lane, branch, commits=1, dirty=None, base="origin/dev"):
+def add_worktree(lane, branch, commits=1, dirty=None, base="origin/dev",
+                 owner="rWT-195"):
     """The charter §4 move, performed AFTER the dispatch snapshot:
-    `git worktree add ../Kevbot-<lane> -b <branch> origin/dev`."""
+    `git worktree add ../Kevbot-wt-<slug>-<run-id> -b <branch> origin/dev`.
+
+    `owner` is the run id carried in the DIRECTORY NAME. Board #218 made that
+    token the ownership discriminator — the elimination test these cases were
+    first written against ("is another ACTIVE run's snapshot also missing this
+    tree?") was wrong in both directions and is gone — so a §4 worktree now has
+    to declare whose it is, exactly as the WORKTREE CONTRACT tells the agent to.
+    """
     TREES[0] += 1
-    path = f"{TMP}/linked{TREES[0]}"
+    path = f"{TMP}/linked{TREES[0]}-{owner}" if owner else f"{TMP}/linked{TREES[0]}"
     git(lane, "worktree", "add", "--quiet", "-b", branch, path, base)
     for i in range(commits):
         open(f"{path}/work{i}.txt", "w").write(f"work {i}\n")
@@ -537,35 +554,43 @@ ok("16 discovered+NO_PUSH: nothing pushed", not origin_has("feat/fresh-killswitc
 ok("16 discovered: pushes once the switch is gone",
    disp.push_run_branch(r)["pushed"] and origin_has("feat/fresh-killswitch-195"))
 
-# 17 ── a worktree a PEER run could also have created is not ours ───────────
-# The dispatcher runs lanes concurrently. Pushing a peer's branch mid-run is the
-# one genuinely harmful outcome available here: it publishes unfinished work AND
-# poisons that peer's own push at reap (it would then decline exists-on-origin).
+# 17 ── a worktree that is not ours is not ours ─────────────────────────────
+# SUPERSEDED BY BOARD #218 — and kept, because the PRINCIPLE it defends is
+# unchanged: pushing a peer's branch is the one genuinely harmful outcome
+# available here (it publishes unfinished work AND poisons that peer's own push,
+# which would then decline exists-on-origin). What changed is how ownership is
+# decided. V4.23 inferred it by ELIMINATION from the other in-flight runs, which
+# declined whenever ANY older peer was alive and ADOPTED the tree once its owner
+# DIED. V4.27 reads the run id the agent put in the directory name, so the answer
+# no longer depends on who else is running. #218's own file carries the full set;
+# these two assert that this file's rail did not merely move.
 lane = lane_tree()
 before = snapshot(lane)
 mine = dispatched(lane, run_id="rMINE-195")
-peer_older = {"run_id": "rPEER-OLD", "worktrees0": before}   # predates the tree
-AMB = add_worktree(lane, "feat/ambiguous-195")
-peer_newer = {"run_id": "rPEER-NEW", "worktrees0": snapshot(lane)}  # postdates it
-ok("17 ambiguous: a peer that predates the worktree blocks it",
-   disp.fresh_worktrees(mine, lane, "t", [peer_older]) == [], AMB)
+peer_older = {"run_id": "rPEER-OLD", "task_id": 196, "worktrees0": before}
+THEIRS = add_worktree(lane, "feat/peers-work-195", owner="rPEER-OLD")
+ok("17 a peer's declared worktree is not ours",
+   disp.fresh_worktrees(mine, lane, "t", [peer_older]) == [], THEIRS)
 res = disp.push_run_branch(mine, [peer_older])
-ok("17 ambiguous: nothing pushed while that peer is in flight", not res["pushed"], res)
-ok("17 ambiguous: peer's branch did NOT reach origin", not origin_has("feat/ambiguous-195"))
-ok("17 ambiguous: a peer dispatched AFTER it cannot have created it",
-   disp.fresh_worktrees(mine, lane, "t", [peer_newer]) == [AMB])
-ok("17 ambiguous: a peer with NO snapshot is treated as a rival (conservative)",
-   disp.fresh_worktrees(mine, lane, "t", [{"run_id": "rLEGACY"}]) == [])
-ok("17 ambiguous: pushes once the rival is no longer in flight",
-   disp.push_run_branch(mine, [peer_newer])["pushed"])
-ok("17 ambiguous: ...and only THEN reaches origin", origin_has("feat/ambiguous-195"))
+ok("17 nothing pushed", not res["pushed"], res)
+ok("17 the peer's branch did NOT reach origin", not origin_has("feat/peers-work-195"))
+ok("17 ...and it is STILL not ours after that peer ends (the #218 orphan rail)",
+   not disp.push_run_branch(mine, [])["pushed"] and
+   not origin_has("feat/peers-work-195"))
+# ...while our OWN declared worktree pushes with that same peer in flight — the
+# false decline #218 fixed, asserted here so this file cannot regress it either.
+MINE_WT = add_worktree(lane, "feat/mine-195", owner="rMINE-195")
+ok("17 our own declared worktree IS ours, peer or no peer",
+   disp.fresh_worktrees(mine, lane, "t", [peer_older]) == [MINE_WT])
+ok("17 ...and it pushes", disp.push_run_branch(mine, [peer_older])["pushed"]
+   and origin_has("feat/mine-195"))
 
 # 18 ── reap end-to-end in the §4 shape ─────────────────────────────────────
 CALLS.clear()
 lane = lane_tree()
 run = finished_run(lane, "dev", "rS4-195")
 run["worktrees0"] = snapshot(lane)
-add_worktree(lane, "feat/reap-fresh-195")
+add_worktree(lane, "feat/reap-fresh-195", owner="rS4-195")
 st = {"runs": [run]}
 disp.reap(st)
 ok("18 reap §4: the discovered branch reached origin", origin_has("feat/reap-fresh-195"))
@@ -580,9 +605,13 @@ ok("18 reap §4: the agent result was still reported",
 ok("18 reap §4: no push-failure noise", not any(
     "auto-push FAILED" in (b.get("body") or "") for m, p, b in CALLS if m == "POST"))
 
-# 19 ── reap() itself supplies the in-flight peers ──────────────────────────
-# The rail is only real if reap wires it; passing other_active by hand (case 17)
-# would not notice reap forgetting to.
+# 19 ── reap() itself supplies the other runs, and a live peer does not block ─
+# The rail is only real if reap wires the run set; passing it by hand (case 17)
+# would not notice reap forgetting to. SUPERSEDED BY #218 in its VERDICT: under
+# V4.23 an in-flight peer blocked this push, and that is the false decline that
+# stranded a real commit on 07-30 at CONCURRENCY=4. The finishing run now
+# publishes its own declared worktree while the peer keeps working, and the
+# peer's tree is left untouched.
 CALLS.clear()
 lane = lane_tree()
 snap = snapshot(lane)
@@ -594,11 +623,14 @@ open(peer_log, "w").write("still working\n")     # no terminal JSON → still ru
 peer = {"run_id": "rPEER-195", "task_id": 196, "agent": "E", "worktree": lane,
         "branch0": "dev", "worktrees0": snap, "pid": alive.pid,
         "t0": disp.time.time(), "log": peer_log, "active": True}
-add_worktree(lane, "feat/rival-195")
+add_worktree(lane, "feat/rival-195", owner="rRIVAL-195")
+add_worktree(lane, "feat/peer-still-working-195", owner="rPEER-195")
 st = {"runs": [run, peer]}
 disp.reap(st)
 alive.kill()
-ok("19 reap: the in-flight peer blocked the push", not origin_has("feat/rival-195"))
+ok("19 reap: the finishing run published its OWN worktree", origin_has("feat/rival-195"))
+ok("19 reap: the in-flight peer's worktree was left alone",
+   not origin_has("feat/peer-still-working-195"))
 ok("19 reap: the finished run was still collected", not st["runs"][0]["active"])
 ok("19 reap: the peer is still in flight", st["runs"][1]["active"])
 ok("19 reap: the finished run still reported",
@@ -609,7 +641,7 @@ ok("19 reap: the finished run still reported",
 lane = agent_tree(branch="feat/inplace-195")     # registered tree moved off dev
 r = run_rec(lane, "dev")
 r["worktrees0"] = snapshot(lane)
-add_worktree(lane, "feat/alongside-195")
+add_worktree(lane, "feat/alongside-195", owner="rTEST-195")
 res = disp.push_run_branch(r)
 ok("20 both: two targets considered", len(res["results"]) == 2, res)
 ok("20 both: in-place branch on origin", origin_has("feat/inplace-195"))
@@ -635,7 +667,7 @@ r = {"run_id": "rDETACHED-195", "task_id": 1, "worktree": lane,
      "worktrees0": snapshot(lane)}
 ok("21 no branch0: no candidate at all is NAMED",
    disp.push_run_branch(r)["reason"] == "no-candidate", r)
-add_worktree(lane, "feat/detached-run-195")
+add_worktree(lane, "feat/detached-run-195", owner="rDETACHED-195")
 ok("21 no branch0: the fresh leg still pushes",
    disp.push_run_branch(r)["pushed"] and origin_has("feat/detached-run-195"))
 # git worktree list blowing up must disable the leg, not the reap

@@ -1,5 +1,41 @@
 #!/usr/bin/env python3
-"""Team dispatcher (V4.25) — dispatches board tasks to headless Claude agents.
+"""Team dispatcher (V4.27) — dispatches board tasks to headless Claude agents.
+
+V4.27 (board #218): WORKTREE OWNERSHIP IS DECLARED, NOT INFERRED. V4.23's push
+leg asked "is another ACTIVE run's dispatch snapshot ALSO missing this worktree?"
+and treated a yes as ambiguity. That question cannot tell an orphan from a peer's
+live work, and it is wrong in BOTH directions — both observed live:
+  • a run dispatched EARLIER can never have a later worktree in its snapshot, so
+    every older concurrent run made ownership "ambiguous". At CONCURRENCY=1 that
+    was nearly never; at CONCURRENCY=4 (armed 07-30, #219) it is the DEFAULT —
+    three declines in one reap cycle on 07-30 15:46Z, one of them stranding a
+    real commit while its run reported `ok`;
+  • once the owner DIED there was no rival left, so the next run to reap CLAIMED
+    the orphan: run r1785382865-212 recorded `pushed_branch =
+    verify/auto-push-live-195`, a branch cut by the #195 run in a worktree R
+    never touched. That is the exact harm the rail exists to prevent.
+The elimination test is replaced by a DISCRIMINATOR THE RUN CARRIES: the
+worktree's directory name must contain the owning run's id (the WORKTREE CONTRACT
+in build_prompt requires it), so ownership is decidable from the run alone and no
+longer depends on what other runs happen to be doing. A legacy `-<task-id>` tag
+still identifies a run when it is that task's only known run. Anything else —
+including a worktree carrying ANOTHER run's id, and any untagged worktree — is
+REFUSED and named in the log, never adopted: an unattributable worktree is left
+for preflight (2), because a guess that claims your tree is the same guess that
+publishes a peer's unfinished branch. See worktree_owner().
+
+V4.26 (board #218, step 2): THE GIT CONTRACT STOPPED LYING — AGENTS CAN PUSH.
+Every dispatched agent was told "You cannot push (headless)". That is false, and
+was falsified four times for four on 07-29/30: #198's Staged patch, #193's
+dashboard, #197's reconcile and #211's release-brief generator each pushed their
+own branch, one of them opening a PR unaided. The cost of the lie is not
+cosmetic — it made V4.23's run-end push the ONLY publication path, so every
+weakness in that machinery (see #218 on ownership mis-attribution) became a
+single point of failure for work that the agent could simply have pushed itself.
+The contract now says agents SHOULD push, synchronously, before their final
+message, and demotes the loop's push to what it should always have been: a
+BACKSTOP for a run that dies before it gets there. Prompt-only — no behaviour
+change in reap(); the run-end push still runs, still with every V4.23 rail.
 
 V4.25 (board #202): THE STEP-TICK CONTRACT. Agents obeyed the #171 ASSIGNEE
 CONTRACT and left their finished step UNTICKED — four for four on 07-29 — because
@@ -26,11 +62,11 @@ it, says so, and spends no retry. LANDING ON TOP OF V4.21-23 also settles the
 coupling #198 documented in advance: the retry leg calls `forget_task_runs()`,
 without which the step-guard would refuse the very retry this version grants.
 
-V4.23 (board #195): PUSH AT RUN END. A headless agent can build, test and COMMIT
-but is TOLD it cannot push (see the GIT CONTRACT below), and in practice most
-runs left their work on local disk only — visible solely to whoever read
-preflight invariant (2). reap() now pushes the run's own branch. Rails, each with
-a test that fails without it: never a protected branch (dev/main/master), never
+V4.23 (board #195): PUSH AT RUN END. A headless agent can build, test and COMMIT,
+and until V4.26 was wrongly TOLD it could not push (see the GIT CONTRACT below),
+so in practice most runs left their work on local disk only — visible solely to
+whoever read preflight invariant (2). reap() now pushes the run's own branch.
+Rails, each with a test that fails without it: never a protected branch (dev/main/master), never
 --force, never a dirty worktree, never a branch this run did not create (HEAD must
 have moved OFF the branch the run started on AND the branch must not already exist
 on origin), and FAIL OPEN + LOUD — a failed push logs and leaves preflight (2) to
@@ -46,9 +82,11 @@ REGISTERED worktree, but charter §4 has each lane work in a FRESH worktree
 registered tree was still parked on dev and every push declined as `protected`.
 So: `git worktree list` is snapshotted at DISPATCH, and reap pushes from the
 worktrees that were not in that snapshot (plus the registered one, if the run did
-move it). Ownership is inferred conservatively — a worktree another in-flight run
-could equally have created is left alone, because publishing a peer's unfinished
-branch would also poison that peer's own push (`exists-on-origin`).
+move it). Ownership was inferred by ELIMINATION from the other in-flight runs —
+SUPERSEDED BY V4.27, which requires the run's own id in the worktree name; the
+principle it was defending is unchanged and now enforced positively: publishing a
+peer's unfinished branch would also poison that peer's own push
+(`exists-on-origin`).
 V4.22 (board #198, step 8 audible): `Staged` JOINS THE TERMINAL SET. Kevin's
 ruling landed after V4.21 shipped: "if something is staged, maybe you consider
 that something similar to done or blocked". `Staged` means REVIEWED, brief held,
@@ -120,6 +158,7 @@ Design: docs/_active/Design_Agent_Dispatcher.md (decisions approved 2026-07-23).
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -761,7 +800,7 @@ def mentions_delivered(role, ids):
         return 0
 
 
-def build_prompt(agent, task, mentions_block=""):
+def build_prompt(agent, task, mentions_block="", run_id=None):
     """Board #135: the ONE-SHOT CONTRACT block exists because two real runs
     (#121/#68) armed background suite-watchers and ended their turn — a
     headless `claude -p` process exits with its final message and reap kills
@@ -879,6 +918,25 @@ so the chain fell behind reality. That is the failure mode this contract kills.
     else:
         step_block = ""
         tick_block = ""
+    # Board #218 — THE WORKTREE CONTRACT. The run-end push used to guess which
+    # worktree belonged to which run by eliminating the other in-flight runs;
+    # that guess declined every tree while a peer was alive and ADOPTED the tree
+    # of a peer that had died (run r1785382865-212 published #195's branch). A
+    # guess cannot be made safe, so ownership is DECLARED instead: the agent puts
+    # its run id in the directory name and the loop pushes only what it can
+    # attribute. Rendered even when run_id is unknown (a direct build_prompt
+    # call) — the rule is what matters, and an untagged tree is refused either way.
+    wt_block = f"""
+WORKTREE CONTRACT (board #218 — ownership has to be DECLARABLE): your run id is
+`{run_id or '<see the dispatch comment on the task>'}`. If you cut your own worktree
+(charter §4), its DIRECTORY NAME must carry that run id:
+`git worktree add ../Kevbot-wt-<slug>-{run_id or '<run-id>'} -b <branch> origin/dev`.
+That token is the only thing that makes the tree provably yours. The run-end push
+(board #195) pushes ONLY a worktree it can positively attribute to your run: one
+carrying another run's id, or none at all, is REFUSED and named in the log, never
+adopted — because the same guess that would rescue your branch is the guess that
+published a peer's unfinished work. This does not replace pushing it yourself.
+"""
     return f"""You are {agent['letter']}·auto, a headless dispatched agent on the RoR Trader team.
 Identity/scope: {agent.get('scope','')}
 HARD BOUNDARIES (violating any = abort and report): {agent.get('boundaries','')}
@@ -901,17 +959,22 @@ and wait for it in-process: a long step (test suite, backtest) is run in the
 foreground to completion, budgeted against the lease — never backgrounded to "check
 on later". Anything you cannot finish in-process goes in your final report as
 remaining work, not into the background.
-
+{wt_block}
 GIT CONTRACT (board #153 — cut from a clean base): if you create a branch, cut it
 from LATEST origin/dev, never from your worktree's current HEAD:
 `git fetch origin && git branch <name> origin/dev` (or `git checkout -b <name> origin/dev`).
 A branch cut from worktree HEAD inherits whatever unmerged commits sit there and
 carries them into your diff (tonight one branch dragged in 10 unrelated commits).
 `git log origin/dev..HEAD --oneline` must show ONLY your own commits before you report
-ready. You cannot push (headless) and must NOT try to background one — COMMIT your work
-and name any branch you created in your final report. When your run ends the dispatcher
-pushes that branch for you (board #195) IF the worktree is clean and the branch is your
-own; an uncommitted change is the one thing that makes your work unpushable.
+ready. PUSH IT YOURSELF (board #218) — you CAN push, headless or not; four runs did on
+07-29/30 and one opened its PR unaided. COMMIT everything, then run
+`git push -u origin <branch>` synchronously IN THE FOREGROUND before your final message,
+and read its output — never background a push, never `--force`, never push dev/main.
+The dispatcher also pushes your branch when your run ends (board #195), but that is a
+BACKSTOP for a run that dies before it gets there — not your publication path, so
+do not rely on it, and it cannot save UNCOMMITTED work. An uncommitted change is the
+one thing that makes your work unpushable.
+Either way, name any branch you created in your final report.
 
 ASSIGNEE CONTRACT (board #171 — assignee = whoever the task is WAITING ON): the dispatcher
 now routes on `assignee` alone; the checklist is advisory display only. Before your final
@@ -1244,8 +1307,82 @@ def push_worktree_branch(wt, tag, branch0=None):
     return {"pushed": True, "branch": branch, "worktree": wt, "reason": "ok"}
 
 
-def fresh_worktrees(r, anchor, tag, other_active=()):
-    """Worktree roots that did not exist when this run was dispatched.
+# Board #218 — the shape of a run id, as one_pass() mints it: `r<epoch>-<task>`,
+# plus the `.N` collision suffix V4.24 added. Used to spot ANOTHER run's tag in a
+# worktree name without having to know that run — a dead run is long gone from
+# state, and its orphaned worktree is exactly what must not be adopted.
+RUN_ID_RE = re.compile(r"r\d{9,}-\d+(?:\.\d+)?")
+
+
+def worktree_owner(w, r, known_runs=()):
+    """Board #218 — does run `r` POSITIVELY own worktree root `w`?
+
+    Returns (owned: bool, why: str) — `why` is logged either way, so a refusal
+    reads as a decision and tells the agent what to name its tree next time.
+
+    V4.23 asked the wrong question: "is another ACTIVE run's snapshot also
+    missing this worktree?". That is inference by ELIMINATION, and it cannot
+    distinguish an orphan from a peer's live work — so an older concurrent run
+    always made ownership ambiguous (a false DECLINE, the normal case once
+    CONCURRENCY rose to 4), and a dead owner left a worktree with no rival to
+    object (a false PUSH — run r1785382865-212 published #195's branch). The
+    false push is the worse error, so the discriminator has to be carried BY THE
+    RUN, not reconstructed from the neighbours:
+
+      1. the worktree name carries THIS run's id  → owned. Unambiguous by
+         construction: run ids are unique for all time (checked at dispatch
+         against both state and the log directory), and the WORKTREE CONTRACT in
+         build_prompt requires the agent to use one.
+      2. it carries a DIFFERENT run's id          → refused, whether or not that
+         run is still alive. This is the orphan rail: the owner being dead is
+         precisely when nothing else would object. "A different run's id" is
+         read two ways, because either alone leaves a hole: any id of the
+         MINTED SHAPE (which catches an owner long gone from state — the orphan
+         that started this), and the id of any run the state file still holds
+         (which catches ids that predate the shape, or are hand-written).
+      3. it carries this run's TASK id and this is the task's only known run
+         → owned. The legacy `Kevbot-wt-<slug>-<task>` convention, kept working
+         where it is still decidable. A second run of the same task — a retry, or
+         the next step of a chain — makes it undecidable, so it is refused.
+      4. anything else                            → refused as unattributable.
+         Left for preflight (2); the agent's own push (board #218 step 2) is the
+         primary path anyway, and this leg is only the backstop.
+
+    Rule 1/2 match against the whole path (a run id is distinctive enough that a
+    coincidence is not a real risk); rule 3 matches the BASENAME only, because a
+    bare task number could otherwise be matched by an unrelated parent directory.
+    """
+    run_id = str(r.get("run_id") or "")
+    base = os.path.basename(w.rstrip("/")) or w
+    if run_id and run_id in w:
+        return True, f"name carries this run's id ({run_id})"
+    foreign = [m for m in RUN_ID_RE.findall(w) if m != run_id]
+    foreign += [str(o.get("run_id")) for o in known_runs
+                if o.get("run_id") and str(o["run_id"]) != run_id
+                and str(o["run_id"]) in w and str(o["run_id"]) not in foreign]
+    if foreign:
+        return False, (f"name carries run {foreign[0]}'s id, not this run's "
+                       f"({run_id or 'unknown'}) — a worktree belongs to the run "
+                       "that declared it, alive or dead")
+    tid = r.get("task_id")
+    if tid is not None and re.search(rf"(?:^|\D){tid}(?:\D|$)", base):
+        rivals = sorted({str(o.get("run_id")) for o in known_runs
+                         if o.get("task_id") == tid
+                         and str(o.get("run_id") or "") != run_id})
+        if not rivals:
+            return True, (f"name carries task #{tid} and this is the only known "
+                          f"run of it ({run_id or 'unknown'})")
+        return False, (f"name carries task #{tid}, but {len(rivals)} other run(s) "
+                       f"of that task are known ({', '.join(rivals)}) — which one "
+                       "cut it is not decidable")
+    return False, ("name carries no run or task id, so no run can claim it — "
+                   f"cut worktrees as ../Kevbot-wt-<slug>-{run_id or '<run-id>'} "
+                   "(board #218 WORKTREE CONTRACT)")
+
+
+def fresh_worktrees(r, anchor, tag, known_runs=(), refused=None):
+    """Worktree roots that did not exist when this run was dispatched AND that
+    this run positively owns (board #218 — see worktree_owner()).
 
     THIS is the shape that matters, and the one the first cut of #195 missed:
     charter §4 has every lane work in a FRESH worktree
@@ -1254,13 +1391,12 @@ def fresh_worktrees(r, anchor, tag, other_active=()):
     declined as `protected` and the feature never fired. The work is in a
     directory that did not exist at dispatch, so that is what we look for.
 
-    Ownership is inferred, not known, so it is inferred CONSERVATIVELY: a
-    worktree is only this run's if no other run still in flight could also have
-    created it. Another active run whose own dispatch snapshot lacks the
-    worktree predates it too — ambiguous, decline and let preflight (2) have it.
-    Pushing a peer's branch mid-run is the one genuinely harmful outcome here:
-    it would publish unfinished work AND poison that peer's own push at reap
-    (`exists-on-origin`).
+    "Did not exist at dispatch" is NECESSARY but not SUFFICIENT: it is equally
+    true of a peer's tree and of an orphan left by a run that died. Ownership
+    itself is decided by worktree_owner(); `known_runs` is every run the state
+    file still holds (active or not), used only by the legacy task-id rule.
+    `refused` optionally collects the declines so the run-level result can name
+    them rather than reporting a bare "no-candidate".
     """
     if "worktrees0" not in r:
         return []                                    # pre-#195 run record
@@ -1274,12 +1410,14 @@ def fresh_worktrees(r, anchor, tag, other_active=()):
     for w in now:
         if w in before:
             continue
-        rival = next((o for o in other_active
-                      if w not in set(o.get("worktrees0") or ())), None)
-        if rival is not None:
-            print(f"  {tag}: SKIP {w} — run {rival.get('run_id')} is still in "
-                  "flight and predates it too; owner ambiguous", flush=True)
+        owned, why = worktree_owner(w, r, known_runs)
+        if not owned:
+            print(f"  {tag}: REFUSED {w} — {why}", flush=True)
+            if refused is not None:
+                refused.append({"pushed": False, "branch": None, "worktree": w,
+                                "reason": "unattributable", "detail": why})
             continue
+        print(f"  {tag}: OWNS {w} — {why}", flush=True)
         out.append(w)
     return out
 
@@ -1309,14 +1447,16 @@ def _aggregate(tag, results):
             "worktree": lead["worktree"], "results": results}
 
 
-def push_run_branch(r, other_active=()):
+def push_run_branch(r, known_runs=()):
     """Push this run's OWN branch(es), or explain (loudly) why not.
 
     Returns {"pushed": bool, "branch": str|None, "reason": str, "results": [...]}.
     Every refusal is a named reason so the reap log reads as a decision, not a
     silence. Two places the work can be, and both are checked:
       A. the run's REGISTERED worktree, if the run moved it onto a new branch;
-      B. a worktree created AFTER dispatch — the charter §4 default.
+      B. a worktree created AFTER dispatch AND carrying this run's id — the
+         charter §4 default (board #218; `known_runs` is every run still in the
+         state file, which the legacy task-id rule needs).
     """
     tag = f"push[{r.get('run_id')}]"
     if os.path.exists(NO_PUSH_FILE):
@@ -1336,17 +1476,22 @@ def push_run_branch(r, other_active=()):
     results = []
     if "branch0" in r:
         results.append(push_worktree_branch(wt, tag, branch0=r["branch0"]))
-    for new_wt in fresh_worktrees(r, wt, tag, other_active):
+    refused = []
+    for new_wt in fresh_worktrees(r, wt, tag, known_runs, refused=refused):
         results.append(push_worktree_branch(new_wt, tag))
+    # Refusals go LAST so they can never outrank a real outcome in _aggregate,
+    # but they are carried: a worktree left alone is a decision to report, not
+    # a silence (board #218).
+    results.extend(refused)
     return _aggregate(tag, results)
 
 
-def try_push_run_branch(r, other_active=()):
+def try_push_run_branch(r, known_runs=()):
     """FAIL-OPEN wrapper — the outer rail. push_run_branch() handles the
     failures it foresaw; this one exists for the rest (git missing, subprocess
     timeout, a worktree that vanished mid-reap). A reap must complete."""
     try:
-        return push_run_branch(r, other_active)
+        return push_run_branch(r, known_runs)
     except Exception as e:  # noqa: BLE001 — a push can never fail a reap
         print(f"  push[{r.get('run_id')}]: ERROR — {e} (run reported normally; "
               f"preflight (2) still covers the branch)", flush=True)
@@ -1444,11 +1589,11 @@ def reap(st):
         # is the follow-through. Runs on the lease-expired leg too (a run that
         # committed and then hung is exactly the work most likely to be lost;
         # the dirty-tree rail declines the ones that were killed mid-edit).
-        # The still-active runs go with it: a worktree they could also have
-        # created is not this run's to push (see fresh_worktrees). `r` is no
-        # longer active by here, so it cannot be its own rival.
-        res = try_push_run_branch(
-            r, [x for x in st["runs"] if x is not r and x.get("active")])
+        # Board #218: EVERY other run in state goes with it, finished ones too —
+        # ownership no longer turns on who is still in flight (that test claimed
+        # orphans and declined peers), and the legacy task-id rule specifically
+        # needs to see a task's OTHER runs, which are usually already reaped.
+        res = try_push_run_branch(r, [x for x in st["runs"] if x is not r])
         if res["pushed"]:
             r["pushed_branch"] = res["branch"]
             rh_record_push(r["run_id"], res["branch"])
@@ -1528,7 +1673,6 @@ def one_pass(live, only_task=None):
         # Board #143 — this lane's unseen @-mentions ride along in the prompt.
         # Nothing is marked seen here: the prompt has not reached a process yet.
         m_block, m_ids = mentions_for(t["assignee"])
-        prompt = build_prompt(agent, t, mentions_block=m_block)
         run_id = f"r{int(time.time())}-{t['id']}"
         # Board #197: a FAILED run is now returned to the queue, so the same task
         # can be re-dispatched within the same SECOND (a run that dies instantly,
@@ -1550,6 +1694,11 @@ def one_pass(live, only_task=None):
             n += 1
             run_id = f"{base}.{n}"
         log_path = f"{LOG_DIR}/{run_id}.log"
+        # Board #218 — the prompt is built AFTER the id is settled, because the
+        # WORKTREE CONTRACT hands the agent that id: it is the token the run-end
+        # push attributes the worktree by, so an agent that never learns it
+        # cannot comply. (Pre-#218 the prompt was built first and the id after.)
+        prompt = build_prompt(agent, t, mentions_block=m_block, run_id=run_id)
         flag = " [run-requested]" if t["id"] in req_ids else ""
         if not live:
             open(f"{LOG_DIR}/{run_id}.DRY.prompt.txt", "w").write(prompt)
