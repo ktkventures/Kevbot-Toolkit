@@ -237,6 +237,30 @@ for rel, expect in (
 
 
 print()
+print("― rail 8: `pytest src/` collects the REAL tree cleanly (pythonpath = src) ―")
+# Suites are normally run directly, which puts src/ on sys.path. Under pytest the rootdir
+# is the project root, so without `pythonpath = src` in pytest.ini 17 suites die at import
+# with ModuleNotFoundError. Those errors are collection noise, not real failures — but a
+# run that always ends in errors is exactly what gets the guard above deleted. Delete the
+# `pythonpath` line from pytest.ini and this rail fails.
+ok("pytest.ini puts src/ on the path the way a direct run does",
+   "pythonpath = src" in open(PYTEST_INI, encoding="utf-8").read())
+p = subprocess.run(
+    [sys.executable, "-m", "pytest", "src/", "--collect-only", "-q"],
+    cwd=ROOT, capture_output=True, text=True, timeout=600,
+)
+collect_out = p.stdout + p.stderr
+ok("`pytest src/ --collect-only` reports ZERO collection errors",
+   "errors during collection" not in collect_out
+   and "error during collection" not in collect_out
+   and not any(ln.startswith("ERROR ") for ln in collect_out.splitlines()),
+   collect_out[-800:])
+ok("and it exits 0 rather than being Interrupted",
+   p.returncode == 0, f"exit {p.returncode}: {collect_out[-500:]}")
+ok("ModuleNotFoundError for engine modules is gone",
+   "ModuleNotFoundError" not in collect_out, collect_out[-500:])
+
+print()
 print(f"{PASS} passed, {FAIL} failed")
 for f in FAILURES:
     print("  FAIL:", f)
