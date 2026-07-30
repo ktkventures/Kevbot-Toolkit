@@ -159,7 +159,9 @@ except Exception as _mentions_import_err:  # pragma: no cover — belt and brace
 CONCURRENCY = 4
 # Circuit breaker ONLY — it exists to stop a runaway loop, never to ration an
 # ordinary day. Raised 24 → 40 by Kevin on 07-30 (board #219) after one overnight
-# session spent 20 of 24 and left 4 for all of Thursday. Two properties Kevin
+# session spent 20 of 24 and left 4 for all of Thursday, then 40 → 50 by Kevin the
+# SAME DAY — 40 was reached by 16:30Z with four lanes live, which is the raise
+# working as intended rather than a runaway. Two properties Kevin
 # asked for, and both must survive any future edit:
 #   • easy to adjust — one integer, read at runtime, no deploy;
 #   • his call to adjust it — changing this number needs Kevin's explicit
@@ -167,7 +169,7 @@ CONCURRENCY = 4
 # The window is the UTC DAY (today_run_count() below), so it rolls at 00:00Z =
 # 18:00 MT — an evening's throughput is charged to the NEXT MT morning. Kevin has
 # NOT ruled on moving to a rolling 24h window (board #219 option 3); it stays UTC-day.
-DAILY_CAP = 40
+DAILY_CAP = 50
 POLL_S = 900
 RUN_TIMEOUT_S = 45 * 60  # lease
 CLAUDE_BIN = "claude"
