@@ -303,8 +303,17 @@ ok("the host is named in the prompt so it is never guessed",
    D.BOARD_API_URL in p1)
 ok("the call carries the credential the route now accepts",
    "Authorization: Bearer $RORT_BOARD_SERVICE_KEY" in p1)
-ok("no bare hostless POST line survives",
-   "POST /api/dev-tasks/217/steps/complete" not in p1)
+# Scoped to the GENERATED TICK BLOCK, not the whole prompt. `build_prompt` embeds
+# the task's LIVE comment thread (dispatcher.py:778), so asserting across all of p1
+# means any human or agent who quotes the old bare-path string in a #217 comment
+# fails this check. That is exactly what happened on 07-30: M's review comment
+# explained the fix by quoting `POST /api/dev-tasks/217/steps/complete`, and this
+# assertion went red on a REBASE with no code change behind it.
+# The rail is about what the dispatcher RENDERS, so it is asserted there.
+_tick = p1[p1.index("STEP-TICK CONTRACT"):] if "STEP-TICK CONTRACT" in p1 else ""
+ok("the tick block exists to assert against", bool(_tick))
+ok("no bare hostless POST line survives IN THE TICK BLOCK",
+   "POST /api/dev-tasks/217/steps/complete" not in _tick, _tick[:400])
 
 env = D.run_env()
 ok("run_env() exports the API host", env.get("RORT_BOARD_API_URL") == D.BOARD_API_URL)
