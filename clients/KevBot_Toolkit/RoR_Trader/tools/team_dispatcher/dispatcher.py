@@ -159,15 +159,29 @@ except Exception as _mentions_import_err:  # pragma: no cover — belt and brace
 CONCURRENCY = 4
 # Circuit breaker ONLY — it exists to stop a runaway loop, never to ration an
 # ordinary day. Raised 24 → 40 by Kevin on 07-30 (board #219) after one overnight
-# session spent 20 of 24 and left 4 for all of Thursday. Two properties Kevin
+# session spent 20 of 24 and left 4 for all of Thursday, then 40 → 50 by Kevin the
+# SAME DAY — 40 was reached by 16:30Z with four lanes live, which is the raise
+# working as intended rather than a runaway. Two properties Kevin
 # asked for, and both must survive any future edit:
-#   • easy to adjust — one integer, read at runtime, no deploy;
+#   • easy to adjust — no deploy, no restart;
 #   • his call to adjust it — changing this number needs Kevin's explicit
 #     approval, exactly like a flag arm. Do not "temporarily" raise it in a run.
+#
+# The FIRST property was CLAIMED here and never actually built (board #228). This
+# constant is read at IMPORT, so every change cost a PR, a train, a deploy AND a
+# loop restart — which is what Kevin hit on 07-30 raising 40 → 50. The live value
+# now comes from effective_daily_cap() below; this constant is only the FALLBACK
+# when the settings row is missing or unreadable.
+#
 # The window is the UTC DAY (today_run_count() below), so it rolls at 00:00Z =
 # 18:00 MT — an evening's throughput is charged to the NEXT MT morning. Kevin has
 # NOT ruled on moving to a rolling 24h window (board #219 option 3); it stays UTC-day.
-DAILY_CAP = 40
+DAILY_CAP = 50
+# Sanity ceiling on the runtime override. A circuit breaker set to a nonsense
+# value is not a breaker, so an out-of-range setting is CLAMPED and reported —
+# never silently honoured, never silently ignored.
+DAILY_CAP_MAX = 500
+DAILY_CAP_SETTING = "dispatcher_daily_cap"
 POLL_S = 900
 RUN_TIMEOUT_S = 45 * 60  # lease
 CLAUDE_BIN = "claude"
@@ -310,6 +324,43 @@ def save_state(st):
 def today_run_count(st):
     today = datetime.now(timezone.utc).date().isoformat()
     return sum(1 for r in st["runs"] if r["ts"][:10] == today)
+
+
+def effective_daily_cap():
+    """The live cap, read fresh EVERY poll. Returns (cap, source).
+
+    Board #228. `DAILY_CAP` is a module constant read at import, so raising it
+    used to cost a PR, a train, a deploy AND a loop restart — Kevin raised
+    40 → 50 on 07-30 and hit exactly that. The comment above the constant had
+    claimed "read at runtime, no deploy" since #219; it was never true.
+
+    The value now lives in `system_settings` under `dispatcher_daily_cap`, the
+    same table and shape as `data_worker_streaming_enabled`. Change the row and
+    the running loop honours it on the next poll — no deploy, no restart.
+
+    Failure policy, deliberately NOT a silent default:
+      • row missing        -> the constant, source "constant (no row)"
+      • unreadable / bad   -> the constant, source names the problem, and the
+                              poll line prints it. A cap that quietly reverts is
+                              worse than one that is loudly wrong.
+      • out of range       -> CLAMPED to [1, DAILY_CAP_MAX] and reported. A
+                              breaker set to nonsense is not a breaker.
+    """
+    try:
+        rows = api("GET", f"system_settings?key=eq.{DAILY_CAP_SETTING}&select=value")
+    except Exception as e:
+        return DAILY_CAP, f"constant (settings unreadable: {type(e).__name__})"
+    if not rows:
+        return DAILY_CAP, "constant (no row)"
+    raw = rows[0].get("value")
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return DAILY_CAP, f"constant (row value {raw!r} is not an int)"
+    if val < 1 or val > DAILY_CAP_MAX:
+        clamped = max(1, min(val, DAILY_CAP_MAX))
+        return clamped, f"settings CLAMPED from {val} to [1,{DAILY_CAP_MAX}]"
+    return val, "settings"
 
 
 def active_runs(st):
@@ -1417,7 +1468,8 @@ def one_pass(live, only_task=None):
     st = load_state()
     reap(st)
     slots = CONCURRENCY - len(active_runs(st))
-    cap_left = DAILY_CAP - today_run_count(st)
+    cap, cap_src = effective_daily_cap()
+    cap_left = cap - today_run_count(st)
     done_ids = {t["id"] for t in api("GET", "dev_tasks?status=eq.Done&select=id")}
     # Button presses first (priority-jump), then the organic Todo queue.
     requested, bad_requests = run_requested(agents, done_ids)
@@ -1441,9 +1493,12 @@ def one_pass(live, only_task=None):
                   flush=True)
         cands = hit
     now = datetime.now(timezone.utc).strftime("%H:%M:%SZ")
+    # cap SOURCE is printed, not just the number: a fallback to the constant is
+    # the one failure here that would otherwise look identical to working (#228).
     print(f"[{now}] agents={list(agents)} ({source}) · dispatchable={len(cands)} "
           f"(button-requested={len(requested)}, skipped={len(skipped)}) "
-          f"· slots={slots} · cap_left={cap_left} · mode={'LIVE' if live else 'DRY-RUN'}",
+          f"· slots={slots} · cap_left={cap_left}/{cap} [{cap_src}] "
+          f"· mode={'LIVE' if live else 'DRY-RUN'}",
           flush=True)
     for t, reason in bad_requests:
         if live:
