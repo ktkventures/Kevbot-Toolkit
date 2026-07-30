@@ -802,6 +802,51 @@ def poll_task(task_id: int, scoped_id: Optional[int] = None,
     }
 
 
+# ── Cross-task comment feed (board #220 — the M-session dashboard) ───────────
+# Every other comment read on this router is scoped to ONE task, because every
+# other consumer opens one thread. The M-session activity log is the first
+# reader that needs the board's comment stream as a whole, and fanning
+# `/{task_id}/comments` over ~90 open tasks is exactly the poll-efficiency
+# mistake board #148 measured. So: one list GET, newest first.
+#
+# Read-only, zero new capture (board #220 Phase 1 rail): the events already
+# exist — system transitions, agent reports, Kevin's `@M` Ask-AI comments.
+_FEED_LIMIT_CAP = 500
+# Bodies are the whole cost here: 07-30 sampling put M's own comments at ~1,278
+# chars each, and agent reports run longer. The feed renders an EXCERPT and
+# deep-links to the thread for the rest (Kevin's pointer-not-repetition model),
+# so the wire carries an excerpt too — with the true length alongside it, so the
+# UI can say how much it is not showing instead of silently eliding.
+_FEED_CHARS_CAP = 20000
+
+
+@router.get("/comments/recent")
+def recent_comments(limit: int = 300, max_chars: int = 1400,
+                    user=Depends(get_current_user)):
+    """Recent comments across ALL tasks, newest first (board #220).
+
+    `max_chars` truncates each body for the wire; `body_chars` always carries
+    the UNTRUNCATED length, so `len(body) < body_chars` is the truncation tell.
+    `max_chars=0` returns full bodies (used by nothing on the page today —
+    kept so a debugging read doesn't have to guess at a large number).
+
+    Route order note: this path cannot collide with `/{task_id}/comments` —
+    that template requires the SECOND segment to be the literal "comments",
+    and here the second segment is "recent".
+    """
+    limit = min(max(limit, 1), _FEED_LIMIT_CAP)
+    rows = _admin().table("dev_task_comments") \
+        .select("id,task_id,author,body,created_at,step_order") \
+        .order("created_at", desc=True).limit(limit).execute().data or []
+    cap = min(max_chars, _FEED_CHARS_CAP) if max_chars and max_chars > 0 else 0
+    for r in rows:
+        body = r.get("body") or ""
+        r["body_chars"] = len(body)
+        if cap and len(body) > cap:
+            r["body"] = body[:cap]
+    return rows
+
+
 @router.get("/{task_id}/comments")
 def list_comments(task_id: int, user=Depends(get_current_user)):
     return _admin().table("dev_task_comments").select("*") \
