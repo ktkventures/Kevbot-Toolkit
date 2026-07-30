@@ -130,6 +130,66 @@ ok("run_history.pushed_branch is OPTIONAL in the type (un-migrated DB is fine)",
 ok("PR numbers are never scraped out of comment prose",
    "dev_task_comments" not in PAGE and "PR #" not in PAGE)
 
+print("― board #243: the shipping row points at the ASSIGNEE, not the builder ―")
+# Kevin, 07-30: *"I clicked on one that looks like it's assigned to me, but the
+# picture makes it look like it's assigned to E."* The row rendered
+# `s.builtRun.agent_letter` — the lane that PRODUCED the work — and the assignee
+# was not on the row at all, so the panel answered "who made this?" while Kevin
+# was asking "who do I chase?". An audit found ZERO real assignee mismatches:
+# the data was right and the DISPLAY was wrong, which is the more expensive way
+# round, because it costs trust in the board exactly where the board is meant to
+# reassure. These rails pin the fix to the row itself, not to the whole file.
+SHIP_ROW = PAGE.split("{ship.map((s) =>")[1].split("</Panel>")[0]
+SHIP_SUB = PAGE.split('<Panel title="shipping lane')[1].split("{ship.length === 0")[0]
+
+ok("the row renders the task's ASSIGNEE", "s.task.assignee" in SHIP_ROW)
+ok("the assignee is the row's FIRST (primary) role chip",
+   re.search(r"RoleChip role=\{chase\}", SHIP_ROW) is not None
+   and SHIP_ROW.index("RoleChip role={chase}") < SHIP_ROW.index("RoleChip role={builder}"))
+ok("the builder is NO LONGER the row's lane chip",
+   "RoleChip role={s.builtRun.agent_letter}" not in SHIP_ROW)
+ok("a builder that differs from the assignee is shown TOO, not dropped",
+   re.search(r"builder\s*!==\s*chase", SHIP_ROW) is not None
+   and "builderIsOther &&" in SHIP_ROW)
+ok("the two are distinguishable by SIZE, not just position (builder demoted)",
+   re.search(r"RoleChip role=\{builder\} size=\{(\d+)\}", SHIP_ROW) is not None
+   and int(re.search(r"RoleChip role=\{builder\} size=\{(\d+)\}", SHIP_ROW).group(1)) < 20)
+ok("…and by a WORD on the row itself — legible with no legend",
+   "built by" in SHIP_ROW)
+ok("the panel header says which avatar is which (a tooltip alone is not enough)",
+   "ASSIGNEE" in SHIP_SUB and "built by" in SHIP_SUB)
+ok("the assignee chip's tooltip says it is who to CHASE",
+   re.search(r"ASSIGNEE \$\{chase\}[^`]*chase", SHIP_ROW) is not None)
+ok("the builder chip's tooltip says it is NOT who to chase",
+   re.search(r"BUILT BY \$\{builder\}", SHIP_ROW) is not None
+   and "not who to chase" in SHIP_ROW)
+ok("an unassigned row says so rather than silently borrowing the builder",
+   "EmptyRoleCircle" in SHIP_ROW and "unassigned" in SHIP_ROW)
+# #222 rail 7 / #229 rail 7 — the whole point of the registry is that a lane
+# split costs no code edit. A literal letter comparison anywhere in this row
+# would re-introduce the hand-maintenance the registry removed. Scanned over
+# CODE only: the row's comment explains what it deliberately does NOT do, and a
+# rail that cannot tell prose from a branch would forbid saying so.
+ship_code = "\n".join(ln for ln in SHIP_ROW.split("\n") if not ln.lstrip().startswith("//"))
+letterish = re.findall(r"[!=]==\s*'[A-Za-z][\w-]{0,3}'", ship_code)
+ok("no literal letter comparison in the row (registry-driven only)",
+   letterish == [], letterish)
+ok("the row reuses the ONE RoleChip implementation",
+   re.search(r"(export\s+)?(const|function)\s+RoleChip\s*[=(]", PAGE) is None
+   and "export const RoleChip" in SHARED)
+# The size knob has to be a parameter OF that one chip, not a fork of it: every
+# dimension derives from `size` so the #222 shape cue survives at 14px.
+chip = SHARED.split("export const RoleChip")[1].split("export const LaneKindChip")[0]
+ok("RoleChip takes an optional size, defaulting to the original 20",
+   re.search(r"size\s*=\s*20", chip) is not None
+   and re.search(r"size\?:\s*number", chip) is not None)
+for dim_name in ("width", "height", "fontSize", "borderRadius", "boxShadow"):
+    # Read the property's VALUE, not a fixed-width window: `Math.max(3, …)` and
+    # the two-line boxShadow both break a naive "up to the next comma" regex.
+    val = chip.split(f"{dim_name}:", 1)[1][:200] if f"{dim_name}:" in chip else ""
+    ok(f"RoleChip's {dim_name} derives from size (no hard-coded 20px twin)",
+       "size" in val or "ring" in val, val[:60])
+
 print("― Kevin 07-29: Staged must not be forgettable ―")
 ok("Staged and Review both get a waiting bucket",
    "waitBucket('Staged'" in PAGE and "waitBucket('Review'" in PAGE)

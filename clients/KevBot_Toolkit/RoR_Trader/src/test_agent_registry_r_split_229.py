@@ -399,10 +399,15 @@ ok("R-A is in the assignee + mention fallback lists",
 ok("the outage fallback treats R as a session (under-promises dispatch)",
    "SESSION_FALLBACK = new Set(['kevin', 'M', 'R'])" in TSX)
 # The generic renderers #222 built must be untouched — that is the claim.
+# Shape is checked as an INVARIANT, not as a pixel literal: board #243
+# parameterised RoleChip's size (the shipping lane demotes the builder to a
+# smaller secondary chip), so `session ? 5 : '50%'` is now computed. What #222
+# claimed — shape branches on the lane kind and an agent stays a circle — still
+# has to hold, and a colour-only regression still fails this.
+ok("RoleChip still varies SHAPE, not colour alone",
+   re.search(r"borderRadius: session \? [^:\n]+ : '50%'", TSX) is not None)
 for label, needle in (
-        ("RoleChip still varies SHAPE, not colour alone",
-         "borderRadius: session ? 5 : '50%'"),
-        ("…with a ring on top of the shape", "boxShadow: session ?"),
+        ("…with a ring on top of the shape", "boxShadow: session"),
         ("LaneKindChip still renders the WORD", "'◧ session'"),
         ("…and its agent counterpart", "'◍ agent'"),
         ("both cues still carry a tooltip", "LANE_KIND_TIP"),

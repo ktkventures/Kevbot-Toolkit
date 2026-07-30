@@ -61,7 +61,7 @@ import Link from 'next/link';
 import Card from '@/components/Card';
 import { apiFetch } from '@/lib/api/client';
 import {
-  AUTHOR_LS_KEY, AiEligibleToggle, ChecklistStep, DISPATCHER, MODE_DEF,
+  AUTHOR_LS_KEY, AiEligibleToggle, ChecklistStep, DISPATCHER, EmptyRoleCircle, MODE_DEF,
   OutcomeChip, RoleChip, RunButton, RunRow, RunStatePill,
   STATUS_COLOR, Task, ageColor, ageShort, elapsedShort, hoursSince, input,
   isProcessChain, relTime, roleAbbrev, roleColor, runIneligibleReason, stepOwner,
@@ -1071,6 +1071,11 @@ export default function AdminDispatchPage() {
           (board #166 measured 16-28h). <b>PR&apos;d is NOT tracked</b> — it needs a{' '}
           <code style={mono}>pr_number</code> field and a GitHub credential the API does not
           have (#193 Half 2), so it renders as a greyed dash rather than a false negative.
+          {' '}<b>Staged/Done here is board state, not git truth.</b>
+          {' '}<b>The leading avatar is the ASSIGNEE — who to chase</b> (board #243); where the
+          lane that BUILT it differs, that one trails behind a smaller
+          {' '}<span style={{ ...dim }}>built by</span> mark. Until #243 the row showed only the
+          builder, which read as a mis-assignment that did not exist.
           {' '}<b>Merged is board state, not git truth</b>: it is the release-lane step ticked
           by <code style={mono}>car_ship_tick.py</code> (#242), which gates every tick on{' '}
           <code style={mono}>git merge-base --is-ancestor</code>. Not read from git here.
@@ -1134,48 +1139,83 @@ export default function AdminDispatchPage() {
                 + 'a statement about branches).'}
           </div>
         )}
-        {ship.map((s) => (
-          <div key={s.task.id} style={{
-            display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap',
-            padding: '7px 0', borderBottom: '1px solid var(--border)',
-          }}>
-            <span style={{
-              fontSize: 15, fontWeight: 700, minWidth: 62, color: ageColor(s.ageH),
-            }} title={s.ageFrom === 'branch'
-              ? `branch pushed ${utcStamp(s.pushedAt)} — branch age is the merge-conflict predictor`
-              : `built ${utcStamp(s.builtAt)} — its LAST COMPLETED RUN, not the branch: no `
-                + 'pushed_at is recorded for this task'}>
-              {ageShort(s.pushedAt || s.builtAt) || '—'}
-            </span>
-            <RoleChip role={s.builtRun.agent_letter} />
-            <Link href={`/admin/tasks?task=${s.task.id}`}
-              style={{ color: 'inherit', fontSize: 13, fontWeight: 600, flex: '1 1 230px', minWidth: 0,
-                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              #{s.task.id} {s.task.title}
-            </Link>
-            <Stage
-              label="pushed"
-              state={s.pushedBranch ? 'done' : 'unknown'}
-              detail={s.pushedBranch || (pushedKnown ? 'unknown' : 'unknown (pre-#195)')}
-              title={s.pushedBranch
-                ? `pushed ${utcStamp(s.pushedAt)} — branch ${s.pushedBranch} (run ${s.builtRun.run_id || '—'})`
-                : 'UNKNOWN, not "not pushed": run_history only records pushed_branch for runs after '
-                  + 'board #195, and this task has none. This row is here on the LEGACY basis '
-                  + '(a run that finished ok) — check the branch by hand before assuming.'} />
-            <Stage label="PR'd" state="untracked" detail="not tracked"
-              title="Not tracked. Needs a structured pr_number on dev_tasks AND a GitHub token the API does not have — board #193 Half 2, a credential decision rather than a UI one. Never scraped from comment prose: a scraped number goes stale silently." />
-            <Stage
-              label="merged"
-              state={s.merge.state === 'unknown' ? 'unknown' : 'pending'}
-              detail={s.merge.state === 'unknown' ? 'unreadable' : `not yet · ${s.task.status}`}
-              title={`merge state: ${s.merge.state.toUpperCase()} — ${s.merge.why}. `
-                + 'Read from the release-lane step ticked by car_ship_tick.py (board #242), which '
-                + 'gates every tick on `git merge-base --is-ancestor <branch> origin/dev`. '
-                + 'That makes this board state, standing in for the merge. Not read from git. '
-                + 'An UNREADABLE row is kept and labelled, never dropped — a lane that hides '
-                + 'what it cannot answer is a false green.'} />
-          </div>
-        ))}
+        {ship.map((s) => {
+          // Board #243 — the row's primary avatar is WHO IT WAITS ON, not who
+          // made it. It used to be the builder, so #193 (assignee `kevin`, built
+          // by F) rendered an F and read to Kevin as work assigned elsewhere.
+          // An audit found ZERO assignee mismatches: the data was right and the
+          // display was wrong, which costs more trust than the reverse.
+          //
+          // Both facts are worth showing, so they are RANKED rather than one
+          // dropped: assignee full size and first, builder demoted to a smaller
+          // trailing chip carrying the words "built by" — no legend needed. The
+          // builder chip is suppressed when it says nothing new (same lane both
+          // times), which is the common case for work still with its author.
+          //
+          // The comparison is between two DATA FIELDS. No letter is named here
+          // (#222 rail 7 / #229 rail 7); a hard-coded `=== 'M'` would have to be
+          // re-edited by hand for every lane split, and #222/#229 both proved
+          // the registry-driven path costs nothing at split time.
+          const chase = s.task.assignee || null;
+          const builder = s.builtRun.agent_letter;
+          const builderIsOther = !!builder && builder !== chase;
+          return (
+            <div key={s.task.id} style={{
+              display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap',
+              padding: '7px 0', borderBottom: '1px solid var(--border)',
+            }}>
+              <span style={{
+                fontSize: 15, fontWeight: 700, minWidth: 62, color: ageColor(s.ageH),
+              }} title={`built ${utcStamp(s.builtAt)} — age is the merge-conflict predictor`}>
+                {ageShort(s.builtAt) || '—'}
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, flex: 'none' }}>
+                {chase
+                  ? <RoleChip role={chase}
+                      title={`ASSIGNEE ${chase} — who to chase to get this shipped`} />
+                  : <EmptyRoleCircle />}
+                {builderIsOther && (
+                  <span style={{ ...dim, fontSize: 10.5, display: 'inline-flex',
+                    alignItems: 'center', gap: 3, whiteSpace: 'nowrap' }}>
+                    built by
+                    <RoleChip role={builder} size={14}
+                      title={`BUILT BY ${builder} (run ${s.builtRun.run_id || '—'}) — context, `
+                        + `not who to chase; this task waits on ${chase || 'nobody — it is unassigned'}`} />
+                  </span>
+                )}
+                {!chase && (
+                  <span style={{ ...dim, fontSize: 10.5, whiteSpace: 'nowrap' }}
+                    title={'UNASSIGNED — nobody is being chased, which is itself the problem. '
+                      + 'Board #171: the assignee is whoever the task waits on.'}>
+                    unassigned
+                  </span>
+                )}
+              </span>
+              <Link href={`/admin/tasks?task=${s.task.id}`}
+                style={{ color: 'inherit', fontSize: 13, fontWeight: 600, flex: '1 1 230px', minWidth: 0,
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                #{s.task.id} {s.task.title}
+              </Link>
+              <Stage label="built" state="done" detail={utcStamp(s.builtAt)}
+                title={`the task's most recent run that finished ok (run ${s.builtRun.run_id || '—'})`} />
+              <Stage
+                label="pushed"
+                state={s.pushedBranch ? 'done' : 'unknown'}
+                detail={s.pushedBranch || (pushedKnown ? 'unknown' : 'unknown (pre-#195)')}
+                title={s.pushedBranch
+                  ? `pushed ${utcStamp(s.pushedAt)} — branch ${s.pushedBranch}`
+                  : 'UNKNOWN, not "not pushed": run_history only records pushed_branch for runs after '
+                    + 'board #195, and this task has none. Check the branch by hand before assuming.'} />
+              <Stage label="PR'd" state="untracked" detail="not tracked"
+                title="Not tracked. Needs a structured pr_number on dev_tasks AND a GitHub token the API does not have — board #193 Half 2, a credential decision rather than a UI one. Never scraped from comment prose: a scraped number goes stale silently." />
+              <Stage
+                label={s.task.status === 'Staged' ? 'staged' : 'shipped'}
+                state={s.task.status === 'Staged' ? 'pending' : 'untracked'}
+                detail={s.task.status}
+                title="board state, used as a proxy for the merge: Staged = reviewed and awaiting a release train; Done = shipped. Not read from git." />
+            </div>
+          );
+        })}
       </Panel>
 
       {/* ── Run log ───────────────────────────────────────────────────────── */}
