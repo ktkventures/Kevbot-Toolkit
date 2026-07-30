@@ -1,5 +1,22 @@
 #!/usr/bin/env python3
-"""Team dispatcher (V4.19) — dispatches board tasks to headless Claude agents.
+"""Team dispatcher (V4.21) — dispatches board tasks to headless Claude agents.
+
+V4.21 (board #198): ELIGIBILITY, NOT STATUS, GATES DISPATCH. The gate was
+`status=eq.Todo`, which made the kanban column do two unrelated jobs at once —
+WHERE a task sits in its lifecycle, and MAY an AI touch it — and the second kept
+corrupting the first (tasks shoved back to Todo purely to re-arm them between
+chain steps). The gate is now `ai_eligible = true OR status = 'Todo'`: ADDITIVE,
+so every task on the board today dispatches exactly as it did and the new arm is
+opt-in per task (same shape as the process chain's new-shape keys, same shape as
+a default-OFF engine flag). `status` is now WRITE-ONLY for the dispatcher — it
+sets In Progress/Review, and no task is ever refused for not being in Todo.
+The Todo query was also the accidental re-dispatch guard (a finished run moved
+the task to Review, which dropped it out of the query), so this version replaces
+that side-effect with two STATUS-BLIND rails: a step-guard (no repeat of a
+chain step a finished run already covered) and a completed-chain refusal. See
+`triage_todo`, `step_sig`, `step_already_ran`. The one thing status still says is
+FINALITY: a `Done` or `Blocked` task is never dispatched, armed or not
+(`TERMINAL_STATUSES`) — that is not the permission coupling #198 removed.
 
 V4.19 (board #143, V2.12): @-MENTION DELIVERY. A dispatched agent's prompt now
 carries that lane's UNSEEN mentions — the same `task_mentions` rows F's Messages
@@ -95,6 +112,38 @@ STALE_SKIP_S = 4 * 3600    # board #171 tripwire: a STUCK Todo (headless-assigne
 # gated); the tag is cleared on claim. Ineligible requests are cleared LOUDLY
 # (comment + run_history 'ignored') instead of rotting on the task.
 RUN_REQUESTED_TAG = "run-requested"
+
+# Board #198 — THE DISPATCH GATE, as a PostgREST filter. `ai_eligible` is the
+# ARMING switch ("may an AI run this"); `status` is the kanban POSITION ("where
+# is it in its lifecycle"). The OR keeps the legacy Todo queue working unchanged
+# while the new arm is opt-in per task, so shipping this changes nothing about
+# what runs today: every existing row is ai_eligible=false
+# (migrations/dev_tasks_ai_eligible.sql) and every Todo task still matches.
+# `eq.true` rather than `is.true` because Step 2 round-tripped that exact
+# spelling against the real PostgREST endpoint.
+GATE_FILTER = "or=(ai_eligible.eq.true,status.eq.Todo)"
+
+# Board #198 AUDIBLE (inserted by M review of step 4) — STATUS AS FINALITY.
+# #198 removed status-as-PERMISSION; it did not make a FINISHED task
+# dispatchable. `Done` = the work is over. `Blocked` = parked, and reap() itself
+# puts a failed dispatch there. Neither is work to hand an agent, armed or not.
+#
+# Reading status to refuse a TERMINAL state is NOT the coupling #198 removed —
+# it is status as finality, and it is the ONE status read in the gate that
+# withholds anything. DO NOT "clean this up" as leftover Todo coupling.
+#
+# Why the other rails do not already cover it: step_already_ran() is bounded by
+# the dispatcher's rolling run state, and step_sig() of a CHAINLESS task is the
+# constant "task" — measured on the live board 07-29, 129 of 132 Done tasks are
+# chainless and 89 are assigned to a headless lane, so the step-guard has no
+# current step to protect them with. The hole is reachable by the ORDINARY flow:
+# Kevin stamps a contained task (the stamp arms it) → it runs → M closes it →
+# `Done` + armed + chainless + headless assignee, with nothing disarming it. It
+# would re-run finished work and eat the 24-run DAILY_CAP.
+# The API also disarms on close (dev_tasks.update_task) — hygiene, and it makes
+# the data honest — but that depends on every future close path remembering,
+# whereas THIS rail cannot be forgotten. Both, deliberately.
+TERMINAL_STATUSES = ("Done", "Blocked")
 
 # #182 Step 7 — inbound check. Owners whose completed steps are NOT re-checked by
 # the next agent. Kevin's stamps are approvals, not deliverables; gating them would
@@ -203,8 +252,74 @@ def current_step(task):
     return None, None
 
 
-def triage_todo(agents, done_ids):
-    """Classify the Todo queue → (dispatchable, skipped).
+def step_sig(task):
+    """Identity of the WORK a dispatch would cover — the current chain step, or
+    the whole task when there is no chain (board #198).
+
+    Deliberately status-blind. It answers the only question the re-dispatch guard
+    needs: "has the chain moved on since the last run, or is the SAME step about
+    to run a second time?". Includes the title as well as the index so an audible
+    step inserted ahead of the current one reads as new work rather than a
+    repeat."""
+    idx, step = current_step(task)
+    if step is None:
+        return "task"          # legacy checklist, no checklist, or chain finished
+    return f"{idx}:{step_title(step)[:80]}"
+
+
+def step_already_ran(st, task):
+    """True when a FINISHED dispatched run already covered this task's current
+    step (board #198).
+
+    Why this exists: the pre-#198 gate was `status=eq.Todo`, so reap()'s move to
+    `Review` doubled as the re-dispatch guard — a completed task simply fell out
+    of the query. `ai_eligible` does not fall out of anything, so without this
+    rail an armed task whose step was left un-ticked (measured 4-for-4 on 07-29,
+    board #202) would re-dispatch the SAME step every poll and eat the daily cap.
+    The chain advancing is what re-arms it: a new current step is a new
+    signature, which is exactly Kevin's "the chain re-arms itself".
+
+    Status-blind by construction — it reads the dispatcher's OWN run log, not the
+    board. `st=None` (unit tests, the `dispatchable()` shim) makes it inert.
+
+    #197 COUPLING (unshipped at the time of writing): that branch returns a
+    FAILED run's task to its pre-dispatch status so the next poll retries it.
+    Once both land, `report_failed_run()` must drop this task's finished runs
+    from state (`forget_task_runs(st, task_id)`) or an armed task's auto-retry
+    will be refused here. Refusing is the SAFE side of that race — it matches
+    today's behaviour, where a failed run parks the task in Review — so the two
+    can land in either order without a runaway."""
+    if not st:
+        return False
+    sig = step_sig(task)
+    return any(r.get("task_id") == task["id"] and r.get("step_sig") == sig
+               and not r.get("active") for r in st.get("runs", []))
+
+
+def forget_task_runs(st, task_id):
+    """Drop a task's finished runs from the step-guard's view, re-arming it for
+    another pass at its CURRENT step (board #198). Nothing calls this yet: it is
+    the hook #197's retry leg needs — see step_already_ran()."""
+    st["runs"] = [r for r in st.get("runs", [])
+                  if r.get("task_id") != task_id or r.get("active")]
+    return st["runs"]
+
+
+def triage_todo(agents, done_ids, st=None):
+    """Classify the dispatch queue → (dispatchable, skipped).
+
+    Board #198 — ELIGIBILITY GATES, STATUS DESCRIBES. The query is the OR of
+    `ai_eligible` and the legacy `status=Todo` queue (GATE_FILTER), and no task
+    is ever refused here for sitting in the wrong lifecycle column. `status` is
+    read in exactly TWO places below, neither of them a permission read:
+      • TERMINAL_STATUSES — finality. `Done`/`Blocked` is not "not allowed yet",
+        it is "there is nothing here to do"; see the constant for why the
+        step-guard cannot cover a chainless closed task (audible, step 5).
+      • the arm SELECTOR — it picks which arm's BEHAVIOUR applies, so the
+        pre-#198 Todo queue keeps behaving byte-identically (a finished chain
+        sitting in Todo still dispatches on assignee alone — board #182) while
+        the new arm gets the tighter rails.
+    Nothing here refuses a task for NOT being in Todo, which was the coupling.
 
     Board #171 — ASSIGNEE IS AUTHORITATIVE, the checklist is advisory. The old
     `next_actor()` gate let an un-ticked checklist step OVERRIDE the assignee and
@@ -222,10 +337,21 @@ def triage_todo(agents, done_ids):
       is_stuck=True  → assignee IS a headless lane but a hard gate blocks it
                        (blocked_by / needs-review|scoping / empty description). A
                        real blocker or an unforeseen gate bug hides here → loud."""
-    tasks = api("GET", "dev_tasks?status=eq.Todo&select=*"
+    tasks = api("GET", f"dev_tasks?{GATE_FILTER}&select=*"
                        "&order=is_urgent.desc,priority_phase,priority_seq")
     out, skipped = [], []
     for t in tasks:
+        if t.get("status") in TERMINAL_STATUSES:
+            # HARD RAIL, first in the gate: a finished or parked task is never
+            # dispatched, however it got armed (see TERMINAL_STATUSES — finality,
+            # not permission). Quiet, not stuck: a closed task is not a stuck
+            # QUEUE, and flagging it would comment on a finished thread and then
+            # trip the 4h staleness tripwire on it every day forever. The SKIP
+            # line below still names it on the pass its reason first appears.
+            skipped.append((t, f"status is {t['status']} — terminal; a finished "
+                               f"or parked task is never dispatched, armed or "
+                               f"not (board #198 audible)", False))
+            continue
         a = t.get("assignee")
         if a not in agents:
             skipped.append((t, f"waiting on {a or '—'} (not a headless agent)", False))
@@ -261,14 +387,45 @@ def triage_todo(agents, done_ids):
                                    f"not a build; never dispatched to a headless agent",
                                 False))
                 continue
+        # ── Board #198 rails. The `status=eq.Todo` query used to be the accidental
+        # re-dispatch guard: reap() moved a finished task to Review, which dropped
+        # it out of the query. An armed task never drops out of anything, so the
+        # guard has to be stated instead of inherited — status-blind, from the
+        # dispatcher's own run log and the chain itself.
+        # THE ONE STATUS READ (see the docstring): purely an arm selector. A task
+        # in Todo keeps its pre-#198 behaviour to the letter, including the legacy
+        # fallback where a fully-ticked chain still dispatches on assignee alone
+        # (board #182 walk 4). Nothing here refuses a task for NOT being Todo.
+        legacy_todo_arm = t.get("status") == "Todo"
+        if not legacy_todo_arm:
+            if step is None and is_process_chain(t.get("checklist") or []):
+                # Every step ticked. The chain IS the scope (#182), so there is
+                # nothing left to hand an agent — dispatching here would re-run
+                # the whole task from the top. Waiting on a human to sign off and
+                # close, which is the designed state: quiet, no tripwire.
+                skipped.append((t, "chain complete — every step is ticked; nothing "
+                                   "left to dispatch (sign off and close it, or add "
+                                   "a step)", False))
+                continue
+            if step_already_ran(st, t):
+                # A finished run already covered this exact step. Classified as
+                # WAITING, not stuck: the task is waiting on a human to review the
+                # output / tick the step, and marking it stuck would post a
+                # "dispatch skipped" comment on EVERY dispatched task one poll
+                # after its result. The log line below still names it every pass.
+                where = (f"step {idx + 1}" if step is not None else "this task")
+                skipped.append((t, f"{where} already had a finished dispatched run — "
+                                   f"waiting on review / the step tick; the chain "
+                                   f"advancing is what re-arms it (board #198)", False))
+                continue
         out.append(t)
     return out, skipped
 
 
-def dispatchable(agents, done_ids):
+def dispatchable(agents, done_ids, st=None):
     """Back-compat shim: the dispatchable subset only. one_pass() calls
     triage_todo() directly because it also needs the skip diagnostics."""
-    return triage_todo(agents, done_ids)[0]
+    return triage_todo(agents, done_ids, st)[0]
 
 
 def process_skips(st, skipped, live, exclude_ids):
@@ -345,6 +502,14 @@ def run_requested(agents, done_ids):
                       "&order=updated_at")
     ok, bad = [], []
     for t in rows or []:
+        # Board #198 leaves this list ALONE, deliberately. These are the BUTTON's
+        # refusals — a human just pressed Run on a specific task — and they are
+        # about "this cannot be started" / "this is not workable yet", not about
+        # the eligibility question #198 moved onto `ai_eligible`. The organic gate
+        # in triage_todo() no longer refuses anything for its status; loosening
+        # the button (e.g. honouring a press on an armed `Staged` task, which the
+        # organic gate now dispatches on its own) is a design call for Kevin/M,
+        # not a mechanical consequence of the gate change.
         # The button overrides queue ORDER, never "not workable yet" (M, #109
         # review): Scoping status / needs-scoping tag are hard refusals. The
         # board-#136 pipeline stages joined the list — Approval isn't approved
@@ -672,7 +837,7 @@ def one_pass(live, only_task=None):
     # Button presses first (priority-jump), then the organic Todo queue.
     requested, bad_requests = run_requested(agents, done_ids)
     req_ids = {t["id"] for t in requested}
-    organic, skipped = triage_todo(agents, done_ids)
+    organic, skipped = triage_todo(agents, done_ids, st)
     cands = requested + [t for t in organic if t["id"] not in req_ids]
     # Board #171: LOUD, deduped reporting for the organic queue's skips — only in
     # the continuous --loop (a one-shot --task run must not comment on unrelated
@@ -685,7 +850,8 @@ def one_pass(live, only_task=None):
         if not hit:
             why = next((r for t, r, _ in skipped if t["id"] == only_task), None)
             detail = (f" — {why}" if why else
-                      " (not Todo / wrong lane / blocked / awaiting review)")
+                      " (not AI-eligible and not Todo / wrong lane / blocked / "
+                      "this step already ran)")
             print(f"task #{only_task} is NOT eligible{detail} — nothing dispatched",
                   flush=True)
         cands = hit
@@ -740,8 +906,13 @@ def one_pass(live, only_task=None):
             "body": f"dispatched to {t['assignee']}·auto (run {run_id})"})
         rh_claim(t, run_id)
         p = spawn(agent, t, prompt, log_path)
+        # `step_sig` (board #198) is what stops an armed task re-running the step
+        # it just ran: recorded at CLAIM, read by step_already_ran() once the run
+        # is no longer active. Recorded for every run, both arms, so the guard
+        # works the moment a task is armed later.
         st["runs"].append({"run_id": run_id, "task_id": t["id"], "agent": t["assignee"],
                            "pid": p.pid, "t0": time.time(), "log": log_path,
+                           "step_sig": step_sig(t),
                            "ts": datetime.now(timezone.utc).isoformat(), "active": True})
         save_state(st)
         # ONLY NOW are the mentions delivered — spawn() has the prompt and the
