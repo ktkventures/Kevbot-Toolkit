@@ -378,6 +378,106 @@ export function buildFeed(
     .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));
 }
 
+/* ── The render budget (board #240) ──────────────────────────────────────── */
+
+/**
+ * Kevin, 07-30, first real use of the dashboard: *"some of these modules are
+ * really long, like the activity log module. I think we should probably have it
+ * have a scroll bar inside of the module and then have it lazy-load stuff… it's
+ * kind of stalling my computer out trying to look at it."*
+ *
+ * Measured: ~300 comments with bodies + ~135 run rows = **~435 rich rows on
+ * first paint**, every one carrying a body blob, an expand handler and three
+ * mark buttons — and the page grew without bound as the board did.
+ *
+ * THE FIX IS "RENDER LESS AT A TIME", NEVER "KEEP LESS". The activity log is an
+ * accountability record — event → M saw it → M did X, or judged none needed —
+ * and a window that only ever HELD the last N events would quietly stop being
+ * one. `feedWindow` therefore slices the RENDER, not the data: `total` is always
+ * the full count, `hidden` is what has not been painted yet, and exhausting the
+ * pages returns the input list verbatim. Nothing here may drop an event.
+ */
+
+/** Rows painted per page. One page is roughly a busy day on this board — the
+ *  unit Kevin reads in — and ~9% of the measured 435-row first paint. */
+export const FEED_PAGE_ROWS = 50;
+
+/** Bounded height of the activity log's own scroll container, in px. This is
+ *  the "scroll bar inside of the module" half: the PAGE stops growing with the
+ *  board, so sections 3/4 and the known-gaps footer stay reachable. */
+export const FEED_MAX_HEIGHT = 620;
+
+/** How close to the bottom of that container counts as "asking for more". */
+export const FEED_SCROLL_SLACK = 240;
+
+/** A slice of the feed, plus everything the page must SAY about what it is not
+ *  showing. `hidden` is printed, never implied — an unpainted event that looks
+ *  like an absent one is the #157 dead-alarm failure in miniature. */
+export interface FeedWindow {
+  rows: FeedEvent[];
+  /** Rendered now. */
+  shown: number;
+  /** Kept, classified and counted — but not yet painted. */
+  hidden: number;
+  /** Everything in the feed. Always the untouched input length. */
+  total: number;
+  more: boolean;
+}
+
+/**
+ * Take the first `pages` pages of `rows`. Pure, total, and non-destructive:
+ * every input row is reachable by raising `pages`, and the order is the feed's.
+ */
+export function feedWindow(
+  rows: FeedEvent[], pages: number, per: number = FEED_PAGE_ROWS,
+): FeedWindow {
+  const all = rows || [];
+  const size = Math.max(1, Math.floor(Number.isFinite(per) ? per : FEED_PAGE_ROWS));
+  const p = Math.max(1, Math.floor(Number.isFinite(pages) ? pages : 1));
+  const take = Math.min(all.length, size * p);
+  return {
+    rows: all.slice(0, take),
+    shown: take,
+    hidden: all.length - take,
+    total: all.length,
+    more: take < all.length,
+  };
+}
+
+/**
+ * Is the scroll container near enough to its bottom to paint another page?
+ * Split out as a pure function so the lazy-load rail is TESTED rather than
+ * eyeballed in a browser — the frontend has no JS test runner, but node runs
+ * this verbatim (the board-#228 lifting pattern).
+ */
+export function nearBottom(
+  scrollTop: number, clientHeight: number, scrollHeight: number,
+  slack: number = FEED_SCROLL_SLACK,
+): boolean {
+  const t = Number.isFinite(scrollTop) ? scrollTop : 0;
+  const c = Number.isFinite(clientHeight) ? clientHeight : 0;
+  const h = Number.isFinite(scrollHeight) ? scrollHeight : 0;
+  return t + c >= h - slack;
+}
+
+/** Consecutive same-day runs of a feed, for the day headers. Grouping happens
+ *  over the WINDOW, not the feed, so a day header costs nothing until its rows
+ *  are painted. `dayOf` is injected so this stays free of the .tsx helpers. */
+export interface FeedDay { day: string; rows: FeedEvent[] }
+
+export function groupByDay(
+  rows: FeedEvent[], dayOf: (iso: string) => string,
+): FeedDay[] {
+  const days: FeedDay[] = [];
+  (rows || []).forEach((e) => {
+    const d = dayOf(e.at);
+    const last = days[days.length - 1];
+    if (last && last.day === d) last.rows.push(e);
+    else days.push({ day: d, rows: [e] });
+  });
+  return days;
+}
+
 /* ── Section 5 — the Ask-AI inbox ────────────────────────────────────────── */
 
 /** One open question, in either direction. */
