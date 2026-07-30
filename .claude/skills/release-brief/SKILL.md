@@ -5,6 +5,79 @@ description: Prepare the standardized paste-block that hands a finished branch t
 
 # Release Brief
 
+## GENERATE IT FIRST — do not hand-author (board #211)
+
+```
+cd /home/kevin/projects/Kevbot-Toolkit/clients/KevBot_Toolkit/RoR_Trader
+python3 tools/release_brief/brief_gen.py                 # print the brief + verdict
+python3 tools/release_brief/brief_gen.py --json          # the machine-readable plan
+python3 tools/release_brief/brief_gen.py --create-task   # also create the R task
+```
+
+`Staged → shipped` used to be the last hand-typed hop, and it is where work died:
+nothing polls `Staged`, so a task sat there until M noticed and typed ~40 lines of
+largely templated prose. Everything a brief needs is already structured (the board)
+or derivable (git), so the generator derives it:
+
+| Part of the brief | Derived from |
+|---|---|
+| **cars** | `dev_tasks` where `status=Staged` and the CURRENT chain step is `R`-owned |
+| **branch** | `run_history.pushed_branch` → the task thread → a local branch named `*-<id>` |
+| **gates** | test files in the branch's diff; **the full dispatcher suite set** whenever `tools/team_dispatcher/dispatcher.py` is touched |
+| **order** | docs cars first, code last — a code failure then leaves the docs landed |
+| **conflicts** | overlapping paths across cars + `git merge-base` staleness per branch |
+| **owed logs** | unmerged `docs/deploy-log-waveN-MMDD` branches (R leaves these behind on purpose) |
+| **hands-off branches** | other worktrees' branches, filtered to unmerged + committed within ~3 weeks |
+| **wave number** | highest `R · Release train Wave N` on the board, +1 |
+| **hard limits / procedure** | constants — byte-identical in every brief M hand-wrote |
+
+**Kevin's ruling (task #211, 07-30): generate + AUTO-DISPATCH**, with the judgement
+enforced mechanically instead of by attention. Two distinct verdicts:
+
+- a **refusal** drops ONE car and the rest still ship — an unreviewed chain (no
+  ticked M-review step in front of the R step), an unresolvable branch, an empty
+  diff, or a branch already merged into `dev`;
+- a **hold** keeps the whole train and its brief but routes it to **M** — overlapping
+  paths with no recorded resolution (two cars on `dispatcher.py`), or a stale base.
+  **Exception:** an owed deploy-log is stale by construction, so its staleness warns
+  rather than holds — otherwise the tool refuses the log backlog it exists to clear.
+
+`--create-task` honours that: AUTO → `assignee=R`, `status=Todo`, `ai_eligible=true`
+(the loop dispatches it). HELD → `assignee=M`, `status=Review`, unarmed — visible,
+never dispatched.
+
+The generator **never** merges, pushes, rebases, runs a gate, flips a flag, or touches
+a worktree. It reads, prints, and at most writes one `dev_tasks` row.
+
+Rails suite: `python3 tools/release_brief/test_brief_gen.py` (expect `ALL PASS`).
+
+### What the generator does NOT derive (M review, 07-30)
+
+Validated by replaying Waves 14 and 16 through it and diffing against the briefs M
+hand-wrote for them. Six gaps were found and fixed; the derived gate block now
+matches the hand-written one byte-for-byte on both waves. These stay M's to add:
+
+- **gate RESULTS** (`# 74 checks passed`) — the generator may never run a gate.
+- **the `#` column is the BOARD id**, not the GitHub PR number. R merges by branch.
+- **narrative context** — *why* three logs are owed, which suite is load-bearing.
+- **armed tasks that are not cars** — that inventory is `/preflight`'s.
+- **whether a PR exists yet** — R opens one if missing.
+
+⚠️ **A `Staged` task whose chain names no R step is REFUSED, not shipped.** That was
+2 of the 5 real cars across Waves 14/16, and it used to be a silent drop. The brief
+now names it under *Refused cars* — retrofit the chain with `/task-chain`, re-run.
+
+**Still M's job, every time:** read the generated brief, and resolve anything it held.
+The shape it emits is what R is tuned to execute — when that shape needs to change,
+edit the generator, not a one-off brief.
+
+---
+
+## Hand-authoring fallback
+
+Use only when the generator cannot run (no board access) or the train is genuinely
+unlike anything it models.
+
 Produce ONE self-contained paste-block that an ephemeral `R` session executes
 top-to-bottom. R has fresh eyes and zero context — the brief must contain everything.
 R validates, merges, deploy-watches, logs, reports, and dies. R never starts feature
