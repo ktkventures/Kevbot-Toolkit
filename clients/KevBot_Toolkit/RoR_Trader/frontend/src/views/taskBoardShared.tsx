@@ -316,8 +316,13 @@ export interface RunRow {
  * Its window is the UTC DAY, which rolls at 18:00 MT: an evening's runs are
  * charged to the next morning. The lane panel prints that reset time so the cap
  * cannot be spent unknowingly.
+ *
+ * CONCURRENCY 3 → 4 (same change, board #219) — this mirror was missed when
+ * DAILY_CAP was updated beside it, so the dashboard advertised 3 lanes while the
+ * loop ran 4, and test_dispatch_dashboard_193.py went RED on dev. Both constants
+ * move together: dispatcher.py is the SSOT and this line only mirrors it.
  */
-export const DISPATCHER = { CONCURRENCY: 3, DAILY_CAP: 40, RUN_TIMEOUT_S: 2700, POLL_S: 20 };
+export const DISPATCHER = { CONCURRENCY: 4, DAILY_CAP: 40, RUN_TIMEOUT_S: 2700, POLL_S: 20 };
 
 // The agreed pipeline (Kevin+M 07-25, board #136): Backlog → Scoping →
 // Approval → Todo → In Progress → Review → Staged → Done; Blocked is the
