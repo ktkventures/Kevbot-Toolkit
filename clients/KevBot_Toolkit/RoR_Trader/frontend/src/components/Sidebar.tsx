@@ -117,6 +117,10 @@ const navItems: NavItem[] = [
       { href: '/admin/roadmap', label: 'Roadmap' },
       { href: '/admin/agents', label: 'Agents' },
       { href: '/admin/dispatch', label: 'Dispatch' },
+      // Board #220 — /admin/dispatch answers STATE (what is running); this
+      // answers HISTORY (what happened that M has to react to). Adjacent on
+      // purpose; deliberately not merged (see #193 step 7).
+      { href: '/admin/m-session', label: 'M Session' },
     ],
   },
   {
