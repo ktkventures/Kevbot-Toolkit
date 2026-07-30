@@ -129,6 +129,23 @@ BASE = "origin/dev"
 
 DISPATCHER_FILE = "tools/team_dispatcher/dispatcher.py"
 
+# The deployed API the release brief tells R to PROBE after deploy-watch. Read from
+# the dispatcher's own constant so the two cannot drift; the literal is only the
+# fallback for a checkout where the dispatcher cannot be parsed. Board #237.
+def _board_api_host():
+    try:
+        src = open(os.path.join(APP_ROOT, DISPATCHER_FILE), encoding="utf-8").read()
+        m = re.search(r'BOARD_API_URL\s*=\s*os\.getenv\([^)]*?"(https://[^"]+)"', src) \
+            or re.search(r'BOARD_API_URL\s*=\s*"(https://[^"]+)"', src)
+        if m:
+            return m.group(1).rstrip("/")
+    except Exception:
+        pass
+    return "https://api-dev-2c9d.up.railway.app"
+
+
+API_HOST = _board_api_host()
+
 # The full suite set, in the order M ran it. Any car that touches the dispatcher
 # pulls ALL of these, not just its own test: the dispatcher is one module that
 # four branches edited in a week, and #195's/#198's suites are the ones that
@@ -190,8 +207,16 @@ PROCEDURE = """## Procedure
 2. Breadcrumb before AND after every merge.
 3. Merge in the order above, verifying each lands before the next.
 4. **Deploy-watch:** all 7 services to `success` on the final head. Do not stop at `pending`.
-5. Wave-{wave} `Deploy_Log.md` entry on `docs/deploy-log-wave{wave}-{mmdd}`, PR opened, left UNMERGED.
-6. Report, set `assignee` to `M`, stop."""
+5. **PROBE THE SERVICE, do not trust the deploy status.** `GET {api_host}/health` must return
+   **200**, and `{api_host}/api/openapi.json` must return **200**. A 401 from `/api/dev-tasks`
+   is CORRECT (router loaded, admin-gated); a 5xx or a timeout is not.
+   **This step is not a formality.** On Wave 24 (07-30) deploy-watch reported **7/7 `success`
+   while the api was serving 502** -- a container that Railway launched successfully and that
+   then crash-looped on import. Deploy status answers "did Railway accept it"; only a probe
+   answers "does the service work". If the probe fails, say so LOUDLY and hand back to M --
+   the train is not done, whatever the deploy dashboard says.
+6. Wave-{wave} `Deploy_Log.md` entry on `docs/deploy-log-wave{wave}-{mmdd}`, PR opened, left UNMERGED.
+7. Report, set `assignee` to `M`, stop."""
 
 HEADER = """**RELEASE BRIEF -- Wave {wave}, {date}. {car_count}.**
 
@@ -649,7 +674,7 @@ def render(plan):
                   "CI green.", ""]
 
     out += [PROCEDURE.format(wave=plan["wave"], mmdd=plan["date"][5:].replace("-", ""),
-                             base_sha=plan["base_sha"]), ""]
+                             base_sha=plan["base_sha"], api_host=API_HOST), ""]
 
     loop_note = _loop_note(plan)
     armed = [c["label"] for c in plan["cars"] if c["armed"]]
