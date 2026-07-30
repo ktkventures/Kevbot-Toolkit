@@ -210,4 +210,29 @@ ok("no insert/update/delete performed by the feed reads",
    len(FAKE.writes) == writes_after_seed,
    f"(new writes: {FAKE.writes[writes_after_seed:]})")
 
+print("― 7. the Ask-AI tell excludes `@M-A` (step-3 review BLOCKER) ―")
+# Board #222 makes `M-A` a real owner. The Phase-1 lookahead `(?![A-Za-z0-9])`
+# did not exclude a HYPHEN, so `@M-A build this` MATCHED and would have been
+# surfaced as a top-priority Ask-AI for the M session — filling the one surface
+# Kevin expects a fast answer from with agent-directed traffic, which degrades
+# exactly the signal it exists for. Fixed to `(?![-A-Za-z0-9])`.
+#
+# The pattern is read OUT OF the shipped TS rather than restated here: a copy
+# in this file would pass while the shipped regex was wrong.
+import re                                                        # noqa: E402
+from pathlib import Path                                         # noqa: E402
+
+_FEED_TS = (Path(SRC).parent / "frontend/src/views/mSessionFeed.ts") \
+    .read_text(encoding="utf-8")
+_m = re.search(r"export const ASK_AI_RE = /(.+?)/([a-z]*);", _FEED_TS)
+ok("ASK_AI_RE literal found in mSessionFeed.ts", bool(_m))
+ASK_AI = re.compile(_m.group(1))
+
+ok("`@M please look` MATCHES — Kevin's fast lane still fires",
+   bool(ASK_AI.search("@M please look")))
+ok("`@M-A build this` does NOT match — #222's M-A is not Kevin waiting",
+   not ASK_AI.search("@M-A build this"))
+ok("`@MA nope` does not match", not ASK_AI.search("@MA nope"))
+ok("`@Meta no` does not match", not ASK_AI.search("@Meta no"))
+
 print(f"\nALL {PASS} CHECKS PASSED — board #220 Phase 1 feed endpoint")

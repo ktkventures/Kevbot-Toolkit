@@ -80,6 +80,7 @@ def create_app() -> FastAPI:
     from api.routers.resampled_store_admin import router as resampled_store_admin_router
     from api.routers.trade_snapshots import router as trade_snapshots_router
     from api.routers.model_parity import router as model_parity_router
+    from api.routers.m_session import router as m_session_router
 
     app.include_router(auth_router)
     app.include_router(settings_router)
@@ -115,6 +116,7 @@ def create_app() -> FastAPI:
     app.include_router(resampled_store_admin_router)
     app.include_router(trade_snapshots_router)
     app.include_router(model_parity_router)
+    app.include_router(m_session_router)
 
     # Load user packs at startup — registers indicators, interpreters,
     # triggers, and intra-bar level maps. DB group creation is skipped

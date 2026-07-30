@@ -55,9 +55,11 @@ import {
   ageColor, ageShort, hoursSince, input, isProcessChain, relTime,
   stepOwner, stepTitle, tagChip, utcDay, utcStamp,
 } from './taskBoardShared';
+import { MD_CSS, Md } from './taskMarkdown';
 import {
-  FEED_RULES, FeedClass, FeedComment, FeedEvent, InboxItem, M_SESSION_AUTHOR,
-  UNCLASSIFIED, askAiInbox, buildFeed, mQueue, waitingOnKevin,
+  FEED_RULES, FeedClass, FeedComment, FeedEvent, InboxItem, MMark, MOrderRow,
+  MSessionState, M_SESSION_AUTHOR, RulesPayload, UNCLASSIFIED, askAiInbox,
+  buildFeed, intendedOrder, mQueue, waitingOnKevin,
 } from './mSessionFeed';
 
 /** Auto-refresh cadence. Slower than /admin/dispatch's 15s on purpose: this
@@ -153,6 +155,28 @@ export default function AdminMSessionPage() {
   const [showRules, setShowRules] = useState(false);
   const [openBodies, setOpenBodies] = useState<Set<string>>(new Set());
 
+  // ── Step-4 state: M's own store + the rules rendered from source ────────
+  const [store, setStore] = useState<MSessionState | null>(null);
+  const [storeErr, setStoreErr] = useState<string | null>(null);
+  const [rules, setRules] = useState<RulesPayload | null>(null);
+  const [rulesErr, setRulesErr] = useState<string | null>(null);
+  const [openRule, setOpenRule] = useState<string | null>(null);
+  // Local, uncommitted edits. Held separately from `store` so a 30s refresh
+  // cannot silently overwrite what M is in the middle of typing — the canvas is
+  // the one place on this page where losing a draft costs real work.
+  const [plan, setPlan] = useState<MOrderRow[] | null>(null);
+  const [canvasDraft, setCanvasDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+  const [markNote, setMarkNote] = useState<{ key: string; text: string } | null>(null);
+
+  const loadStore = useCallback(async () => {
+    try {
+      setStoreErr(null);
+      setStore(await apiFetch<MSessionState>('/api/m-session/state'));
+    } catch (e) { setStoreErr(String(e)); }
+  }, []);
+
   const load = useCallback(async () => {
     try {
       setErr(null);
@@ -178,10 +202,19 @@ export default function AdminMSessionPage() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { loadStore(); }, [loadStore]);
   useEffect(() => {
-    const id = setInterval(() => { if (!document.hidden) load(); }, REFRESH_MS);
+    // The rules are files on disk; they change on a deploy, not on a timer, so
+    // this is a one-shot read rather than part of the 30s refresh.
+    apiFetch<RulesPayload>('/api/m-session/rules')
+      .then(setRules).catch((e) => setRulesErr(String(e)));
+  }, []);
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (!document.hidden) { load(); loadStore(); }
+    }, REFRESH_MS);
     return () => clearInterval(id);
-  }, [load]);
+  }, [load, loadStore]);
   useEffect(() => {
     const id = setInterval(() => setTick((n) => n + 1), 5000);
     return () => clearInterval(id);
@@ -195,8 +228,30 @@ export default function AdminMSessionPage() {
 
   const inbox = useMemo(() => askAiInbox(comments), [comments]);
   const kevinQueue = useMemo(() => waitingOnKevin(comments), [comments]);
-  const queue = useMemo(() => mQueue(tasks), [tasks]);
   const feed = useMemo(() => buildFeed(comments, runs), [comments, runs]);
+
+  // M's stated plan, or the empty plan while the store is unprovisioned. The
+  // comparator swap step 2 left a parameter for is exactly this one argument.
+  const order = useMemo<MOrderRow[]>(
+    () => plan ?? (store?.order || []), [plan, store]);
+  const queue = useMemo(() => mQueue(tasks, intendedOrder(order)), [tasks, order]);
+  const rankOf = useMemo(() => {
+    const m = new Map<number, MOrderRow>();
+    order.forEach((o) => m.set(o.task_id, o));
+    return m;
+  }, [order]);
+  /** Coverage marks by feed event key — the seen/actioned record. */
+  const markOf = useMemo(() => {
+    const m = new Map<string, MMark>();
+    (store?.marks || []).forEach((x) => m.set(x.event_key, x));
+    return m;
+  }, [store]);
+  const storeReady = !!store?.available;
+  const attentionRows = useMemo(
+    () => feed.filter((e) => e.cls === 'attention'), [feed]);
+  const unreviewed = useMemo(
+    () => attentionRows.filter((e) => !markOf.has(e.key)).length,
+    [attentionRows, markOf]);
 
   const feedRows = useMemo(
     () => (showRoutine ? feed : feed.filter((e) => e.cls === 'attention')),
@@ -230,6 +285,74 @@ export default function AdminMSessionPage() {
 
   const taskTitle = (id: number | null) =>
     (id != null && taskById.get(id)?.title) || '';
+
+  /* ── Writes. Every one of them touches ONLY M's own store; not a single
+       call here can change a task's status, assignee or priority. That is
+       design principle B held at the call site as well as at the API. ── */
+
+  const write = async (label: string, fn: () => Promise<unknown>) => {
+    setSaving(label); setSaveErr(null);
+    try { await fn(); await loadStore(); }
+    catch (e) { setSaveErr(`${label}: ${String(e)}`); }
+    finally { setSaving(null); }
+  };
+
+  /** Move a task within M's plan. Seeds the plan from the CURRENT queue order
+   *  so the first nudge produces a complete, explicit plan rather than one
+   *  ranked task floating above an implicit remainder. */
+  const nudge = (taskId: number, dir: -1 | 1) => {
+    const base = (plan && plan.length ? plan : queue.map((t, i) => ({
+      task_id: t.id, rank: i + 1, why: rankOf.get(t.id)?.why ?? null,
+    })));
+    const idx = base.findIndex((o) => o.task_id === taskId);
+    if (idx < 0) return;
+    const j = idx + dir;
+    if (j < 0 || j >= base.length) return;
+    const next = base.slice();
+    [next[idx], next[j]] = [next[j], next[idx]];
+    setPlan(next.map((o, i) => ({ ...o, rank: i + 1 })));
+  };
+
+  const setWhy = (taskId: number, why: string) => {
+    const base = (plan && plan.length ? plan : queue.map((t, i) => ({
+      task_id: t.id, rank: i + 1, why: rankOf.get(t.id)?.why ?? null,
+    })));
+    setPlan(base.map((o) => (o.task_id === taskId ? { ...o, why } : o)));
+  };
+
+  const savePlan = () => write('save plan', async () => {
+    await apiFetch('/api/m-session/order', {
+      method: 'PUT',
+      body: JSON.stringify({
+        actor: M_SESSION_AUTHOR,
+        // task_id + why ONLY — the API rejects anything else, and sending a
+        // whole Task here is the mistake that guard exists to catch.
+        items: (plan || []).map((o) => ({ task_id: o.task_id, why: o.why || null })),
+      }),
+    });
+    setPlan(null);
+  });
+
+  const saveCanvas = () => write('save canvas', async () => {
+    await apiFetch('/api/m-session/canvas', {
+      method: 'PUT',
+      body: JSON.stringify({ body: canvasDraft ?? '', actor: M_SESSION_AUTHOR }),
+    });
+    setCanvasDraft(null);
+  });
+
+  const mark = (e: FeedEvent, state: MMark['state'], note?: string) =>
+    write(`mark ${e.key}`, () => apiFetch('/api/m-session/marks', {
+      method: 'POST',
+      body: JSON.stringify({
+        event_key: e.key, state, note: note || null,
+        task_id: e.taskId, actor: M_SESSION_AUTHOR,
+      }),
+    }));
+
+  const unmark = (e: FeedEvent) =>
+    write(`unmark ${e.key}`, () => apiFetch(
+      `/api/m-session/marks/${encodeURIComponent(e.key)}`, { method: 'DELETE' }));
 
   const oldestOpenH = inbox.open.length ? hoursSince(inbox.open[0].comment.created_at) : -1;
 
@@ -294,7 +417,9 @@ export default function AdminMSessionPage() {
         head — and so Kevin can see what M is holding, in what order, and under what rules. Every
         number is a read over <code style={{ ...mono, margin: '0 4px' }}>dev_tasks</code>/
         <code style={{ ...mono, margin: '0 4px' }}>dev_task_comments</code>/
-        <code style={{ ...mono, margin: '0 4px' }}>run_history</code>; this page stores nothing.
+        <code style={{ ...mono, margin: '0 4px' }}>run_history</code>. The <b>only</b> thing this
+        page stores is what the board cannot answer: M&apos;s intended ordering, M&apos;s
+        seen/actioned marks, and the canvas text.
         {' '}<b>/admin/dispatch answers STATE</b> (what is running now); <b>this answers HISTORY</b>
         {' '}(what happened that M has to react to).
       </p>
@@ -377,40 +502,87 @@ export default function AdminMSessionPage() {
         title={`m’s queue — ${queue.length} on M’s plate`}
         sub={<>
           Everything the board says is waiting on the M session (<code style={mono}>assignee=M</code>,
-          excluding {'Done'} and {'Blocked'} — assignee = whoever the task waits on, board #171).
-          {' '}<b>This is BOARD ORDER, not the order M intends.</b> Kevin asked for the order M plans
-          to take these in — a plan that today lives only in M&apos;s head and a session-local todo
-          list he cannot see. That store is <b>step 4</b> of this chain and needs a migration; the
-          sort is already a swappable comparator so step 4 changes one argument, not this page.
-        </>}>
+          excluding {'Done'} and {'Blocked'} — assignee = whoever the task waits on, board #171),
+          {' '}<b>in the order M INTENDS</b>. That order is a <i>plan</i>, not board metadata, and it
+          is the only thing in this section that is stored: <code style={mono}>task_id</code>,{' '}
+          <code style={mono}>rank</code> and a one-line <code style={mono}>why</code>. Everything
+          else on each row — title, status, chain step, age — is read live from the board.
+          {' '}<b>Below the divider M has not decided</b>; those fall back to board priority. The{' '}
+          <b>why</b> is what answers <i>&quot;why is that third?&quot;</i> without Kevin having to ask.
+        </>}
+        right={plan ? (
+          <span style={{ display: 'flex', gap: 6 }}>
+            <button style={{ ...input, cursor: 'pointer', fontSize: 11.5, borderColor: 'var(--green)', color: 'var(--green)' }}
+              disabled={!!saving} onClick={savePlan}>
+              {saving === 'save plan' ? 'saving…' : '✓ save plan'}
+            </button>
+            <button style={{ ...input, cursor: 'pointer', fontSize: 11.5 }}
+              onClick={() => setPlan(null)}>discard</button>
+          </span>
+        ) : null}>
+        {!storeReady && (
+          <div style={{ ...dim, fontSize: 12, marginBottom: 8 }}>
+            Ordering is board priority until the store is provisioned — see the red banner below.
+          </div>
+        )}
         {queue.length === 0 && <div style={{ ...dim, fontSize: 13 }}>nothing assigned to M.</div>}
         {queue.map((t, i) => {
           const step = stepLabel(t);
+          const o = rankOf.get(t.id);
+          const prev = i > 0 ? rankOf.get(queue[i - 1].id) : undefined;
+          const divider = !o && (i === 0 || !!prev);
           return (
-            <div key={t.id} style={{
-              display: 'flex', gap: 9, alignItems: 'center', flexWrap: 'wrap',
-              padding: '6px 0', borderBottom: '1px solid var(--border)',
-            }}>
-              <span style={{ ...dim, ...mono, minWidth: 22, textAlign: 'right' }}>{i + 1}</span>
-              <span style={{ ...mono, ...dim, minWidth: 42 }}
-                title="board priority (phase.seq) — the Phase-1 sort key">
-                {t.priority_phase}.{t.priority_seq}
-              </span>
-              <TaskLink id={t.id} title={t.title} />
-              <span style={{ flex: 1 }} />
-              {step && (
-                <span style={{ ...dim, fontSize: 11.5, maxWidth: 420, overflow: 'hidden',
-                  textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={step}>{step}</span>
+            <React.Fragment key={t.id}>
+              {divider && (
+                <div style={{
+                  ...dim, fontSize: 10.5, letterSpacing: 0.6, marginTop: 8, paddingTop: 5,
+                  borderTop: '1px dashed var(--border)',
+                }}>
+                  ↓ BELOW HERE M HAS NOT DECIDED — board priority order, no stated intention
+                </div>
               )}
-              <HandoffChain task={t} />
-              <span style={{ ...tagChip, borderColor: STATUS_COLOR[t.status], color: STATUS_COLOR[t.status] }}>
-                {t.status}
-              </span>
-              <span style={{ fontSize: 11.5, color: ageColor(hoursSince(t.updated_at)) }}
-                title={`last board edit ${utcStamp(t.updated_at)}`}>
-                {ageShort(t.updated_at)}
-              </span>
-            </div>
+              <div style={{
+                display: 'flex', gap: 9, alignItems: 'center', flexWrap: 'wrap',
+                padding: '6px 0', borderBottom: '1px solid var(--border)',
+              }}>
+                <span style={{ ...dim, ...mono, minWidth: 22, textAlign: 'right' }}>{i + 1}</span>
+                {storeReady && (
+                  <span style={{ display: 'flex', gap: 2 }}>
+                    <button title="earlier in M's plan" disabled={i === 0}
+                      style={{ ...input, cursor: 'pointer', fontSize: 10, padding: '0 4px' }}
+                      onClick={() => nudge(t.id, -1)}>▲</button>
+                    <button title="later in M's plan" disabled={i === queue.length - 1}
+                      style={{ ...input, cursor: 'pointer', fontSize: 10, padding: '0 4px' }}
+                      onClick={() => nudge(t.id, 1)}>▼</button>
+                  </span>
+                )}
+                <span style={{ ...mono, ...dim, minWidth: 42 }}
+                  title="board priority (phase.seq) — the fallback sort key, owned by dev_tasks">
+                  {t.priority_phase}.{t.priority_seq}
+                </span>
+                <TaskLink id={t.id} title={t.title} />
+                <span style={{ flex: 1 }} />
+                {step && (
+                  <span style={{ ...dim, fontSize: 11.5, maxWidth: 340, overflow: 'hidden',
+                    textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={step}>{step}</span>
+                )}
+                <HandoffChain task={t} />
+                <span style={{ ...tagChip, borderColor: STATUS_COLOR[t.status], color: STATUS_COLOR[t.status] }}>
+                  {t.status}
+                </span>
+                <span style={{ fontSize: 11.5, color: ageColor(hoursSince(t.updated_at)) }}
+                  title={`last board edit ${utcStamp(t.updated_at)}`}>
+                  {ageShort(t.updated_at)}
+                </span>
+              </div>
+              {storeReady && (
+                <input
+                  style={{ ...input, fontSize: 11.5, width: '100%', marginBottom: 3, opacity: 0.9 }}
+                  placeholder={`why is #${t.id} here? (M's reason — stored, one line)`}
+                  value={(plan?.find((p) => p.task_id === t.id)?.why ?? o?.why) || ''}
+                  onChange={(ev) => setWhy(t.id, ev.target.value)} />
+              )}
+            </React.Fragment>
           );
         })}
       </Panel>
@@ -438,6 +610,17 @@ export default function AdminMSessionPage() {
             ● {feed.length - routineCount} attention
           </span>
           <span style={{ ...dim, fontSize: 12 }}>· {routineCount} routine (rule-classified)</span>
+          {storeReady && (
+            <span style={{
+              ...tagChip, fontWeight: 700,
+              borderColor: unreviewed ? 'var(--amber, #d98c00)' : 'var(--green)',
+              color: unreviewed ? 'var(--amber, #d98c00)' : 'var(--green)',
+            }} title="attention events with no seen/actioned mark. This number going DOWN is the only evidence of coverage on this page — and an un-reviewed row keeps a live left edge so it cannot age quietly.">
+              {unreviewed
+                ? `${unreviewed} un-reviewed of ${attentionRows.length}`
+                : `all ${attentionRows.length} reviewed`}
+            </span>
+          )}
           {unclassified > 0 && (
             <span style={{ ...tagChip, borderColor: 'var(--red)', color: 'var(--red)', fontWeight: 700 }}
               title="events no rule recognises. They are shown as ATTENTION on purpose — unrecognised is never routine — and each one is a rule waiting to be written.">
@@ -495,10 +678,18 @@ export default function AdminMSessionPage() {
             {d.rows.map((e) => {
               const open = openBodies.has(e.key);
               const long = e.body.length > FEED_EXCERPT;
+              const mk = markOf.get(e.key);
               return (
                 <div key={e.key} style={{
                   padding: '5px 6px', borderRadius: 6, marginBottom: 2,
-                  background: e.cls === 'attention' ? 'rgba(217,140,0,0.05)' : 'transparent',
+                  background: mk ? 'transparent'
+                    : e.cls === 'attention' ? 'rgba(217,140,0,0.05)' : 'transparent',
+                  opacity: mk ? 0.6 : 1,
+                  // An UN-reviewed attention row keeps a live left edge. Visible
+                  // gaps beat false coverage: nothing here ages quietly into
+                  // looking handled.
+                  borderLeft: e.cls === 'attention' && !mk
+                    ? '2px solid var(--amber, #d98c00)' : '2px solid transparent',
                 }}>
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12 }}>
                     <RoleChip role={e.actor.replace('·auto', '')} title={e.actor} />
@@ -529,6 +720,60 @@ export default function AdminMSessionPage() {
                       )}
                     </div>
                   )}
+                  {/* The coverage record: event → M saw it → M did X, or judged
+                      nothing was needed. Confirming the rule is one click;
+                      an EXCEPTION gets a real note. */}
+                  {storeReady && (
+                    <div style={{ marginLeft: 28, marginTop: 3, display: 'flex', gap: 6,
+                      alignItems: 'center', flexWrap: 'wrap' }}>
+                      {mk ? (
+                        <>
+                          <span style={{ ...tagChip, borderColor: 'var(--green)', color: 'var(--green)' }}
+                            title={`${mk.state} by ${mk.marked_by || 'M'} at ${utcStamp(mk.marked_at)}`}>
+                            ✓ {mk.state}
+                          </span>
+                          {mk.note && (
+                            <span style={{ fontSize: 11.5, color: 'var(--text-secondary)' }}>
+                              — {mk.note}
+                            </span>
+                          )}
+                          <button style={{ ...input, cursor: 'pointer', fontSize: 10, padding: '0 5px' }}
+                            title="un-mark. A wrong 'I looked at this' is false coverage."
+                            onClick={() => unmark(e)}>undo</button>
+                        </>
+                      ) : (
+                        <>
+                          <button style={{ ...input, cursor: 'pointer', fontSize: 10, padding: '0 6px' }}
+                            title="the rule's verdict stands and M has read it"
+                            onClick={() => mark(e, 'seen')}>seen</button>
+                          <button style={{ ...input, cursor: 'pointer', fontSize: 10, padding: '0 6px' }}
+                            title="M looked and judged nothing was needed — say why"
+                            onClick={() => setMarkNote({ key: e.key, text: '' })}>no action…</button>
+                          <button style={{ ...input, cursor: 'pointer', fontSize: 10, padding: '0 6px' }}
+                            title="M did something — say what"
+                            onClick={() => setMarkNote({ key: e.key, text: '' })}>actioned…</button>
+                        </>
+                      )}
+                      {markNote?.key === e.key && (
+                        <span style={{ display: 'flex', gap: 5, flex: 1, minWidth: 260 }}>
+                          <input autoFocus style={{ ...input, fontSize: 11.5, flex: 1 }}
+                            placeholder="what M did, or why nothing was needed"
+                            value={markNote.text}
+                            onChange={(ev) => setMarkNote({ key: e.key, text: ev.target.value })} />
+                          <button style={{ ...input, cursor: 'pointer', fontSize: 10.5 }}
+                            onClick={() => { mark(e, 'actioned', markNote.text); setMarkNote(null); }}>
+                            actioned
+                          </button>
+                          <button style={{ ...input, cursor: 'pointer', fontSize: 10.5 }}
+                            onClick={() => { mark(e, 'no-action', markNote.text); setMarkNote(null); }}>
+                            no action
+                          </button>
+                          <button style={{ ...input, cursor: 'pointer', fontSize: 10.5 }}
+                            onClick={() => setMarkNote(null)}>✕</button>
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -536,33 +781,154 @@ export default function AdminMSessionPage() {
         ))}
       </Panel>
 
-      {/* ── Not built yet — said out loud, not implied by absence ──────────── */}
-      <Card>
-        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.8, color: 'var(--text-tertiary)', marginBottom: 6 }}>
-          SECTIONS 3 &amp; 4 — NOT BUILT YET (step 4 of this chain)
+      {/* ── 3 · THE RULES — rendered FROM SOURCE, never restated ───────────── */}
+      <Panel
+        n="3"
+        title={`the rules that govern how M works${rules ? ` — ${rules.sources.length} sources` : ''}`}
+        sub={<>
+          <b>Rendered from the source files, verbatim.</b> Kevin&apos;s design principle A: <i>&quot;a
+          hand-maintained copy of the rules on a page is a second source of truth that will silently
+          diverge&quot;</i> — the exact failure mode of the untracked-copy problem that bit us three
+          times on 07-30. Nothing below is retyped: each block is a byte-for-byte slice of a file on
+          disk, cut at a heading anchor. <b>Edit the file and this page changes.</b> If an anchor
+          moves, this section says so <b>in red</b> — it never renders quietly empty, because
+          &quot;no rules&quot; and &quot;the rules moved&quot; look identical and debug differently.
+        </>}
+        right={rules && rules.missing > 0 ? (
+          <span style={{ ...tagChip, borderColor: 'var(--red)', color: 'var(--red)', fontWeight: 700 }}>
+            {rules.missing} SOURCE{rules.missing === 1 ? '' : 'S'} MISSING
+          </span>
+        ) : null}>
+        {rulesErr && (
+          <div style={{ color: 'var(--red)', fontSize: 13, fontWeight: 700 }}>
+            ⚠ the rules endpoint did not load — {rulesErr}
+          </div>
+        )}
+        {!rules && !rulesErr && <div style={{ ...dim, fontSize: 13 }}>reading the source files…</div>}
+        {rules?.sources.map((s) => (
+          <div key={s.id} style={{
+            border: `1px solid ${s.found ? 'var(--border)' : 'var(--red)'}`,
+            background: s.found ? 'transparent' : 'rgba(200,60,60,0.08)',
+            borderRadius: 9, padding: '8px 11px', marginBottom: 7,
+          }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+              <button style={{ ...input, cursor: 'pointer', fontSize: 11.5 }}
+                disabled={!s.found}
+                onClick={() => setOpenRule(openRule === s.id ? null : s.id)}>
+                {openRule === s.id ? '▾' : '▸'} {s.label}
+              </button>
+              <code style={{ ...mono, ...dim }}>{s.path} · {s.anchor}</code>
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 4 }}>{s.why}</div>
+            {!s.found && (
+              <div style={{ marginTop: 5 }}>
+                <div style={{ color: 'var(--red)', fontWeight: 700, fontSize: 12.5 }}>
+                  ⚠ NOT RENDERED — {s.error}
+                </div>
+                <div style={{ ...mono, ...dim, marginTop: 2 }}>tried: {s.resolved_path}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
+                  Either the heading moved (fix the anchor in{' '}
+                  <code style={mono}>api/routers/m_session.py</code>&apos;s{' '}
+                  <code style={mono}>RULE_SOURCES</code>) or this deploy&apos;s working copy does not
+                  carry that file (set <code style={mono}>RORT_RULES_ROOT</code>/
+                  <code style={mono}>RORT_REPO_ROOT</code>).
+                </div>
+              </div>
+            )}
+            {s.found && openRule === s.id && (
+              <div style={{ marginTop: 7, borderTop: '1px solid var(--border)', paddingTop: 7 }}>
+                <style>{MD_CSS}</style>
+                <div style={{ fontSize: 13 }}><Md text={s.text} /></div>
+              </div>
+            )}
+          </div>
+        ))}
+        {rules && (
+          <div style={{ ...dim, fontSize: 11, marginTop: 4 }}>
+            read {relTime(rules.generated_at)} from <code style={mono}>{rules.ror_root}</code> and{' '}
+            <code style={mono}>{rules.repo_root}</code>
+          </div>
+        )}
+      </Panel>
+
+      {/* ── 4 · M's CANVAS ─────────────────────────────────────────────────── */}
+      <Panel
+        n="4"
+        title="m’s canvas"
+        sub={<>
+          What M is <b>doing</b>, <b>worried about</b>, and <b>waiting on</b> — the cross-task
+          picture. Kevin: <i>&quot;a good canvas for you to publish the details and I&apos;ll take a
+          look at it.&quot;</i> This is the fix for the read-it-twice problem, and his ruling scopes
+          it precisely: <b>task-specific detail stays on the task thread</b> (its audit trail), the
+          canvas carries what spans tasks, and chat collapses to TLDRs and pointers —{' '}
+          <i>&quot;left a comment on #217&quot;</i> — because the detail is one click away. Markdown;
+          <code style={mono}> #123 </code>links are just task links, so write pointers, not copies.
+        </>}
+        right={store?.canvas?.updated_at ? (
+          <span style={{ ...dim, fontSize: 11.5 }}>
+            updated {relTime(store.canvas.updated_at)} by {store.canvas.updated_by || 'M'}
+          </span>
+        ) : null}>
+        {!storeReady ? (
+          <div style={{ ...dim, fontSize: 13 }}>
+            the canvas store is not provisioned — see the red banner below.
+          </div>
+        ) : canvasDraft === null ? (
+          <>
+            <button style={{ ...input, cursor: 'pointer', fontSize: 11.5, marginBottom: 8 }}
+              onClick={() => setCanvasDraft(store?.canvas?.body || '')}>✎ edit</button>
+            <style>{MD_CSS}</style>
+            <div style={{ fontSize: 13.5 }}>
+              <Md text={store?.canvas?.body || ''}
+                fallback="The canvas is empty. M writes here; Kevin reads here." />
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 7 }}>
+              <button style={{ ...input, cursor: 'pointer', fontSize: 11.5, borderColor: 'var(--green)', color: 'var(--green)' }}
+                disabled={!!saving} onClick={saveCanvas}>
+                {saving === 'save canvas' ? 'saving…' : '✓ save'}
+              </button>
+              <button style={{ ...input, cursor: 'pointer', fontSize: 11.5 }}
+                onClick={() => setCanvasDraft(null)}>cancel</button>
+              <span style={{ ...dim, fontSize: 11.5, alignSelf: 'center' }}>
+                {canvasDraft.length} chars · markdown · a 30s refresh will not overwrite this draft
+              </span>
+            </div>
+            <textarea value={canvasDraft} onChange={(ev) => setCanvasDraft(ev.target.value)}
+              rows={18} spellCheck={false}
+              placeholder={'## Doing\n\n## Worried about\n\n## Waiting on'}
+              style={{ ...input, width: '100%', ...mono, fontSize: 12.5, lineHeight: 1.5,
+                resize: 'vertical' }} />
+          </>
+        )}
+      </Panel>
+
+      {/* ── The store's own state — loud when the migration is unapplied ───── */}
+      {(!storeReady || storeErr || saveErr) && (
+        <div style={{
+          border: '1px solid var(--red)', borderRadius: 10, padding: '10px 14px', marginBottom: 14,
+          background: 'rgba(200,60,60,0.08)',
+        }}>
+          <div style={{ color: 'var(--red)', fontWeight: 700, fontSize: 13 }}>
+            ⚠ M&apos;s store is not available — sections 1 (ordering), 2 (seen/actioned) and 4
+            (canvas) are READ-ONLY and EMPTY BECAUSE OF THIS, not because M has written nothing.
+          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 4 }}>
+            {store?.reason || storeErr || saveErr}
+          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 4 }}>
+            <code style={mono}>src/migrations/m_session_state.sql</code> is authored and
+            {' '}<b>deliberately unapplied</b>: never DDL against prod. Authorization path — author
+            the file → hand to M → <b>Kevin authorizes by name</b> → M or Kevin applies → only then
+            may the code merge.
+          </div>
         </div>
-        <ul style={{ fontSize: 12.5, color: 'var(--text-secondary)', paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <li>
-            <b>3 · The rules that govern how M works</b> — charter §4 (assignee), §7 (chains +
-            retrofit), §8 (cadence), the required rails, the sizing law, and the Ask-AI-first
-            priority order. It must <b>render those files&apos; actual text</b>, never a retyped
-            summary: a hand-maintained copy of the rules is a second source of truth that diverges
-            silently. The classifier table above is the part of that principle this step could
-            honestly reach — it is generated from the code that runs.
-          </li>
-          <li>
-            <b>4 · M&apos;s canvas</b> — what M is doing, worried about, and waiting on. Kevin&apos;s
-            fix for the read-it-twice problem: task-specific detail stays on the task thread, the
-            canvas carries the cross-task picture, and chat collapses to TLDRs and pointers.
-          </li>
-          <li>
-            Both need the one genuinely new store — M&apos;s intended ordering, M&apos;s
-            seen/actioned marks, and the canvas text — which is a schema change, and therefore
-            gated: author the <code style={mono}>.sql</code>, hand it to M, <b>Kevin authorizes by
-            name</b>, apply, and only then may the code merge.
-          </li>
-        </ul>
-      </Card>
+      )}
+      {saveErr && storeReady && (
+        <div style={{ color: 'var(--red)', fontSize: 12.5, marginBottom: 10 }}>⚠ {saveErr}</div>
+      )}
 
       {/* ── Known gaps — printed, not hidden (the /admin/dispatch posture) ─── */}
       <div style={{ marginTop: 14 }}>
@@ -587,9 +953,16 @@ export default function AdminMSessionPage() {
               null task id so that writer needs no rework here.
             </li>
             <li>
-              <b>There is no seen/actioned state yet.</b> The classifier sorts routine from
-              attention, but nothing records that M looked. Until step 4 lands, this page shows what
-              happened — it does not yet prove coverage, and it must never be read as if it did.
+              <b>Coverage is only as good as M&apos;s honesty about what it actually looked at.</b>
+              {' '}The seen/actioned marks record that M looked; they cannot prove M read. The
+              un-reviewed counter and the live left edge on unmarked attention rows exist so a gap
+              stays visible rather than aging quietly — <b>visible gaps beat false coverage</b>.
+            </li>
+            <li>
+              <b>Section 3 renders only the anchors it is told about.</b> A rule that lives in a
+              file nobody listed is not on this page. Adding one is a row in{' '}
+              <code style={mono}>RULE_SOURCES</code>, not a paragraph typed here — and a missing
+              anchor is shown in red rather than skipped.
             </li>
             <li>
               <b>Self-review caveat, stated not buried:</b> once M both classifies and confirms, that

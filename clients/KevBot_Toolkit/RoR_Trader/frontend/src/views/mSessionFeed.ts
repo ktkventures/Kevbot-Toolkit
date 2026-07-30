@@ -107,10 +107,19 @@ export const isSystemAuthor = (a: string): boolean => (a || '') === 'system';
  * row. Anchored to the START of the body on purpose: an `@M` buried mid-comment
  * is a mention, not Kevin's fast lane, and only the fast lane outranks
  * everything else on the page.
+ *
+ * THE HYPHEN IS LOAD-BEARING (caught in the step-3 review, 07-30). The lookahead
+ * excludes alphanumerics so `@MA`/`@Meta` do not match — but a hyphen is not an
+ * alphanumeric, so the original `(?![A-Za-z0-9])` MATCHED `@M-A build this`.
+ * Board #222 introduces `M-A` as a real owner, and agent-directed `@M-A` traffic
+ * landing in this inbox would degrade exactly the signal it exists for: the
+ * whole value of section 5 is that everything in it is genuinely Kevin waiting.
+ * Hence `[-A-Za-z0-9]` — `@M` matches, `@M-A` does not.
  */
-export const ASK_AI_RE = /^\s*@M(?![A-Za-z0-9])/;
-/** The reverse direction: M tagging Kevin with a question. */
-export const ASK_KEVIN_RE = /^\s*@kevin(?![A-Za-z0-9])/i;
+export const ASK_AI_RE = /^\s*@M(?![-A-Za-z0-9])/;
+/** The reverse direction: M tagging Kevin with a question. Same hyphen rule, so
+ *  a future `@kevin-something` token cannot be read as a question to Kevin. */
+export const ASK_KEVIN_RE = /^\s*@kevin(?![-A-Za-z0-9])/i;
 
 /* ── Classifier context ──────────────────────────────────────────────────── */
 
@@ -450,16 +459,84 @@ export const QUEUE_EXCLUDED_STATUSES = ['Done', 'Blocked'];
 export type QueueComparator = (a: Task, b: Task) => number;
 
 /**
- * Phase 1 order: the board's own priority fields. This is explicitly NOT the
- * order the section is FOR — Kevin asked for "the order M INTENDS", which is a
- * plan and lives nowhere today. Step 4 supplies the intended-ordering store and
- * swaps this comparator; the parameter exists so that swap is one argument and
- * not a rewrite.
+ * The board's own priority fields. This is the FALLBACK, not the section's
+ * purpose: Kevin asked for "the order M INTENDS", which is a plan, and a plan
+ * is not derivable from `priority_phase.priority_seq` — those say what the
+ * BOARD thinks. Step 4 supplies `intendedOrder` below; this stays as the order
+ * for anything M has not yet formed an intention about.
  */
 export const boardOrder: QueueComparator = (a, b) =>
   (a.priority_phase - b.priority_phase)
   || (a.priority_seq - b.priority_seq)
   || (a.id - b.id);
+
+/* ── M's own store (board #220 step 4 — migrations/m_session_state.sql) ───── */
+
+/**
+ * One row of M's intended ordering. Note what is NOT here: no status, no
+ * assignee, no title, no priority. Those come from `dev_tasks` at render time.
+ * The type is narrow on purpose — design principle B, enforced at the type
+ * level so that shadowing a board field is a compile error on the way to being
+ * a 400 from the API.
+ */
+export interface MOrderRow {
+  task_id: number;
+  rank: number;
+  /** M's one-liner: why it sits there. Answers Kevin's "why is that third?" */
+  why?: string | null;
+  updated_at?: string | null;
+  updated_by?: string | null;
+}
+
+/** One seen/actioned mark, keyed by FEED EVENT KEY — not by comment id, so
+ *  Phase 2's environment events can be covered by the same record. */
+export interface MMark {
+  event_key: string;
+  state: 'seen' | 'actioned' | 'no-action';
+  note?: string | null;
+  task_id?: number | null;
+  marked_at?: string | null;
+  marked_by?: string | null;
+}
+
+/** GET /api/m-session/state. `available: false` = the migration is unapplied;
+ *  the page says so in red rather than rendering an empty canvas. */
+export interface MSessionState {
+  available: boolean;
+  reason?: string | null;
+  canvas: { id?: number; body: string; updated_at?: string | null; updated_by?: string | null } | null;
+  order: MOrderRow[];
+  marks: MMark[];
+}
+
+/**
+ * The comparator the queue actually uses once M has stated a plan.
+ *
+ * Ranked tasks first, in M's rank; everything else after, in board order.
+ * Unranked LAST rather than first, because an intention is a stronger claim
+ * than a default — and because the boundary between the two is then visible on
+ * the page ("below here, M has not decided"), which is the point of the
+ * section: Kevin can look and say *"why is that third?"*
+ *
+ * The store is consulted for RANK ONLY. Nothing in `byTask` may influence what
+ * a row SAYS about a task — title, status and assignee are read from the board
+ * task object at render time. That is the rail: an ordering store that also
+ * carried a status would give Kevin two answers to one question.
+ */
+export function intendedOrder(order: MOrderRow[]): QueueComparator {
+  const rank = new Map<number, number>();
+  order.forEach((o) => {
+    if (typeof o?.task_id === 'number' && Number.isFinite(o?.rank)) {
+      rank.set(o.task_id, o.rank);
+    }
+  });
+  return (a, b) => {
+    const ra = rank.has(a.id) ? (rank.get(a.id) as number) : Infinity;
+    const rb = rank.has(b.id) ? (rank.get(b.id) as number) : Infinity;
+    if (ra !== rb) return ra - rb;
+    return boardOrder(a, b);
+  };
+}
 
 /** Everything waiting on the M session, in `cmp` order. */
 export function mQueue(tasks: Task[], cmp: QueueComparator = boardOrder): Task[] {
@@ -468,4 +545,28 @@ export function mQueue(tasks: Task[], cmp: QueueComparator = boardOrder): Task[]
       && !QUEUE_EXCLUDED_STATUSES.includes(t.status))
     .slice()
     .sort(cmp);
+}
+
+/* ── Section 3 — the rules, rendered FROM SOURCE ─────────────────────────── */
+
+/** One block from GET /api/m-session/rules. `found: false` means the page must
+ *  show the failure — a renamed heading reads as "M has no rules" otherwise. */
+export interface RuleBlock {
+  id: string;
+  label: string;
+  why: string;
+  path: string;
+  anchor: string;
+  resolved_path: string;
+  found: boolean;
+  text: string;
+  error?: string | null;
+}
+
+export interface RulesPayload {
+  sources: RuleBlock[];
+  missing: number;
+  ror_root?: string;
+  repo_root?: string;
+  generated_at?: string;
 }
