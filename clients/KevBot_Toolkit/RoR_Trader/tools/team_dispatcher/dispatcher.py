@@ -149,7 +149,14 @@ except Exception as _mentions_import_err:  # pragma: no cover — belt and brace
     print(f"WARN: @-mention injection disabled ({_mentions_import_err}); "
           f"dispatch continues", flush=True)
 
-CONCURRENCY = 3          # Kevin 07-23; blocked_by is the long-term governor
+# Raised 3 → 4 by Kevin on 07-30 (board #219): "I'm good to raise concurrency to 4.
+# I think that's a good idea. I think we're gonna run into merge problems regardless
+# but hopefully with shipping things faster it's less of an issue." At 3, with FOUR
+# headless lanes (R/F/E/M), one lane was ALWAYS starved when saturated — a ceiling
+# nobody chose. `blocked_by` plus one-run-per-lane remain the real governors.
+# Trade-off Kevin accepted explicitly: more simultaneous branches means more chance
+# of two touching one file, which caused the only real merge conflict of 07-29/30.
+CONCURRENCY = 4
 # Circuit breaker ONLY — it exists to stop a runaway loop, never to ration an
 # ordinary day. Raised 24 → 40 by Kevin on 07-30 (board #219) after one overnight
 # session spent 20 of 24 and left 4 for all of Thursday. Two properties Kevin
