@@ -29,6 +29,19 @@ BROKEN. Walks 5-8 close that by exercising the chain schema directly, and cover
 the second half of the same gap: the stamp never wrote `assignee`, so ticking
 alone still left the task on kevin. Both halves fail without the fix.
 
+Board #244 UPDATE — walks 9-12: the tick worked, but it did not RECORD ITSELF.
+On #243 (the first stamp to auto-tick, 07-30 21:10:13Z) the ticked step carried
+`completed_by: None` and a `stamp` still reading `pending` while the system
+comment said approved — the modal drew a gold "🔏 needs stamp" chip beside that
+step's own ✓. Neither broke anything, and that is the point: the reason agents
+tick through /steps/complete instead of PATCHing `done` is the audit trail it
+keeps, so a tick that names no actor is exactly the weaker thing the contract
+exists to avoid, and two fields disagreeing about one event is how an argument
+about "what actually happened" starts. The stamp now writes
+`completed_at`/`completed_by` (the author it already names in its comment) and
+settles that step's stamp gate to `approved`/`by`/`at`, matching /steps/stamp.
+Each half fails on its own without its half of the fix.
+
 Offline + hermetic, same shape as test_board_lifecycle_136.py: the real
 `api.routers.dev_tasks` router functions run against an in-memory fake Supabase
 client, and the real `tools/team_dispatcher/dispatcher.py` gate functions run
@@ -337,5 +350,121 @@ ok("assignee untouched when nothing was ticked", r8["assignee"] == "P")
 ok("comment carries neither a tick note nor a hand-off note",
    all("checklist: ticked" not in b and "handed off" not in b
        for b in comments_for(tid8)))
+
+# ── walks 9-12: board #244 — the tick has to RECORD ITSELF ─────────────────
+# Found on #243, the first stamp to auto-tick (07-30 21:10:13Z): the hand-off
+# worked, but the step it ticked carried `completed_by: None` and a `stamp` still
+# reading `pending` while the system comment said approved — the modal drew a gold
+# "🔏 needs stamp" chip next to that step's own ✓. Neither broke anything; both are
+# the audit trail /steps/complete exists to keep, and two fields disagreeing about
+# one event is how an argument about "what actually happened" starts. Walks 9-12
+# fail without the fix — the old handler wrote `done` and nothing else.
+
+print("― walk 9: the ticked step records WHO and WHEN, and settles its stamp ―")
+CHAIN9 = [
+    {"owner": "kevin", "title": "Approve (fast)", "done": False,
+     "mode": "discuss", "origin": "planned",
+     "stamp": {"required": True, "state": "pending"}},
+    {"owner": "M-A", "title": "Build it", "done": False, "mode": "execute"},
+    {"owner": "kevin", "title": "Kevin looks before Done", "done": False,
+     "mode": "discuss", "stamp": {"required": True, "state": "pending"}},
+]
+t9 = dt.create_task({"title": "stamped chain w/ stamp gates", "description": "d",
+                     "assignee": "kevin", "checklist": CHAIN9}, user=None)
+tid9 = t9["id"]
+dt.update_task(tid9, {"status": "Approval", "actor": "M"}, user=None)
+r9 = dt.stamp_approval(tid9, {"mode": "start", "author": "kevin"}, user=None)
+cl9 = r9["checklist"]
+
+ok("ticked step names the ACTOR — completed_by is the stamping author, not None",
+   cl9[0].get("completed_by") == "kevin")
+ok("ticked step records WHEN — completed_at is a parseable ISO stamp",
+   isinstance(cl9[0].get("completed_at"), str)
+   and cl9[0]["completed_at"].startswith("20"))
+ok("stamp.state SETTLES to approved — it no longer contradicts the ✓ beside it",
+   cl9[0]["stamp"]["state"] == "approved")
+ok("settled stamp names its author and time (same shape /steps/stamp writes)",
+   cl9[0]["stamp"]["by"] == "kevin"
+   and cl9[0]["stamp"]["at"] == cl9[0]["completed_at"])
+ok("completed_by AGREES with the author the stamp comment attributes it to",
+   any(f"(by {cl9[0].get('completed_by')})" in b and "stamp: approved to start" in b
+       for b in comments_for(tid9)))
+# Only the step the stamp actually ticked is written — the record must not
+# spread to steps nobody completed.
+ok("un-ticked build step gains NO completion record",
+   "completed_by" not in cl9[1] and "completed_at" not in cl9[1])
+ok("LATER kevin step keeps its gate PENDING — one stamp settles one step",
+   cl9[2]["done"] is False and cl9[2]["stamp"]["state"] == "pending")
+# The record has to survive the write, not just the response object.
+ok("the record is PERSISTED, not just returned",
+   task_row(tid9)["checklist"][0].get("completed_by") == "kevin"
+   and task_row(tid9)["checklist"][0]["stamp"]["state"] == "approved")
+ok("tick + hand-off behaviour is UNCHANGED by the record (board #225 intact)",
+   cl9[0]["done"] is True and r9["assignee"] == "M-A")
+
+print("― walk 10: author defaults to kevin, and a named author is recorded ―")
+CHAIN10 = [
+    {"owner": "kevin", "title": "Approve", "done": False, "mode": "discuss",
+     "stamp": {"required": True, "state": "pending"}},
+    {"owner": "E", "title": "Do it", "done": False, "mode": "execute"},
+]
+t10 = dt.create_task({"title": "stamp, no author given", "description": "d",
+                      "assignee": "kevin", "checklist": CHAIN10}, user=None)
+tid10 = t10["id"]
+dt.update_task(tid10, {"status": "Approval", "actor": "M"}, user=None)
+r10 = dt.stamp_approval(tid10, {"mode": "start"}, user=None)   # no author key
+ok("no author supplied → completed_by defaults to 'kevin' (never None)",
+   r10["checklist"][0].get("completed_by") == "kevin"
+   and r10["checklist"][0]["stamp"].get("by") == "kevin")
+
+t10b = dt.create_task({"title": "stamp relayed by name", "description": "d",
+                       "assignee": "kevin",
+                       "checklist": [
+                           {"owner": "kevin", "title": "Approve", "done": False,
+                            "stamp": {"required": True, "state": "pending"}},
+                           {"owner": "E", "title": "Do it", "done": False},
+                       ]}, user=None)
+tid10b = t10b["id"]
+dt.update_task(tid10b, {"status": "Approval", "actor": "M"}, user=None)
+r10b = dt.stamp_approval(tid10b, {"mode": "start", "author": "kevin (via M)"},
+                         user=None)
+ok("a named author is recorded VERBATIM on both fields — no silent rewrite",
+   r10b["checklist"][0].get("completed_by") == "kevin (via M)"
+   and r10b["checklist"][0]["stamp"].get("by") == "kevin (via M)")
+
+print("― walk 11: a step with NO stamp gate gets the record, not an invented gate ―")
+# Legacy checklists and un-gated chain steps carry no `stamp` block. Settling
+# one into existence would rewrite the chain to claim a gate it never had.
+t11 = dt.create_task({"title": "legacy checklist", "description": "d",
+                      "assignee": "F", "checklist": [
+                          {"text": "Kevin stamps", "done": False, "role": "kevin"},
+                          {"text": "Build", "done": False, "role": "F"},
+                      ]}, user=None)
+tid11 = t11["id"]
+dt.update_task(tid11, {"status": "Approval", "actor": "M"}, user=None)
+r11 = dt.stamp_approval(tid11, {"mode": "start", "author": "kevin"}, user=None)
+ok("legacy step still records the actor",
+   r11["checklist"][0].get("completed_by") == "kevin")
+ok("NO stamp block is invented on a step that never had one",
+   r11["checklist"][0].get("stamp") is None)
+
+print("― walk 12: the stamp's record matches /steps/complete's on the same shape ―")
+# The two tick paths must produce the same record, or an auditor reading the
+# chain gets a different answer depending on which button fired.
+t12 = dt.create_task({"title": "ticked via /steps/complete", "description": "d",
+                      "assignee": "F", "checklist": [
+                          {"owner": "F", "title": "Build it", "done": False,
+                           "mode": "execute"},
+                          {"owner": "M", "title": "Review", "done": False},
+                      ]}, user=None)
+r12 = dt.complete_step(t12["id"], {"actor": "F·auto"}, user=None)
+COMPLETION_KEYS = {"done", "completed_at", "completed_by"}
+ok("both tick paths write the same completion fields on the step they tick",
+   COMPLETION_KEYS <= set(r12["checklist"][0]) and COMPLETION_KEYS <= set(cl9[0]),
+   f"{sorted(set(r12['checklist'][0]) & COMPLETION_KEYS)} vs "
+   f"{sorted(set(cl9[0]) & COMPLETION_KEYS)}")
+ok("_STEP_COMPLETION_FIELDS (the PATCH guard's list) is exactly what a stamp "
+   "now writes — the guard and the writer cannot drift",
+   set(dt._STEP_COMPLETION_FIELDS) == COMPLETION_KEYS)
 
 print(f"\nALL PASS ({PASS} checks)")
