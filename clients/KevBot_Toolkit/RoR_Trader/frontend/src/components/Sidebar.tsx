@@ -116,6 +116,7 @@ const navItems: NavItem[] = [
       { href: '/admin/tasks', label: 'Tasks' },
       { href: '/admin/roadmap', label: 'Roadmap' },
       { href: '/admin/agents', label: 'Agents' },
+      { href: '/admin/dispatch', label: 'Dispatch' },
     ],
   },
   {
