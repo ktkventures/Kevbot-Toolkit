@@ -1,0 +1,4 @@
+# Task-thread screenshots (SOP_Local_Preview_Visual_Verification.md Part B):
+# evidence files, never committed — only this .gitignore is.
+*
+!.gitignore

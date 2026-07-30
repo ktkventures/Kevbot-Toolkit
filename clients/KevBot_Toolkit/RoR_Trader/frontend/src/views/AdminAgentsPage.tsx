@@ -231,8 +231,17 @@ export default function AdminAgentsPage() {
                     {/* Recent dispatcher runs (run_history, board #109) */}
                     {(runsByAgent.get(a.letter) || []).length > 0 && (
                       <div style={{ fontSize: 11.5 }}>
-                        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 0.6, color: 'var(--text-tertiary)', marginBottom: 2 }}>
+                        <div style={{
+                          display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 2,
+                          fontSize: 11, fontWeight: 700, letterSpacing: 0.6, color: 'var(--text-tertiary)',
+                        }}>
                           RECENT RUNS
+                          {/* Reciprocal link (board #193 §2): this card is the WHO
+                              (roster); /admin/dispatch is the WHEN (lanes + run log). */}
+                          <Link href="/admin/dispatch" style={{ color: 'var(--blue)', fontWeight: 600 }}
+                            title="the fleet's time axis — lanes in use, what is running and on which step, the full run log">
+                            → dispatch
+                          </Link>
                         </div>
                         {(runsByAgent.get(a.letter) || []).slice(0, 5).map((r) => (
                           <div key={r.id} style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '1px 0' }}>
