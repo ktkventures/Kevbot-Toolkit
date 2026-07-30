@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Team dispatcher (V4.25) — dispatches board tasks to headless Claude agents.
+"""Team dispatcher (V4.26) — dispatches board tasks to headless Claude agents.
+
+V4.26 (board #218, step 2): THE GIT CONTRACT STOPPED LYING — AGENTS CAN PUSH.
+Every dispatched agent was told "You cannot push (headless)". That is false, and
+was falsified four times for four on 07-29/30: #198's Staged patch, #193's
+dashboard, #197's reconcile and #211's release-brief generator each pushed their
+own branch, one of them opening a PR unaided. The cost of the lie is not
+cosmetic — it made V4.23's run-end push the ONLY publication path, so every
+weakness in that machinery (see #218 on ownership mis-attribution) became a
+single point of failure for work that the agent could simply have pushed itself.
+The contract now says agents SHOULD push, synchronously, before their final
+message, and demotes the loop's push to what it should always have been: a
+BACKSTOP for a run that dies before it gets there. Prompt-only — no behaviour
+change in reap(); the run-end push still runs, still with every V4.23 rail.
 
 V4.25 (board #202): THE STEP-TICK CONTRACT. Agents obeyed the #171 ASSIGNEE
 CONTRACT and left their finished step UNTICKED — four for four on 07-29 — because
@@ -26,11 +39,11 @@ it, says so, and spends no retry. LANDING ON TOP OF V4.21-23 also settles the
 coupling #198 documented in advance: the retry leg calls `forget_task_runs()`,
 without which the step-guard would refuse the very retry this version grants.
 
-V4.23 (board #195): PUSH AT RUN END. A headless agent can build, test and COMMIT
-but is TOLD it cannot push (see the GIT CONTRACT below), and in practice most
-runs left their work on local disk only — visible solely to whoever read
-preflight invariant (2). reap() now pushes the run's own branch. Rails, each with
-a test that fails without it: never a protected branch (dev/main/master), never
+V4.23 (board #195): PUSH AT RUN END. A headless agent can build, test and COMMIT,
+and until V4.26 was wrongly TOLD it could not push (see the GIT CONTRACT below),
+so in practice most runs left their work on local disk only — visible solely to
+whoever read preflight invariant (2). reap() now pushes the run's own branch.
+Rails, each with a test that fails without it: never a protected branch (dev/main/master), never
 --force, never a dirty worktree, never a branch this run did not create (HEAD must
 have moved OFF the branch the run started on AND the branch must not already exist
 on origin), and FAIL OPEN + LOUD — a failed push logs and leaves preflight (2) to
@@ -908,10 +921,15 @@ from LATEST origin/dev, never from your worktree's current HEAD:
 A branch cut from worktree HEAD inherits whatever unmerged commits sit there and
 carries them into your diff (tonight one branch dragged in 10 unrelated commits).
 `git log origin/dev..HEAD --oneline` must show ONLY your own commits before you report
-ready. You cannot push (headless) and must NOT try to background one — COMMIT your work
-and name any branch you created in your final report. When your run ends the dispatcher
-pushes that branch for you (board #195) IF the worktree is clean and the branch is your
-own; an uncommitted change is the one thing that makes your work unpushable.
+ready. PUSH IT YOURSELF (board #218) — you CAN push, headless or not; four runs did on
+07-29/30 and one opened its PR unaided. COMMIT everything, then run
+`git push -u origin <branch>` synchronously IN THE FOREGROUND before your final message,
+and read its output — never background a push, never `--force`, never push dev/main.
+The dispatcher also pushes your branch when your run ends (board #195), but that is a
+BACKSTOP for a run that dies before it gets there — not your publication path, so
+do not rely on it, and it cannot save UNCOMMITTED work. An uncommitted change is the
+one thing that makes your work unpushable.
+Either way, name any branch you created in your final report.
 
 ASSIGNEE CONTRACT (board #171 — assignee = whoever the task is WAITING ON): the dispatcher
 now routes on `assignee` alone; the checklist is advisory display only. Before your final
