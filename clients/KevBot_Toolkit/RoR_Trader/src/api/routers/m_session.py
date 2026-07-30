@@ -63,7 +63,19 @@ def _now() -> str:
 # levels up (clients/KevBot_Toolkit/RoR_Trader), which is why the two roots are
 # named separately instead of being guessed at from one base.
 _ROR_ROOT = Path(__file__).resolve().parents[3]
-_REPO_ROOT = _ROR_ROOT.parents[2]
+# Computed DEFENSIVELY: in the deployed container the app is unpacked at `/app`,
+# so `_ROR_ROOT` is `/app` and there are no three levels above it — `.parents[2]`
+# raised IndexError AT IMPORT, uvicorn never loaded the app, and the api served
+# 502 for ~20 minutes after Wave 24 (board #220). The env overrides below already
+# existed for exactly this case, but the eager fallback crashed before they could
+# be read. Falling back to `_ROR_ROOT` is right for the deployed layout: there is
+# no monorepo above the app root, and `/rules` already reports the absolute path
+# it tried when a source file is absent.
+try:
+    _repo_default = _ROR_ROOT.parents[2]
+except IndexError:
+    _repo_default = _ROR_ROOT
+_REPO_ROOT = _repo_default
 
 # `RORT_RULES_ROOT` / `RORT_REPO_ROOT` exist for the deployed API, whose working
 # copy may not carry the whole monorepo. Not a silent default: if the resulting
