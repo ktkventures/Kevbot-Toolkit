@@ -274,7 +274,12 @@ def t_rail_already_merged():
     why = dict(p["refusals"]).get("#750", "")
     check("RAIL 6: refusal says ALREADY MERGED", "ALREADY MERGED" in why, why)
     check("RAIL 6: refusal tells M to tick the step, not re-ship",
-          "Tick step 4" in why and "do not re-ship" in why, why)
+          "tick step 4" in why and "do not re-ship" in why, why)
+    # #242: the refusal used to leave "tick it" as a manual instruction. It now
+    # names the tool that does it with the merge verified, scoped to this one
+    # car -- so the LATE safety net and the in-train sweep are one mechanism.
+    check("RAIL 6: refusal names car_ship_tick with --only for this car",
+          "car_ship_tick.py --only 750" in why, why)
 
     # NEGATIVE PROOF: same empty diff, NOT merged -> the generic refusal
     p = train([t], {750: "feat/shipped-750"}, {"feat/shipped-750": []})
@@ -362,6 +367,32 @@ def t_procedure_shape():
                 {1001: "feat/c-1001", 1002: "feat/d-1002"},
                 {"feat/c-1001": [APP + "src/a.py"], "feat/d-1002": [APP + "src/b.py"]})
     check("PROCEDURE: two cars read '2 CARS'", "2 CARS" in B.render(two))
+
+
+def t_242_procedure_ticks_the_cars():
+    """BOARD #242 -- the brief must tell the train to tick its CARS' ship steps.
+
+    A train ticks its OWN chain and nothing ticks the cars', so after Waves 23,
+    24 and 25 the shipped cars sat on open `Ship via a release train` steps and
+    kept rendering in the shipping lane. The instruction lives in the generated
+    PROCEDURE because that is the SOP R-A actually executes -- if it is not in
+    the brief, it does not happen."""
+    t = task(1201, "code car", REVIEWED_CHAIN)
+    p = train([t], {1201: "feat/c-1201"}, {"feat/c-1201": [APP + "src/a.py"]})
+    body = B.render(p)
+    check("#242: the procedure names the sweep tool",
+          "tools/release_brief/car_ship_tick.py" in body, body)
+    check("#242: it runs AFTER the merges and BEFORE deploy-watch",
+          body.index("car_ship_tick.py") < body.index("Deploy-watch"), body)
+    check("#242: the brief says why (a train never ticks its cars')",
+          "ticks its OWN chain" in body, body)
+    check("#242: a non-zero exit is not allowed to pass quietly",
+          "could not be verified" in body, body)
+    # The ABORT path is the one that would otherwise leave a PARTIAL train's
+    # merged cars stale -- R-A hands back on a red gate and never reaches the
+    # end of the procedure, so the hard limits must send it through the sweep.
+    check("#242: the abort path runs the sweep when a merge already landed",
+          "if ANY merge already landed" in body, body)
 
 
 def t_frontend_note():
@@ -787,7 +818,8 @@ def t_gap224_zero_cars_are_loud():
 TESTS = [t_car_selection, t_rail_unreviewed, t_rail_unreviewed_taskless,
          t_rail_overlap, t_rail_overlap_append_only, t_rail_dispatcher_suites,
          t_rail_stale_base, t_rail_no_branch, t_rail_already_merged, t_order,
-         t_hard_limits, t_procedure_shape, t_frontend_note, t_r_task_row,
+         t_hard_limits, t_procedure_shape, t_242_procedure_ticks_the_cars,
+         t_frontend_note, t_r_task_row,
          t_empty_train, t_paths, t_wave_guard,
          t_gap_no_r_step_is_loud, t_gap_suite_list_tracks_reality,
          t_gap_owed_log_stale_base_warns, t_gap_loop_version_is_read,

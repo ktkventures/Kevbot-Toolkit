@@ -200,14 +200,30 @@ HARD_LIMITS = """## DO NOT
 - No rebase, no force-push, no reset, no flag flips, no `railway`.
 - Do not work in the main checkout (`{app_root}`) -- a live dispatcher loop runs from it.
 
-Any gate red / CI red / unexpected conflict -> abort, comment, reassign M, stop."""
+Any gate red / CI red / unexpected conflict -> abort, comment, reassign M, stop --
+**but if ANY merge already landed, run the ship-step sweep (procedure step 4) BEFORE you
+hand back.** It ticks exactly what really merged and nothing else, so a partial train
+still leaves an honest board."""
 
 PROCEDURE = """## Procedure
 1. Backup branch `backup/dev-pre-wave{wave}-{mmdd}` from current `origin/dev` (`{base_sha}`).
 2. Breadcrumb before AND after every merge.
 3. Merge in the order above, verifying each lands before the next.
-4. **Deploy-watch:** all 7 services to `success` on the final head. Do not stop at `pending`.
-5. **PROBE THE SERVICE, do not trust the deploy status.** `GET {api_host}/health` must return
+4. **TICK EACH SHIPPED CAR'S OWN SHIP STEP** (board #242) -- from the app root:
+   ```
+   python3 tools/release_brief/car_ship_tick.py --actor 'R-A·auto'
+   ```
+   A train ticks its OWN chain; nothing ticks the CARS'. Skipping this leaves every car
+   you just merged sitting on an open `Ship via a release train` step, holding
+   `Staged`/`Review` and rendering in the shipping lane as if it never went anywhere --
+   which happened after Waves 23, 24 AND 25, and on the third Kevin saw the stale lane
+   before M did. The sweep fetches, then ticks ONLY cars whose branch `origin/dev`
+   already contains, so it cannot tick a car that failed to merge and it is safe to
+   re-run. Paste its output into your report.
+   **A non-zero exit means a tick could not be verified** -- say so loudly and hand to
+   M; do not re-run blindly.
+5. **Deploy-watch:** all 7 services to `success` on the final head. Do not stop at `pending`.
+6. **PROBE THE SERVICE, do not trust the deploy status.** `GET {api_host}/health` must return
    **200**, and `{api_host}/api/openapi.json` must return **200**. A 401 from `/api/dev-tasks`
    is CORRECT (router loaded, admin-gated); a 5xx or a timeout is not.
    **This step is not a formality.** On Wave 24 (07-30) deploy-watch reported **7/7 `success`
@@ -215,8 +231,8 @@ PROCEDURE = """## Procedure
    then crash-looped on import. Deploy status answers "did Railway accept it"; only a probe
    answers "does the service work". If the probe fails, say so LOUDLY and hand back to M --
    the train is not done, whatever the deploy dashboard says.
-6. Wave-{wave} `Deploy_Log.md` entry on `docs/deploy-log-wave{wave}-{mmdd}`, PR opened, left UNMERGED.
-7. Report, set `assignee` to `M`, stop."""
+7. Wave-{wave} `Deploy_Log.md` entry on `docs/deploy-log-wave{wave}-{mmdd}`, PR opened, left UNMERGED.
+8. Report (including step 4's sweep output), set `assignee` to `M`, stop."""
 
 HEADER = """**RELEASE BRIEF -- Wave {wave}, {date}. {car_count}.**
 
@@ -538,8 +554,10 @@ def build_train(tasks, resolve_branch, diff_files, fork_behind,
             if already_merged(branch):
                 refusals.append((f"#{t['id']}", f"`{branch}` is ALREADY MERGED into "
                                  f"{BASE} -- it shipped on an earlier train and its R "
-                                 f"step was never ticked. Tick step {idx + 1} and close; "
-                                 f"do not re-ship."))
+                                 f"step was never ticked. Run "
+                                 f"`python3 tools/release_brief/car_ship_tick.py "
+                                 f"--only {t['id']}` (board #242) to tick step "
+                                 f"{idx + 1} and close; do not re-ship."))
             else:
                 refusals.append((f"#{t['id']}", f"`{branch}` has no diff against {BASE} "
                                                 "-- nothing to ship"))
