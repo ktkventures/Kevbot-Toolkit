@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Team dispatcher (V4.24) — dispatches board tasks to headless Claude agents.
+"""Team dispatcher (V4.25) — dispatches board tasks to headless Claude agents.
+
+V4.25 (board #202): THE STEP-TICK CONTRACT. Agents obeyed the #171 ASSIGNEE
+CONTRACT and left their finished step UNTICKED — four for four on 07-29 — because
+no contract asked them to. build_prompt now states the tick as plainly as the
+reassignment, names the endpoint that owns completion (a checklist PATCH is
+refused for a chain), and states the exception: did not finish → do NOT tick,
+say so, reassign. Prompt-only, no schema, chains only.
 
 V4.24 (board #197): A FAILED RUN STOPS LYING ABOUT ITS STATUS. reap() used to
 move EVERY finished run's task to `Review` ("output awaiting sign-off") — including
@@ -764,8 +771,46 @@ adjacent or trivially related. If you believe the chain is wrong — steps shoul
 be merged, split or reordered — RAISE IT: reassign to M with the reason. Do not
 expand scope unilaterally. M owns the chain (board #182 authoring standard).
 === END OF YOUR STEP ==="""
+        # Board #202 — THE STEP-TICK CONTRACT. Measured across four runs on 07-29
+        # (#195/#197/#198/#200): every agent obeyed the ASSIGNEE CONTRACT and NOT
+        # ONE ticked the step it had just finished — M hand-ticked all four. There
+        # was nothing to obey: the prompt asked only for a "STEP DONE:" line in the
+        # report, which is prose. A stale chain is not cosmetic — the current step
+        # is what the dispatcher sends the NEXT agent as its SOP and what the
+        # inbound check judges the hand-off against, so a finished-but-unticked
+        # step briefs the next agent on work that is already done.
+        # PROMPT-ONLY BY DESIGN (Kevin's step-1 ruling): the API could tick
+        # automatically when a dispatched run reassigns away from the step's owner,
+        # but that GUESSES intent — an agent may reassign precisely BECAUSE it could
+        # not finish. Same shape as the #171 assignee contract, which works.
+        # Rendered ONLY for a process chain: a legacy {role,text,done} checklist has
+        # no dispatched step, hence nothing to tick.
+        # The mechanism is the ACTION ENDPOINT, not a checklist PATCH: for a chain,
+        # api/routers/dev_tasks.py::_prepare_checklist_patch REFUSES a PATCH that
+        # flips `done` (409, completion is server-owned), so telling the agent to
+        # tick in "the same PATCH" as the assignee would be an impossible
+        # instruction. /steps/complete also derives the hand-off, which is why the
+        # assignee contract is applied to its RESULT rather than alongside it.
+        tick_block = f"""
+STEP-TICK CONTRACT (board #202 — the chain has to match reality): you were dispatched for
+STEP {idx + 1} of {len(cl)}. If you COMPLETED it, TICK IT in the same wrap-up that sets the
+assignee — one call does both:
+  POST /api/dev-tasks/{task['id']}/steps/complete   body: {{"actor": "{agent['letter']}·auto"}}
+That ticks step {idx + 1}, records who completed it, and hands the task to the next step's
+owner. Then apply the ASSIGNEE CONTRACT above to the RESULT: PATCH `assignee` only if reality
+differs from the chain (you finished, but the task now waits on Kevin).
+  • DID NOT FINISH IT? DO NOT TICK. Say so plainly in your report and reassign to whoever it
+    now waits on. A step ticked but not done is worse than one done but not ticked.
+  • A 'STEP DONE:' line in your report is PROSE, not a tick. The tick is the API call.
+  • Never flip `done` with a generic PATCH — the API refuses it (409; completion is
+    server-owned). If /steps/complete itself refuses (e.g. the step needs an approved
+    stamp), do not work around it: report the refusal and let M route it.
+Measured on 07-29: four dispatched agents reassigned correctly and not one ticked its step,
+so the chain fell behind reality. That is the failure mode this contract kills.
+"""
     else:
         step_block = ""
+        tick_block = ""
     return f"""You are {agent['letter']}·auto, a headless dispatched agent on the RoR Trader team.
 Identity/scope: {agent.get('scope','')}
 HARD BOUNDARIES (violating any = abort and report): {agent.get('boundaries','')}
@@ -809,7 +854,7 @@ message, set this task's `assignee` to whoever it now waits on:
   • done and awaiting M sign-off → leave assignee as-is; the dispatcher moves you to Review.
 Leaving the task assigned to YOU while you are blocked is the failure mode this rule kills.
 Reassign via `PATCH /api/dev-tasks/<id>` setting `assignee` ONLY — do NOT change status.
-
+{tick_block}
 Do the task. Your FINAL message becomes a comment on task #{task['id']} — make it a
 self-contained result report (what you did, files touched, what needs review). If you
 completed checklist steps, list them as 'STEP DONE: <text>' lines. Do not change task
