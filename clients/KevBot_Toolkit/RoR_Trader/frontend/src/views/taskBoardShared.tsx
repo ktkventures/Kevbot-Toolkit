@@ -4,6 +4,9 @@
  * list — adding a role is one line here (ASSIGNEES + ROLE_COLOR).
  */
 import React from 'react';
+// Board #246 — the multi-select PREDICATES live in a dependency-free plain-JS
+// module so a test can execute them for real (see taskFilters.js header).
+import { filterSummary, toggleSelected, UNASSIGNED_LABEL } from './taskFilters';
 
 /**
  * A per-step approval gate (board #182): a stamp carried in the step's own
@@ -847,6 +850,96 @@ export const RolePicker = ({ value, options, onPick, allowEmpty = false, pickTit
               </button>
             ))}
           </span>
+        </>
+      )}
+    </span>
+  );
+};
+
+/**
+ * Checkbox multi-select filter (board #246 — Kevin: *"can we make those
+ * multi-select… you just have a checkbox next to each option"*).
+ *
+ * TWO invariants it exists to hold, both about not lying to the reader:
+ *
+ *  1. NOTHING TICKED = NO FILTER. `matchesMulti` owns that (taskFilters.js);
+ *     this control simply never emits an "empty means empty" signal, and the
+ *     panel footer says so in words. Eleven statuses make single-select close
+ *     to useless — the common question is "show me Review AND Staged" — but a
+ *     multi-select that starts by hiding everything is worse than the
+ *     single-select it replaced.
+ *  2. A FILTERED VIEW MUST NOT LOOK LIKE AN EMPTY BOARD. The closed control
+ *     always states what it is doing — `all`, the chosen values, or a count —
+ *     and goes bold/blue whenever it is constraining anything.
+ */
+export const MultiSelectFilter = ({
+  label, options, selected, onChange, colors, labelFor, allLabel = 'all', title,
+}: {
+  label: string;
+  options: string[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+  /** optional swatch per option (statuses use STATUS_COLOR) */
+  colors?: Record<string, string>;
+  /** optional display name per option ('' renders as "(unassigned)") */
+  labelFor?: (o: string) => string;
+  allLabel?: string;
+  title?: string;
+}) => {
+  const [open, setOpen] = React.useState(false);
+  const active = selected.length > 0;
+  const shown = (o: string) => (labelFor ? labelFor(o) : o) || UNASSIGNED_LABEL;
+  return (
+    <span style={{ position: 'relative', display: 'inline-block' }}>
+      <button
+        title={title || `${label} filter — tick any number; none ticked = all ${options.length}`}
+        style={{
+          ...input, cursor: 'pointer', maxWidth: 260, whiteSpace: 'nowrap',
+          overflow: 'hidden', textOverflow: 'ellipsis',
+          fontWeight: active ? 700 : 400,
+          borderColor: active ? 'var(--blue)' : 'var(--border)',
+          color: active ? 'var(--blue)' : 'var(--text-primary)',
+        }}
+        onClick={() => setOpen(!open)}>
+        {label}: {filterSummary(selected, allLabel)} ▾
+      </button>
+      {open && (
+        <>
+          <span onClick={() => setOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 1500 }} />
+          <div style={{
+            position: 'absolute', top: '120%', left: 0, zIndex: 1600, minWidth: 190,
+            maxHeight: 320, overflowY: 'auto', padding: '7px 9px', borderRadius: 8,
+            border: '1px solid var(--border)', background: 'var(--bg-card, var(--bg-input))',
+            boxShadow: '0 6px 20px rgba(0,0,0,0.4)', fontSize: 12.5,
+          }}>
+            {options.map((o) => (
+              <label key={o || '(none)'} style={{
+                display: 'flex', alignItems: 'center', gap: 6, padding: '2px 0',
+                cursor: 'pointer', whiteSpace: 'nowrap',
+              }}>
+                <input type="checkbox" checked={selected.includes(o)}
+                  onChange={() => onChange(toggleSelected(selected, o))} />
+                {colors && colors[o] && (
+                  <span style={{
+                    width: 8, height: 8, borderRadius: 4, background: colors[o],
+                    display: 'inline-block', flexShrink: 0,
+                  }} />
+                )}
+                <span>{shown(o)}</span>
+              </label>
+            ))}
+            <div style={{
+              marginTop: 6, paddingTop: 5, borderTop: '1px solid var(--border)',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+            }}>
+              <span style={{ color: 'var(--text-tertiary)', fontSize: 11 }}>
+                {active ? `${selected.length} of ${options.length}` : `none ticked = all ${options.length}`}
+              </span>
+              <button style={{ ...input, cursor: 'pointer', fontSize: 11, padding: '2px 6px' }}
+                disabled={!active} onClick={() => onChange([])}
+                title="clear this filter — an empty selection shows everything">clear</button>
+            </div>
+          </div>
         </>
       )}
     </span>
