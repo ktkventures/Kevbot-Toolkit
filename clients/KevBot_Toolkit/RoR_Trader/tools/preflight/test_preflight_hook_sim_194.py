@@ -18,9 +18,17 @@ test is a comment, not a rail. The two things the task demands proof of:
       3  drift then real cp   -> RED -> GREEN (the reconcile actually works)
       4  live copy missing    -> !! naming the same `cp`
       5  canonical unreadable -> `--` note, never a false RED
-  (9) SIM poller alive
-      6  real process whose cmdline contains replay_sim_poller -> OK
-         (proves the pgrep pattern matches the REAL thing, not a mock)
+  (9) SIM poller alive — HERMETIC (board #194 step 3). The check's process lister is
+      injectable, so these pass whether or not the real poller is running on this box.
+      The first cut of this test spawned a decoy, killed it, and asserted RED — which
+      only held while the REAL poller was down, i.e. only on a broken machine.
+      6  the PRODUCTION path (real pgrep + bracket pattern + invocation filter)
+         matches a REAL `python .../replay_sim_poller.py` process     -> OK
+      6b the production lister returns nothing for an absent pattern (the RED input),
+         proving the RED branch is reachable without killing the real poller
+      6c injected lister: RED (empty table) and GREEN (a poller line) back-to-back in
+         ONE run, asserted to hold under BOTH real-poller states
+      6d a dispatched agent's own argv MENTIONING the poller is not a false GREEN
       7  down                 -> !! whose fix uses .venv/bin/python, NOT bare python3
       8  down + PAUSE present -> `--` note (documented kill switch, not an alarm)
   advisory posture
@@ -82,8 +90,21 @@ def stub_repo(hook_body=None, live_body=None, pause=False):
     return canon, pf.LIVE_HOOK
 
 
-def poller_down(*a, **kw):
-    return subprocess.CompletedProcess(a, 1, stdout="", stderr="")
+def lister(*lines):
+    """An injected process lister — the test never consults the real process table."""
+    return lambda: "".join(f"{ln}\n" for ln in lines)
+
+
+POLLER_LINE = "4242 .venv/bin/python tools/team_sim/replay_sim_poller.py --live --loop --poll 30"
+# A dispatched agent's cmdline carries its whole prompt, and #194's prompt quotes the
+# poller command verbatim — this is the real false-GREEN that shipped in step 2.
+AGENT_LINE = ("209506 claude -p You are M·auto ... nohup .venv/bin/python "
+              "tools/team_sim/replay_sim_poller.py --live --loop --poll 30 ... END")
+
+
+def real_poller_running():
+    """Ground truth for THIS box, so the test can assert it does not depend on it."""
+    return any(pf._is_poller_invocation(ln) for ln in pf.pgrep_lines().splitlines())
 
 
 CANON = '#!/usr/bin/env python3\n"""hook."""\nimport sys\nprint_mentions()\n'
@@ -129,32 +150,68 @@ def t5_hook_canon_unreadable():
 
 
 # --- (9) SIM poller ---------------------------------------------------------
-def t6_sim_alive_real_process():
-    """A REAL process whose cmdline carries the name — proves the pattern matches."""
+def t6_production_path_matches_a_real_process():
+    """The PRODUCTION path end-to-end: real pgrep + bracket pattern + invocation filter.
+
+    Spawns a genuine `python .../replay_sim_poller.py` and asserts the default
+    (uninjected) check sees it. This is additive to the real process table, so it
+    holds whether or not the real poller is up.
+    """
     stub_repo(hook_body=CANON, live_body=CANON)
-    fake = f"{TMP}/replay_sim_poller_TESTFAKE"
-    shutil.copyfile("/bin/sleep", fake)
-    os.chmod(fake, 0o755)
-    p = subprocess.Popen([fake, "45"])
+    d = tempfile.mkdtemp(dir=TMP)
+    fake = f"{d}/{pf.SIM_POLLER_SCRIPT}"
+    open(fake, "w", encoding="utf-8").write("import time\ntime.sleep(45)\n")
+    p = subprocess.Popen([sys.executable, fake])
     _PROCS.append(p)
-    time.sleep(0.4)                       # let it appear in the process table
-    out = run(pf.check_9_sim_poller)
-    check("(9) live poller process reads GREEN via real pgrep",
+    time.sleep(0.5)                       # let it appear in the process table
+    out = run(pf.check_9_sim_poller)      # no injection: the real pgrep runs
+    check("(9) production path (real pgrep) sees a real poller invocation -> GREEN",
           "  OK  (9)" in out and "!!" not in out, out)
+    matched = [ln for ln in pf.pgrep_lines().splitlines() if fake in ln]
+    check("(9) the bracket pattern itself matched that real process",
+          len(matched) == 1 and pf._is_poller_invocation(matched[0]),
+          f"pgrep lines mentioning the spawned script: {matched}")
     p.kill()
     p.wait()
-    time.sleep(0.4)
-    out2 = run(pf.check_9_sim_poller)     # GREEN -> RED once it dies
-    check("(9) GREEN -> RED the moment the real process dies", "  !!  (9)" in out2, out2)
+
+
+def t6b_production_lister_can_return_empty():
+    """The RED input is reachable through the REAL lister — no need to kill the poller."""
+    out = pf.pgrep_lines("[z]zz_absent_pattern_194")
+    check("(9) real lister returns nothing for an absent pattern (RED branch reachable)",
+          out.strip() == "", repr(out))
+
+
+def t6c_red_and_green_back_to_back():
+    """RED then GREEN in ONE run, asserted independent of this box's poller state."""
+    was_running = real_poller_running()
+    stub_repo(hook_body=CANON, live_body=CANON)
+    red = run(lambda: pf.check_9_sim_poller(lister()))            # empty process table
+    green = run(lambda: pf.check_9_sim_poller(lister(POLLER_LINE)))
+    still_running = real_poller_running()
+    check("(9) injected empty table -> RED", "  !!  (9)" in red, red)
+    check("(9) injected poller line -> GREEN", "  OK  (9)" in green and "!!" not in green, green)
+    check("(9) RED and GREEN both held in ONE run, real poller untouched",
+          "  !!  (9)" in red and "  OK  (9)" in green and was_running == still_running,
+          f"real poller running: before={was_running} after={still_running}")
+    print(f"        (real SIM poller was {'UP' if was_running else 'DOWN'} during this run "
+          f"— the two cases above must pass either way)")
+
+
+def t6d_agent_prompt_is_not_a_false_green():
+    """A process that merely MENTIONS the poller (an agent's own prompt) is not alive."""
+    stub_repo(hook_body=CANON, live_body=CANON)
+    out = run(lambda: pf.check_9_sim_poller(lister(AGENT_LINE)))
+    check("(9) an agent prompt quoting the poller command is NOT a false GREEN",
+          "  !!  (9)" in out, out)
+    both = run(lambda: pf.check_9_sim_poller(lister(AGENT_LINE, POLLER_LINE)))
+    check("(9) a real invocation alongside that noise still reads GREEN",
+          "  OK  (9)" in both and "!!" not in both, both)
 
 
 def t7_sim_down():
     stub_repo(hook_body=CANON, live_body=CANON)
-    real_sh, pf.sh = pf.sh, poller_down
-    try:
-        out = run(pf.check_9_sim_poller)
-    finally:
-        pf.sh = real_sh
+    out = run(lambda: pf.check_9_sim_poller(lister()))
     check("(9) dead poller goes RED", "  !!  (9)" in out, out)
     check("(9) RED fix uses .venv/bin/python", pf.VENV_PY_REL in out, out)
     check("(9) RED fix never hands over bare `python3 tools/`",
@@ -165,13 +222,19 @@ def t7_sim_down():
 
 def t8_sim_paused():
     stub_repo(hook_body=CANON, live_body=CANON, pause=True)
-    real_sh, pf.sh = pf.sh, poller_down
-    try:
-        out = run(pf.check_9_sim_poller)
-    finally:
-        pf.sh = real_sh
+    out = run(lambda: pf.check_9_sim_poller(lister()))
     check("(9) documented kill switch = note, not an alarm",
           "  --  (9)" in out and "!!" not in out, out)
+
+
+def t8b_lister_crash_is_advisory():
+    """A lister that blows up degrades to a `--` note, never a false GREEN or a raise."""
+    stub_repo(hook_body=CANON, live_body=CANON)
+    def boom():
+        raise OSError("pgrep unavailable")
+    out = run(lambda: pf.check_9_sim_poller(boom))
+    check("(9) lister crash -> `--` note, no false GREEN",
+          "  --  (9)" in out and "  OK  (9)" not in out, out)
 
 
 # --- advisory posture -------------------------------------------------------
@@ -227,7 +290,11 @@ def main():
     print(f"Preflight #194 invariants (8) hook-copy + (9) SIM poller — {PREFLIGHT_PY}")
     for t in (t1_hook_identical, t2_hook_drifted, t3_hook_red_then_green,
               t4_hook_live_missing, t5_hook_canon_unreadable,
-              t6_sim_alive_real_process, t7_sim_down, t8_sim_paused,
+              t6_production_path_matches_a_real_process,
+              t6b_production_lister_can_return_empty,
+              t6c_red_and_green_back_to_back,
+              t6d_agent_prompt_is_not_a_false_green,
+              t7_sim_down, t8_sim_paused, t8b_lister_crash_is_advisory,
               t9_advisory_never_blocks, t10_exit_zero_contract):
         try:
             t()

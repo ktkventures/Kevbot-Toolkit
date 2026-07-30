@@ -45,11 +45,16 @@ gates you are about to run measured the wrong code.
    `replay_sim_requests` rows; this local poller claims them), so a dead poller is a silent
    no-op with no error anywhere. Its documented kill switch `tools/team_sim/PAUSE` reads as a
    `--` note, not an alarm. The fix line hands over `.venv/bin/python` — **bare `python3` dies
-   instantly** on `ModuleNotFoundError: supabase`, and a handoff once shipped that command
+   instantly** on `ModuleNotFoundError: supabase`, and a handoff once shipped that command.
+   GREEN requires an actual `python .../replay_sim_poller.py` process, not merely a cmdline
+   containing the name: a dispatched agent's argv carries its whole prompt, so any task that
+   *mentions* the poller used to read GREEN with it stone dead.
 
 Tests: `python3 tools/preflight/test_preflight_hook_sim_194.py` — standalone, no network,
 proves (8) and (9) each go RED on drift/absence and GREEN once reconciled, and that a crash
-in either degrades to a note without failing the run.
+in either degrades to a note without failing the run. (9)'s process lister is injectable, so
+the suite passes **whether or not the real poller is running** — it asserts that explicitly
+and never touches the live process table to force a RED.
 
 ## Acting on the output
 

@@ -49,6 +49,8 @@ LIVE_HOOK = "/home/kevin/projects/Kevbot-Toolkit/.claude/hooks/team_board_contex
 # SIM poller: the LOCAL executor behind the SIM Run button (Railway cannot reach
 # this host, so the button only WRITES a request row — no poller, nothing runs).
 SIM_POLLER_REL = "tools/team_sim/replay_sim_poller.py"
+SIM_POLLER_SCRIPT = "replay_sim_poller.py"              # basename we must see RUNNING
+SIM_POLLER_PAT = "[r]eplay_sim_poller"   # bracket trick: cannot match this pgrep's own argv
 SIM_PAUSE_REL = "tools/team_sim/PAUSE"                  # documented kill switch
 # It needs the venv: bare `python3` dies instantly on `ModuleNotFoundError: supabase`,
 # and a handoff once shipped exactly that command (silently dead Run button).
@@ -331,20 +333,50 @@ def check_8_hook_copy():
             f"(if the LIVE copy is the newer one, ship it to {HOOK_REL} FIRST, then cp back)")
 
 
-def check_9_sim_poller():
+def pgrep_lines(pattern=SIM_POLLER_PAT):
+    """The real process-table lister: `pgrep -af` output, one `PID cmdline` per line.
+
+    Injected into check_9 so the check's own logic is testable without consulting
+    (or having to break) this box's process table.
+    """
+    r = sh(["pgrep", "-af", pattern])
+    return r.stdout if r.returncode == 0 else ""
+
+
+def _is_poller_invocation(line):
+    """True only for a real `python .../replay_sim_poller.py` process.
+
+    `pgrep -af` matches ANY process whose cmdline merely CONTAINS the name — and a
+    dispatched agent's argv carries its entire prompt, so a task that so much as
+    MENTIONS the poller made this check read GREEN with the poller stone dead
+    (observed on board #194's own run). Require the shape of a real invocation:
+    a python interpreter with the script itself among its arguments.
+    """
+    tok = line.split()
+    return (len(tok) >= 3
+            and "python" in os.path.basename(tok[1])
+            and any(t.endswith(SIM_POLLER_SCRIPT) for t in tok[2:]))
+
+
+def check_9_sim_poller(list_procs=None):
     """SIM poller alive (board #194, same family as 5).
 
     The SIM Run button and the nightly sweep are DECLARATIVE — they write
     `replay_sim_requests` rows and this local poller claims them. With the poller
     down, the button silently does nothing and rows sit 'requested' forever.
+
+    `list_procs` is injectable (default: the real `pgrep`) so the acceptance test
+    can drive both the GREEN and the RED branch in one run. It previously could
+    only go red while the real poller was DOWN — i.e. the test only passed on a
+    broken box, which is not a test.
     """
+    list_procs = list_procs or pgrep_lines
     try:
-        # bracket trick: the pattern cannot match this very pgrep's own argv
-        r = sh(["pgrep", "-af", "[r]eplay_sim_poller"])
+        out = list_procs()
     except Exception as e:
         note(9, f"could not check the SIM poller ({e})")
         return
-    alive = r.returncode == 0 and r.stdout.strip()
+    alive = any(_is_poller_invocation(ln) for ln in (out or "").splitlines())
     if alive:
         ok(9, "SIM poller alive")
     elif os.path.exists(f"{REPO}/{SIM_PAUSE_REL}"):
