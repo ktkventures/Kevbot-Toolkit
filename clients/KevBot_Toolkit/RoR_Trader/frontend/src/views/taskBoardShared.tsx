@@ -750,19 +750,31 @@ export function nextActor(t: Task, subtasks: Task[]): { next: string | null; han
  * forced-colors mode, where a hue swap would say nothing; the colour and the
  * tooltip are the reinforcement, never the whole signal. Read from the registry
  * via context, so the next live-session lane inherits it with no code change.
+ *
+ * Board #243 — `size` (default 20, the original) exists so a surface that shows
+ * TWO owners can rank them by scale: the actionable one full size, the
+ * for-context one visibly demoted. Every dimension derives from `size`, the
+ * #222 shape cue included, so a smaller chip is the same chip and not a second
+ * implementation drifting out of sync.
  */
-export const RoleChip = ({ role, title }: { role: string; title?: string }) => {
+export const RoleChip = ({ role, title, size = 20 }: {
+  role: string; title?: string; size?: number;
+}) => {
   const reg = useAgentRegistry();
   const session = isSessionLane(role, reg);
   const kind = session ? 'session' : 'agent';
+  const ring = size / 20;   // the ring is part of the shape cue — it scales too
   return (
     <span title={title ? `${title} · ${LANE_KIND_TIP[kind]}`
       : `${role} — ${LANE_KIND_TIP[kind]}`} style={{
       display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-      width: 20, height: 20, flex: 'none',
-      borderRadius: session ? 5 : '50%',
-      boxShadow: session ? `0 0 0 1.5px var(--bg-card, #12161c), 0 0 0 3px ${roleColor(role)}` : undefined,
-      fontSize: 9, fontWeight: 700, letterSpacing: -0.3, color: '#fff',
+      width: size, height: size, flex: 'none',
+      borderRadius: session ? Math.max(3, Math.round(size * 0.25)) : '50%',
+      boxShadow: session
+        ? `0 0 0 ${1.5 * ring}px var(--bg-card, #12161c), 0 0 0 ${3 * ring}px ${roleColor(role)}`
+        : undefined,
+      fontSize: Math.max(7, Math.round(size * 0.45)),
+      fontWeight: 700, letterSpacing: -0.3, color: '#fff',
       background: roleColor(role), whiteSpace: 'nowrap', verticalAlign: 'middle',
     }}>{roleAbbrev(role)}</span>
   );

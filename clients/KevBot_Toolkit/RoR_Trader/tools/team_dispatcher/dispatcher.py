@@ -1,5 +1,26 @@
 #!/usr/bin/env python3
-"""Team dispatcher (V4.28) — dispatches board tasks to headless Claude agents.
+"""Team dispatcher (V4.29) — dispatches board tasks to headless Claude agents.
+
+V4.29 (board #245): `pushed_branch` MEANS "THE BRANCH THIS RUN PUBLISHED", NOT
+"THE BRANCH THE BACKSTOP PUSHED". V4.23 wrote the field only on its own
+successful push. V4.26 then told agents to push their own branches — and from
+that moment `push_worktree_branch` correctly REFUSED every one of them
+(`exists-on-origin`: advancing a published branch is not this loop's job) and
+recorded nothing. The column went permanently empty, and the #193 shipping lane,
+which reads it, rendered `? pushed / unknown` on every row for days. **The signal
+was not degraded gradually; it was deleted the moment agents became
+self-sufficient, and nothing noticed the panel depended on it.**
+
+The refusal to advance stands. What changes is that an `exists-on-origin` branch
+which has passed every ownership rail ABOVE it — worktree positively attributed
+to this run (V4.27), HEAD moved off `branch0`, tree clean, ahead of PUSH_BASE —
+is reported as `published`, and reap() records it exactly as it records its own
+push. WHY THE REAPER AND NOT THE AGENT: an agent-side write is a prose contract,
+and a prose contract is precisely what failed here (#218 told agents to push;
+nothing told them to record it). The reaper runs for every run whether or not the
+agent remembered anything, and it is the only place where "this branch belongs to
+this run" is a CHECKED fact rather than a claim. An agent may still write the
+field itself; it is no longer required to.
 
 V4.28 (board #232): "FINISHED" IS A SET, NOT A STRING — plus two new statuses.
 Kevin added `Stand By` (he has SEEN it, wants it, and chose *not yet* — parked on
@@ -1412,9 +1433,31 @@ def push_worktree_branch(wt, tag, branch0=None):
                         f"SKIP — cannot prove {branch} is new on origin: {err[:200]}",
                         wt)
     if out:
-        return _decline(tag, "exists-on-origin",
-                        f"REFUSED — {branch} already exists on origin; advancing a "
-                        "published branch is not this loop's job", wt)
+        # BOARD #245 — REFUSING TO PUSH IS NOT THE SAME AS HAVING NOTHING TO
+        # RECORD, and conflating the two is what deleted the dashboard's signal.
+        #
+        # Since #218 told agents to push their OWN branch, this is the NORMAL
+        # leg: by the time control reaches here the branch has already passed
+        # every ownership rail above — the worktree is positively attributed to
+        # this run (#218 worktree_owner), HEAD has left `branch0`, the tree is
+        # clean, and the branch is ahead of PUSH_BASE. A branch in that state
+        # that is ALREADY ON ORIGIN was published by this run's agent. The
+        # refusal to advance it stands (that is someone else's history to move);
+        # what changes is that we now say WHAT was published, so
+        # `run_history.pushed_branch` means "the branch this run published",
+        # whoever ran the push. Before this, the field was written only on the
+        # backstop's own successful push — so the moment agents became
+        # self-sufficient it went permanently empty and the shipping lane
+        # rendered `? pushed / unknown` on every row.
+        head = _git(wt, "rev-parse", branch)[1]
+        remote = (out.split()[0] if out.split() else "")
+        same = bool(head) and head == remote
+        print(f"  {tag}: REFUSED to advance {branch} ({wt}) — already on origin; "
+              f"RECORDING it as this run's published branch (board #245; remote "
+              f"{'matches' if same else 'DIFFERS from'} local HEAD)", flush=True)
+        return {"pushed": False, "branch": branch, "worktree": wt,
+                "reason": "exists-on-origin", "published": branch,
+                "published_head_matches": same}
     # Plain push. No --force, ever: the branch is provably new on origin, so
     # there is nothing to force past.
     rc, out, err = _git(wt, "push", "-u", "origin", branch)
@@ -1551,9 +1594,15 @@ def _aggregate(tag, results):
     `branch` is comma-joined; `results` always carries the full detail.
     """
     pushed = [x for x in results if x["pushed"]]
+    # Board #245 — branches this run PUBLISHED but did not push itself (the
+    # agent did, per #218). Carried alongside `branch` rather than folded into
+    # it: `pushed` still means "the backstop fired", and only `published_branch`
+    # answers the question the dashboard actually asks — is there code?
+    published = ",".join(x["published"] for x in results if x.get("published"))
     if pushed:
         return {"pushed": True, "reason": "ok", "results": results,
                 "branch": ",".join(x["branch"] for x in pushed),
+                "published_branch": published or None,
                 "worktree": pushed[0]["worktree"]}
     if not results:
         return _decline(tag, "no-candidate",
@@ -1565,6 +1614,7 @@ def _aggregate(tag, results):
     failed = [x for x in results if x["reason"].startswith("push-failed")]
     lead = failed[0] if failed else results[0]
     return {"pushed": False, "branch": lead["branch"], "reason": lead["reason"],
+            "published_branch": published or None,
             "worktree": lead["worktree"], "results": results}
 
 
@@ -1718,6 +1768,17 @@ def reap(st):
         if res["pushed"]:
             r["pushed_branch"] = res["branch"]
             rh_record_push(r["run_id"], res["branch"])
+        elif res.get("published_branch"):
+            # Board #245 — the agent pushed its own branch (#218), so the loop
+            # correctly declined to advance it. The BRANCH still exists and this
+            # run is the one that published it, so it is recorded identically:
+            # the shipping lane's question is "is there code?", not "who ran
+            # git push". Recorded HERE, in the reaper, and not by the agent —
+            # the reaper runs for every run whether or not the agent remembered
+            # anything, and it is the only place where "this branch belongs to
+            # this run" is a CHECKED fact (#218 ownership) rather than a claim.
+            r["pushed_branch"] = res["published_branch"]
+            rh_record_push(r["run_id"], res["published_branch"])
         elif res["reason"].startswith("push-failed"):
             report_push_failure(r["task_id"], r["run_id"], res["branch"],
                                 res["reason"])

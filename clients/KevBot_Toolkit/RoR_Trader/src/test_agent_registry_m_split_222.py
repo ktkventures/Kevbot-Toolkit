@@ -343,10 +343,16 @@ ok("isSessionLane contains NO hard-coded letter check "
    "'M'" not in sess and '"M"' not in sess and "'kevin'" not in sess, sess)
 ok("the letter fallback is scoped to an EMPTY registry (API outage) only",
    "reg.size === 0 && SESSION_FALLBACK.has(role)" in TSX)
+# Asserted as an INVARIANT rather than as a pixel literal: the shape must branch
+# on `session`, and the agent case must stay a circle. Board #243 parameterised
+# the chip's size (the shipping lane demotes the builder to a smaller secondary
+# chip), which turned the old literal `session ? 5 : '50%'` into a computed
+# value. The CLAIM this rail defends — shape carries the lane kind, not colour —
+# is untouched, and dropping the branch or going colour-only still fails it.
 ok("RoleChip varies SHAPE, not colour alone (survives greyscale / "
    "forced-colors / colourblindness)",
-   "borderRadius: session ? 5 : '50%'" in TSX)
-ok("…and a ring on top of the shape", "boxShadow: session ?" in TSX)
+   re.search(r"borderRadius: session \? [^:\n]+ : '50%'", TSX) is not None)
+ok("…and a ring on top of the shape", "boxShadow: session" in TSX)
 ok("a short WORD accompanies it (LaneKindChip renders 'session' / 'agent')",
    "'◧ session'" in TSX and "'◍ agent'" in TSX)
 ok("both cues carry an explanatory tooltip", "LANE_KIND_TIP" in TSX)

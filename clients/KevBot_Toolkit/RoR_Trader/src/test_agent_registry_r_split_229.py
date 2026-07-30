@@ -399,10 +399,15 @@ ok("R-A is in the assignee + mention fallback lists",
 ok("the outage fallback treats R as a session (under-promises dispatch)",
    "SESSION_FALLBACK = new Set(['kevin', 'M', 'R'])" in TSX)
 # The generic renderers #222 built must be untouched — that is the claim.
+# Shape is checked as an INVARIANT, not as a pixel literal: board #243
+# parameterised RoleChip's size (the shipping lane demotes the builder to a
+# smaller secondary chip), so `session ? 5 : '50%'` is now computed. What #222
+# claimed — shape branches on the lane kind and an agent stays a circle — still
+# has to hold, and a colour-only regression still fails this.
+ok("RoleChip still varies SHAPE, not colour alone",
+   re.search(r"borderRadius: session \? [^:\n]+ : '50%'", TSX) is not None)
 for label, needle in (
-        ("RoleChip still varies SHAPE, not colour alone",
-         "borderRadius: session ? 5 : '50%'"),
-        ("…with a ring on top of the shape", "boxShadow: session ?"),
+        ("…with a ring on top of the shape", "boxShadow: session"),
         ("LaneKindChip still renders the WORD", "'◧ session'"),
         ("…and its agent counterpart", "'◍ agent'"),
         ("both cues still carry a tooltip", "LANE_KIND_TIP"),
@@ -437,16 +442,23 @@ ok("no 'R-A' letter test outside the abbreviation lookup — rendering stays reg
    not _offending, " | ".join(_offending[:3]))
 ok("R-A IS present as registry data (colour/abbrev/list), so the negative above is meaningful",
    "R-A" in TSX)
-# The "exactly one frontend file" rail was also diff-based and dies on a merged
-# tree for the same reason. Merge-stable restatement: R-A registry data lives ONLY
-# in the shared token module — no other view may carry it, which is what "one file"
-# was really protecting. A second view naming R-A means the lane leaked into a
-# renderer.
-_other_views = [os.path.basename(p) for p in glob.glob(os.path.join(VIEWS, "*.tsx"))
-                if os.path.basename(p) != "taskBoardShared.tsx"
-                and "R-A" in open(p, encoding="utf-8").read()]
-ok("R-A data lives ONLY in the shared token module, not in any other view",
-   not _other_views, str(sorted(_other_views)))
+# The "exactly one frontend file" rail was diff-based and died on a merged tree.
+# Its first restatement — "R-A appears in NO other view" — was ALSO wrong, and
+# board #245 proved it within hours: the shipping lane legitimately needs to know
+# which lanes own a ship step (`SHIP_STEP_OWNERS = ['R', 'R-A']`), because R-A is
+# the lane that ships. Naming a lane as DATA is not the leak this rail exists to
+# catch.
+#
+# What it actually protects: R-A must never be RENDER LOGIC — no view may branch
+# on the literal. So the rail is now a letter-test ban across every view, with the
+# abbreviation lookup exempted as before. Data lists pass; `role === 'R-A'` does not.
+_offenders = []
+for _p in glob.glob(os.path.join(VIEWS, "*.tsx")):
+    for _line in open(_p, encoding="utf-8").read().splitlines():
+        if re.search(r"[=!]==\s*'R-A'|'R-A'\s*[=!]==", _line) and "? 'RA'" not in _line:
+            _offenders.append(f"{os.path.basename(_p)}: {_line.strip()[:60]}")
+ok("no view BRANCHES on the literal 'R-A' — it may be data, never render logic",
+   not _offenders, " | ".join(_offenders[:3]))
 
 # ── the charter records the split (the SSOT Kevin named) ──────────────────
 print("― charter §1/§2/§3/§8 ―")
