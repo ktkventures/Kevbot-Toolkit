@@ -51,7 +51,13 @@ and only the conductor's seat moves off the dispatch queue (rails 1/2).
           FOR FREE                   through the SAME registry-driven path #222
                                    built: no letter check was added, and the
                                    generic renderers are untouched. Asserted as
-                                   a DIFF against origin/dev, not just by shape.
+                                   MERGE-STABLE properties (no `R-A` letter test
+                                   outside the abbreviation lookup; `R-A` data
+                                   confined to the shared token module) rather
+                                   than as a diff against origin/dev — a diff
+                                   assertion is true on the branch and false the
+                                   moment another car edits the same file, which
+                                   is how it went red in the Wave 24 simulation.
 
 Hermetic: loads the real dispatcher module with a fake `api()` that PARSES the
 PostgREST filter it is handed (borrowed from test_dispatcher_ai_eligible_gate_198)
@@ -63,6 +69,7 @@ in the task report for the per-mutation failure counts.
 
 Run:  .venv/bin/python src/test_agent_registry_r_split_229.py   (from RoR_Trader root)
 """
+import glob
 import importlib.util
 import os
 import re
@@ -301,14 +308,20 @@ ok("headless_agents() still selects on status alone",
    "agents?status=eq.headless&select=*" in DISPATCHER_SRC)
 ok("the non-headless-assignee skip is a single shared branch",
    DISPATCHER_SRC.count("(not a headless agent)") == 1)
-# The strongest form of rail 4: dispatcher.py is byte-identical to dev. #222
-# had to touch STUB_AGENTS; #229 touches the dispatcher not at all.
-diff = subprocess.run(
-    ["git", "diff", "origin/dev", "--stat", "--",
-     "tools/team_dispatcher/dispatcher.py"],
-    cwd=ROOT, capture_output=True, text=True).stdout.strip()
-ok("dispatcher.py is UNCHANGED against origin/dev — zero logic, zero data",
-   diff == "", diff)
+# Rail 4, stated so it SURVIVES A MERGE. The original form asserted
+# `git diff origin/dev -- dispatcher.py` was empty — true on this branch, and
+# false the moment any OTHER car legitimately edits the dispatcher. It went red
+# on the Wave 24 combined-tree simulation next to #232 (which adds
+# FINISHED_STATUSES) and #228, neither of which is a regression.
+#
+# The claim worth protecting is not "nobody touched this file", it is "R/R-A
+# needed NO dispatcher logic": if the split had required any, the dispatcher
+# would have to NAME the lane. So assert the lane is absent from it. That holds
+# on the branch, holds after the merge, and still fails the day someone adds a
+# hard-coded R-A branch to the gate — which is the thing this rail exists for.
+ok("dispatcher.py names no R-A logic — the split needed zero dispatcher code",
+   "R-A" not in DISPATCHER_SRC,
+   "\n".join(l for l in DISPATCHER_SRC.splitlines() if "R-A" in l)[:400])
 
 # ── RAIL 5 — the registry-unreachable fallback stays the DOCS lane ─────────
 print("― rail 5: the stub fallback cannot dispatch a release ―")
@@ -401,27 +414,39 @@ ok("TaskDetailModal still labels the assignee",
 ok("…and the chain-step owner, quiet unless that owner is a session",
    "sessionOnly" in MODAL_SRC)
 
-# The claim measured, not asserted: the ONLY .tsx lines this task changed are
-# list/colour/abbrev/fallback data + comments. No renderer, no branch, no hook.
-tsx_diff = subprocess.run(
-    ["git", "diff", "origin/dev", "-U0", "--", "frontend/src/views"],
-    cwd=ROOT, capture_output=True, text=True).stdout
-added = [l[1:].strip() for l in tsx_diff.splitlines()
-         if l.startswith("+") and not l.startswith("+++")]
-code_added = [l for l in added
-              if l and not l.startswith(("//", "*", "/*", "*/"))]
-ALLOWED = ("export const MENTION_ROLES", "export const ASSIGNEES",
-           "M: '#7c5cff'", "P: '#2e9e5b'", "claude: '#64748b'",
-           ": r === 'M-A' ? 'MA'", "const SESSION_FALLBACK")
-ok("every non-comment .tsx line added is registry DATA, not render logic",
-   all(any(l.startswith(a) for a in ALLOWED) for l in code_added),
-   " | ".join(l for l in code_added
-              if not any(l.startswith(a) for a in ALLOWED)))
-# `git diff` prints paths from the REPO root, not from ROOT — compare basenames.
-tsx_files = {os.path.basename(p)
-             for p in re.findall(r"^\+\+\+ b/(.+)$", tsx_diff, re.M)}
-ok("…and the frontend touched exactly one file (the shared token module)",
-   tsx_files == {"taskBoardShared.tsx"}, str(sorted(tsx_files)))
+# Rail 7, stated so it SURVIVES A MERGE. The original diffed `frontend/src/views`
+# against origin/dev and required every added non-comment line to be registry
+# data. True on this branch; false on any tree that also carries another car's
+# frontend work — it went red beside #228's cap control in the Wave 24 simulation,
+# which is not a regression.
+#
+# The claim worth protecting: R-A is rendered from REGISTRY DATA, never from a
+# hard-coded letter test. So assert the negative directly — no comparison against
+# the literal 'R-A' anywhere in the views. Data lookups (`ASSIGNEES`, colour and
+# abbrev maps) are unaffected; a `role === 'R-A'` branch fails it, on the branch
+# and forever after. That is #222's "the next live-session lane inherits the
+# rendering for free" kept as a test rather than a memory.
+# One letter test IS legitimate and pre-dates this task: the abbreviation chain
+# `r === 'M-A' ? 'MA' : r === 'R-A' ? 'RA' : r`, which is a lookup table written
+# as a ternary (#222 established the shape for M-A). That is data. Anything else
+# comparing against 'R-A' would be render logic, and is what this rail forbids.
+_offending = [l.strip() for l in (TSX + "\n" + MODAL_SRC).splitlines()
+              if re.search(r"[=!]==\s*'R-A'|'R-A'\s*[=!]==", l)
+              and "? 'RA'" not in l]
+ok("no 'R-A' letter test outside the abbreviation lookup — rendering stays registry-driven",
+   not _offending, " | ".join(_offending[:3]))
+ok("R-A IS present as registry data (colour/abbrev/list), so the negative above is meaningful",
+   "R-A" in TSX)
+# The "exactly one frontend file" rail was also diff-based and dies on a merged
+# tree for the same reason. Merge-stable restatement: R-A registry data lives ONLY
+# in the shared token module — no other view may carry it, which is what "one file"
+# was really protecting. A second view naming R-A means the lane leaked into a
+# renderer.
+_other_views = [os.path.basename(p) for p in glob.glob(os.path.join(VIEWS, "*.tsx"))
+                if os.path.basename(p) != "taskBoardShared.tsx"
+                and "R-A" in open(p, encoding="utf-8").read()]
+ok("R-A data lives ONLY in the shared token module, not in any other view",
+   not _other_views, str(sorted(_other_views)))
 
 # ── the charter records the split (the SSOT Kevin named) ──────────────────
 print("― charter §1/§2/§3/§8 ―")
