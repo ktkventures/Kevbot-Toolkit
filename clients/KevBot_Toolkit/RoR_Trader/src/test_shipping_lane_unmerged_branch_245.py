@@ -259,9 +259,17 @@ ok("a Done/Closed task drops off too (the #232 finished SET, unchanged)",
 ok("the merge source is the release-lane step, named in the page",
    "car_ship_tick" in PAGE and "merge-base --is-ancestor" in PAGE)
 ok("the ship-step owner list MIRRORS car_ship_tick.py's SHIP_OWNERS",
-   sorted(re.findall(r"'([^']+)'", re.search(r"export const SHIP_STEP_OWNERS = \[([^\]]*)\]", PAGE).group(1)))
-   == sorted(re.findall(r"'([^']+)'", re.search(r"^SHIP_OWNERS = \(([^)]*)\)",
-             read(ROOT, "tools", "release_brief", "car_ship_tick.py"), re.M).group(1)))
+   # Quote-AGNOSTIC on both sides. The first cut matched `'...'` only, so it read
+   # #242's `SHIP_OWNERS = ("R", "R-A")` (double quotes) as an EMPTY list and the
+   # mirror "failed" while the two lists were in fact identical. A cross-file
+   # mirror must not depend on the other file's quote style. Caught by the Wave-26
+   # combined-tree gate: both branches were green alone.
+   sorted(re.findall(r"['\"]([^'\"]+)['\"]",
+                     re.search(r"export const SHIP_STEP_OWNERS = \[([^\]]*)\]", PAGE).group(1)))
+   == sorted(re.findall(r"['\"]([^'\"]+)['\"]",
+                        re.search(r"^SHIP_OWNERS = \(([^)]*)\)",
+                                  read(ROOT, "tools", "release_brief", "car_ship_tick.py"),
+                                  re.M).group(1)))
    if os.path.exists(os.path.join(ROOT, "tools", "release_brief", "car_ship_tick.py"))
    else "SHIP_STEP_OWNERS" in PAGE,
    "car_ship_tick.py is board #242 and may not have merged yet")
