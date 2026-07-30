@@ -21,7 +21,8 @@ Team assignment board: `docs/_active/Team_Board.md` (see §7).
 | **F — Frontend** | Portfolio pages, Strategy Health / health-overview UI, reporting UI, tasks-page implementation (per M's spec) | Next.js app UI code; its own plan docs | Engine/data files (e.g. `bar_cache.py`, `strategy_data.py`, `forward_test_service.py`, `fidelity_parity_suite.py`, worker/recompute lanes); flags; deploys; E's operational logs |
 | **P — Packs** | User-pack accuracy (S/R pack first), new packs, pack-builder AI | Pack definitions, pack-builder code; its own plan docs | Same exclusions as F. **Plus:** pack edits change backtests → recomputes → shift paired-% baselines. Coordinate TIMING with E before any pack change lands. |
 | **TM — Task Manager** (planned, board #182) | Gates every process-chain hand-off. Asks *"was what was asked for actually delivered?"* — narrow, time-boxed, three outcomes only: **PASS** / **BOUNCE** (back to submitter with a reason) / **ESCALATE** (insert an audible PM step). Never performs the deep investigation; it ROUTES to one. **Gates M's steps too — that is the point.** | Board writes: tick steps, reassign, insert audible steps | Code; flags; deploys; prod-DB; never investigates — escalating is its answer to "this needs more" |
-| **R — Release** | Ephemeral gatekeeper: validate → merge → deploy-watch → log → die | Nothing persistent | Never starts feature work; never flips flags beyond what the brief specifies |
+| **R — Release** (the CONDUCTOR since 07-30, board #229) · **LIVE SESSION — never auto-dispatched** (registry `status=live-session`) | Runs the release LANE, not one train: reads the `Staged` queue and decides what ships together and in what order; authors and ADAPTS briefs mid-flight; reconciles red gates and conflicts; calls incidents; holds the cross-train picture (wave numbering, what supersedes what). Retains long-term memory, and is the FALLBACK when automation fails | The release queue and the wave numbering; every brief R-A executes | Never starts feature work; never flips flags beyond what the brief specifies |
+| **R-A — Release Executor** (headless half of the R lane, added 07-30, board #229) | ONE train, bounded context: merge → gate → deploy-watch → log, per a brief. Runs gates twice and verifies before merging; reports deploy state honestly and never stops at `pending` | Same as R — it inherits R's scope and boundaries verbatim from the registry (which already ARE the headless release scope Kevin granted 07-26) | Same as R. **Plus, reserved to the R session:** deciding what ships together · authoring or adapting a brief · reconciling a red gate or a conflict needing judgement · calling an incident · wave numbering. **ABORTS AND HANDS BACK rather than improvising** — that is the designed behaviour, not a failure |
 
 **PM vs TM — the split (Kevin, 07-28).** `M` was doing both jobs and could not do the second
 honestly: an agent that gates its own hand-offs is self-review wearing a badge. On 07-28 M made
@@ -67,6 +68,45 @@ The board renders the distinction by registry `status`/`kind` (round avatar = he
 squared + ringed, "◧ session" = live session/human), never by a hard-coded letter, so the next
 live-session lane inherits it for free.
 
+**R vs R-A — the dividing line (Kevin, 07-30, board #229).** The same split, applied to the
+release lane — and applied for the OPPOSITE reason to #222's. **`R·auto` is not the problem;
+the evidence says it is good at its job.** Across 27 runs, 24 `ok`, 17 trains shipped, the
+judgement is genuinely disciplined: it aborts on red gates rather than improvising (#217, #194
+held, #191 Worker-failed), self-reports its own misses (*"flagging the deviation rather than
+papering over it"* on Wave 19's pending `build`), watches deploys to settlement rather than
+stopping at `pending`, resolved #210's conflict only after verifying it matched the narrow shape
+the brief authorised, and independently confirmed a RED on #226 before trusting the fix.
+
+**The problem is that every correct hand-back lands on M.** On 07-30 alone R correctly refused or
+handed back, and *M* then reconciled #217's stale rail-5 assertion · overrode #222's false-negative
+refusal with documentation · rebased Car 3 through a same-line conflict · **rewrote Wave 21's brief
+three times** as reality moved · resolved a wave-number collision · triaged a Railway incident.
+None of that is orchestration; all of it is release-lane technical work sitting in M's context.
+
+The pair is therefore **not a demotion of the headless agent** — it is the same competence at two
+context horizons (Kevin: *"the session-based agent is the big-picture thinker; their auto version
+is trained on the same things and automates the work that falls in line with it… the session
+retains long-term memory and can act as a fallback route in case we have automation issues"*):
+
+| `R` — session, the CONDUCTOR | `R-A` — headless, the EXECUTOR |
+|---|---|
+| reads the `Staged` queue; decides **what ships together, and in what order** | merge → gate → deploy-watch → log, per a brief |
+| authors and **adapts briefs mid-flight** (Wave 21 needed three rewrites) | runs gates twice, verifies before merging |
+| reconciles red gates and conflicts | **aborts and hands back** rather than improvising |
+| calls incidents (07-30's Railway queue) | reports deploy state honestly; never stops at `pending` |
+| holds the cross-train picture: what supersedes what, wave numbering | one train, bounded context |
+
+**M's remaining role in releases: mark a task `Staged`.** Everything after that is R's. That is the
+load the split removes. Mechanism is identical to #222 — registry rows, no new machinery — and the
+board rendering cost nothing, which is the proof #222's "the next live-session lane inherits it for
+free" was true rather than merely intended.
+
+**Two things the R lane inherits from M's first week of this (board #229):** (1) **a session with
+nothing to wake it goes quiet** — M stalled twice on 07-30 until a heartbeat was armed, so the R
+session needs its own monitor (Staged queue depth, oldest-Staged age, deploy state, open PRs, red
+gates); (2) **disarm before restatusing** — two races on 07-30 came from changing an ARMED task's
+status, and R touches statuses constantly.
+
 **RELEASES GO THROUGH A DEDICATED R SESSION — ALWAYS (Kevin, 07-26, restating the rule).**
 M authors the brief; Kevin spawns R; R executes. M does NOT merge, even when authorized
 and even when it would be faster. The 07-25/07-26 M-as-R runs were a ONE-TIME exception
@@ -97,7 +137,8 @@ Expand the registry by adding a row + a roster entry. Keep letters short and bor
 | — | Harness secondary-TF gap session (67106cca) | RETIRED 07-22 | Work committed 07-21 (b4d9a76); Kevin to add "(retired)" to title |
 | F — Frontend | (97dd74e4, anchored main window, works in `../Kevbot-frontend`) | LIVE 07-22 | Shipped V2.4 (PR #71); V2.5 in final tweaks on `feat/task-detail-panels` — merge AFTER tonight's nightly completes; then V2.2/V2.3, V2.6 agents page queued |
 | P — Packs | (reserved) | HOLD | Spawn after M-RS5a flip settles + divergence board green |
-| R | (ephemeral, per release) | as-needed | Name: `R — release <branch> <MM-DD>`; killed after merge+log |
+| R — Release (conductor) | (live session, persistent across trains) | LIVE 07-30 | Board #229 promoted R from per-train ephemeral to the release LANE's session. Owns the `Staged` queue, wave numbering and every brief; dispatches the execution to `R-A`. Needs its own heartbeat monitor — a session with nothing to wake it goes quiet (M stalled twice on 07-30 before one was armed) |
+| R-A — Release Executor | (headless; dispatched per train, no persistent session) | LIVE 07-30 | The R lane's headless half (board #229). Not a session anyone spawns — the dispatcher runs it per task from the registry row, which inherits R's scope/boundaries/worktree. One train per run; assign it here, and assign the R **session** anything on the right-hand column of the §1 R/R-A dividing line |
 
 ## 3. Naming protocol
 
@@ -112,7 +153,15 @@ Expand the registry by adding a row + a roster entry. Keep letters short and bor
 - **Succession keeps the name:** when a parent hands off, the successor takes the SAME
   name (`E — Engine/Divergence`); Kevin appends `(retired MM-DD)` to the outgoing
   session's title. The roster's session id-prefix + dates carry the lineage.
-- **R is ephemeral:** `R — release <branch> <MM-DD>`, never numbered, never reused.
+- **Split lanes use `<LETTER>-A`, never a number:** `M-A` (board #222), `R-A` (board #229). The
+  suffix means "the headless half of that lane", which is a different thing from a numbered
+  subordinate: `E1` is one task inside E's lane, `M-A` is M's lane running headless. A lane has
+  at most one `-A`. `E2` predates the convention, is plan-specific and does not fit it — **retire
+  it rather than repurpose it** (Kevin, 07-30). Kevin has HELD `E`/`E-A` and `F`/`F-A` until M
+  and R prove the pattern out.
+- **R is no longer ephemeral (board #229, 07-30).** The R *session* is persistent and conducts the
+  lane; the per-train ephemeral role is now `R-A`, dispatched per release. The old
+  `R — release <branch> <MM-DD>` naming applies to a manual fallback R-A run only.
 - Sessions cannot rename their own sidebar entry. A new session's FIRST reply must
   state its adopted name ("I am F — Frontend") so Kevin can set the sidebar title.
 
@@ -258,7 +307,7 @@ M surfaces every "Next: kevin" item in conversation — Kevin never hunts his ow
 sessions). Coordination is async through the board, plan docs, and Kevin. Design work
 items accordingly: self-contained, with the context written down.
 
-## 8. Release protocol (ephemeral R sessions)
+## 8. Release protocol (R conducts; R-A executes)
 
 **DEFAULT CADENCE — SHIP EACH REVIEWED BRANCH IMMEDIATELY (Kevin, binding, 2026-07-29).**
 A branch that has passed M review goes to a train **at once**, as its own single car if
@@ -280,19 +329,28 @@ nothing else is ready. Do **NOT** accumulate reviewed branches waiting for a ful
   times after being told twice not to, because caution feels responsible. It is not
   responsible when it costs the thing Kevin actually asked for.
 
-**R is `headless` in the agents registry (Kevin-granted 07-26) — releases dispatch from the
-board, not from a paste-block.** M writes the brief as the task's `description`, sets
-`assignee=R` and status `Todo`, and the dispatcher picks it up. `/release-brief` is still
-the right tool for AUTHORING the brief; only its delivery changed.
+**`R-A` is the `headless` registry row (board #229; the release scope itself is Kevin-granted
+07-26) — releases dispatch from the board, not from a paste-block.** The brief is the task's
+`description`, `assignee=R-A`, status `Todo`, and the dispatcher picks it up. `/release-brief`
+is still the right tool for AUTHORING the brief; only its delivery changed.
 
-1. Working session finishes a branch → M reviews → M authors the brief (**`/release-brief`**)
-   as a board task assigned to `R`.
-2. The dispatcher dispatches `R·auto`. (A fresh human `R — release <branch> <MM-DD>` session
+**Board #229 changed WHO authors it.** M's job in a release now ends at marking a task `Staged`;
+**R** reads that queue and owns everything after. Until #229's held `UPDATE R → live-session` is
+applied and step 3's classification is done, `R` still dispatches — read `assignee=R-A` below as
+the target state the train lands.
+
+1. Working session finishes a branch → M reviews → **M marks it `Staged` and stops there**.
+2. **R** (the session) reads the `Staged` queue, decides what ships together and in what order,
+   and authors the brief (**`/release-brief`**) as a board task assigned to `R-A` — adapting it
+   mid-flight when reality moves, which is normal, not an exception (Wave 21 took three passes).
+3. The dispatcher dispatches `R-A·auto`. (A fresh human `R — release <branch> <MM-DD>` session
    pasting the brief still works and remains valid when Kevin prefers fresh human eyes.)
-3. R executes the brief top-to-bottom: verify branch state → run gates → backup branch →
-   merge PR → watch deploy → write `Deploy_Log.md` entry → report → **die**. R never
-   starts new work, never fixes non-trivial failures (it reports back to the working
-   session instead), and aborts loudly on any gate failure.
-4. **R never restarts the dispatcher loop** — a release session must not cycle the process
+4. R-A executes the brief top-to-bottom: verify branch state → run gates → backup branch →
+   merge PR → watch deploy → write `Deploy_Log.md` entry → report → **die**. R-A never
+   starts new work, never fixes non-trivial failures, and aborts loudly on any gate failure —
+   **it hands back to R, not to M.** That hand-back is the designed behaviour and the whole
+   point of the split: R reconciles the red gate, the conflict or the incident, and M's context
+   never sees it.
+5. **R-A never restarts the dispatcher loop** — a dispatched run must not cycle the process
    that dispatched it. When a train carries a `dispatcher.py` change, the restart and its
    preflight (5) verification are **M's**, immediately after the merge.
