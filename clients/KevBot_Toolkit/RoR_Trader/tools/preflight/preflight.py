@@ -24,7 +24,10 @@ Invariants:
   5  dispatcher loop alive AND its file matches dev
   6  armed RORT flags match the recorded baseline   (--full only; E-owned baseline)
   7  no task sits in Todo whose next-actor is kevin  (the #151 contradiction)
+  8  SessionStart hook's live copy matches the tracked canonical (#194 — sibling of 5)
+  9  SIM poller alive (its Run button is DECLARATIVE — a dead poller is a silent no-op)
 """
+import difflib
 import glob
 import json
 import os
@@ -38,6 +41,20 @@ ENV = f"{REPO}/src/.env"
 HERE = os.path.dirname(os.path.abspath(__file__))
 FLAG_BASELINE = f"{HERE}/expected_flags.json"
 DISPATCHER_REL = "tools/team_dispatcher/dispatcher.py"   # relative to REPO
+# The SessionStart hook runs by ABSOLUTE path from an UNTRACKED location; the
+# tracked canonical lives in the repo and arming it is a manual `cp`. Only memory
+# keeps the two identical — the exact shape invariant (5) exists for (board #194).
+HOOK_REL = "tools/team_dispatcher/hooks/team_board_context.py"   # tracked canonical
+LIVE_HOOK = "/home/kevin/projects/Kevbot-Toolkit/.claude/hooks/team_board_context.py"
+# SIM poller: the LOCAL executor behind the SIM Run button (Railway cannot reach
+# this host, so the button only WRITES a request row — no poller, nothing runs).
+SIM_POLLER_REL = "tools/team_sim/replay_sim_poller.py"
+SIM_POLLER_SCRIPT = "replay_sim_poller.py"              # basename we must see RUNNING
+SIM_POLLER_PAT = "[r]eplay_sim_poller"   # bracket trick: cannot match this pgrep's own argv
+SIM_PAUSE_REL = "tools/team_sim/PAUSE"                  # documented kill switch
+# It needs the venv: bare `python3` dies instantly on `ModuleNotFoundError: supabase`,
+# and a handoff once shipped exactly that command (silently dead Run button).
+VENV_PY_REL = ".venv/bin/python"
 # M-lane docs whose dev copy must match local. Charter + every Spec_* (globbed
 # locally so a spec that exists locally but not on dev shows up as "missing").
 DOC_RELS = ["docs/_active/Session_Charters.md"] + sorted(
@@ -275,6 +292,103 @@ def check_7_todo_kevin():
             "move each to Approval/Review — Todo means agent-dispatchable, never Kevin-actioned")
 
 
+def _delta_shape(canon_src, live_src):
+    """A legible one-phrase summary of the drift, so `!!` says WHAT moved."""
+    plus = minus = 0
+    for line in difflib.unified_diff(canon_src.splitlines(), live_src.splitlines(), n=0):
+        if line.startswith("+") and not line.startswith("+++"):
+            plus += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            minus += 1
+    return f"live is +{plus}/-{minus} lines vs tracked"
+
+
+def check_8_hook_copy():
+    """Live SessionStart hook == tracked canonical (board #194).
+
+    Sibling of (5), same failure mode: (5) exists because the RUNNING dispatcher.py
+    silently diverged from dev twice. The board-context hook has the identical
+    shape — it runs from an untracked absolute path, its canonical copy is in the
+    repo, and arming is a manual `cp` with nothing watching it.
+    """
+    canon = f"{REPO}/{HOOK_REL}"
+    try:
+        canon_src = open(canon, encoding="utf-8").read()
+    except OSError as e:
+        note(8, f"tracked canonical hook unreadable ({e}) — cannot verify the live copy")
+        return
+    try:
+        live_src = open(LIVE_HOOK, encoding="utf-8").read()
+    except OSError:
+        bad(8, f"SessionStart hook MISSING at its live path ({LIVE_HOOK}) "
+               f"— sessions open with NO board queue and NO @-mentions",
+            f"cp {canon} {LIVE_HOOK}")
+        return
+    if live_src == canon_src:
+        ok(8, "SessionStart hook live copy matches the tracked canonical")
+    else:
+        bad(8, f"SessionStart hook DRIFTED from its tracked canonical ({_delta_shape(canon_src, live_src)}) "
+               f"— every session runs hook code that is not what the repo says it runs",
+            f"cp {canon} {LIVE_HOOK}   "
+            f"(if the LIVE copy is the newer one, ship it to {HOOK_REL} FIRST, then cp back)")
+
+
+def pgrep_lines(pattern=SIM_POLLER_PAT):
+    """The real process-table lister: `pgrep -af` output, one `PID cmdline` per line.
+
+    Injected into check_9 so the check's own logic is testable without consulting
+    (or having to break) this box's process table.
+    """
+    r = sh(["pgrep", "-af", pattern])
+    return r.stdout if r.returncode == 0 else ""
+
+
+def _is_poller_invocation(line):
+    """True only for a real `python .../replay_sim_poller.py` process.
+
+    `pgrep -af` matches ANY process whose cmdline merely CONTAINS the name — and a
+    dispatched agent's argv carries its entire prompt, so a task that so much as
+    MENTIONS the poller made this check read GREEN with the poller stone dead
+    (observed on board #194's own run). Require the shape of a real invocation:
+    a python interpreter with the script itself among its arguments.
+    """
+    tok = line.split()
+    return (len(tok) >= 3
+            and "python" in os.path.basename(tok[1])
+            and any(t.endswith(SIM_POLLER_SCRIPT) for t in tok[2:]))
+
+
+def check_9_sim_poller(list_procs=None):
+    """SIM poller alive (board #194, same family as 5).
+
+    The SIM Run button and the nightly sweep are DECLARATIVE — they write
+    `replay_sim_requests` rows and this local poller claims them. With the poller
+    down, the button silently does nothing and rows sit 'requested' forever.
+
+    `list_procs` is injectable (default: the real `pgrep`) so the acceptance test
+    can drive both the GREEN and the RED branch in one run. It previously could
+    only go red while the real poller was DOWN — i.e. the test only passed on a
+    broken box, which is not a test.
+    """
+    list_procs = list_procs or pgrep_lines
+    try:
+        out = list_procs()
+    except Exception as e:
+        note(9, f"could not check the SIM poller ({e})")
+        return
+    alive = any(_is_poller_invocation(ln) for ln in (out or "").splitlines())
+    if alive:
+        ok(9, "SIM poller alive")
+    elif os.path.exists(f"{REPO}/{SIM_PAUSE_REL}"):
+        note(9, f"SIM poller down — its documented kill switch is present "
+                f"({SIM_PAUSE_REL}); intentional, remove that file to resume")
+    else:
+        bad(9, "SIM poller NOT running — the SIM Run button and nightly sweep silently no-op "
+               "(requests sit unclaimed forever, with no error anywhere)",
+            f"cd {REPO} && nohup {VENV_PY_REL} {SIM_POLLER_REL} --live --loop --poll 30 "
+            f">/dev/null 2>&1 &   (bare python3 dies instantly: ModuleNotFoundError: supabase)")
+
+
 def main():
     print(f"[Preflight] Env invariants (task #153){' --full' if FULL else ''} — {datetime.now():%Y-%m-%d %H:%M}")
     gitroot = resolve_gitroot()
@@ -298,7 +412,9 @@ def main():
                       (4, lambda: check_4_docs(gitroot, relprefix)),
                       (5, lambda: check_5_dispatcher(gitroot, relprefix)),
                       (6, check_6_flags),
-                      (7, check_7_todo_kevin)):
+                      (7, check_7_todo_kevin),
+                      (8, check_8_hook_copy),
+                      (9, check_9_sim_poller)):
         try:
             fn()
         except Exception as e:
