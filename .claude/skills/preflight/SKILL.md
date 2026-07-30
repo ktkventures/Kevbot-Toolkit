@@ -18,7 +18,7 @@ was missing a week of rules). Preflight asserts the invariants that would have c
 python3 /home/kevin/projects/Kevbot-Toolkit/clients/KevBot_Toolkit/RoR_Trader/tools/preflight/preflight.py --full
 ```
 
-`--full` adds invariant (6), the Railway armed-flag baseline check, on top of the seven
+`--full` adds invariant (6), the Railway armed-flag baseline check, on top of the eight
 the SessionStart hook already runs compact on every session. It fails loud and never
 blocks — every check is isolated; the script always exits 0.
 
@@ -35,6 +35,21 @@ gates you are about to run measured the wrong code.
 5. dispatcher loop alive AND its file matches dev
 6. armed `RORT_*` flags match the recorded baseline — `tools/preflight/expected_flags.json` (**E owns/populates this**; `--full` only)
 7. no task sits in `Todo` whose next-actor is `kevin` (dispatch-blocked, silently sitting — the #151 class)
+8. the live SessionStart hook matches its tracked canonical — the hook runs by absolute path
+   from untracked `/home/kevin/projects/Kevbot-Toolkit/.claude/hooks/team_board_context.py`,
+   the canonical is `tools/team_dispatcher/hooks/team_board_context.py`, and arming is a
+   manual `cp`. **Sibling of (5)**, added for exactly the same reason: (5) exists because the
+   running `dispatcher.py` silently diverged from dev twice, and the hook has the identical
+   shape (board #194)
+9. SIM poller alive — the SIM Run button and nightly sweep are DECLARATIVE (they only write
+   `replay_sim_requests` rows; this local poller claims them), so a dead poller is a silent
+   no-op with no error anywhere. Its documented kill switch `tools/team_sim/PAUSE` reads as a
+   `--` note, not an alarm. The fix line hands over `.venv/bin/python` — **bare `python3` dies
+   instantly** on `ModuleNotFoundError: supabase`, and a handoff once shipped that command
+
+Tests: `python3 tools/preflight/test_preflight_hook_sim_194.py` — standalone, no network,
+proves (8) and (9) each go RED on drift/absence and GREEN once reconciled, and that a crash
+in either degrades to a note without failing the run.
 
 ## Acting on the output
 
