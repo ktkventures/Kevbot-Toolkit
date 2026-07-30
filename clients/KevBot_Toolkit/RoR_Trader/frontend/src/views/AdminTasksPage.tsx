@@ -28,6 +28,7 @@ import {
   RETIRED_TAGS, StampButtons, TwoTouchChip, ImpactSelect, defaultChain,
   groupBoard, isVisionTask, StuckChip, isStuckInTodo, HandoffChain,
   AiEligibleToggle, RunStatePill, runState,
+  AgentMeta, AgentRegistryContext, agentRegistryMap,
 } from './taskBoardShared';
 
 // Board #198 column headers — the split spelled out where Kevin hovers it.
@@ -70,7 +71,7 @@ export default function AdminTasksPage() {
   const [roles, setRoles] = useState<string[]>(ASSIGNEES);
   // Run button state (board #109): registry statuses decide who is
   // headless-enrolled; run_history rows carry requested/running/last-outcome.
-  const [agents, setAgents] = useState<{ letter: string; status: string }[]>([]);
+  const [agents, setAgents] = useState<AgentMeta[]>([]);
   const [runs, setRuns] = useState<RunRow[]>([]);
   // Messages tab (board #143): unread mentions for the current viewer role
   // (whoever you're acting as = commentAuthor) drives the tab's badge. The
@@ -103,7 +104,9 @@ export default function AdminTasksPage() {
   }, []);
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    apiFetch<{ letter: string; status: string }[]>('/api/agents?active=true')
+    // `kind` rides along for board #222: RoleChip renders a live-session /
+    // human owner differently from a headless one, keyed off the registry.
+    apiFetch<AgentMeta[]>('/api/agents?active=true')
       .then((rows) => {
         setAgents(rows || []);
         const letters = (rows || []).map((a) => a.letter).filter(Boolean);
@@ -127,11 +130,16 @@ export default function AdminTasksPage() {
     } catch { /* badge just doesn't show */ }
   }, [commentAuthor]);
   useEffect(() => { loadUnread(); }, [loadUnread]);
+  // Board #222 — one registry lookup for every owner avatar on the page, so
+  // "is this lane a live session or a headless agent?" is answered by the
+  // registry rather than by a letter check anyone has to remember to update.
+  const agentReg = useMemo(() => agentRegistryMap(agents), [agents]);
   // Mirrors the dispatcher's enrollment rule: registry rows with
-  // status='headless'; when there are none, its stub fallback is M (docs lane).
+  // status='headless'; when there are none, its stub fallback is the docs
+  // lane's headless half — M-A since the board-#222 split (M is the session).
   const headless = useMemo(() => {
     const h = new Set(agents.filter((a) => a.status === 'headless').map((a) => a.letter));
-    if (h.size === 0) h.add('M');
+    if (h.size === 0) h.add('M-A');
     return h;
   }, [agents]);
   const latestRunByTask = useMemo(() => {
@@ -476,6 +484,7 @@ export default function AdminTasksPage() {
   }
 
   return (
+    <AgentRegistryContext.Provider value={agentReg}>
     <div style={{ padding: 20, maxWidth: 1500, margin: '0 auto' }}>
       <h1 style={{ fontSize: 22, marginBottom: 4 }}>Dev Task Tracker</h1>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
@@ -489,6 +498,10 @@ export default function AdminTasksPage() {
         🤖 AI = may an agent claim this task (armed by Kevin’s Approval stamp, independent of the
         kanban status) · the Run column reads out what the dispatcher is doing (idle / queued /
         running / failed) next to ▶ Run once, a one-off queue jump.
+        Owner avatars: a <b>round</b> avatar is a headless agent the dispatcher can auto-run;
+        a <b>squared, ringed</b> one (◧ session) is a live session or human — it never auto-runs,
+        so a task parked there is waiting on a person, by design. Read from the agents registry
+        (<code>status</code>/<code>kind</code>), not from the letter.
       </p>
 
       {err && <Card><div style={{ color: 'var(--red)', fontSize: 13 }}>⚠ {err}</div></Card>}
@@ -672,5 +685,6 @@ export default function AdminTasksPage() {
           onPollTick={pollRefresh} />
       )}
     </div>
+    </AgentRegistryContext.Provider>
   );
 }

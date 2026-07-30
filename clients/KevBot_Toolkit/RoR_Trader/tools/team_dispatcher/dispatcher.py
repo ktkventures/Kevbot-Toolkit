@@ -267,11 +267,18 @@ TERMINAL_STATUSES = ("Done", "Blocked", "Staged")
 # put an agent in the position of auditing his sign-off.
 INBOUND_SKIP_OWNERS = ("kevin",)
 
-# Fallback roster until the agents registry (V2.6) is live. Only lanes listed
-# here can dispatch in fallback mode — Phase B = docs lane only.
+# Fallback roster used when the agents registry is UNREACHABLE. Only lanes
+# listed here can dispatch in fallback mode — Phase B = docs lane only.
+#
+# Board #222 — this is the docs/organization lane, and as of the M/M-A split the
+# HEADLESS half of that lane is `M-A`; `M` is the live SESSION. DATA, not logic:
+# the gate in triage_todo() is untouched, and it already refuses any assignee
+# absent from this dict (skipped, waiting-not-stuck). Leaving `M` here would
+# re-arm the exact behaviour the split removes the moment a registry fetch
+# fails — which is precisely when nobody is watching.
 STUB_AGENTS = {
-    "M": {"letter": "M", "status": "headless", "worktree": REPO,
-          "scope": "docs/organization lane", "boundaries": "Edit only under docs/; board API; no git push, no deploys, no engine files, no prod-DB writes, no flags"},
+    "M-A": {"letter": "M-A", "status": "headless", "worktree": REPO,
+            "scope": "docs/organization lane", "boundaries": "Edit only under docs/; board API; no git push, no deploys, no engine files, no prod-DB writes, no flags"},
 }
 
 

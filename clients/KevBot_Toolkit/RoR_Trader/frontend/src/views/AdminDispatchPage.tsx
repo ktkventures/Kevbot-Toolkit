@@ -41,10 +41,11 @@ import {
   STATUS_COLOR, Task, ageColor, ageShort, elapsedShort, hoursSince, input,
   isProcessChain, relTime, roleAbbrev, roleColor, runIneligibleReason, stepOwner,
   stepTitle, tagChip, utcDay, utcStamp,
+  AgentRegistryContext, agentRegistryMap,
 } from './taskBoardShared';
 
 /** Minimal shape of an /api/agents row — only what the lane panel needs. */
-interface AgentRow { letter: string; name: string; status: string }
+interface AgentRow { letter: string; name: string; status: string; kind?: string }
 
 /** Auto-refresh cadence (spec §10). Three list GETs per tick, joined in
  *  memory — NEVER a per-row fetch (the board-#148 poll-efficiency lesson: a
@@ -300,12 +301,16 @@ export default function AdminDispatchPage() {
   }, [runsByTask]);
 
   // Mirrors the dispatcher's enrollment rule (registry status='headless'), with
-  // the same M stub fallback the board uses when the registry is empty.
+  // the same stub fallback the board uses when the registry is empty (M-A
+  // since board #222 — M is the live session and never dispatches).
   const headlessLetters = useMemo(() => {
     const l = agents.filter((a) => a.status === 'headless').map((a) => a.letter);
-    return l.length ? l : ['M'];
+    return l.length ? l : ['M-A'];
   }, [agents]);
   const headless = useMemo(() => new Set(headlessLetters), [headlessLetters]);
+  // Board #222 — owner avatars here read the same registry the lane panel does,
+  // so a live-session lane renders as one on this page too.
+  const agentReg = useMemo(() => agentRegistryMap(agents), [agents]);
 
   // `running` rows split by the lease rule (§4). `tick` is a dependency because
   // a run crosses from live to stale with the clock, not with a fetch.
@@ -412,6 +417,7 @@ export default function AdminDispatchPage() {
   const starved = headlessLetters.length > DISPATCHER.CONCURRENCY;
 
   return (
+    <AgentRegistryContext.Provider value={agentReg}>
     <div style={{ padding: 20, maxWidth: 1500, margin: '0 auto' }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
         <h1 style={{ fontSize: 22, marginBottom: 4 }}>Dispatch</h1>
@@ -880,5 +886,6 @@ export default function AdminDispatchPage() {
         </ol>
       </Card>
     </div>
+    </AgentRegistryContext.Provider>
   );
 }
