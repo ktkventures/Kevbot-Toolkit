@@ -277,7 +277,7 @@ export interface Mention {
 // The @-mention token set (board #143): registry letters + kevin. Sourced from
 // the agents registry at runtime; this is the fallback + the compose picker's
 // order. Adding a role is one line here + one registry row.
-export const MENTION_ROLES = ['M', 'E', 'E2', 'F', 'P', 'R', 'kevin'];
+export const MENTION_ROLES = ['M', 'M-A', 'E', 'E2', 'F', 'P', 'R', 'kevin'];
 
 /** One dispatcher run of a board task (run_history table, board #109). */
 export interface RunRow {
@@ -348,7 +348,7 @@ export const STATUS_DEF: Record<string, string> = {
 export const AREAS = ['engine', 'backtest', 'frontend', 'infra', 'data', 'docs', 'other'];
 // Team roles per Session_Charters.md §1. Legacy values ('claude', …) still
 // render: selects append any unknown current value instead of blanking it.
-export const ASSIGNEES = ['', 'M', 'E', 'E2', 'F', 'P', 'R', 'kevin'];
+export const ASSIGNEES = ['', 'M', 'M-A', 'E', 'E2', 'F', 'P', 'R', 'kevin'];
 export const ORIGINS = ['planned', 'discovered', 'kevin'];
 export const AUTHOR_LS_KEY = 'ror_task_comment_author';
 // RETIRED by the board-#136 pipeline: needs-review became the Review STATUS;
@@ -383,12 +383,67 @@ export const IMPACT_DEF: Record<string, string> = {
   live: 'live — touches live trading, deploy carefully',
 };
 export const ROLE_COLOR: Record<string, string> = {
-  M: '#7c5cff', E: '#d9534f', E2: '#e08a3c', F: '#3b82f6', P: '#2e9e5b',
-  R: '#2aa8a0', kevin: '#c9a227', claude: '#64748b', system: '#556070',
+  M: '#7c5cff', 'M-A': '#a48cff', E: '#d9534f', E2: '#e08a3c', F: '#3b82f6',
+  P: '#2e9e5b', R: '#2aa8a0', kevin: '#c9a227', claude: '#64748b',
+  system: '#556070',
 };
 export const roleColor = (r: string) => ROLE_COLOR[r] || '#64748b';
 export const roleAbbrev = (r: string) =>
-  r === 'kevin' ? 'K' : r === 'claude' ? 'C' : r === 'system' ? '⚙' : r;
+  r === 'kevin' ? 'K' : r === 'claude' ? 'C' : r === 'system' ? '⚙'
+    : r === 'M-A' ? 'MA' : r;
+
+/* ── Lane kind: session vs headless agent (board #222) ──────────────────────
+ * `M` used to mean two actors at once — the long-running manager SESSION and
+ * the headless engineer that builds the team's own tooling — and the board
+ * could not tell them apart, so twice on 07-30 an ARMED task assigned `M`
+ * dispatched `M·auto` into work reserved for the session. The fix is a registry
+ * split (M = live-session, M-A = headless); this is the display half of it.
+ *
+ * The rule is read from the REGISTRY, never from a letter check: any owner whose
+ * row says `status='live-session'` (or `kind='human'`) renders as a session. So
+ * the next lane that goes live-session inherits the treatment for free, and this
+ * file needs no edit for it. */
+export interface AgentMeta {
+  letter: string;
+  status: string;                 // live-session | headless | dormant | …
+  kind?: string;                  // agent | human
+}
+
+/** letter → registry row, for everything that renders an owner. Empty by
+ *  default so a component outside the provider still renders (fallback below). */
+export const AgentRegistryContext = React.createContext<Map<string, AgentMeta>>(
+  new Map());
+export const useAgentRegistry = () => React.useContext(AgentRegistryContext);
+
+/** Convenience for pages that already fetched `/api/agents`. */
+export const agentRegistryMap = (rows: AgentMeta[] | null | undefined) =>
+  new Map((rows || []).filter((a) => a && a.letter).map((a) => [a.letter, a]));
+
+/** Owners that render as a session when the registry is UNREACHABLE. Mirrors
+ *  the dispatcher's own stub posture (AdminTasksPage does the same for the
+ *  headless set): a fallback for an API outage, not the rule. Kevin is a human
+ *  and M is the session the #222 split created — being wrong in this direction
+ *  is the safe way to be wrong, because it under-promises dispatch. */
+const SESSION_FALLBACK = new Set(['kevin', 'M']);
+
+/** True when this owner is a live session / human — i.e. NEVER auto-dispatched;
+ *  a task parked here waits on a person, which is the designed state. */
+export const isSessionLane = (role: string,
+                              reg: Map<string, AgentMeta>): boolean => {
+  const row = reg.get(role);
+  if (!row) return reg.size === 0 && SESSION_FALLBACK.has(role);
+  return row.status === 'live-session' || row.kind === 'human';
+};
+
+export const laneKindLabel = (role: string, reg: Map<string, AgentMeta>) =>
+  isSessionLane(role, reg) ? 'session' : 'agent';
+
+export const LANE_KIND_TIP: Record<string, string> = {
+  session: 'live session — the dispatcher never auto-runs this lane; the task '
+    + 'waits on a person at a keyboard (registry status: live-session/human)',
+  agent: 'headless agent — the dispatcher can auto-run this lane '
+    + '(registry status: headless)',
+};
 
 export const withLegacy = (list: string[], current: string) =>
   list.includes(current) ? list : [...list, current];
@@ -617,15 +672,56 @@ export function nextActor(t: Task, subtasks: Task[]): { next: string | null; han
  * Circular role avatar (ClickUp-style) — letters for now; the circle is the
  * slot a profile picture can fill later. Used for activity authors, owner
  * chips, and as the RolePicker trigger/options.
+ *
+ * Board #222 — SHAPE carries the lane kind, not colour. A headless agent is a
+ * CIRCLE (as it always was); a live session / human is a SQUARED avatar with an
+ * outer ring. Shape survives colourblindness, greyscale printing and
+ * forced-colors mode, where a hue swap would say nothing; the colour and the
+ * tooltip are the reinforcement, never the whole signal. Read from the registry
+ * via context, so the next live-session lane inherits it with no code change.
  */
-export const RoleChip = ({ role, title }: { role: string; title?: string }) => (
-  <span title={title || role} style={{
-    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-    width: 20, height: 20, borderRadius: '50%', flex: 'none',
-    fontSize: 9, fontWeight: 700, letterSpacing: -0.3, color: '#fff',
-    background: roleColor(role), whiteSpace: 'nowrap', verticalAlign: 'middle',
-  }}>{roleAbbrev(role)}</span>
-);
+export const RoleChip = ({ role, title }: { role: string; title?: string }) => {
+  const reg = useAgentRegistry();
+  const session = isSessionLane(role, reg);
+  const kind = session ? 'session' : 'agent';
+  return (
+    <span title={title ? `${title} · ${LANE_KIND_TIP[kind]}`
+      : `${role} — ${LANE_KIND_TIP[kind]}`} style={{
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      width: 20, height: 20, flex: 'none',
+      borderRadius: session ? 5 : '50%',
+      boxShadow: session ? `0 0 0 1.5px var(--bg-card, #12161c), 0 0 0 3px ${roleColor(role)}` : undefined,
+      fontSize: 9, fontWeight: 700, letterSpacing: -0.3, color: '#fff',
+      background: roleColor(role), whiteSpace: 'nowrap', verticalAlign: 'middle',
+    }}>{roleAbbrev(role)}</span>
+  );
+};
+
+/**
+ * The short LABEL half of the #222 cue — for surfaces with room for words
+ * (the modal owner row). "session" reads as "this waits on a person; the
+ * dispatcher will never pick it up"; "agent" as "this can auto-run".
+ */
+export const LaneKindChip = ({ role, sessionOnly = false }: {
+  role: string; sessionOnly?: boolean;
+}) => {
+  const reg = useAgentRegistry();
+  const kind = laneKindLabel(role, reg);
+  if (!role) return null;
+  // `sessionOnly` for dense rows (chain-step lines): say something only when
+  // there IS something to say — a step owned by a session is the thing that
+  // silently never dispatches, and it is what #195/#219 got wrong at authoring
+  // time. An agent-owned step is the unremarkable case; stay quiet.
+  if (sessionOnly && kind !== 'session') return null;
+  return (
+    <span title={LANE_KIND_TIP[kind]} style={{
+      ...tagChip, marginLeft: 5,
+      border: `1px solid ${kind === 'session' ? roleColor(role) : 'var(--border)'}`,
+      color: kind === 'session' ? roleColor(role) : 'var(--text-secondary)',
+      fontWeight: kind === 'session' ? 700 : 400,
+    }}>{kind === 'session' ? '◧ session' : '◍ agent'}</span>
+  );
+};
 
 /** Dashed empty avatar circle (unassigned / "none" option in pickers). */
 export const EmptyRoleCircle = ({ label = '＠' }: { label?: string }) => (

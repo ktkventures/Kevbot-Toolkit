@@ -39,7 +39,7 @@ import {
   StampButtons, TwoTouchChip, ImpactSelect, IMPACT_DEF, defaultChain, StuckChip,
   MENTION_ROLES, HandoffChain, isProcessChain, stepOwner, stepTitle, MODE_DEF,
   SlashItem, SlashMenu, filterSlashItems, applySlashInsert, detectSlash,
-  makeChainStep, chainStarted, AiEligibleToggle, RunStatePill,
+  makeChainStep, chainStarted, AiEligibleToggle, RunStatePill, LaneKindChip,
 } from './taskBoardShared';
 import { Md, MD_CSS } from './taskMarkdown';
 
@@ -102,7 +102,7 @@ interface Props {
 
 export default function TaskDetailModal({
   task, allTasks, visionOptions, roles = ASSIGNEES, initialSelected, patch, del, onClose, onOpenTask,
-  commentAuthor, onPickAuthor, headless = new Set(['M']), onRunRequested, onPollTick,
+  commentAuthor, onPickAuthor, headless = new Set(['M-A']), onRunRequested, onPollTick,
 }: Props) {
   const subtasks = useMemo(
     () => allTasks.filter((t) => t.parent_id === task.id), [allTasks, task.id]);
@@ -504,6 +504,10 @@ export default function TaskDetailModal({
           <RolePicker value={task.assignee} pickTitle="assignee" allowEmpty
             options={withLegacy(roles, task.assignee || '').filter(Boolean)}
             onPick={(r) => patchTracked({ assignee: r })} />
+          {/* board #222 — the LABEL half of the session/agent cue. The avatar's
+              shape already says it; here there is room for the word, and this is
+              the header where "why has nothing run on this?" gets asked. */}
+          <LaneKindChip role={task.assignee || ''} />
           <NextChip t={task} subtasks={subtasks} />
           {/* board #169 — handoff chain as owner avatars (mirrors the board card);
               a compact read of the same checklist the Process tab edits */}
@@ -626,6 +630,10 @@ export default function TaskDetailModal({
                           options={roles.filter(Boolean)}
                           onPick={(r) => setSteps(steps.map((x, j) => j === i
                             ? (isChain ? { ...x, owner: r || null } : { ...x, role: r || null }) : x))} />
+                        {/* board #222 — quiet unless the step is owned by a live
+                            session, which is the case that never auto-dispatches;
+                            this is the row where that gets decided. */}
+                        <LaneKindChip role={stepOwner(s) || ''} sessionOnly />
                         <span style={{ cursor: 'pointer', opacity: 0.6 }} title="move up" onClick={() => moveStep(i, -1)}>↑</span>
                         <span style={{ cursor: 'pointer', opacity: 0.6 }} title="move down" onClick={() => moveStep(i, 1)}>↓</span>
                         <span style={{ cursor: 'pointer', color: 'var(--red)' }} title="delete step"

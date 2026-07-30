@@ -15,7 +15,8 @@ Team assignment board: `docs/_active/Team_Board.md` (see §7).
 
 | Role | Scope | Owns (exclusive) | Must NOT touch |
 |------|-------|------------------|----------------|
-| **M — Project Manager** (was "Manager/Coordinator", retitled 07-28) | Cross-session coordination, doc/roadmap hygiene, big-picture tracking, ROUTING. Asks *"is this actually right?"* — the thorough look, where one is warranted | This charter + roster; `Team_Board.md`; roadmap/organization docs; specs for org tooling (tasks-page upgrade, admin roadmap page) | Engine/data code; flags; deploys; heavy prod-DB; E's operational logs (`STATUS.md`, `Deploy_Log.md`, hunt logs) — M proposes restructures via spec, never live-edits E's logs |
+| **M — Project Manager** (was "Manager/Coordinator", retitled 07-28) · **LIVE SESSION — never auto-dispatched** (registry `status=live-session`, board #222) | Cross-session coordination, doc/roadmap hygiene, big-picture tracking, ROUTING. Asks *"is this actually right?"* — the thorough look, where one is warranted | This charter + roster; `Team_Board.md`; roadmap/organization docs; specs for org tooling (tasks-page upgrade, admin roadmap page) | Engine/data code; flags; deploys; heavy prod-DB; E's operational logs (`STATUS.md`, `Deploy_Log.md`, hunt logs) — M proposes restructures via spec, never live-edits E's logs |
+| **M-A — Manager Assistant** (headless half of the M lane, added 07-30, board #222) | The team's own INFRASTRUCTURE ENGINEER: builds M-lane tooling (dispatcher, preflight, skills, the board), writes specs and design docs, runs sweeps/audits/inventories, diagnoses bounded defects, verifies a release train's claims | Same as M — it inherits M's scope and boundaries verbatim from the registry | Same as M. **Plus, reserved to the M session:** reviewing another agent's work · merge reconciles needing judgement · restarting the loop · applying a migration · anything touching prod · setting priority · talking to Kevin · authoring a chain |
 | **E — Engine/Divergence** | Divergence debugging, bar integrity, fidelity, recomputes, bug-hunt loop, M-RS roadmap | Engine/data-path code; ALL flag flips; Railway deploys (`railway variables`, `railway up`); heavy prod-DB analysis; operational logs: `STATUS.md`, `Deploy_Log.md`, `Divergence_Hunt_Log.md`; project memory | — |
 | **F — Frontend** | Portfolio pages, Strategy Health / health-overview UI, reporting UI, tasks-page implementation (per M's spec) | Next.js app UI code; its own plan docs | Engine/data files (e.g. `bar_cache.py`, `strategy_data.py`, `forward_test_service.py`, `fidelity_parity_suite.py`, worker/recompute lanes); flags; deploys; E's operational logs |
 | **P — Packs** | User-pack accuracy (S/R pack first), new packs, pack-builder AI | Pack definitions, pack-builder code; its own plan docs | Same exclusions as F. **Plus:** pack edits change backtests → recomputes → shift paired-% baselines. Coordinate TIMING with E before any pack change lands. |
@@ -38,6 +39,34 @@ run, the hand-off proceeds flagged "unreviewed" — the dispatcher died twice in
 silently for 41 hours, and a hard gate would stall every task mid-chain) · silent on pass, loud on
 problem.
 
+**M vs M-A — the dividing line (Kevin, 07-30, board #222).** `M` named two different actors and
+the board could not tell them apart: twice on 07-30 (#195, #219) a task assigned `M` and left ARMED
+dispatched `M·auto` into work reserved for the session — one of those steps read *"M restarts the
+loop"*. Measured across 35 `M·auto` runs, what the headless half ACTUALLY does is build the team's
+own machinery; the session runs the operation. So they split, and **`M` now means the session**:
+
+| Give it to **M-A** (headless, dispatchable) | Keep it on **M** (the session) |
+|---|---|
+| building M-lane infrastructure | reviewing another agent's work — the reviewer must hold context the builder lacked |
+| writing a spec or design doc | merge reconciles needing judgement |
+| sweeps, audits, inventories | restarting the loop · applying a migration · anything touching prod |
+| diagnosing a bounded defect | deciding priority, and talking to Kevin |
+| verifying a release train's claims | authoring a chain |
+
+**Why M-A exists rather than doing it all in session:** it runs in PARALLEL (the session is strictly
+serial), on FRESH BOUNDED CONTEXT that does not consume the session's, and every run leaves an
+auditable `run_history` row. Real advantages, not a consolation prize.
+
+**The mechanism is the registry, not a new flag.** `M` = `status=live-session`, `M-A` =
+`status=headless`. `dispatcher.headless_agents()` selects `status=eq.headless`, and `triage_todo()`
+already reports a non-headless assignee as *waiting, not stuck* — proven by `kevin` since 07-23. A
+step-level `headless:false` flag was designed and deliberately DROPPED: the owner field already
+says it, by construction. **Never infer session-only from step prose** — a keyword scan of #218
+flagged *"restart the loop"* when the text said *"do NOT restart the loop"*. It must be declared.
+The board renders the distinction by registry `status`/`kind` (round avatar = headless agent;
+squared + ringed, "◧ session" = live session/human), never by a hard-coded letter, so the next
+live-session lane inherits it for free.
+
 **RELEASES GO THROUGH A DEDICATED R SESSION — ALWAYS (Kevin, 07-26, restating the rule).**
 M authors the brief; Kevin spawns R; R executes. M does NOT merge, even when authorized
 and even when it would be faster. The 07-25/07-26 M-as-R runs were a ONE-TIME exception
@@ -57,6 +86,7 @@ Expand the registry by adding a row + a roster entry. Keep letters short and bor
 | M — Project Manager | (9f1e8099) | RETIRED 07-29 → M — Project Manager | Killed by the 07-29 crash burst (board #188) after first acts only; no lane work landed |
 | M — Project Manager | (c4764159) | RETIRED 07-29 → M — Project Manager | Verified the unverified TM gate and **rejected** it — 2 blockers: `--disallowedTools` is allow-by-default so it cannot make an agent tool-less (`Skill` stayed live, and `Skill` reaches `/local-update`, which writes the prod DB), and rail 2 was unreachable. Kevin approved the pivot → shipped the **INBOUND CHECK** instead (PR #123, dispatcher V4.18, 18 tests) — **#182 Step 7 DONE**. Also: release train Wave 6 (#190, 4 PRs, headless R), crash-burst diagnosis (#188), TM design parked (#189). Retired at a clean boundary: train merged, dispatcher restarted on V4.18 and verified against dev. |
 | M — Project Manager | (1805c263) | LIVE 07-29 | Successor to c4764159. **Kevin's 07-29 direction: run HIGHER-LEVEL — coordinate with Kevin and DISPATCH agents; do not self-investigate.** Handoff doc: `docs/_active/handoffs/M_handoff_2026-07-29_v2.md`. Board = SSOT at /admin/tasks (`dev_tasks`); `Team_Board.md` is a FROZEN snapshot, do not edit it. Lane pickup: #182 **Step 8** (Kevin's end-to-end review) and **Step 9** (retrofit decision); watch the first real hand-offs for the inbound check's calibration — false raises vs rubber-stamping. |
+| M-A — Manager Assistant | (headless; dispatched per task, no persistent session) | LIVE 07-30 | The M lane's headless half (board #222). Not a session anyone spawns — the dispatcher runs it per task from the registry row, which inherits M's scope/boundaries/worktree. Assign it here; assign the M **session** anything on the right-hand column of the §1 dividing line. |
 | E — Engine/Divergence | "RoR Trader divergence overnight…" (bf8b3056) | RETIRED 07-22 → E — Engine/Divergence | Handed off at milestone boundary (V4.5 done, sub-min canonical closed) — moved up from the planned morning-brief handoff so the nightly runs in fresh context |
 | E — Engine/Divergence | (abe9f5c3) | RETIRED 07-23 → E — Engine/Divergence | Milestone boundary: nightly hunt (PR #73 BAR_DUP_GUARD) + task-#100 EOD-churn triage (armed SUPPRESS_EOD_REENTRY) + #103 revision-drift heal + #101 append-supersede (PR #75) all Done. Inherited E2's shadow-worker steady-state watch (board #57 comment 78) |
 | E — Engine/Divergence | (8b062a2b) | RETIRED 07-25 → E — Engine/Divergence | Monster session: nightly validation (3/3 arms passed) → #112 PREBAR evidence pack → #113 PREBAR armed post-close (VERIFIED 07-25 rebuild) → #114 carry-policy audit → #116 SPY revision-drift heal → #108 nightly settle-retrue shipped (PR #77) + armed (VERIFIED first run 00:20Z 07-25) → PR #78 health semantics sign-off + #118 340 diagnosis. Shadow-worker watch → successor |
