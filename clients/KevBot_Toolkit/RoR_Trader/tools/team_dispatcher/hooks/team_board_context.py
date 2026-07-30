@@ -61,8 +61,14 @@ def fetch_open_tasks():
             url = line.split("=", 1)[1].strip().strip('"')
         elif line.startswith("SUPABASE_SERVICE_ROLE_KEY="):
             key = line.split("=", 1)[1].strip().strip('"')
+    # OPEN = not FINISHED (board #232). A bare `neq.Done` would put every
+    # task Kevin has since CLOSED back into every session's opening queue — the
+    # #232 sweep's whole point is that "finished" is a SET, not one string.
+    # Spelled literally rather than imported: this hook runs standalone on every
+    # session start and must not pay for importing dispatcher.py (which reads
+    # env and creds at module level). The set is dispatcher.FINISHED_STATUSES.
     q = ("dev_tasks?select=id,title,status,assignee,parent_id,tags,notes"
-         "&status=neq.Done&order=priority_phase,priority_seq")
+         "&status=not.in.(Done,Closed)&order=priority_phase,priority_seq")
     r = urllib.request.Request(
         f"{url.rstrip('/')}/rest/v1/{q}",
         headers={"apikey": key, "Authorization": f"Bearer {key}"},

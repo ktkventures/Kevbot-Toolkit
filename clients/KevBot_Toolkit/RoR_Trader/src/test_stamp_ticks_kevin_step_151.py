@@ -152,16 +152,19 @@ t = dt.create_task({"title": "board-dispatched release", "description": "d",
                     "assignee": "F", "checklist": CHECKLIST}, user=None)
 tid = t["id"]
 dt.update_task(tid, {"status": "Approval", "actor": "M"}, user=None)
-r = dt.stamp_approval(tid, {"mode": "final", "author": "kevin"}, user=None)
+r = dt.stamp_approval(tid, {"mode": "start", "author": "kevin"}, user=None)
 
 cl = r["checklist"]
 ok("first Kevin step is now done (the stamp IS that step)",
    cl[0]["text"] == "Kevin stamps" and cl[0]["done"] is True)
 ok("agent build step untouched", cl[1]["done"] is False)
-ok("LATER Kevin (two-touch review) step stays OPEN — only the first is ticked",
+ok("LATER Kevin (review) step stays OPEN — only the first is ticked",
    cl[2]["text"] == "Kevin reviews before Done" and cl[2]["done"] is False)
-ok("status → Todo and two-touch kevin_final set",
-   r["status"] == "Todo" and r["kevin_final"] is True)
+# Board #232: ONE stamp, and it no longer decides who closes. The kevin_final
+# COLUMN survives (legacy rows + the API's close guard depend on it) — the stamp
+# simply stops writing it, so a freshly stamped task is never two-touch.
+ok("status → Todo, and the stamp does NOT set kevin_final (board #232)",
+   r["status"] == "Todo" and r["kevin_final"] is False)
 ok("stamp comment names the ticked step",
    any('checklist: ticked "Kevin stamps"' in b for b in comments_for(tid)))
 ok("still exactly ONE system comment for the stamp",
@@ -210,7 +213,7 @@ ok("checklist untouched when there is no pending Kevin step",
    r3["checklist"][0]["done"] is False)
 ok("comment has NO tick note when nothing was ticked",
    all("checklist: ticked" not in b for b in comments_for(tid3))
-   and any("stamp: approved — M closes (by kevin)" in b
+   and any("stamp: approved to start (by kevin)" in b
            for b in comments_for(tid3)))
 
 # ── walk 4: an already-done first Kevin step is left alone, next one ticks ─

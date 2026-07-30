@@ -1,5 +1,27 @@
 #!/usr/bin/env python3
-"""Team dispatcher (V4.27) — dispatches board tasks to headless Claude agents.
+"""Team dispatcher (V4.28) — dispatches board tasks to headless Claude agents.
+
+V4.28 (board #232): "FINISHED" IS A SET, NOT A STRING — plus two new statuses.
+Kevin added `Stand By` (he has SEEN it, wants it, and chose *not yet* — parked on
+purpose, which is NOT `Blocked`, where something prevents progress and someone
+should look) and `Closed` (his retrospective look at work M already marked
+`Done`; it blocks nothing, because the work has already shipped by then).
+The statuses are the cheap half. The expensive half is that `Done` meant
+"finished" in ~14 load-bearing places, and the sharpest of them is HERE:
+
+    done_ids = {t["id"] for t in api("GET", "<tasks>?status=eq.Done...")}
+                                            ^^ the old spelling, one status
+
+`done_ids` is how `blocked_by` is resolved. Under the old spelling, a task moving
+`Done → Closed` DROPS OUT of that set and everything depending on it silently
+re-blocks — a task that dispatched fine yesterday just stops, with no error, no
+log line and no comment. That is the hardest class of failure to notice, and it
+is why #232 is a sweep rather than a one-line addition. The fix is one shared
+`FINISHED_STATUSES` (below) used everywhere the question is "is this over?",
+instead of 14 hand-written comparisons — which also makes status number three
+cost nothing. `TERMINAL_STATUSES` gains both new statuses: a parked task and a
+closed one are equally "nothing here to hand an agent", and triage_todo() reports
+them QUIETLY, which is exactly the semantics `Stand By` needs.
 
 V4.27 (board #218): WORKTREE OWNERSHIP IS DECLARED, NOT INFERRED. V4.23's push
 leg asked "is another ACTIVE run's dispatch snapshot ALSO missing this worktree?"
@@ -308,7 +330,39 @@ GATE_FILTER = "or=(ai_eligible.eq.true,status.eq.Todo)"
 # The API also disarms on close (dev_tasks.update_task) — hygiene, and it makes
 # the data honest — but that depends on every future close path remembering,
 # whereas THIS rail cannot be forgotten. Both, deliberately.
-TERMINAL_STATUSES = ("Done", "Blocked", "Staged")
+#   `Closed` = Kevin's own version of done, AFTER `Done` (board #232). The work
+#              already shipped; this is his retrospective look. Nothing to hand
+#              an agent, for the same reason `Done` is not.
+#   `Stand By`= Kevin has SEEN it, wants it, and chose NOT YET (board #232).
+#              Deliberately parked — the whole point is that no action is needed
+#              from an AI, so dispatching from here would override the one
+#              decision the status exists to record. Quiet, not stuck: unlike
+#              `Blocked`, nobody needs to come look.
+TERMINAL_STATUSES = ("Done", "Closed", "Blocked", "Staged", "Stand By")
+
+# Board #232 — THE ONE SHARED "FINISHED" SET. Every question of the form "is this
+# task over?" reads THIS, never a bare `== "Done"`. Two statuses mean finished:
+# `Done` (M's close) and `Closed` (Kevin's, which comes after it), and a task
+# moves from the first to the second in the ordinary course of a day.
+#
+# THE RAIL THIS EXISTS FOR: `done_ids` in one_pass() resolves `blocked_by`. Spelled
+# as `status=eq.Done`, a blocker moving Done → Closed silently re-blocked every
+# task depending on it — no error, no log, nothing to notice. The set is also why
+# adding status number three is a one-line change here instead of a 14-site sweep.
+#
+# NOT the same question as TERMINAL_STATUSES, and the two must not be merged:
+# terminal = "never dispatch this", which also covers `Blocked`, `Staged` and
+# `Stand By` — none of which is FINISHED, and none of which should ever satisfy a
+# dependency. `blocked_by` a Blocked task must keep blocking.
+FINISHED_STATUSES = ("Done", "Closed")
+# PostgREST spelling of the same set, for the blocked_by lookup.
+FINISHED_FILTER = "status=in.(" + ",".join(FINISHED_STATUSES) + ")"
+
+
+def is_finished(status) -> bool:
+    """True when a task is OVER — `Done` or `Closed` (board #232). The single
+    predicate behind every "is this task finished?" read in this module."""
+    return status in FINISHED_STATUSES
 
 # #182 Step 7 — inbound check. Owners whose completed steps are NOT re-checked by
 # the next agent. Kevin's stamps are approvals, not deliverables; gating them would
@@ -521,10 +575,11 @@ def triage_todo(agents, done_ids, st=None):
     `ai_eligible` and the legacy `status=Todo` queue (GATE_FILTER), and no task
     is ever refused here for sitting in the wrong lifecycle column. `status` is
     read in exactly TWO places below, neither of them a permission read:
-      • TERMINAL_STATUSES — finality. `Done`/`Blocked`/`Staged` is not "not
-        allowed yet", it is "there is nothing HERE to hand an agent"; see the
-        constant for why the step-guard cannot cover a chainless closed task
-        (audible, step 5) and why `Staged` belongs (audible, step 8).
+      • TERMINAL_STATUSES — finality. `Done`/`Closed`/`Blocked`/`Staged`/
+        `Stand By` is not "not allowed yet", it is "there is nothing HERE to hand
+        an agent"; see the constant for why the step-guard cannot cover a
+        chainless closed task (audible, step 5), why `Staged` belongs (audible,
+        step 8) and why `Closed`/`Stand By` joined (board #232).
       • the arm SELECTOR — it picks which arm's BEHAVIOUR applies, so the
         pre-#198 Todo queue keeps behaving byte-identically (a finished chain
         sitting in Todo still dispatches on assignee alone — board #182) while
@@ -558,11 +613,16 @@ def triage_todo(agents, done_ids, st=None):
             # closed task is not a stuck QUEUE, and flagging it would comment on
             # a finished thread and then trip the 4h staleness tripwire on it
             # every day forever. `Staged` is quiet for the same reason — it waits
-            # on a release train, which is R's job, not a stalled dispatch. The
+            # on a release train, which is R's job, not a stalled dispatch. And
+            # `Stand By` (board #232) is quiet BY DEFINITION: Kevin looked at it
+            # and chose not yet, so raising it as stuck would nag him daily about
+            # a decision he already made. That is the whole difference from
+            # `Blocked`, where someone genuinely should come look. The
             # SKIP line below still names it on the pass its reason first appears.
             skipped.append((t, f"status is {t['status']} — terminal; a finished, "
                                f"parked or release-staged task is never "
-                               f"dispatched, armed or not (board #198 audible)",
+                               f"dispatched, armed or not (board #198 audible; "
+                               f"Closed/Stand By added by #232)",
                             False))
             continue
         a = t.get("assignee")
@@ -579,7 +639,8 @@ def triage_todo(agents, done_ids, st=None):
             continue
         unmet = [b for b in (t.get("blocked_by") or []) if b not in done_ids]
         if unmet:
-            skipped.append((t, f"blocked by {unmet} (not Done)", True))
+            skipped.append((t, f"blocked by {unmet} (not finished — "
+                               f"{'/'.join(FINISHED_STATUSES)})", True))
             continue
         # #182 Step 7 — chain gates. Only for process chains; legacy checklists
         # are untouched (they gate on assignee alone, exactly as in V4.16).
@@ -708,9 +769,9 @@ def run_requested(agents, done_ids):
     description non-empty, not blocked, agent headless-enrolled OR stub —
     deliberately NO next-actor / needs-review / status=Todo gates (the button
     is an explicit human override of queue ORDER). Hard refusals: In Progress /
-    Done / Blocked (can't be started) and Scoping / needs-scoping (not
-    workable yet — the button never overrides that). Returns
-    (eligible, [(task, reason)])."""
+    FINISHED (Done, Closed) / Blocked / Stand By (can't be started, or a human
+    parked it) and Scoping / needs-scoping (not workable yet — the button never
+    overrides that). Returns (eligible, [(task, reason)])."""
     rows = api("GET", f"dev_tasks?tags=cs.{{{RUN_REQUESTED_TAG}}}&select=*"
                       "&order=updated_at")
     ok, bad = [], []
@@ -723,16 +784,23 @@ def run_requested(agents, done_ids):
         # the button to honour a press on a stage it currently refuses is a design
         # call for Kevin/M, not a mechanical consequence of the gate change.
         # Step-8 audible note: this list and TERMINAL_STATUSES now AGREE on all
-        # three terminal stages — Done, Blocked and Staged are refused on both
-        # paths — so the V4.21 divergence on `Staged` closed itself. Nothing here
-        # was changed to achieve that.
+        # terminal stages — Done, Closed, Blocked, Staged and Stand By are
+        # refused on both paths — so the V4.21 divergence on `Staged` closed
+        # itself. Board #232 kept them in agreement when it added the two new
+        # statuses; the FINISHED half is read from the shared set, not respelled.
         # The button overrides queue ORDER, never "not workable yet" (M, #109
         # review): Scoping status / needs-scoping tag are hard refusals. The
         # board-#136 pipeline stages joined the list — Approval isn't approved
         # yet, Review/Staged already ran (claim-time net for tasks moved after
         # the button press; the request endpoint refuses them up front).
-        if t.get("status") in ("In Progress", "Done", "Blocked", "Scoping",
-                               "Approval", "Review", "Staged"):
+        # Board #232 adds `Closed` and `Stand By` here for the same reason they
+        # joined TERMINAL_STATUSES: `Closed` is finished (can't be started), and
+        # `Stand By` is Kevin's explicit "not yet" — the button overrides queue
+        # ORDER, never a human's decision to park something.
+        if (is_finished(t.get("status"))
+                or t.get("status") in ("In Progress", "Blocked", "Stand By",
+                                       "Scoping", "Approval", "Review",
+                                       "Staged")):
             bad.append((t, f"status is {t['status']}"))
         elif "needs-scoping" in (t.get("tags") or []):
             bad.append((t, "tagged needs-scoping — not workable yet"))
@@ -1668,7 +1736,11 @@ def one_pass(live, only_task=None):
     slots = CONCURRENCY - len(active_runs(st))
     cap, cap_src = effective_daily_cap()
     cap_left = cap - today_run_count(st)
-    done_ids = {t["id"] for t in api("GET", "dev_tasks?status=eq.Done&select=id")}
+    # Board #232 — the FINISHED set, not the literal `Done` string. A blocker
+    # that Kevin has since Closed is still finished; spelled `status=eq.Done`
+    # this drops it and every dependent task silently re-blocks. See
+    # FINISHED_STATUSES. (Name kept: `done_ids` is what four call sites read.)
+    done_ids = {t["id"] for t in api("GET", f"dev_tasks?{FINISHED_FILTER}&select=id")}
     # Button presses first (priority-jump), then the organic Todo queue.
     requested, bad_requests = run_requested(agents, done_ids)
     req_ids = {t["id"] for t in requested}

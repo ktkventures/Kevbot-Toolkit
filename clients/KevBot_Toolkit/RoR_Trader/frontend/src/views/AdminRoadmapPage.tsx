@@ -22,7 +22,7 @@ import Card from '@/components/Card';
 import { apiFetch } from '@/lib/api/client';
 import {
   Task, STATUS_COLOR, roleColor, tagChip, badge, input,
-  RoleChip, NextChip, ProgressBar, nextActor, groupBoard,
+  RoleChip, NextChip, ProgressBar, nextActor, groupBoard, isFinished,
 } from './taskBoardShared';
 
 // Cosmetic phase labels — M-maintained, one line to extend, no schema (§4.3).
@@ -94,7 +94,7 @@ export default function AdminRoadmapPage() {
   // excluded on purpose — their next-actor derives from their first open
   // subtask, so listing both would double-count). API priority order kept.
   const awaitingKevin = useMemo(() =>
-    tasks.filter((t) => t.status !== 'Done' && !byParent.has(t.id) &&
+    tasks.filter((t) => !isFinished(t.status) && !byParent.has(t.id) &&
       nextActor(t, []).next === 'kevin'),
   [tasks, byParent]);
 
@@ -117,14 +117,16 @@ export default function AdminRoadmapPage() {
   // (ProgressBar returns null at total 0).
   const rollup = (v: Task): { done: number; total: number } => {
     const kids = byParent.get(v.id) || [];
-    if (kids.length > 0) return { done: kids.filter((k) => k.status === 'Done').length, total: kids.length };
+    // FINISHED, not literally Done (board #232) — a Closed subtask counts
+    // toward the roll-up, or every vision loses progress as Kevin closes work.
+    if (kids.length > 0) return { done: kids.filter((k) => isFinished(k.status)).length, total: kids.length };
     const cl = v.checklist || [];
     return { done: cl.filter((s) => s.done).length, total: cl.length };
   };
 
-  const openVisions = visionItems.filter((v) => v.status !== 'Done');
+  const openVisions = visionItems.filter((v) => !isFinished(v.status));
   const phaseCount = new Set(openVisions.map((v) => v.priority_phase)).size;
-  const shownLoose = looseTasks.filter((t) => showDone || t.status !== 'Done');
+  const shownLoose = looseTasks.filter((t) => showDone || !isFinished(t.status));
 
   const SubtaskLine = ({ k }: { k: Task }) => (
     <Link href={`/admin/tasks?task=${k.id}`} onClick={(e) => e.stopPropagation()}
@@ -142,7 +144,7 @@ export default function AdminRoadmapPage() {
 
   const VisionCard = ({ v }: { v: Task }) => {
     const kids = byParent.get(v.id) || [];
-    const openKids = kids.filter((k) => k.status !== 'Done');
+    const openKids = kids.filter((k) => !isFinished(k.status));
     const r = rollup(v);
     const crew = Array.from(new Set(
       openKids.map((k) => k.assignee).filter((a): a is string => !!a && a !== v.assignee)));
@@ -154,7 +156,7 @@ export default function AdminRoadmapPage() {
           border: '1px solid var(--border)', borderRadius: 10, padding: 14,
           background: 'var(--bg-card, var(--bg-input))', cursor: 'pointer',
           display: 'flex', flexDirection: 'column', gap: 8,
-          opacity: v.status === 'Done' ? 0.55 : 1,
+          opacity: isFinished(v.status) ? 0.55 : 1,
         }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ color: 'var(--text-tertiary)', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>#{v.id}</span>
@@ -235,7 +237,7 @@ export default function AdminRoadmapPage() {
 
           {/* Phase sections (§4.3) — ascending, 0 first; M-managed order */}
           {phases.map(([n, visions]) => {
-            const shown = visions.filter((v) => showDone || v.status !== 'Done');
+            const shown = visions.filter((v) => showDone || !isFinished(v.status));
             if (shown.length === 0) return null;
             return (
               <div key={n} style={{ marginBottom: 20 }}>
@@ -253,7 +255,7 @@ export default function AdminRoadmapPage() {
               <div style={sectionHeader}>ungrouped — tasks without a vision parent</div>
               {shownLoose.map((t) => (
                 <Link key={t.id} href={`/admin/tasks?task=${t.id}`}
-                  style={{ ...oneLiner, opacity: t.status === 'Done' ? 0.55 : 1 }}>
+                  style={{ ...oneLiner, opacity: isFinished(t.status) ? 0.55 : 1 }}>
                   <span style={{ color: 'var(--text-tertiary)', fontVariantNumeric: 'tabular-nums' }}>#{t.id}</span>
                   <span style={{ ...truncate, flex: 1, minWidth: 0, color: 'var(--text-primary)' }}>{t.title}</span>
                   {t.impacts_live && <LiveDot />}

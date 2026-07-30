@@ -8,9 +8,10 @@ fake `api()`. Covers the agreed acceptance walk:
 
   1. Full lifecycle on a test task: Backlog → Scoping → Approval →
      [stamp] → Todo → In Progress → Review → (Staged →) Done,
-     BOTH stamp paths ("Approve — M closes" and "Approve + I review before
-     Done"), system comments logged, two-touch close guard enforced
-     (403 unless actor=kevin; Staged → Done release-train exempt).
+     THE stamp ("approved to start" — board #232 retired the two-touch
+     second mode), system comments logged, two-touch close guard STILL
+     enforced on legacy kevin_final rows (403 unless actor=kevin;
+     Staged → Done release-train exempt).
   2. Field validation: impact whitelist, kevin_final/standing_approval bools.
   3. Run-request refusals for the new pipeline stages.
   4. Dispatcher: organic queue is status=Todo ONLY (by construction);
@@ -154,7 +155,7 @@ def comments_for(tid):
             if c["task_id"] == tid]
 
 
-print("― lifecycle walk A: stamp 'delegate' (Approve — M closes) ―")
+print("― lifecycle walk A: THE stamp ('approved to start', board #232) ―")
 t = dt.create_task({"title": "walk A", "description": "test", "assignee": "F"},
                    user=None)
 tid = t["id"]
@@ -168,14 +169,19 @@ expect_http("run-request refused in Approval", 400,
             dt.request_run, tid, {"author": "kevin"}, user=None)
 expect_http("stamp rejects a bad mode", 400,
             dt.stamp_approval, tid, {"mode": "yolo"}, user=None)
-r = dt.stamp_approval(tid, {"mode": "delegate", "author": "kevin"}, user=None)
-ok("delegate stamp → Todo, kevin_final stays false",
+# Board #232 — the RETIRED two-touch mode is refused LOUDLY, never silently
+# downgraded to the one remaining stamp. A caller asking for a gate that no
+# longer exists has to find out.
+expect_http("the retired two-touch mode ('final') is refused, not downgraded",
+            400, dt.stamp_approval, tid, {"mode": "final"}, user=None)
+r = dt.stamp_approval(tid, {"mode": "start", "author": "kevin"}, user=None)
+ok("the stamp → Todo, and kevin_final is never set (board #232)",
    r["status"] == "Todo" and r["kevin_final"] is False)
-ok("stamp logged ONE system comment",
-   sum("stamp: approved — M closes (by kevin)" in b
+ok("stamp logged ONE system comment, labelled 'approved to start'",
+   sum("stamp: approved to start (by kevin)" in b
        for b in comments_for(tid)) == 1)
 expect_http("second stamp refused (409 — not in Approval)", 409,
-            dt.stamp_approval, tid, {"mode": "delegate"}, user=None)
+            dt.stamp_approval, tid, {"mode": "start"}, user=None)
 dt.update_task(tid, {"status": "In Progress", "actor": "F"}, user=None)
 dt.update_task(tid, {"status": "Review", "actor": "F"}, user=None)
 r = dt.update_task(tid, {"status": "Done", "actor": "M"}, user=None)
@@ -184,16 +190,20 @@ ok("status flips logged as system comments",
    any("status: Backlog → Scoping (by M)" in b for b in comments_for(tid))
    and any("status: In Progress → Review (by F)" in b for b in comments_for(tid)))
 
-print("― lifecycle walk B: stamp 'final' (two-touch) ―")
+# Board #232 kept the kevin_final COLUMN and its close guard standing while
+# retiring the stamp mode that used to SET it: rows stamped two-touch before
+# 07-30 must keep behaving exactly as stamped. So the walk sets the flag the way
+# a legacy row carries it — directly — and then proves the guard is unchanged.
+print("― lifecycle walk B: LEGACY two-touch row (kevin_final still guards) ―")
 t2 = dt.create_task({"title": "walk B", "description": "test", "assignee": "F"},
                     user=None)
 tid2 = t2["id"]
 dt.update_task(tid2, {"status": "Approval", "actor": "M"}, user=None)
-r = dt.stamp_approval(tid2, {"mode": "final", "author": "kevin"}, user=None)
-ok("final stamp → Todo + kevin_final TRUE",
-   r["status"] == "Todo" and r["kevin_final"] is True)
-ok("stamp comment names two-touch",
-   any("two-touch (Kevin reviews before Done)" in b for b in comments_for(tid2)))
+r = dt.stamp_approval(tid2, {"mode": "start", "author": "kevin"}, user=None)
+ok("the stamp itself leaves kevin_final false",
+   r["status"] == "Todo" and r["kevin_final"] is False)
+r = dt.update_task(tid2, {"kevin_final": True}, user=None)
+ok("a legacy two-touch row still carries kevin_final", r["kevin_final"] is True)
 dt.update_task(tid2, {"status": "In Progress", "actor": "F"}, user=None)
 dt.update_task(tid2, {"status": "Review", "actor": "F"}, user=None)
 expect_http("two-touch guard: M cannot move Review → Staged", 403,
@@ -270,6 +280,19 @@ good, bad = disp.run_requested(agents, set())
 ok("run_requested refuses Approval/Review/Staged",
    sorted(t["id"] for t, _ in bad) == [10, 11, 12]
    and all(r == f"status is {t['status']}" for t, r in bad))
+# Board #232 — the two new statuses join the button's refusals for two DIFFERENT
+# reasons: `Closed` is FINISHED (read from the shared set, so it cannot drift
+# from `Done`), and `Stand By` is a human's explicit "not yet" — the button
+# overrides queue ORDER, never that.
+fake_rows = [
+    dict(todo_row, id=20, status="Closed", tags=["run-requested"]),
+    dict(todo_row, id=21, status="Stand By", tags=["run-requested"]),
+    dict(todo_row, id=22, status="Todo", tags=["run-requested"]),
+]
+good232, bad232 = disp.run_requested(agents, set())
+ok("run_requested refuses Closed and Stand By too (board #232)",
+   sorted(t["id"] for t, _ in bad232) == [20, 21]
+   and [t["id"] for t in good232] == [22])
 ok("run_requested still serves an approved Todo task",
    [t["id"] for t in good] == [13])
 

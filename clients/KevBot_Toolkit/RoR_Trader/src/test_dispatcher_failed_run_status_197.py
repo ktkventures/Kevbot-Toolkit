@@ -112,7 +112,9 @@ class Board:
         if method == "GET":
             if path.startswith("agents?"):
                 return [dict(self.agent)]
-            if path.startswith("dev_tasks?status=eq.Done"):
+            # Board #232: the blocked_by lookup is the shared FINISHED set
+            # (`status=in.(Done,Closed)`), not the literal `status=eq.Done`.
+            if path.startswith(f"dev_tasks?{disp.FINISHED_FILTER}"):
                 return []
             if path.startswith(f"dev_tasks?{disp.GATE_FILTER}"):
                 # V4.21 (#198) replaced the `status=eq.Todo` queue with
