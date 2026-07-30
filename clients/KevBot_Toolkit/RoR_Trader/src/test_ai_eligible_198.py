@@ -255,8 +255,12 @@ spec = importlib.util.spec_from_file_location(
 disp = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(disp)
 
-armed_elsewhere = mk("armed but Staged", ai_eligible=True)
-dt.update_task(armed_elsewhere["id"], {"status": "Staged", "actor": "M"},
+# `Review`, not `Staged`: the step-8 audible made `Staged` TERMINAL in the gate
+# (a release ships via R on M's brief, never by self-dispatch), so it can no
+# longer stand in for "some non-Todo column". `Review` is mid-pipeline and still
+# dispatches, which is what this walk actually asserts.
+armed_elsewhere = mk("armed but in Review", ai_eligible=True)
+dt.update_task(armed_elsewhere["id"], {"status": "Review", "actor": "M"},
                user=None)
 todo_unarmed = mk("plain Todo, never armed")
 dt.update_task(todo_unarmed["id"], {"status": "Todo", "actor": "M"},
@@ -298,7 +302,7 @@ agents = {"F": {"letter": "F", "status": "headless", "worktree": ".",
 got, _skipped = disp.triage_todo(agents, set())
 got_ids = [x["id"] for x in got]
 
-ok("ai_eligible=true on a NON-Todo (Staged) task DISPATCHES — the column the "
+ok("ai_eligible=true on a NON-Todo (Review) task DISPATCHES — the column the "
    "API sets is the column the gate reads (Step 4)",
    armed_elsewhere["id"] in got_ids, f"got={got_ids}")
 ok("a Todo task with ai_eligible=false STILL dispatches "
@@ -347,9 +351,12 @@ r = dt.update_task(contra["id"],
 ok("a CONTRADICTORY patch (Done + armed) resolves to disarmed — closing wins",
    r["ai_eligible"] is False and r["status"] == "Done")
 
-# Narrow: only a CLOSE disarms. Review/Staged are mid-flight (the R train still
-# has to ship a Staged task), so disarming there would stop the chain re-arming
-# itself — which is the whole point of #198.
+# Narrow: only a CLOSE disarms. Review / In Progress are mid-flight, so disarming
+# there would stop the chain re-arming itself — the whole point of #198. `Staged`
+# keeps its flag too, even though the gate now refuses to dispatch it (step-8
+# audible): the flag records that Kevin ARMED the task, and it must survive the
+# release so the task is still armed for whatever follows the train. The gate, not
+# the flag, is what withholds a Staged dispatch.
 for s in ("Review", "Staged", "In Progress", "Blocked"):
     t = mk(f"armed and moved to {s}", ai_eligible=True)
     r = dt.update_task(t["id"], {"status": s, "actor": "M"}, user=None)

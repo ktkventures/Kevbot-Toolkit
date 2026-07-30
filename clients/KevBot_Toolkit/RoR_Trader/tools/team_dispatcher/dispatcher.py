@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Team dispatcher (V4.21) — dispatches board tasks to headless Claude agents.
+"""Team dispatcher (V4.22) — dispatches board tasks to headless Claude agents.
+
+V4.22 (board #198, step 8 audible): `Staged` JOINS THE TERMINAL SET. Kevin's
+ruling landed after V4.21 shipped: "if something is staged, maybe you consider
+that something similar to done or blocked". `Staged` means REVIEWED, brief held,
+waiting on a release train, and the actor is R executing a brief M wrote
+(charter §8) — an agent self-dispatching from `Staged` bypasses the brief, the
+artifact that makes a release auditable. This deliberately REVERSES the "#193
+bonus" V4.21 noted (an armed `Staged` task self-dispatching to R·auto): worth
+having as a considered train-builder design, not as a side effect of an
+eligibility flag. See `TERMINAL_STATUSES`.
 
 V4.21 (board #198): ELIGIBILITY, NOT STATUS, GATES DISPATCH. The gate was
 `status=eq.Todo`, which made the kanban column do two unrelated jobs at once —
@@ -15,7 +25,7 @@ the task to Review, which dropped it out of the query), so this version replaces
 that side-effect with two STATUS-BLIND rails: a step-guard (no repeat of a
 chain step a finished run already covered) and a completed-chain refusal. See
 `triage_todo`, `step_sig`, `step_already_ran`. The one thing status still says is
-FINALITY: a `Done` or `Blocked` task is never dispatched, armed or not
+FINALITY: a terminal task is never dispatched, armed or not
 (`TERMINAL_STATUSES`) — that is not the permission coupling #198 removed.
 
 V4.19 (board #143, V2.12): @-MENTION DELIVERY. A dispatched agent's prompt now
@@ -123,10 +133,23 @@ RUN_REQUESTED_TAG = "run-requested"
 # spelling against the real PostgREST endpoint.
 GATE_FILTER = "or=(ai_eligible.eq.true,status.eq.Todo)"
 
-# Board #198 AUDIBLE (inserted by M review of step 4) — STATUS AS FINALITY.
+# Board #198 AUDIBLE (inserted by M review of step 4; `Staged` added by the
+# step-8 audible on Kevin's 07-29 ruling) — STATUS AS FINALITY.
 # #198 removed status-as-PERMISSION; it did not make a FINISHED task
-# dispatchable. `Done` = the work is over. `Blocked` = parked, and reap() itself
-# puts a failed dispatch there. Neither is work to hand an agent, armed or not.
+# dispatchable. Each entry earns its place:
+#   `Done`   = the work is over.
+#   `Blocked`= parked, and reap() itself puts a failed dispatch there.
+#   `Staged` = REVIEWED and waiting on a RELEASE, which is R's job via the brief
+#              M writes (charter §8) — not a dispatch. An agent self-dispatching
+#              from `Staged` would ship without the brief, the artifact that
+#              makes a release auditable. It is not an odd third entry: DO NOT
+#              "clean it up" as inconsistent with Done/Blocked.
+# None of the three is work to hand an agent, armed or not.
+#
+# `Staged` here deliberately REVERSES the "#193 bonus" V4.21 noted — an armed
+# `Staged` task self-dispatching to R·auto and building half the release train
+# for free. Kevin's call: that is a train-builder design to make on purpose, not
+# a side effect of an eligibility flag.
 #
 # Reading status to refuse a TERMINAL state is NOT the coupling #198 removed —
 # it is status as finality, and it is the ONE status read in the gate that
@@ -143,7 +166,7 @@ GATE_FILTER = "or=(ai_eligible.eq.true,status.eq.Todo)"
 # The API also disarms on close (dev_tasks.update_task) — hygiene, and it makes
 # the data honest — but that depends on every future close path remembering,
 # whereas THIS rail cannot be forgotten. Both, deliberately.
-TERMINAL_STATUSES = ("Done", "Blocked")
+TERMINAL_STATUSES = ("Done", "Blocked", "Staged")
 
 # #182 Step 7 — inbound check. Owners whose completed steps are NOT re-checked by
 # the next agent. Kevin's stamps are approvals, not deliverables; gating them would
@@ -312,9 +335,10 @@ def triage_todo(agents, done_ids, st=None):
     `ai_eligible` and the legacy `status=Todo` queue (GATE_FILTER), and no task
     is ever refused here for sitting in the wrong lifecycle column. `status` is
     read in exactly TWO places below, neither of them a permission read:
-      • TERMINAL_STATUSES — finality. `Done`/`Blocked` is not "not allowed yet",
-        it is "there is nothing here to do"; see the constant for why the
-        step-guard cannot cover a chainless closed task (audible, step 5).
+      • TERMINAL_STATUSES — finality. `Done`/`Blocked`/`Staged` is not "not
+        allowed yet", it is "there is nothing HERE to hand an agent"; see the
+        constant for why the step-guard cannot cover a chainless closed task
+        (audible, step 5) and why `Staged` belongs (audible, step 8).
       • the arm SELECTOR — it picks which arm's BEHAVIOUR applies, so the
         pre-#198 Todo queue keeps behaving byte-identically (a finished chain
         sitting in Todo still dispatches on assignee alone — board #182) while
@@ -342,15 +366,18 @@ def triage_todo(agents, done_ids, st=None):
     out, skipped = [], []
     for t in tasks:
         if t.get("status") in TERMINAL_STATUSES:
-            # HARD RAIL, first in the gate: a finished or parked task is never
-            # dispatched, however it got armed (see TERMINAL_STATUSES — finality,
-            # not permission). Quiet, not stuck: a closed task is not a stuck
-            # QUEUE, and flagging it would comment on a finished thread and then
-            # trip the 4h staleness tripwire on it every day forever. The SKIP
-            # line below still names it on the pass its reason first appears.
-            skipped.append((t, f"status is {t['status']} — terminal; a finished "
-                               f"or parked task is never dispatched, armed or "
-                               f"not (board #198 audible)", False))
+            # HARD RAIL, first in the gate: a finished, parked or release-staged
+            # task is never dispatched, however it got armed (see
+            # TERMINAL_STATUSES — finality, not permission). Quiet, not stuck: a
+            # closed task is not a stuck QUEUE, and flagging it would comment on
+            # a finished thread and then trip the 4h staleness tripwire on it
+            # every day forever. `Staged` is quiet for the same reason — it waits
+            # on a release train, which is R's job, not a stalled dispatch. The
+            # SKIP line below still names it on the pass its reason first appears.
+            skipped.append((t, f"status is {t['status']} — terminal; a finished, "
+                               f"parked or release-staged task is never "
+                               f"dispatched, armed or not (board #198 audible)",
+                            False))
             continue
         a = t.get("assignee")
         if a not in agents:
@@ -507,9 +534,12 @@ def run_requested(agents, done_ids):
         # about "this cannot be started" / "this is not workable yet", not about
         # the eligibility question #198 moved onto `ai_eligible`. The organic gate
         # in triage_todo() no longer refuses anything for its status; loosening
-        # the button (e.g. honouring a press on an armed `Staged` task, which the
-        # organic gate now dispatches on its own) is a design call for Kevin/M,
-        # not a mechanical consequence of the gate change.
+        # the button to honour a press on a stage it currently refuses is a design
+        # call for Kevin/M, not a mechanical consequence of the gate change.
+        # Step-8 audible note: this list and TERMINAL_STATUSES now AGREE on all
+        # three terminal stages — Done, Blocked and Staged are refused on both
+        # paths — so the V4.21 divergence on `Staged` closed itself. Nothing here
+        # was changed to achieve that.
         # The button overrides queue ORDER, never "not workable yet" (M, #109
         # review): Scoping status / needs-scoping tag are hard refusals. The
         # board-#136 pipeline stages joined the list — Approval isn't approved
