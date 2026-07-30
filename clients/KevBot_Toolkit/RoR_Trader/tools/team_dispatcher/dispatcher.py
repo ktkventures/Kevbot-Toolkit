@@ -14,7 +14,9 @@ The Todo query was also the accidental re-dispatch guard (a finished run moved
 the task to Review, which dropped it out of the query), so this version replaces
 that side-effect with two STATUS-BLIND rails: a step-guard (no repeat of a
 chain step a finished run already covered) and a completed-chain refusal. See
-`triage_todo`, `step_sig`, `step_already_ran`.
+`triage_todo`, `step_sig`, `step_already_ran`. The one thing status still says is
+FINALITY: a `Done` or `Blocked` task is never dispatched, armed or not
+(`TERMINAL_STATUSES`) — that is not the permission coupling #198 removed.
 
 V4.19 (board #143, V2.12): @-MENTION DELIVERY. A dispatched agent's prompt now
 carries that lane's UNSEEN mentions — the same `task_mentions` rows F's Messages
@@ -120,6 +122,28 @@ RUN_REQUESTED_TAG = "run-requested"
 # `eq.true` rather than `is.true` because Step 2 round-tripped that exact
 # spelling against the real PostgREST endpoint.
 GATE_FILTER = "or=(ai_eligible.eq.true,status.eq.Todo)"
+
+# Board #198 AUDIBLE (inserted by M review of step 4) — STATUS AS FINALITY.
+# #198 removed status-as-PERMISSION; it did not make a FINISHED task
+# dispatchable. `Done` = the work is over. `Blocked` = parked, and reap() itself
+# puts a failed dispatch there. Neither is work to hand an agent, armed or not.
+#
+# Reading status to refuse a TERMINAL state is NOT the coupling #198 removed —
+# it is status as finality, and it is the ONE status read in the gate that
+# withholds anything. DO NOT "clean this up" as leftover Todo coupling.
+#
+# Why the other rails do not already cover it: step_already_ran() is bounded by
+# the dispatcher's rolling run state, and step_sig() of a CHAINLESS task is the
+# constant "task" — measured on the live board 07-29, 129 of 132 Done tasks are
+# chainless and 89 are assigned to a headless lane, so the step-guard has no
+# current step to protect them with. The hole is reachable by the ORDINARY flow:
+# Kevin stamps a contained task (the stamp arms it) → it runs → M closes it →
+# `Done` + armed + chainless + headless assignee, with nothing disarming it. It
+# would re-run finished work and eat the 24-run DAILY_CAP.
+# The API also disarms on close (dev_tasks.update_task) — hygiene, and it makes
+# the data honest — but that depends on every future close path remembering,
+# whereas THIS rail cannot be forgotten. Both, deliberately.
+TERMINAL_STATUSES = ("Done", "Blocked")
 
 # #182 Step 7 — inbound check. Owners whose completed steps are NOT re-checked by
 # the next agent. Kevin's stamps are approvals, not deliverables; gating them would
@@ -286,11 +310,16 @@ def triage_todo(agents, done_ids, st=None):
 
     Board #198 — ELIGIBILITY GATES, STATUS DESCRIBES. The query is the OR of
     `ai_eligible` and the legacy `status=Todo` queue (GATE_FILTER), and no task
-    is ever refused here for not being in Todo. `status` is read in exactly ONE
-    place below, and never to grant or withhold permission: it selects which
-    arm's BEHAVIOUR applies, so the pre-#198 Todo queue keeps behaving
-    byte-identically (a finished chain sitting in Todo still dispatches on
-    assignee alone — board #182) while the new arm gets the tighter rails.
+    is ever refused here for sitting in the wrong lifecycle column. `status` is
+    read in exactly TWO places below, neither of them a permission read:
+      • TERMINAL_STATUSES — finality. `Done`/`Blocked` is not "not allowed yet",
+        it is "there is nothing here to do"; see the constant for why the
+        step-guard cannot cover a chainless closed task (audible, step 5).
+      • the arm SELECTOR — it picks which arm's BEHAVIOUR applies, so the
+        pre-#198 Todo queue keeps behaving byte-identically (a finished chain
+        sitting in Todo still dispatches on assignee alone — board #182) while
+        the new arm gets the tighter rails.
+    Nothing here refuses a task for NOT being in Todo, which was the coupling.
 
     Board #171 — ASSIGNEE IS AUTHORITATIVE, the checklist is advisory. The old
     `next_actor()` gate let an un-ticked checklist step OVERRIDE the assignee and
@@ -312,6 +341,17 @@ def triage_todo(agents, done_ids, st=None):
                        "&order=is_urgent.desc,priority_phase,priority_seq")
     out, skipped = [], []
     for t in tasks:
+        if t.get("status") in TERMINAL_STATUSES:
+            # HARD RAIL, first in the gate: a finished or parked task is never
+            # dispatched, however it got armed (see TERMINAL_STATUSES — finality,
+            # not permission). Quiet, not stuck: a closed task is not a stuck
+            # QUEUE, and flagging it would comment on a finished thread and then
+            # trip the 4h staleness tripwire on it every day forever. The SKIP
+            # line below still names it on the pass its reason first appears.
+            skipped.append((t, f"status is {t['status']} — terminal; a finished "
+                               f"or parked task is never dispatched, armed or "
+                               f"not (board #198 audible)", False))
+            continue
         a = t.get("assignee")
         if a not in agents:
             skipped.append((t, f"waiting on {a or '—'} (not a headless agent)", False))

@@ -27,6 +27,14 @@ rail with no failing test is a comment:
                                    dispatched (it would re-run the whole task),
                                    while a fully-ticked chain sitting in Todo
                                    keeps its legacy behaviour (board #182 walk 4).
+  RAIL 7  terminal statuses      — (step-5 audible) a `Done` or `Blocked` task is
+                                   NEVER dispatched, armed or not: status as
+                                   FINALITY, which is not the status-as-permission
+                                   coupling #198 removed. The step-guard cannot
+                                   cover it — 129 of the live board's 132 Done
+                                   tasks are CHAINLESS, so step_sig() is the
+                                   constant "task". Narrow on purpose: an armed
+                                   Staged/Review/In Progress task still dispatches.
   RAIL 6  every earlier gate     — headless assignee, needs-review/scoping tags,
                                    empty description, blocked_by-vs-Done,
                                    chain/assignee agreement and mode=discuss all
@@ -81,6 +89,12 @@ AGENTS = {"M": {"letter": "M", "status": "headless", "worktree": ".",
 
 ALL_STATUSES = ("Backlog", "Scoping", "Approval", "Todo", "In Progress",
                 "Review", "Staged", "Done", "Blocked")
+# Rail 7 (the step-5 audible): these two are FINAL — an armed task sitting in one
+# of them is refused. Spelled as literals rather than derived from
+# D.TERMINAL_STATUSES so widening that constant cannot silently shrink what rails
+# 1 and 3 still test.
+TERMINAL = ("Done", "Blocked")
+LIVE_STATUSES = tuple(s for s in ALL_STATUSES if s not in TERMINAL)
 
 
 def task(**kw):
@@ -139,7 +153,7 @@ def triage(rows, st=None):
 
 # ── RAIL 1 — the OR gate: armed dispatches from ANY status ──────────────────
 print("― rail 1: an ARMED task dispatches wherever it sits on the board ―")
-for i, s in enumerate(ALL_STATUSES):
+for i, s in enumerate(LIVE_STATUSES):
     armed = task(id=100 + i, status=s, ai_eligible=True)
     got, skipped, _ = triage([armed])
     ok(f"ai_eligible=true dispatches from status={s!r}",
@@ -178,8 +192,11 @@ ok("both arms are served in one pass and nothing else is", sorted(got) == [11, 1
 
 # ── RAIL 3 — status is never permission ────────────────────────────────────
 print("― rail 3: no task is refused for not being in Todo ―")
+# Scanned over the LIVE statuses only: the two TERMINAL ones are refused ON
+# PURPOSE by rail 7 (finality, not permission), and that refusal names the status
+# because it has to be legible in the log. Everything else must stay status-blind.
 refusals = []
-for i, s in enumerate(ALL_STATUSES):
+for i, s in enumerate(LIVE_STATUSES):
     _, skipped, _ = triage([task(id=200 + i, status=s, ai_eligible=True)])
     refusals += [r for _t, r, _s in skipped if "status" in r.lower()]
 ok("no skip reason anywhere cites the task's status", not refusals, str(refusals))
@@ -334,6 +351,66 @@ D.api, _ = board_api([task(id=68, status="Backlog", ai_eligible=True,
 out, _ = D.triage_todo(AGENTS, {999}, {"runs": []})
 ok("...and a DONE blocker does not (the #144 non-bug)",
    [t["id"] for t in out] == [68])
+
+# ── RAIL 7 — TERMINAL statuses: finality, not permission (step-5 audible) ──
+print("― rail 7: a Done or Blocked task is never dispatched, armed or not ―")
+ok("TERMINAL_STATUSES is exactly Done + Blocked",
+   D.TERMINAL_STATUSES == ("Done", "Blocked"), str(D.TERMINAL_STATUSES))
+
+# THE MEASURED HOLE: 129 of the live board's 132 Done tasks are CHAINLESS and 89
+# are assigned to a headless lane, so step_sig() is the constant "task" and the
+# step-guard has nothing to protect. Empty run state on purpose — this must be
+# refused by the terminal rail alone, not by the step-guard remembering a run.
+closed = task(id=70, status="Done", ai_eligible=True, assignee="M")
+got, skipped, _ = triage([closed], {"runs": []})
+ok("an ARMED, CHAINLESS, Done task is NOT dispatched (the re-run hole)",
+   got == [] and len(skipped) == 1, f"got={got}")
+ok("...the reason says terminal and names the status",
+   skipped and "terminal" in skipped[0][1] and "Done" in skipped[0][1],
+   skipped[0][1] if skipped else "")
+ok("...and it is QUIET — a closed task is not a stuck queue (no comment, no "
+   "4h tripwire on a finished thread)",
+   skipped and skipped[0][2] is False)
+
+got, skipped, _ = triage([task(id=71, status="Blocked", ai_eligible=True,
+                               assignee="M")], {"runs": []})
+ok("an ARMED Blocked task is NOT dispatched (reap() parks failed runs there — "
+   "board #197)", got == [], f"got={got}")
+ok("...quiet as well (reap already commented; the board column IS the signal)",
+   skipped and skipped[0][2] is False)
+
+open_step = [{"owner": "M", "title": "do it", "body": "SOP", "done": False}]
+for s in TERMINAL:
+    got, _, _ = triage([task(id=72, status=s, ai_eligible=True, assignee="M",
+                             checklist=[dict(x) for x in open_step])],
+                       {"runs": []})
+    ok(f"an armed {s} task with an OPEN chain step is refused too "
+       f"(finality beats an un-ticked step)", got == [], f"got={got}")
+
+# The rail must be NARROW: it is the two terminal columns, not "every status that
+# is not Todo" — that would put the #198 coupling straight back.
+for s in ("Staged", "Review", "In Progress", "Backlog", "Scoping", "Approval"):
+    got, _, _ = triage([task(id=73, status=s, ai_eligible=True, assignee="M",
+                             checklist=[dict(x) for x in open_step])],
+                       {"runs": []})
+    ok(f"an armed {s} task still DISPATCHES (the rail is finality, not a "
+       f"whitelist)", got == [73], f"got={got}")
+ok("...which keeps the #193 bonus: an armed Staged task self-dispatches",
+   triage([task(id=74, status="Staged", ai_eligible=True, assignee="M")],
+          {"runs": []})[0] == [74])
+
+# A closed task cannot reach the spawn path even through the back-back door: the
+# gate is the only producer of the dispatch list (dispatchable() is a shim).
+D.api, _ = board_api([closed])
+ok("dispatchable() — the shim one_pass()'s callers use — is empty for a Done "
+   "task", [t["id"] for t in D.dispatchable(AGENTS, set())] == [])
+
+# Terminal refusal happens FIRST, so the reason a human reads is "it is finished"
+# rather than an incidental gate it also happens to fail.
+got, skipped, _ = triage([task(id=75, status="Done", ai_eligible=True,
+                               assignee="kevin", description="")], {"runs": []})
+ok("terminal is checked before assignee/description — the reason is finality",
+   got == [] and "terminal" in skipped[0][1], skipped[0][1] if skipped else "")
 
 print()
 print(f"{'ALL PASS' if not FAIL else 'FAILURES'} "

@@ -323,4 +323,57 @@ w = dt.update_task(plain["id"],
 ok("the real field landed", w["ai_eligible"] is True)
 ok("the unknown field never reached the row", "bogus_column" not in w)
 
+
+# ── walk 7: closing a task DISARMS it (board #198 audible, step 5) ─────────
+# The other half of the audible. The dispatcher's TERMINAL_STATUSES rail is the
+# guarantee; this is hygiene, so the refusal never has to fire and the board's
+# toggle column tells the truth about a closed card.
+
+print("― walk 7: status → Done clears ai_eligible ―")
+closed = mk("armed, then closed", ai_eligible=True)
+ok("armed before the close", closed["ai_eligible"] is True)
+r = dt.update_task(closed["id"], {"status": "Done", "actor": "M"}, user=None)
+ok("closing the task DISARMS it", r["ai_eligible"] is False)
+ok("...and the close itself still happened", r["status"] == "Done")
+ok("...the status transition comment is unchanged",
+   any("status:" in b and "Done" in b for b in comments_for(closed["id"])))
+ok("...it stays disarmed on a later no-op read",
+   dt.update_task(closed["id"], {}, user=None)["ai_eligible"] is False)
+
+contra = mk("closed and armed in one patch")
+r = dt.update_task(contra["id"],
+                   {"status": "Done", "ai_eligible": True, "actor": "M"},
+                   user=None)
+ok("a CONTRADICTORY patch (Done + armed) resolves to disarmed — closing wins",
+   r["ai_eligible"] is False and r["status"] == "Done")
+
+# Narrow: only a CLOSE disarms. Review/Staged are mid-flight (the R train still
+# has to ship a Staged task), so disarming there would stop the chain re-arming
+# itself — which is the whole point of #198.
+for s in ("Review", "Staged", "In Progress", "Blocked"):
+    t = mk(f"armed and moved to {s}", ai_eligible=True)
+    r = dt.update_task(t["id"], {"status": s, "actor": "M"}, user=None)
+    ok(f"moving to {s} does NOT disarm (only a close does)",
+       r["ai_eligible"] is True, str(r["ai_eligible"]))
+
+reopened = dt.update_task(closed["id"], {"status": "Todo", "actor": "M"},
+                          user=None)
+ok("re-opening a closed task does not silently re-arm it (Kevin's stamp is "
+   "still the arming gate)", reopened["ai_eligible"] is False)
+
+# BELT AND BRACES: a `Done` + armed row that got there WITHOUT this endpoint (a
+# direct Supabase write, or a future close path that forgets) is still refused by
+# the dispatcher — which is exactly why both rails exist.
+bypass = mk("armed Done via a path that skipped the API", ai_eligible=True)
+for row in FAKE.store["dev_tasks"]:
+    if row["id"] == bypass["id"]:
+        row["status"] = "Done"        # no PATCH → no disarm
+ok("the bypassed row really is Done AND armed",
+   [r for r in FAKE.store["dev_tasks"] if r["id"] == bypass["id"]][0]
+   ["ai_eligible"] is True)
+disp.api = fake_api
+got_ids = [x["id"] for x in disp.triage_todo(agents, set(), {"runs": []})[0]]
+ok("the dispatcher refuses it anyway (TERMINAL_STATUSES — the rail that cannot "
+   "be forgotten)", bypass["id"] not in got_ids, f"got={got_ids}")
+
 print(f"\nALL PASS ({PASS} checks)")

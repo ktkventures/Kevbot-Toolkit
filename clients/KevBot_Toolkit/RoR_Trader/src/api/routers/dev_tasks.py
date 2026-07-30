@@ -395,8 +395,22 @@ def update_task(task_id: int, payload: dict = Body(...),
     thread ("status: Todo → In Progress (by F)") so handoffs stay traceable.
     The optional `actor` field names who made the change; it is not a task
     column and never lands on the row.
+
+    Closing a task DISARMS it (`ai_eligible=false`, board #198) — see below.
     """
     row = {k: v for k, v in payload.items() if k in _EDITABLE}
+    # Board #198 audible — DISARM ON CLOSE. `ai_eligible` is the arming switch
+    # ("may an AI run this"); once a task is Done the answer is permanently no,
+    # so closing it clears the arm rather than leaving `Done` + armed rows on the
+    # board. A contradictory patch ({"status": "Done", "ai_eligible": true})
+    # resolves to DISARMED: closing wins.
+    # HYGIENE, NOT THE GUARANTEE. This covers one endpoint, so a direct Supabase
+    # write or some future close path can skip it; the dispatcher's own
+    # TERMINAL_STATUSES rail is the one that cannot be forgotten. Both exist
+    # deliberately — this one means the refusal never has to fire, and it keeps
+    # the DATA honest for the board UI's toggle column.
+    if row.get("status") == "Done":
+        row["ai_eligible"] = False
     c = _admin()
     if row:
         _validate_team_fields(c, row, task_id=task_id)
