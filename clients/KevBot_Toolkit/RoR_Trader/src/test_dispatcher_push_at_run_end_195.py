@@ -399,7 +399,7 @@ TASK = {"id": 901, "title": "t", "description": "d", "assignee": "M",
 disp.headless_agents = lambda: ({"M": {"letter": "M", "status": "headless",
                                        "worktree": LANE, "scope": "", "boundaries": ""}},
                                 "test")
-disp.triage_todo = lambda agents, done: ([TASK], [])
+disp.triage_todo = lambda agents, done, st=None: ([TASK], [])  # st arg added by #198 (V4.21); the stub ignores it
 disp.run_requested = lambda agents, done: ([], [])
 disp.mentions_for = lambda role: ("", [])
 disp.mentions_delivered = lambda role, ids: 0

@@ -251,8 +251,13 @@ todo_row = {"id": 1, "status": "Todo", "assignee": "F", "tags": [],
 fake_rows = [todo_row]
 got = disp.dispatchable(agents, set())
 q = calls[-1][1]
-ok("organic queue queries status=eq.Todo ONLY (gate by construction)",
-   "status=eq.Todo" in q)
+# Board #198: the gate is `ai_eligible = true OR status = 'Todo'`. Still "by
+# construction" — the SELECT is the gate — but status is now one arm of it rather
+# than the whole thing, and it no longer refuses anything on its own.
+ok("organic queue queries the #198 OR gate (ai_eligible OR Todo), by construction",
+   "or=(ai_eligible.eq.true,status.eq.Todo)" in q, q)
+ok("...and the legacy Todo arm is still in it (nothing on the board today changed)",
+   "status.eq.Todo" in q, q)
 ok("eligible Todo task passes the organic gates", got == [todo_row])
 
 fake_rows = [

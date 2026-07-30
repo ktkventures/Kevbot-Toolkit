@@ -1,0 +1,42 @@
+-- AI-eligible toggle (2026-07-29, board #198, Step 2).
+--
+-- Splits the two jobs the kanban `status` column had been doing at once:
+--   • WHERE the task sits in its lifecycle  (status — stays)
+--   • MAY an AI agent run it                (ai_eligible — new, this column)
+--
+-- The dispatch gate reads `status=eq.Todo` today, which forced tasks back into
+-- Todo between chain steps purely to re-arm them and kept corrupting the
+-- kanban position. After this column lands, the gate becomes
+-- `ai_eligible = true OR status = 'Todo'` (Step 4, tools/team_dispatcher —
+-- a different lane's file; NOT changed by this migration) and status goes back
+-- to being descriptive only: the dispatcher WRITES it, never READS it as
+-- permission.
+--
+-- ADDITIVE + IDEMPOTENT + BEHAVIOUR-NEUTRAL. Every existing task gets
+-- ai_eligible = FALSE, so nothing becomes newly dispatchable: the OR-fallback
+-- in Step 4 means today's Todo queue keeps dispatching exactly as it does now
+-- and the new path is opt-in per task. Same shape as the process chain (any
+-- new-shape key opts a checklist in) and as the engine flags (default OFF,
+-- read at runtime).
+--
+-- Metadata-only ALTER: `ADD COLUMN ... NOT NULL DEFAULT false` on PG 11+ stores
+-- the default in the catalog instead of rewriting the heap, so this is an
+-- instant catalog update under a brief ACCESS EXCLUSIVE lock — no table
+-- rewrite, no long lock (cf. #114's migration; `dev_tasks` is ~200 rows but the
+-- habit is the point). No index: `dev_tasks` is small and admin-only, and the
+-- dispatcher's poll already reads the whole board; if one is ever wanted here
+-- it must be CREATE INDEX CONCURRENTLY (E's #185 note).
+
+-- FALSE = only the legacy status=Todo path can dispatch this task.
+-- TRUE  = an AI agent may run it wherever it sits on the board, which is what
+-- makes `Staged`-with-an-R-owned-next-step self-dispatch (the train-builder
+-- half of #193) fall out for free.
+--
+-- Set by: POST /api/dev-tasks/{id}/stamp (Kevin's Approval stamp arms it — his
+-- review stays the arming gate, nothing runs unapproved) and by the board
+-- toggle column (Step 3, PATCH /api/dev-tasks/{id}).
+ALTER TABLE dev_tasks
+    ADD COLUMN IF NOT EXISTS ai_eligible BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- RLS unchanged: dev_tasks already has RLS enabled with no public policy; only
+-- the service-role (admin) client reaches it via admin-gated endpoints.

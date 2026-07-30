@@ -195,7 +195,23 @@ future recurring work (approved once for the series). Vision containers are exem
 **Process-chain convention (universal, Kevin 07-25):** EVERY task carries a process
 checklist — multi-role tasks spell their real handoff chain; simple tasks use the
 default 4-step (do → M review → Kevin approval if flagged → close). Next-actor chip
-derives from it.
+derives from it. A step carries `id · owner · title · body · mode · origin · stamp`;
+a checklist becomes a process chain the moment ANY step carries one of those keys,
+so conversion is opt-in per task with no migration and no flag day. `mode=discuss`
+marks a step that wants a human REPLY — the dispatcher refuses to hand one to a
+headless agent. The step's `body` IS the SOP the dispatcher sends that agent, which
+is the whole payoff: context lives in the task instead of being hand-written at
+dispatch time.
+**Retrofit rule (Kevin, 07-29 — #182 Step 9's decision):** existing tasks are **NOT
+batch-converted**. A task gets a real chain **when someone touches it** — written
+before the work starts, if the absence of a chain would create a gap. Kevin's
+reasoning, verbatim: *"if we do it one by one, it'll probably get better quality.
+Sometimes I think when we do things in batches, we get a little lazy."* Legacy
+`{role,text,done}` checklists keep rendering and dispatching untouched, so there is
+no deadline and nothing rots. **Judgement applies:** a small contained task does not
+need nine steps — a chain exists to carry a real hand-off, not to be ceremony. Write
+the SOP bodies as *what the step is for, what "done" means, and what it must not do*;
+retroactive steps also record what actually came out.
 **Approval tags (Kevin 07-25, batch-review protocol):** `needs-approval` = M requests
 Kevin's eyes BEFORE execution (Kevin's inbox; renders amber). Kevin pre-approves by
 flipping to `kevin-ok` (tag edit or a "good to go" comment — M's board-watcher converts
@@ -214,10 +230,39 @@ items accordingly: self-contained, with the context written down.
 
 ## 8. Release protocol (ephemeral R sessions)
 
-1. Working session finishes a branch → runs **`/release-brief`** → outputs a paste-block.
-2. Kevin opens a FRESH session (fresh eyes are the point), names it
-   `R — release <branch> <MM-DD>`, pastes the brief.
+**DEFAULT CADENCE — SHIP EACH REVIEWED BRANCH IMMEDIATELY (Kevin, binding, 2026-07-29).**
+A branch that has passed M review goes to a train **at once**, as its own single car if
+nothing else is ready. Do **NOT** accumulate reviewed branches waiting for a fuller train.
+- Kevin's words: *"don't worry about pushing the dev... my short-term goal is to be able to
+  see the changes go live. When we're waiting on trains and gates and stuff, it could be
+  hours before I see a UI change."*
+- **The cost model that justified batching does not currently apply.** Each dev push
+  restarts the live Worker (1–3 min bar-recording gap), so batching once saved real money.
+  Kevin is **not trading live** and will not until the dev/prod split (board #204). Do not
+  spend his time protecting a cost he has told you he is not paying.
+- **Batching is the EXCEPTION and needs Kevin asking for it in the moment.** "You can group
+  them" is permission for that instance, never a standing default.
+- **Merging sooner is the conflict FIX, not the conflict risk.** Conflicts come from branch
+  AGE. Measured 07-29: four branches (#195/#197/#198/#202) queued behind one train had all
+  bumped `dispatcher.py`'s docstring version banner, guaranteeing a conflict R must abort
+  on — a conflict produced purely by waiting.
+- **The failure mode is drift back to caution.** On 07-29 M reverted to batching three
+  times after being told twice not to, because caution feels responsible. It is not
+  responsible when it costs the thing Kevin actually asked for.
+
+**R is `headless` in the agents registry (Kevin-granted 07-26) — releases dispatch from the
+board, not from a paste-block.** M writes the brief as the task's `description`, sets
+`assignee=R` and status `Todo`, and the dispatcher picks it up. `/release-brief` is still
+the right tool for AUTHORING the brief; only its delivery changed.
+
+1. Working session finishes a branch → M reviews → M authors the brief (**`/release-brief`**)
+   as a board task assigned to `R`.
+2. The dispatcher dispatches `R·auto`. (A fresh human `R — release <branch> <MM-DD>` session
+   pasting the brief still works and remains valid when Kevin prefers fresh human eyes.)
 3. R executes the brief top-to-bottom: verify branch state → run gates → backup branch →
    merge PR → watch deploy → write `Deploy_Log.md` entry → report → **die**. R never
    starts new work, never fixes non-trivial failures (it reports back to the working
    session instead), and aborts loudly on any gate failure.
+4. **R never restarts the dispatcher loop** — a release session must not cycle the process
+   that dispatched it. When a train carries a `dispatcher.py` change, the restart and its
+   preflight (5) verification are **M's**, immediately after the merge.

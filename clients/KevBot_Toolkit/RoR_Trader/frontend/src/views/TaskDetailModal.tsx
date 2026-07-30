@@ -39,7 +39,7 @@ import {
   StampButtons, TwoTouchChip, ImpactSelect, IMPACT_DEF, defaultChain, StuckChip,
   MENTION_ROLES, HandoffChain, isProcessChain, stepOwner, stepTitle, MODE_DEF,
   SlashItem, SlashMenu, filterSlashItems, applySlashInsert, detectSlash,
-  makeChainStep, chainStarted,
+  makeChainStep, chainStarted, AiEligibleToggle, RunStatePill,
 } from './taskBoardShared';
 import { Md, MD_CSS } from './taskMarkdown';
 
@@ -528,6 +528,13 @@ export default function TaskDetailModal({
           {vision && totalCount > 0 &&
             <span style={tagChip} title="subtasks done / total">{doneCount}/{totalCount}</span>}
           <span style={{ flex: 1 }} />
+          {/* board #198 — the three controls, deliberately distinct: standing
+              permission (switch) · what the dispatcher is doing (pill) · run it
+              once now (button). The task-level toggle sits here; the Config tab
+              carries the same switch scoped to the selected subtask. */}
+          <AiEligibleToggle task={task}
+            onToggle={(v) => patch(task.id, { ai_eligible: v })} />
+          <RunStatePill task={task} latestRun={(runsMap[task.id] || [])[0]} />
           <RunButton task={task} allTasks={allTasks} headless={headless}
             latestRun={(runsMap[task.id] || [])[0]} onRequest={requestRun} />
           {runErr && <span style={{ color: 'var(--red)', fontSize: 11, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={runErr}>{runErr}</span>}
@@ -724,11 +731,24 @@ export default function TaskDetailModal({
                           onChange={(e) => patch(scoped.id, { kevin_final: e.target.checked })} /> 🔏 two-touch
                         <span style={cfgHint}> — set by the Approval stamps (only Kevin signs off Review → Staged/Done); edit only to correct a mis-stamp</span>
                       </label>
-                      <label style={{ fontSize: 13, display: 'block' }}>
+                      <label style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>
                         <input type="checkbox" checked={!!scoped.standing_approval}
                           onChange={(e) => patch(scoped.id, { standing_approval: e.target.checked })} /> 🪪 standing approval
                         <span style={cfgHint}> — pre-approved class of work (07-25 agreement); no pipeline logic reads it yet</span>
                       </label>
+                      {/* board #198 — the same switch as the header, scoped to
+                          whichever item the Config tab is showing (so a subtask
+                          can be armed without leaving the vision's modal).
+                          Arming = launching: ON can dispatch within ~20s. */}
+                      <div style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <AiEligibleToggle task={scoped}
+                          onToggle={(v) => patch(scoped.id, { ai_eligible: v })} />
+                        <span style={cfgHint}>
+                          — standing permission for a headless agent to claim this task, independent
+                          of the kanban status (armed by Kevin’s Approval stamp). ON can dispatch on
+                          the dispatcher’s next poll (~20s).
+                        </span>
+                      </div>
                     </div>
 
                     {/* Run history (board #109) — dispatcher runs of the scoped item */}

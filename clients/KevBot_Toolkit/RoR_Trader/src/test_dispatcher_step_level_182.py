@@ -27,13 +27,18 @@ spec.loader.exec_module(D)
 AGENTS = {"M": {"letter": "M", "scope": "s", "boundaries": "b"},
           "F": {"letter": "F", "scope": "s", "boundaries": "b"}}
 
+# status="Todo" is explicit since board #198: the filter that used to SELECT these
+# rows (`status=eq.Todo`) is now an OR with `ai_eligible`, and these walks describe
+# the LEGACY Todo arm — including walk 4, where a fully-ticked chain sitting in
+# Todo still dispatches on assignee alone.
 def task(**kw):
     t = {"id": 1, "title": "T", "description": "d", "assignee": "F",
+         "status": "Todo", "ai_eligible": False,
          "tags": [], "blocked_by": [], "checklist": []}
     t.update(kw); return t
 
 def run_triage(tasks):
-    D.api = lambda m, p, body=None, prefer=None: tasks if p.startswith("dev_tasks?status=eq.Todo") else []
+    D.api = lambda m, p, body=None, prefer=None: tasks if p.startswith(f"dev_tasks?{D.GATE_FILTER}") else []
     return D.triage_todo(AGENTS, set())
 
 print("― walk 1: legacy checklists are UNCHANGED (V4.16 behaviour) ―")

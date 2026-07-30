@@ -199,7 +199,14 @@ EVENTS = []
 
 
 def fake_api(method, path, body=None, prefer=None):
-    if method == "GET" and path.startswith("dev_tasks?status=eq.Todo"):
+    # Board #198: the gate query is GATE_FILTER (`or=(ai_eligible.eq.true,
+    # status.eq.Todo)`), no longer `status=eq.Todo`. Follow the dispatcher's own
+    # constant instead of re-pinning a literal, so a future gate change cannot
+    # silently make this fake serve an EMPTY board — which is what the stale
+    # literal did: no task dispatched, and the mark-seen ordering check below went
+    # red for a reason that had nothing to do with mentions. TASK is status=Todo,
+    # so it matches either spelling.
+    if method == "GET" and path.startswith(f"dev_tasks?{disp.GATE_FILTER}"):
         return [dict(TASK)]
     if method == "GET" and path.startswith("dev_tasks?status=eq.Done"):
         return []
