@@ -14,6 +14,11 @@ What must hold now:
   • after MAX_AUTO_RETRIES → `Blocked`, blocker NAMED (matching the lease leg)
   • "output awaiting sign-off" is NEVER emitted for a failed run
   • outcome='ok'     → unchanged: Review + the agent's result + sign-off comment
+  • §8 AUDIBLE       → if a HUMAN moved the task off `In Progress` during the run,
+                       neither leg fires: no status write, no retry spent, and the
+                       thread says so. A restored status that is wrong is worse
+                       than `Review` — reverting a Todo → Approval move would
+                       re-dispatch, on the next poll, work Kevin pulled back.
 
 §7 IS THE POINT. #195's step 2 shipped 52 green checks over a feature that never
 fired, because every case handed the function a hand-built record instead of the
@@ -84,6 +89,8 @@ class Board:
         self.comments, self.run_history, self.calls = [], [], []
         self.agent = {"letter": agent_letter, "status": "headless", "worktree": TMP,
                       "scope": "test lane", "boundaries": "none — hermetic test"}
+        # §8: make the status re-read fail, to exercise the fail-open leg.
+        self.status_get_raises = False
 
     # -- helpers the assertions read ---------------------------------------
     def statuses(self, task_id):
@@ -109,6 +116,17 @@ class Board:
                 return []
             if path.startswith("dev_tasks?status=eq.Todo"):
                 return [dict(t) for t in self.tasks.values() if t["status"] == "Todo"]
+            if path.startswith("dev_tasks?id=eq."):
+                # The audible's re-read (status_now). Served from the SAME dict
+                # the PATCHes land in, so "what the board says now" is real: a
+                # test that moves a task mid-run is seen exactly as a human's
+                # move would be. Returning [] here instead would silently stub
+                # the guard out and green-light a rail that never runs.
+                if self.status_get_raises:
+                    raise RuntimeError("simulated board read failure")
+                tid = int(path.split("id=eq.")[1].split("&")[0])
+                t = self.tasks.get(tid)
+                return [{"status": t["status"]}] if t else []
             return []                       # run-requests, comments, run_history
         if method == "POST":
             if path == "dev_task_comments":
@@ -181,7 +199,10 @@ SIGNOFF = "output awaiting sign-off"
 
 # ══ §1 — a failed run (is_error terminal JSON) ════════════════════════════
 print("\n[§1] reap of an is_error run — the r1785350077-191 shape")
-b = use(Board([mktask(500)]))
+# status="In Progress" is what a real claim leaves on the board (§7 proves it),
+# and since the audible the reaper READS that value back. A fixture sitting in
+# Todo would be indistinguishable from a human having moved the task mid-run.
+b = use(Board([mktask(500, status="In Progress")]))
 st = reap_one(b, mkrun("r-err", 500, write_log(
     "err", terminal("API Error: 500 · Internal server error", True))))
 ok("§1a task is NOT moved to Review", "Review" not in b.statuses(500),
@@ -203,7 +224,7 @@ ok("§1h retry counter bumped to 1",
 
 # ══ §2 — died mid-stream: no terminal JSON at all ═════════════════════════
 print("\n[§2] reap of a run that died mid-stream — the r1785354198-195 shape")
-b = use(Board([mktask(501)]))
+b = use(Board([mktask(501, status="In Progress")]))
 st = reap_one(b, mkrun("r-dead", 501, write_log("dead", "half a log line, then noth")))
 ok("§2a not Review", "Review" not in b.statuses(501), f"got {b.statuses(501)}")
 ok("§2b restored to Todo", b.tasks[501]["status"] == "Todo")
@@ -378,6 +399,77 @@ ok(f"§7o and DOES carry the '{SIGNOFF}' comment",
    any(SIGNOFF in x for x in b.bodies(TID2)))
 ok("§7p the agent's real result is on the thread",
    any(c["author"] == "Z·auto" and "here is the report" in c["body"] for c in b.comments))
+
+
+# ══ §8 — AUDIBLE: a human's mid-run status change is never reverted ═══════
+# Runs last minutes against a 45-minute lease, so the board can move underneath
+# one. If Kevin pulls a task Todo → Approval while it runs and the run then dies,
+# writing status0 back would silently undo his decision AND re-dispatch, on the
+# very next poll, work he had deliberately pulled back. That is a worse lie than
+# the `Review` this whole task exists to kill, so the reaper re-reads first.
+print("\n[§8] a human moved the task DURING the run — the reaper keeps its hands off")
+b = use(Board([mktask(507, status="Approval")]))    # moved off In Progress mid-run
+st = reap_one(b, mkrun("r-moved", 507, write_log("moved", terminal("boom", True)),
+                       status0="Todo"))
+ok("§8a the dispatcher wrote NO status at all", b.statuses(507) == [],
+   f"got {b.statuses(507)}")
+ok("§8b the task is left exactly where the human put it",
+   b.tasks[507]["status"] == "Approval", f"got {b.tasks[507]['status']}")
+ok("§8c the comment SAYS the status was changed during the run and names it",
+   any("CHANGED during the run" in x and "Approval" in x for x in b.bodies(507)),
+   f"got {b.bodies(507)}")
+ok("§8d the comment says the pre-dispatch status was NOT restored",
+   any("Todo NOT restored" in x for x in b.bodies(507)))
+ok("§8e the comment still says the run FAILED (the #197 rail holds)",
+   any("FAILED" in x for x in b.bodies(507))
+   and not any(SIGNOFF in x for x in b.bodies(507)))
+ok("§8f the retry budget is INTACT — nothing was retried",
+   disp.retries_used(st, 507) == 0, f"got {disp.retries_used(st, 507)}")
+ok("§8g run_history still records the truth (outcome=error)", "error" in b.outcomes())
+
+print("\n[§8-cap] cap already spent + a human move → still hands off, no Blocked")
+b = use(Board([mktask(508, status="Approval")]))
+st = {"runs": [], "retries": {"508": MAX_RETRIES}}
+reap_one(b, mkrun("r-moved2", 508, write_log("moved2", terminal("boom", True)),
+                  status0="Todo"), st)
+ok("§8h a spent cap does NOT let the escalation overwrite the human either",
+   b.statuses(508) == [] and b.tasks[508]["status"] == "Approval",
+   f"got {b.statuses(508)}")
+ok("§8i no Blocked comment was posted",
+   not any("Blocked" in x for x in b.bodies(508)), f"got {b.bodies(508)}")
+ok("§8j the spent counter is left as it was (not reset by a non-escalation)",
+   disp.retries_used(st, 508) == MAX_RETRIES)
+
+print("\n[§8-open] the guard FAILS OPEN — an unreadable board must not park a task")
+b = use(Board([mktask(509, status="In Progress")]))
+b.status_get_raises = True
+st = reap_one(b, mkrun("r-blind", 509, write_log("blind", terminal("boom", True)),
+                       status0="Todo"))
+ok("§8k an unreadable status still restores (no silent stall in In Progress)",
+   b.tasks[509]["status"] == "Todo", f"got {b.tasks[509]['status']}")
+ok("§8l and the comment SAYS the current status could not be verified",
+   any("could not be read back" in x for x in b.bodies(509)), f"got {b.bodies(509)}")
+ok("§8m that path does spend a retry (it really did re-arm the task)",
+   disp.retries_used(st, 509) == 1)
+
+print("\n[§8-real] REAL TOPOLOGY: dispatch → run dies → human moved it → reap")
+TID3 = 199
+b = use(Board([mktask(TID3)]))
+os.remove(disp.STATE_FILE)
+disp.CLAUDE_BIN = fake_claude("claude_fail2.sh", "API Error: 500 · run died", True, 1)
+disp.one_pass(live=True)                       # real claim → In Progress
+wait_for_terminal()
+b.tasks[TID3]["status"] = "Approval"           # the human, mid-run, on the board
+disp.one_pass(live=True)                       # reap + the next dispatch decision
+ok("§8n the real reap left the human's status alone",
+   b.tasks[TID3]["status"] == "Approval", f"got {b.statuses(TID3)}")
+ok("§8o only the claim was ever PATCHed — no revert",
+   b.statuses(TID3) == ["In Progress"], f"got {b.statuses(TID3)}")
+ok("§8p the pulled-back task was NOT re-dispatched",
+   len(json.load(open(disp.STATE_FILE))["runs"]) == 1)
+ok("§8q Review never appeared", "Review" not in b.statuses(TID3))
+ok("§8r the thread explains why it stopped here",
+   any("CHANGED during the run" in x for x in b.bodies(TID3)))
 
 print(f"\n{PASS} checks passed"
       + (f", {len(FAILS)} FAILED: {FAILS}" if FAILS else " — ALL PASS"))

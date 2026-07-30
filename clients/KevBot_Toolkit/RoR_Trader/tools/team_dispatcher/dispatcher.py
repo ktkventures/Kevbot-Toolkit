@@ -12,7 +12,10 @@ task is returned to the status it held BEFORE dispatch (recorded on the run at
 claim time, since the board no longer holds it by reap) so a transient failure
 self-heals on the next poll, and after MAX_AUTO_RETRIES it escalates to `Blocked`
 with the blocker NAMED — matching the lease-expired leg, which always got this
-right. `ok` runs are unchanged.
+right. `ok` runs are unchanged. A HUMAN OUTRANKS BOTH ERROR LEGS: the current
+status is re-read at reap time, and if the task is no longer `In Progress` — a
+human moved it during the run — the dispatcher leaves it exactly where they put
+it, says so, and spends no retry.
 
 V4.19 (board #143, V2.12): @-MENTION DELIVERY. A dispatched agent's prompt now
 carries that lane's UNSEEN mentions — the same `task_mentions` rows F's Messages
@@ -650,6 +653,26 @@ def set_retries(st, task_id, n):
         r.pop(str(task_id), None)
 
 
+def status_now(task_id):
+    """The task's status RIGHT NOW, re-read from the board at reap time (board
+    #197 audible). Returns (status, verified).
+
+    `verified` is False when the board could not be read — API error, or the task
+    no longer exists. Fail-OPEN is deliberate: refusing to patch on an unreadable
+    board would leave the task parked in `In Progress`, which is not dispatch-
+    eligible, recreating the exact silent stall #197 exists to kill. The caller
+    then behaves as V4.20 did and SAYS the current status was unverified."""
+    try:
+        rows = api("GET", f"dev_tasks?id=eq.{task_id}&select=status")
+    except Exception as e:
+        print(f"  WARN: could not re-read #{task_id}'s current status ({e}) — "
+              f"proceeding on the recorded pre-dispatch status", flush=True)
+        return None, False
+    if not rows or not (rows[0] or {}).get("status"):
+        return None, False
+    return rows[0]["status"], True
+
+
 def report_failed_run(st, r, result, tail):
     """Board #197 — terminal reporting for a run that DIED (API error, crash,
     kill). Never `Review`: that status asserts reviewable output exists, and a
@@ -660,7 +683,17 @@ def report_failed_run(st, r, result, tail):
     the next poll re-dispatches it with no human in the loop; once the cap is
     spent it goes `Blocked` with the blocker NAMED, matching the lease leg. One
     system comment carries the failure, the transition and the log tail — the
-    agent is NOT credited with a result it never produced."""
+    agent is NOT credited with a result it never produced.
+
+    AUDIBLE (#197 step 4) — A HUMAN'S STATUS CHANGE OUTRANKS BOTH LEGS. Runs last
+    minutes against a 45-minute lease, so the board can move underneath one: the
+    realistic case is Kevin pulling a task Todo → Approval while it runs. Blindly
+    writing `status0` back (or `Blocked`) would silently undo that, and the next
+    poll would re-dispatch work he had deliberately pulled back — a worse lie than
+    the `Review` this task exists to kill. So the CURRENT status is re-read first,
+    and if the task is no longer `In Progress` (the value the claim wrote, see
+    one_pass) the dispatcher writes NOTHING: it leaves the task where the human
+    put it, says so on the thread, and spends no retry — nothing was retried."""
     used = retries_used(st, r["task_id"])
     status0 = r.get("status0")
     # Runs claimed before V4.20 carry no status0, and the board no longer holds
@@ -670,7 +703,24 @@ def report_failed_run(st, r, result, tail):
     unrecorded = "" if status0 else (
         " — NOTE: this run recorded no pre-dispatch status (claimed by a "
         "pre-V4.20 dispatcher), so Todo was assumed")
-    if used < MAX_AUTO_RETRIES:
+    live_status, verified = status_now(r["task_id"])
+    # Fail-open, but never silently: an unreadable board means the human-change
+    # guard below could not run, and the reader deserves to know which of the two
+    # rules produced the transition they are looking at.
+    unverified = "" if verified else (
+        " — NOTE: the task's CURRENT status could not be read back at reap time, "
+        "so this assumes nobody moved the task during the run")
+    if verified and live_status != "In Progress":
+        # Someone moved this task while the run was in flight. Hands off — both
+        # the restore and the escalation would overwrite a deliberate human
+        # decision, and neither is worth more than it is.
+        would_be = status0 or "Todo (assumed — none recorded)"
+        transition = (f"status left at {live_status} — CHANGED during the run "
+                      f"(it is no longer In Progress), so the dispatcher did NOT "
+                      f"touch it: pre-dispatch status {would_be} NOT restored, no "
+                      f"escalation. No automatic retry was spent "
+                      f"({used} of {MAX_AUTO_RETRIES} used) — nothing was retried.")
+    elif used < MAX_AUTO_RETRIES:
         restore = status0 or "Todo"
         set_retries(st, r["task_id"], used + 1)
         api("PATCH", f"dev_tasks?id=eq.{r['task_id']}", body={"status": restore})
@@ -682,7 +732,7 @@ def report_failed_run(st, r, result, tail):
                       f"NOT auto-retried from {restore} — press Run again or move it "
                       f"to Todo (that would be retry {used + 1} of {MAX_AUTO_RETRIES})")
         transition = (f"status: In Progress → {restore} (pre-dispatch status "
-                      f"restored; {retry_note}){unrecorded}")
+                      f"restored; {retry_note}){unrecorded}{unverified}")
     else:
         set_retries(st, r["task_id"], 0)
         blocker = (f"{MAX_AUTO_RETRIES + 1} consecutive dispatched runs died — "
@@ -690,7 +740,7 @@ def report_failed_run(st, r, result, tail):
                    f"the log tails, fix the cause, and move this back to Todo.")
         api("PATCH", f"dev_tasks?id=eq.{r['task_id']}",
             body={"status": "Blocked", "notes": f"dispatch failure — {blocker}"})
-        transition = f"status: In Progress → Blocked — blocker: {blocker}"
+        transition = f"status: In Progress → Blocked — blocker: {blocker}{unverified}"
     api("POST", "dev_task_comments", body={
         "task_id": r["task_id"], "author": "system",
         "body": (f"dispatch run FAILED ({r['agent']}·auto run {r['run_id']}) — the run "
@@ -703,7 +753,8 @@ def report_failed_run(st, r, result, tail):
 def reap(st):
     """Collect finished live runs → post comments, move the task to its
     outcome's terminal status (board #197: `ok` → Review; `error` → pre-dispatch
-    status, or Blocked once the retry cap is spent; lease expired → Blocked).
+    status, or Blocked once the retry cap is spent, or LEFT ALONE if a human moved
+    the task during the run; lease expired → Blocked).
     Runs in state were always live-dispatched, so reporting is unconditional.
     Collect triggers (board #131): process gone; lease expired (kill +
     Blocked); or the log already carries the terminal result JSON while the
