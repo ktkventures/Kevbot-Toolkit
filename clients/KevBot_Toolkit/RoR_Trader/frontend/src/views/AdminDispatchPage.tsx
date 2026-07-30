@@ -9,7 +9,8 @@
  * zero schema change, zero new endpoint, zero new capture.
  *
  * Four panels (spec §4-§7):
- *   1 LANES     — slots vs the configured CONCURRENCY, plus per-lane busy/free
+ *   1 LANES     — slots vs the configured CONCURRENCY, plus per-lane busy/free,
+ *                 and (board #228) the DAILY CAP as an editable LIVE value
  *   2 IN FLIGHT — one card per live run, with STEP n of N
  *   3 QUEUE     — the two DELIBERATELY SEPARATE controls: the AI-eligible
  *                 TOGGLE (input) and the run-state PILL (output), with the Run
@@ -24,6 +25,17 @@
  * as a known gap (§8) rather than faked. A dashboard whose blind spots are
  * invisible manufactures false confidence; that is the #157 "0 healthy"
  * dead-alarm lesson, and this page is not repeating it.
+ *
+ * BOARD #228 adds the ONE write this page did not have: the daily cap. The loop
+ * re-reads `system_settings.dispatcher_daily_cap` on every poll, so the cap is
+ * changeable without a deploy — but only if there is somewhere to change it.
+ * Kevin ruled that somewhere is here (07-30: "yea put it on dispatch"). Two
+ * rails, both of which have a test that fails without them: the panel renders
+ * the LIVE settings row and never the `DISPATCHER.DAILY_CAP` mirror (the
+ * build-time copy that went stale in #219), and an out-of-range value is
+ * REFUSED with its reason rather than written for the loop to silently clamp.
+ * `effective_daily_cap()` stays the SSOT for both the clamp and the fallback;
+ * `resolveDailyCap` below is a mirror of it and must never diverge.
  *
  * Production-bundle rails (CLAUDE.md): every hook before any early return, no
  * IIFE initialisation, and a variable is declared before the useMemo that
@@ -54,6 +66,14 @@ const REFRESH_MS = 15000;
 const RUN_LIMIT = 400;
 /** Grace on top of the 45m lease before a `running` row is called stale (§4). */
 const STALE_GRACE_S = 120;
+/**
+ * The one endpoint the daily-cap control reads AND writes (board #228).
+ *
+ * Declared once so the read and the write can never drift onto different keys —
+ * and built from the mirrored `DAILY_CAP_SETTING`, so the key the page touches
+ * is the key `effective_daily_cap()` reads, by construction.
+ */
+const CAP_ENDPOINT = `/api/admin/system-settings/${DISPATCHER.DAILY_CAP_SETTING}`;
 
 /* ── Pure derivations (module scope: testable, and out of the render body) ── */
 
@@ -117,6 +137,91 @@ export function consecutiveFailures(rows: RunRow[]): number {
     else break;
   }
   return n;
+}
+
+/* ── Daily cap: the LIVE value, not the mirror (board #228) ──────────────── */
+
+/** The `/api/admin/system-settings/{key}` read shape — only what the cap needs. */
+export interface CapSetting { key: string; value: unknown; db_value: unknown; source?: string }
+
+/** What the running loop would compute for this row: the cap and WHY. */
+export interface CapState { cap: number; source: string; fromSettings: boolean }
+
+/**
+ * Mirror of `effective_daily_cap()` in dispatcher.py — deliberately, line for
+ * line (board #228).
+ *
+ * The loop re-reads `system_settings.dispatcher_daily_cap` on EVERY poll, so
+ * the cap it enforces is that row, not the `DISPATCHER.DAILY_CAP` mirror above
+ * (a build-time copy — the thing that went stale in #219). This page therefore
+ * renders the row too, and resolves it with the SAME policy the loop uses, so
+ * the number on the panel and the number in the breaker cannot disagree:
+ *
+ *   • row missing      -> the fallback constant, source "constant (no row)"
+ *   • not an int       -> the fallback constant, source NAMES the bad value
+ *   • out of range     -> CLAMPED to [1, DAILY_CAP_MAX], original reported
+ *
+ * The failure legs return the constant AND say so, because a cap that has
+ * quietly reverted to 50 looks identical to one that is working — the #157
+ * dead-alarm lesson applied to a circuit breaker.
+ *
+ * dispatcher.py is the SSOT for this policy; this is a mirror of it and must
+ * never be the place it is changed.
+ */
+export function resolveDailyCap(dbValue: unknown): CapState {
+  const fallback = DISPATCHER.DAILY_CAP;
+  if (dbValue === null || dbValue === undefined) {
+    return { cap: fallback, source: 'constant (no row)', fromSettings: false };
+  }
+  // Coercion follows Python's `int()` because that is what the loop calls: a
+  // NUMBER truncates toward zero, a STRING must look like a whole number, and
+  // anything else is refused. Not a detail — a value the loop honours and the
+  // page refuses (or vice versa) is the exact disagreement this rail exists to
+  // prevent, and the test cross-checks both against the same inputs.
+  let val = NaN;
+  if (typeof dbValue === 'number') val = Number.isFinite(dbValue) ? Math.trunc(dbValue) : NaN;
+  else if (typeof dbValue === 'string' && /^[+-]?\d+$/.test(dbValue.trim())) val = parseInt(dbValue.trim(), 10);
+  else val = NaN;
+  if (!Number.isFinite(val)) {
+    return {
+      cap: fallback,
+      source: `constant (row value ${JSON.stringify(dbValue)} is not an int)`,
+      fromSettings: false,
+    };
+  }
+  const { DAILY_CAP_MIN: lo, DAILY_CAP_MAX: hi } = DISPATCHER;
+  if (val < lo || val > hi) {
+    return {
+      cap: Math.max(lo, Math.min(val, hi)),
+      source: `settings CLAMPED from ${val} to [${lo},${hi}]`,
+      fromSettings: true,
+    };
+  }
+  return { cap: val, source: 'settings', fromSettings: true };
+}
+
+/**
+ * Gate on the edit box, using the SAME bounds `effective_daily_cap()` clamps to.
+ *
+ * The loop would not honour an out-of-range value — it would clamp it and run a
+ * different cap than the one typed — so the page refuses it outright and names
+ * the reason, rather than writing a number the breaker will silently rewrite.
+ * `0` and negatives are refused for the same reason they clamp to 1 in the
+ * loop: no setting may disable the breaker.
+ */
+export function validateCapInput(raw: string): { ok: boolean; value?: number; reason?: string } {
+  const s = (raw || '').trim();
+  const { DAILY_CAP_MIN: lo, DAILY_CAP_MAX: hi } = DISPATCHER;
+  if (!s) return { ok: false, reason: 'enter a number' };
+  if (!/^-?\d+$/.test(s)) return { ok: false, reason: `"${s}" is not a whole number` };
+  const n = parseInt(s, 10);
+  if (n < lo) {
+    return { ok: false, reason: `${n} is below the minimum of ${lo} — no setting may disable the breaker` };
+  }
+  if (n > hi) {
+    return { ok: false, reason: `${n} is above the maximum of ${hi} (DAILY_CAP_MAX) — the loop would clamp it` };
+  }
+  return { ok: true, value: n };
 }
 
 /** One row of the shipping lane: work that is built but has not shipped. */
@@ -238,6 +343,13 @@ export default function AdminDispatchPage() {
   const [outcomeFilter, setOutcomeFilter] = useState('all');
   const [agentFilter, setAgentFilter] = useState('all');
   const [openTails, setOpenTails] = useState<Set<number>>(new Set());
+  // Daily cap (#228) — the LIVE settings row, kept out of the three-GET poll
+  // body on purpose: it is one constant-path read, not a fan-out over rows.
+  const [capRow, setCapRow] = useState<CapSetting | null>(null);
+  const [capRead, setCapRead] = useState<'pending' | 'ok' | 'error'>('pending');
+  const [capDraft, setCapDraft] = useState('');
+  const [capMsg, setCapMsg] = useState<{ kind: 'err' | 'ok'; text: string } | null>(null);
+  const [capSaving, setCapSaving] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -258,13 +370,36 @@ export default function AdminDispatchPage() {
     finally { setLoading(false); }
   }, []);
 
+  /**
+   * The live cap (#228) — a SEPARATE single read, not part of the §10 poll.
+   *
+   * It is deliberately its own call: the poll's rail is "three list GETs joined
+   * in memory, never a per-row fetch" (#148), and folding a fourth list-shaped
+   * read into it would blur that rail. This is one constant-path GET of one row.
+   *
+   * A failed read is NOT silently treated as "no row" — that is the failure the
+   * whole task exists to kill — so `capRead` distinguishes unreadable from
+   * absent, and the panel says which.
+   */
+  const loadCap = useCallback(async () => {
+    try {
+      const row = await apiFetch<CapSetting>(CAP_ENDPOINT);
+      setCapRow(row || null);
+      setCapRead('ok');
+    } catch {
+      setCapRow(null);
+      setCapRead('error');
+    }
+  }, []);
+
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { loadCap(); }, [loadCap]);
   useEffect(() => {
     const id = setInterval(() => {
-      if (!document.hidden) load();   // paused while the tab is hidden (§10)
+      if (!document.hidden) { load(); loadCap(); }   // paused while the tab is hidden (§10)
     }, REFRESH_MS);
     return () => clearInterval(id);
-  }, [load]);
+  }, [load, loadCap]);
   useEffect(() => {
     const id = setInterval(() => setTick((n) => n + 1), 5000);
     return () => clearInterval(id);
@@ -272,6 +407,17 @@ export default function AdminDispatchPage() {
   useEffect(() => {
     setAuthor(localStorage.getItem(AUTHOR_LS_KEY) || '');
   }, []);
+
+  // The cap the loop would enforce right now, resolved with the loop's own
+  // policy. `capRead === 'error'` is NOT folded into "no row": an unreadable
+  // settings endpoint and an absent row are different failures and read
+  // differently on the panel.
+  const capState = useMemo<CapState>(() => {
+    if (capRead === 'error') {
+      return { cap: DISPATCHER.DAILY_CAP, source: 'constant (settings unreadable)', fromSettings: false };
+    }
+    return resolveDailyCap(capRow?.db_value);
+  }, [capRow, capRead]);
 
   const taskById = useMemo(() => {
     const m = new Map<number, Task>();
@@ -397,6 +543,30 @@ export default function AdminDispatchPage() {
     load();
   }, [author, load]);
 
+  /**
+   * Write the new cap (#228). The gate runs BEFORE the request: an out-of-range
+   * value is refused here with its reason and never reaches the row, because
+   * the loop would clamp it and then enforce a cap nobody chose.
+   */
+  const saveCap = useCallback(async () => {
+    const v = validateCapInput(capDraft);
+    if (!v.ok) { setCapMsg({ kind: 'err', text: `refused — ${v.reason}` }); return; }
+    setCapSaving(true);
+    try {
+      await apiFetch(CAP_ENDPOINT, { method: 'PATCH', body: JSON.stringify({ value: v.value }) });
+      setCapMsg({
+        kind: 'ok',
+        text: `saved — cap is ${v.value}. The dispatcher re-reads it on its NEXT poll `
+          + `(~${DISPATCHER.POLL_S}s), so a run started in the next few seconds is still `
+          + `charged against the old number. No deploy and no restart.`,
+      });
+      setCapDraft('');
+      await loadCap();
+    } catch (e) {
+      setCapMsg({ kind: 'err', text: `save failed — ${String(e)}` });
+    } finally { setCapSaving(false); }
+  }, [capDraft, loadCap]);
+
   const toggleTail = (id: number) => setOpenTails((prev) => {
     const next = new Set(prev);
     if (next.has(id)) next.delete(id); else next.add(id);
@@ -469,14 +639,83 @@ export default function AdminDispatchPage() {
       <Panel
         title={`lanes — ${liveRuns.length}/${DISPATCHER.CONCURRENCY} in use`}
         sub={<>
-          {DISPATCHER.CONCURRENCY} concurrent slots · {startedToday}/{DISPATCHER.DAILY_CAP} runs
+          {DISPATCHER.CONCURRENCY} concurrent slots · {startedToday}/{capState.cap} runs
           {' '}started today — the cap&apos;s window is the <b>UTC day</b>, so it resets at
           {' '}<code style={mono}>00:00Z</code> (18:00 MT): an evening&apos;s runs are charged to the
           {' '}next MT morning (board #219). Counted from <code style={mono}>run_history</code>, not from the
           {' '}dispatcher&apos;s own <code style={mono}>state.json</code> counter — they can differ by any
-          {' '}run that failed to record). Values labelled <i>configured</i> are mirrored from
-          {' '}<code style={mono}>tools/team_dispatcher/dispatcher.py</code>, which the app cannot read.
+          {' '}run that failed to record). <b>CONCURRENCY</b> is labelled <i>configured</i> because it is
+          {' '}mirrored from <code style={mono}>tools/team_dispatcher/dispatcher.py</code>, which the app
+          {' '}cannot read; the <b>cap is not</b> — it is read live from the settings row below (#228).
         </>}>
+        {/* ── Daily-cap control (board #228) ───────────────────────────────
+            The number here is the LIVE `system_settings.dispatcher_daily_cap`
+            row, never the DISPATCHER.DAILY_CAP mirror: the loop re-reads that
+            row every poll, so rendering the build-time copy beside an editable
+            control would put two different caps on one panel — which is exactly
+            how #219 shipped a claim that was never true. */}
+        <div style={{
+          border: '1px solid var(--border)', borderRadius: 10, padding: '10px 12px',
+          marginBottom: 12, display: 'flex', gap: 12, alignItems: 'flex-start', flexWrap: 'wrap',
+        }}>
+          <div style={{ minWidth: 190 }}>
+            <div style={{ ...dim, fontSize: 10.5, letterSpacing: 0.6 }}>DAILY CAP · live</div>
+            <div style={{ fontSize: 20, fontWeight: 700, lineHeight: 1.2 }}>
+              {capRead === 'pending' ? '…' : capState.cap}
+              <span style={{ ...dim, fontSize: 12, fontWeight: 400 }}> runs / UTC day</span>
+            </div>
+            <div style={{
+              fontSize: 11, marginTop: 2,
+              color: capState.fromSettings ? 'var(--green)' : 'var(--amber, #d98c00)',
+            }} title="The `source` the dispatcher prints on its own poll line — settings vs the fallback constant.">
+              source: <code style={mono}>{capRead === 'pending' ? '…' : capState.source}</code>
+            </div>
+          </div>
+
+          <div style={{ flex: '1 1 300px', minWidth: 280 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input
+                style={{ ...input, width: 92, fontSize: 13 }}
+                inputMode="numeric"
+                placeholder={String(capState.cap)}
+                aria-label="new daily cap"
+                value={capDraft}
+                onChange={(e) => { setCapDraft(e.target.value); setCapMsg(null); }}
+                onKeyDown={(e) => { if (e.key === 'Enter') saveCap(); }}
+              />
+              <button
+                style={{ ...input, cursor: capSaving ? 'default' : 'pointer', fontSize: 12 }}
+                disabled={capSaving}
+                onClick={saveCap}
+              >{capSaving ? 'saving…' : 'set cap'}</button>
+              <span style={{ ...dim, fontSize: 11.5 }}>
+                allowed <code style={mono}>[{DISPATCHER.DAILY_CAP_MIN}, {DISPATCHER.DAILY_CAP_MAX}]</code>
+              </span>
+            </div>
+            {capMsg && (
+              <div style={{
+                fontSize: 12, marginTop: 5,
+                color: capMsg.kind === 'err' ? 'var(--red)' : 'var(--green)',
+              }}>{capMsg.kind === 'err' ? '⚠ ' : '✓ '}{capMsg.text}</div>
+            )}
+            <div style={{ ...dim, fontSize: 11.5, marginTop: 5 }}>
+              Takes effect on the dispatcher&apos;s <b>next poll (~{DISPATCHER.POLL_S}s)</b> — no deploy, no
+              restart, no loop bounce. A change that has not landed yet is one poll behind, not broken.
+              {' '}Out of range is <b>refused here</b> with the reason: the loop would clamp it to
+              {' '}<code style={mono}>[{DISPATCHER.DAILY_CAP_MIN}, {DISPATCHER.DAILY_CAP_MAX}]</code> and then
+              {' '}enforce a cap nobody chose. Kevin&apos;s call to change: this is a circuit breaker, not a
+              {' '}ration (board #219).
+            </div>
+            {!capState.fromSettings && capRead !== 'pending' && (
+              <div style={{ fontSize: 12, marginTop: 5, color: 'var(--amber, #d98c00)' }}>
+                ⚠ The loop is running on the <b>fallback constant</b> ({DISPATCHER.DAILY_CAP}), not on the
+                settings row — <code style={mono}>{capState.source}</code>. Setting a value here writes the
+                row and takes the loop off the fallback.
+              </div>
+            )}
+          </div>
+        </div>
+
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
           {slots.map((r, i) => (
             <div key={i} style={{

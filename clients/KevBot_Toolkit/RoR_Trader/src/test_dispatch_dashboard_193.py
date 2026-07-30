@@ -150,9 +150,19 @@ ok("run-history is bulk, not per-row", any("run-history?limit=" in g for g in lo
 # #148: the poll fetches THREE lists and joins them; the only per-task calls in
 # the file are the two user-initiated WRITES (§9: "no new write path"), never a
 # read fanned out over rows.
+#
+# BOARD #228 added a FOURTH read — the live daily cap — and it is named here
+# rather than left to slip past these regexes unnoticed. It does not weaken the
+# #148 rail: the rail is about FAN-OUT (one call per row), and the cap is a
+# single GET of a single constant-path row, issued from its OWN callback so the
+# poll body below still holds at exactly three.
 load_body = PAGE.split("const load = useCallback")[1].split("}, []);")[0]
 ok("the poll body issues exactly three apiFetch calls (#148)",
    load_body.count("apiFetch") == 3, load_body.count("apiFetch"))
+ok("#228's cap read is OUTSIDE the poll body, on a constant path",
+   "apiFetch" not in PAGE.split("const loadCap = useCallback")[1].split("}, []);")[0].replace(
+       "apiFetch<CapSetting>(CAP_ENDPOINT)", "")
+   and re.search(r"^const CAP_ENDPOINT = ", PAGE, re.M) is not None)
 per_task = set(re.findall(r"apiFetch\(`(/api/[^`]*\$\{[^`]*)`", PAGE))
 ok("the only per-task calls are the two writes, not a read fan-out",
    per_task == {"/api/dev-tasks/${id}", "/api/dev-tasks/${id}/run-request"}, per_task)
@@ -189,8 +199,15 @@ print("― §9 non-goals: Half 2 is NOT built here ―")
 for banned in ("octokit", "api.github.com", "github.com/", "gh pr ", "pr_number:"):
     ok(f"no train-builder surface: {banned}", banned.lower() not in PAGE.lower())
 ok("no 'push a train to dev' action", re.search(r"onClick=\{[^}]*(push|merge|train)", PAGE, re.I) is None)
-ok("the page writes nothing new: only the ai_eligible PATCH and the run POST",
+# §9's "no new write path" held until board #228, which added exactly one: the
+# daily cap. Kevin ruled it belongs here (07-30). The verbs are unchanged — the
+# write set is enumerated by ENDPOINT below so a fifth one cannot arrive quietly.
+ok("the page's write verbs are still only PATCH and POST",
    sorted(set(re.findall(r"method: '(\w+)'", PAGE))) == ["PATCH", "POST"])
+writes = set(re.findall(r"apiFetch(?:<[^>]*>)?\(\s*([^,\n]+?),\s*\{\s*\n?\s*method:", PAGE))
+ok("exactly three writes: the task PATCH, the run POST and #228's cap PATCH",
+   writes == {"`/api/dev-tasks/${id}`", "`/api/dev-tasks/${id}/run-request`", "CAP_ENDPOINT"},
+   writes)
 
 print("― CLAUDE.md production-bundle rails ―")
 body = PAGE.split("export default function AdminDispatchPage")[1]

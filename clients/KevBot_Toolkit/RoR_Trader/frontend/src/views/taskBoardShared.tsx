@@ -317,12 +317,27 @@ export interface RunRow {
  * charged to the next morning. The lane panel prints that reset time so the cap
  * cannot be spent unknowingly.
  *
+ * ⚠ DAILY_CAP IS NO LONGER THE LIVE VALUE (board #228). The live cap lives in
+ * `system_settings.dispatcher_daily_cap` and is re-read by the loop on EVERY
+ * poll; this mirror is a build-time copy of dispatcher.py's FALLBACK constant
+ * and nothing more. It went stale under #219 and needed #226 to fix — which is
+ * exactly why the dispatch page renders the settings row, not this number, and
+ * falls back to it only when the row is missing or unreadable (and says so).
+ *
+ * DAILY_CAP_MAX / DAILY_CAP_SETTING mirror the same two names in dispatcher.py.
+ * The bound is what `effective_daily_cap()` CLAMPS to, so the UI refuses out of
+ * range using this exact number: page and loop cannot be allowed to disagree
+ * about what a legal cap is.
+ *
  * CONCURRENCY 3 → 4 (same change, board #219) — this mirror was missed when
  * DAILY_CAP was updated beside it, so the dashboard advertised 3 lanes while the
  * loop ran 4, and test_dispatch_dashboard_193.py went RED on dev. Both constants
  * move together: dispatcher.py is the SSOT and this line only mirrors it.
  */
-export const DISPATCHER = { CONCURRENCY: 4, DAILY_CAP: 50, RUN_TIMEOUT_S: 2700, POLL_S: 20 };
+export const DISPATCHER = {
+  CONCURRENCY: 4, DAILY_CAP: 50, RUN_TIMEOUT_S: 2700, POLL_S: 20,
+  DAILY_CAP_MIN: 1, DAILY_CAP_MAX: 500, DAILY_CAP_SETTING: 'dispatcher_daily_cap',
+};
 
 // The agreed pipeline (Kevin+M 07-25, board #136): Backlog → Scoping →
 // Approval → Todo → In Progress → Review → Staged → Done; Blocked is the
