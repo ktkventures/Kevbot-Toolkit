@@ -470,7 +470,9 @@ export default function AdminDispatchPage() {
         title={`lanes — ${liveRuns.length}/${DISPATCHER.CONCURRENCY} in use`}
         sub={<>
           {DISPATCHER.CONCURRENCY} concurrent slots · {startedToday}/{DISPATCHER.DAILY_CAP} runs
-          {' '}started today (counted from <code style={mono}>run_history</code>, not from the
+          {' '}started today — the cap&apos;s window is the <b>UTC day</b>, so it resets at
+          {' '}<code style={mono}>00:00Z</code> (18:00 MT): an evening&apos;s runs are charged to the
+          {' '}next MT morning (board #219). Counted from <code style={mono}>run_history</code>, not from the
           {' '}dispatcher&apos;s own <code style={mono}>state.json</code> counter — they can differ by any
           {' '}run that failed to record). Values labelled <i>configured</i> are mirrored from
           {' '}<code style={mono}>tools/team_dispatcher/dispatcher.py</code>, which the app cannot read.

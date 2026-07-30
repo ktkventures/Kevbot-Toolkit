@@ -150,7 +150,17 @@ except Exception as _mentions_import_err:  # pragma: no cover — belt and brace
           f"dispatch continues", flush=True)
 
 CONCURRENCY = 3          # Kevin 07-23; blocked_by is the long-term governor
-DAILY_CAP = 24           # circuit breaker only
+# Circuit breaker ONLY — it exists to stop a runaway loop, never to ration an
+# ordinary day. Raised 24 → 40 by Kevin on 07-30 (board #219) after one overnight
+# session spent 20 of 24 and left 4 for all of Thursday. Two properties Kevin
+# asked for, and both must survive any future edit:
+#   • easy to adjust — one integer, read at runtime, no deploy;
+#   • his call to adjust it — changing this number needs Kevin's explicit
+#     approval, exactly like a flag arm. Do not "temporarily" raise it in a run.
+# The window is the UTC DAY (today_run_count() below), so it rolls at 00:00Z =
+# 18:00 MT — an evening's throughput is charged to the NEXT MT morning. Kevin has
+# NOT ruled on moving to a rolling 24h window (board #219 option 3); it stays UTC-day.
+DAILY_CAP = 40
 POLL_S = 900
 RUN_TIMEOUT_S = 45 * 60  # lease
 CLAUDE_BIN = "claude"
@@ -225,7 +235,7 @@ GATE_FILTER = "or=(ai_eligible.eq.true,status.eq.Todo)"
 # current step to protect them with. The hole is reachable by the ORDINARY flow:
 # Kevin stamps a contained task (the stamp arms it) → it runs → M closes it →
 # `Done` + armed + chainless + headless assignee, with nothing disarming it. It
-# would re-run finished work and eat the 24-run DAILY_CAP.
+# would re-run finished work and eat the daily DAILY_CAP.
 # The API also disarms on close (dev_tasks.update_task) — hygiene, and it makes
 # the data honest — but that depends on every future close path remembering,
 # whereas THIS rail cannot be forgotten. Both, deliberately.
