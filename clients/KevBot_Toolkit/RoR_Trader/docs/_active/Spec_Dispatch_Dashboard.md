@@ -97,13 +97,20 @@ the UI so a drift is legible rather than invisible:
 // RUN_TIMEOUT_S). Mirrored here because the app cannot read it. POLL_S is the
 // OPERATIONAL value the loop is started with (`--loop --poll 20`), not the
 // module default (900) — it is used only to word the "can lag one poll" note.
-export const DISPATCHER = { CONCURRENCY: 3, DAILY_CAP: 24, RUN_TIMEOUT_S: 2700, POLL_S: 20 };
+export const DISPATCHER = { CONCURRENCY: 3, DAILY_CAP: 40, RUN_TIMEOUT_S: 2700, POLL_S: 20 };
 ```
 
 `runs started today` = `run_history` rows with non-null `started_at` whose UTC date is
 today. `requested` and `ignored` rows are requests, not runs — excluded. Label it
 "started today (from run_history)": the dispatcher's own cap counts `state.json`, so
 the two can differ by any run that failed to record, and the label keeps that honest.
+
+**The cap's window is the UTC day** (`dispatcher.today_run_count()`), which rolls at
+`00:00Z` = **18:00 MT** — an evening's throughput is charged to the *next* MT morning.
+The lane panel must print that reset time beside the count: board #219 was filed
+because a cap can otherwise be spent unknowingly overnight. `DAILY_CAP` itself is a
+circuit breaker, raised 24 → 40 by Kevin on 07-30 (#219); a rolling-24h window
+(#219 option 3) was NOT adopted.
 
 ## 5. Panel 2 — In flight (one card per live run)
 

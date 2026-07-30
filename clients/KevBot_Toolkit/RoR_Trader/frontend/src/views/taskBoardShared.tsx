@@ -311,8 +311,13 @@ export interface RunRow {
  * POLL_S is the OPERATIONAL value the loop is started with (`--loop --poll 20`),
  * not the module default (900) — it is used only to word the "can lag one poll"
  * note, never to compute a state.
+ *
+ * DAILY_CAP 24 → 40 (Kevin, 07-30, board #219) — a circuit breaker, not a ration.
+ * Its window is the UTC DAY, which rolls at 18:00 MT: an evening's runs are
+ * charged to the next morning. The lane panel prints that reset time so the cap
+ * cannot be spent unknowingly.
  */
-export const DISPATCHER = { CONCURRENCY: 3, DAILY_CAP: 24, RUN_TIMEOUT_S: 2700, POLL_S: 20 };
+export const DISPATCHER = { CONCURRENCY: 3, DAILY_CAP: 40, RUN_TIMEOUT_S: 2700, POLL_S: 20 };
 
 // The agreed pipeline (Kevin+M 07-25, board #136): Backlog → Scoping →
 // Approval → Todo → In Progress → Review → Staged → Done; Blocked is the
