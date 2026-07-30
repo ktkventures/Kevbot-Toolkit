@@ -51,6 +51,38 @@ a worktree. It reads, prints, and at most writes one `dev_tasks` row.
 
 Rails suite: `python3 tools/release_brief/test_brief_gen.py` (expect `ALL PASS`).
 
+## After the merges land — tick the CARS' ship steps (board #242)
+
+```
+python3 tools/release_brief/car_ship_tick.py --dry-run   # show, change nothing
+python3 tools/release_brief/car_ship_tick.py             # tick what actually merged
+```
+
+**A release train is its own board task and it ticks its OWN chain. Nothing ticks the
+CARS'.** So a merged car keeps an open `Ship via a release train` step, holds
+`Staged`/`Review`, and renders in the shipping lane exactly like work that never went
+anywhere. That happened after Wave 23 (#217, #218, #224), Wave 24 (#220, #228, #232,
+#234, #235) and Wave 25 (#225, #229, #239); M hand-ticked all three times, and on the
+third **Kevin saw the stale lane first**.
+
+It is **procedure step 4** of every generated brief — after the merges, before
+deploy-watch — and the hard-limits block routes the ABORT path through it too, so a
+partial train still leaves an honest board.
+
+- The tick **follows the merge, never the intent**: every candidate is gated on
+  `git merge-base --is-ancestor <branch> origin/dev` after a fresh fetch. There is no
+  code path that ticks an unmerged branch, so a car the train failed to merge cannot be
+  ticked by mistake.
+- It takes **no car list** — it re-derives candidates from the board the way the
+  generator derives cars (first incomplete step is `R`/`R-A`-owned) and resolves branches
+  with the same resolver, so it cannot be handed a wrong list of "what shipped".
+- It goes through **`POST /steps/complete`**, so `completed_at`, `completed_by` and the
+  hand-off to the next step's owner are recorded properly, then **re-reads the returned
+  row** to prove the step it meant to tick is the one that got ticked.
+- Idempotent and safe to re-run. **Exit 1 = a tick could not be verified** — hand to M.
+
+Rails suite: `python3 tools/release_brief/test_car_ship_tick.py` (expect `ALL PASS`).
+
 ### What the generator does NOT derive (M review, 07-30)
 
 Validated by replaying Waves 14 and 16 through it and diffing against the briefs M
