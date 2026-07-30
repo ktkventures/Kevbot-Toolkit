@@ -69,11 +69,19 @@ def fakes(branches, diffs, behind=None):
 APP = B.APP_PREFIX
 
 
-def train(tasks, branches, diffs, behind=None, owed=(), merged=()):
+def pr(number, head, title="a change", mergeable="MERGEABLE", draft=False):
+    return {"number": number, "headRefName": head, "title": title,
+            "mergeable": mergeable, "isDraft": draft}
+
+
+def train(tasks, branches, diffs, behind=None, owed=(), merged=(),
+          commits=None, open_prs=None, loop_staleness=None):
     rb, df, fb = fakes(branches, diffs, behind)
     return B.build_train(tasks, rb, df, fb, owed_logs=owed, wave=99,
                          base_sha="deadbee", date="2026-07-30", session="test",
-                         already_merged=lambda b: b in merged)
+                         already_merged=lambda b: b in merged,
+                         commits=(lambda b: commits.get(b)) if commits else None,
+                         open_prs=open_prs, loop_staleness=loop_staleness)
 
 
 # ---------------------------------------------------------------------------
@@ -316,8 +324,8 @@ def t_hard_limits():
           "merge/mrs5a-plus-dev-0722" in body and "fix/mass-search-heartbeat-31" in body)
     check("HARD LIMITS: main checkout is named as off-limits",
           "main checkout" in body)
-    check("HARD LIMITS: non-dispatcher train says the loop is on the running version",
-          "correctly on the running version" in body, body)
+    check("HARD LIMITS: non-dispatcher train says no restart is owed",
+          "no restart is owed" in body, body)
 
     # derived slot flips when a car touches the loop
     p = train([t], {901: "feat/c-901"}, {"feat/c-901": [APP + B.DISPATCHER_FILE]})
@@ -430,7 +438,8 @@ def _main_with_no_wave():
     """Drive main() with every live read stubbed and the wave unknowable."""
     saved = {n: getattr(B, n) for n in
              ("git", "staged_tasks", "live_owed_logs", "live_wave",
-              "live_other_branches", "live_loop_version")}
+              "live_other_branches", "live_loop_version", "live_open_prs",
+              "live_loop_staleness")}
     try:
         B.git = lambda *a, **k: (0, "", "")
         B.staged_tasks = lambda: [task(1, "c", REVIEWED_CHAIN)]
@@ -438,6 +447,8 @@ def _main_with_no_wave():
         B.live_wave = lambda: None
         B.live_other_branches = lambda c: []
         B.live_loop_version = lambda: None
+        B.live_open_prs = lambda: None            # no `gh` in the test process
+        B.live_loop_staleness = lambda: None      # no live loop either
         return B.main([])
     finally:
         for n, v in saved.items():
@@ -549,12 +560,15 @@ def t_gap_loop_version_is_read():
     check("GAP 4: only the HEAD of the file is scanned",
           B._banner_version("\n" * 40 + "V9.9\n") is None)
 
+    # The version is still READ (that was gap 4's defect: it was silently lost)
+    # but it is INFORMATIONAL only -- see t_gap224_restart_trigger for why a
+    # comparison between banners can never be the restart trigger.
     t = task(902, "loop change", REVIEWED_CHAIN)
     p = train([t], {902: "feat/l-902"}, {"feat/l-902": [APP + B.DISPATCHER_FILE]})
-    p["loop_version"], p["target_version"] = "4.24", "4.25"
+    p["loop_version"] = "4.24"
     body = B.render(p)
-    check("GAP 4: the brief names BOTH versions, like the hand-written ones did",
-          "V4.25" in body and "V4.24" in body, body)
+    check("GAP 4: the brief still states the running loop's version",
+          "V4.24" in body, body)
 
 
 def t_gap_armed_state_is_checked():
@@ -596,6 +610,180 @@ def t_gap_nonoverlapping_paths_still_stated():
           "do **not** overlap" in body and "#197" in body.split("## GATING")[0], body)
 
 
+# ---------------------------------------------------------------------------
+# BOARD #224 (07-30) -- three gaps found by running the generator on the two real
+# trains of Waves 19 and 20. Each check below FAILS against the pre-#224
+# generator; each is the generator REASONING about a change instead of READING it.
+# ---------------------------------------------------------------------------
+
+def t_gap224_prose_from_the_diff():
+    """GAP 1: per-car prose came from the board task TITLE. Wave 19's cargo line
+    named `DAILY_CAP` and shipped `CONCURRENCY 3->4` UNDESCRIBED -- the change
+    was in the diff and gated correctly; only the summary a reviewer trusts was
+    wrong."""
+    t = task(219, "Raise the dispatcher DAILY_CAP to 40", REVIEWED_CHAIN)
+    wave19 = ["f4e8a63 chore(dispatcher): DAILY_CAP 20 -> 40",
+              "61dac54 chore(dispatcher): CONCURRENCY 3 -> 4"]
+    p = train([t], {219: "chore/daily-cap-40-219"},
+              {"chore/daily-cap-40-219": [APP + B.DISPATCHER_FILE]},
+              commits={"chore/daily-cap-40-219": wave19})
+    body = B.render(p)
+    check("GAP 1: the car records the commits it carries",
+          p["cars"][0]["commits"] == wave19, str(p["cars"][0]["commits"]))
+    check("GAP 1: a commit absent from the task title is STILL described",
+          "CONCURRENCY 3 -> 4" in body, body)
+    check("GAP 1: the task title is still the header",
+          "board #219 -- Raise the dispatcher DAILY_CAP to 40" in body, body)
+    check("GAP 1: a multi-commit car is flagged as multi-commit",
+          p["cars"][0]["multi_commit"] is True)
+    check("GAP 1: ...and the flag is visible to a reader, not just in the plan",
+          "2 commits" in body, body)
+    check("GAP 1: the flag says the car carries more than its title",
+          "more than its title says" in body, body)
+
+    # NEGATIVE PROOF: one commit -> no multi-commit alarm, but still described.
+    p = train([t], {219: "chore/daily-cap-40-219"},
+              {"chore/daily-cap-40-219": [APP + B.DISPATCHER_FILE]},
+              commits={"chore/daily-cap-40-219": [wave19[0]]})
+    body = B.render(p)
+    check("GAP 1 negative proof: a single-commit car is not flagged",
+          p["cars"][0]["multi_commit"] is False and "2 commits" not in body, body)
+    check("GAP 1 negative proof: its one commit is still spelled out",
+          "DAILY_CAP 20 -> 40" in body, body)
+
+    # UNKNOWN != empty: a failed `git log` must not read as "carries nothing".
+    p = train([t], {219: "chore/daily-cap-40-219"},
+              {"chore/daily-cap-40-219": [APP + B.DISPATCHER_FILE]},
+              commits={"chore/daily-cap-40-219": None})
+    check("GAP 1: an unreadable commit list says so instead of claiming empty",
+          p["cars"][0]["commits"] is None)
+
+    # ...and with no commit facts injected at all the section is simply absent.
+    p = train([t], {219: "chore/daily-cap-40-219"},
+              {"chore/daily-cap-40-219": [APP + "src/a.py"]})
+    check("GAP 1: no cargo section when commits were never read",
+          "## What each car carries" not in B.render(p))
+
+
+def t_gap224_restart_trigger_is_dispatcher_touch():
+    """GAP 2: the restart trigger compared version banners. Wave 19 carried
+    `V4.25` on BOTH sides of the merge, so no comparison could ever have exposed
+    the drift. The trigger is "a car touched `dispatcher.py`"."""
+    t = task(219, "constant-only dispatcher change", REVIEWED_CHAIN)
+
+    # THE WAVE 19 SHAPE: a real dispatcher change, identical banner both sides.
+    p = train([t], {219: "chore/daily-cap-40-219"},
+              {"chore/daily-cap-40-219": [APP + B.DISPATCHER_FILE]})
+    p["loop_version"] = "4.25"          # and the branch's banner is 4.25 too
+    body = B.render(p)
+    check("GAP 2: a dispatcher-touching car demands a restart even when the "
+          "banner did not move", "M restarts and verifies" in body, body)
+    check("GAP 2: the brief says the trigger is the touch, not a version delta",
+          "NEVER a version comparison" in body, body)
+    check("GAP 2: the generator no longer computes a target version",
+          not hasattr(B, "live_target_version"))
+    check("GAP 2: ...and no plan carries one", "target_version" not in p)
+
+    # NEGATIVE PROOF: a same-banner merge that touches NO dispatcher file must
+    # NOT set the restart flag -- otherwise every train would claim a restart.
+    p = train([t], {219: "feat/elsewhere-219"},
+              {"feat/elsewhere-219": [APP + "src/a.py"]})
+    p["loop_version"] = "4.25"
+    body = B.render(p)
+    check("GAP 2 negative proof: a non-dispatcher car owes no restart",
+          "no restart is owed" in body and "M restarts and verifies" not in body, body)
+
+    # The check that DOES work for a constant-only train: process start time vs.
+    # the time the checkout last wrote the file the process loaded.
+    stale = {"loop_started": 1_000_000, "file_mtime": 1_014_400, "stale": True}
+    p = train([t], {219: "feat/elsewhere-219"},
+              {"feat/elsewhere-219": [APP + "src/a.py"]}, loop_staleness=stale)
+    body = B.render(p)
+    check("GAP 2: an ALREADY-stale running loop is called out even with no "
+          "dispatcher car", "ALREADY stale" in body, body)
+    check("GAP 2: ...and the staleness is stated as a time delta",
+          "4h" in body, body)
+    fresh = {"loop_started": 1_014_400, "file_mtime": 1_000_000, "stale": False}
+    p = train([t], {219: "feat/elsewhere-219"},
+              {"feat/elsewhere-219": [APP + "src/a.py"]}, loop_staleness=fresh)
+    check("GAP 2 negative proof: a loop started AFTER its file is not flagged",
+          "ALREADY stale" not in B.render(p))
+
+    # A pull landing SECONDS after the process started (measured live 07-30: 36s)
+    # is as likely to BE the restart as to have missed it. Report the two
+    # timestamps; do not manufacture a staleness claim out of race noise.
+    noise = {"loop_started": 1_000_000, "file_mtime": 1_000_036, "stale": True}
+    p = train([t], {219: "feat/elsewhere-219"},
+              {"feat/elsewhere-219": [APP + "src/a.py"]}, loop_staleness=noise)
+    body = B.render(p)
+    check("GAP 2: a sub-margin delta is NOT asserted as staleness",
+          "ALREADY stale" not in body and "NOT a staleness claim" in body, body)
+    check("GAP 2: a 36s delta renders as seconds, never as '0m'",
+          "36s" in body and "0m" not in body, body)
+
+
+def t_gap224_zero_cars_are_loud():
+    """GAP 3, the worst of the three: Wave 20 returned a clean `0 car(s)` with
+    two mergeable PRs open (#154, #155). `0 car(s)` reads identically to
+    "nothing to ship" -- the same silent shape #211 was built to fix."""
+    wave20 = [pr(154, "feat/m-session-dashboard-220", "M session dashboard"),
+              pr(155, "feat/agent-registry-m-split-222", "agent registry M split")]
+    p = train([], {}, {}, open_prs=wave20)
+    check("GAP 3: zero cars + unclaimed mergeable PRs is SUSPICIOUS",
+          p["zero_car_verdict"] == "SUSPICIOUS", str(p["zero_car_verdict"]))
+    check("GAP 3: both unclaimed PRs are carried in the plan",
+          len(p["unclaimed_prs"]) == 2)
+    body = B.render(p)
+    check("GAP 3: the verdict is LOUD, not a bare zero",
+          "ZERO CARS -- AND THAT IS SUSPICIOUS" in body, body)
+    check("GAP 3: it explicitly refuses the 'nothing to ship' reading",
+          "NOTHING TO SHIP" in body, body)
+    check("GAP 3: it NAMES the PRs by number", "PR #154" in body and "PR #155" in body,
+          body)
+    check("GAP 3: it names their branches too",
+          "feat/m-session-dashboard-220" in body, body)
+    check("GAP 3: it explains WHY they were invisible",
+          "status=eq.Staged" in body, body)
+
+    # NEGATIVE PROOF 1: a claimed PR is not unclaimed.
+    t = task(220, "M session dashboard", REVIEWED_CHAIN)
+    p = train([t], {220: "feat/m-session-dashboard-220"},
+              {"feat/m-session-dashboard-220": [APP + "src/a.py"]},
+              open_prs=[wave20[0]])
+    check("GAP 3 negative proof: a PR whose branch IS a car is claimed",
+          not p["unclaimed_prs"] and p["zero_car_verdict"] is None,
+          str(p["unclaimed_prs"]))
+
+    # NEGATIVE PROOF 2: PRs listed, none shippable -> a genuinely clean zero.
+    p = train([], {}, {}, open_prs=[pr(9, "feat/x", mergeable="CONFLICTING"),
+                                    pr(10, "feat/y", draft=True)])
+    check("GAP 3 negative proof: conflicting and draft PRs do not raise the alarm",
+          p["zero_car_verdict"] == "CLEAN" and not p["unclaimed_prs"],
+          str(p["zero_car_verdict"]))
+    check("GAP 3 negative proof: a checked zero says it was CHECKED",
+          "ZERO CARS -- checked" in B.render(p))
+    p = train([], {}, {}, open_prs=[])
+    check("GAP 3 negative proof: no open PRs at all is also a clean zero",
+          p["zero_car_verdict"] == "CLEAN")
+
+    # NEGATIVE PROOF 3: the check itself failing must NOT read as clean.
+    p = train([], {}, {})                       # open_prs=None == never asked
+    check("GAP 3: an unrun PR check is UNVERIFIED, never CLEAN",
+          p["zero_car_verdict"] == "UNVERIFIED" and p["pr_check"] == "unavailable")
+    check("GAP 3: ...and the brief says the emptiness is unproven",
+          "UNPROVEN" in B.render(p), B.render(p))
+    check("GAP 3: mergeability UNKNOWN is kept, not silently dropped",
+          len(B.unclaimed_prs([pr(11, "feat/z", mergeable="UNKNOWN")], set())) == 1)
+
+    # ...and unclaimed PRs are surfaced even when the train is NOT empty.
+    p = train([t], {220: "feat/m-session-dashboard-220"},
+              {"feat/m-session-dashboard-220": [APP + "src/a.py"]},
+              open_prs=wave20)
+    body = B.render(p)
+    check("GAP 3: an unclaimed PR is surfaced on a non-empty train too",
+          "PR #155" in body and "NOT in this train" in body, body)
+
+
 TESTS = [t_car_selection, t_rail_unreviewed, t_rail_unreviewed_taskless,
          t_rail_overlap, t_rail_overlap_append_only, t_rail_dispatcher_suites,
          t_rail_stale_base, t_rail_no_branch, t_rail_already_merged, t_order,
@@ -603,7 +791,9 @@ TESTS = [t_car_selection, t_rail_unreviewed, t_rail_unreviewed_taskless,
          t_empty_train, t_paths, t_wave_guard,
          t_gap_no_r_step_is_loud, t_gap_suite_list_tracks_reality,
          t_gap_owed_log_stale_base_warns, t_gap_loop_version_is_read,
-         t_gap_armed_state_is_checked, t_gap_nonoverlapping_paths_still_stated]
+         t_gap_armed_state_is_checked, t_gap_nonoverlapping_paths_still_stated,
+         t_gap224_prose_from_the_diff, t_gap224_restart_trigger_is_dispatcher_touch,
+         t_gap224_zero_cars_are_loud]
 
 
 def run():
