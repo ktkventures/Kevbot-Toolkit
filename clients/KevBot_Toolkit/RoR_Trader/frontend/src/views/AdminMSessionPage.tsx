@@ -43,10 +43,17 @@
  *
  * Production-bundle rails (CLAUDE.md): every hook before any early return, no
  * IIFE initialisation, declare before the useMemo that references it.
+ *
+ * RENDER BUDGET (board #240, Kevin's first real use): the activity log mapped
+ * all ~435 feed rows into the DOM on first paint and stalled his browser. It now
+ * scrolls inside itself and paints FEED_PAGE_ROWS at a time, extending on scroll
+ * or on an explicit button. **Render less at a time, never keep less** — the log
+ * is a coverage record, so every event stays fetched, classified, counted and
+ * reachable; only the DOM is bounded. Section 5 stays unbounded on purpose.
  */
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import Card from '@/components/Card';
 import { apiFetch } from '@/lib/api/client';
@@ -57,9 +64,10 @@ import {
 } from './taskBoardShared';
 import { MD_CSS, Md } from './taskMarkdown';
 import {
-  FEED_RULES, FeedClass, FeedComment, FeedEvent, InboxItem, MMark, MOrderRow,
-  MSessionState, M_SESSION_AUTHOR, RulesPayload, UNCLASSIFIED, askAiInbox,
-  buildFeed, intendedOrder, mQueue, waitingOnKevin,
+  FEED_MAX_HEIGHT, FEED_PAGE_ROWS, FEED_RULES, FeedClass, FeedComment, FeedEvent,
+  InboxItem, MMark, MOrderRow, MSessionState, M_SESSION_AUTHOR, RulesPayload,
+  UNCLASSIFIED, askAiInbox, buildFeed, feedWindow, groupByDay, intendedOrder,
+  mQueue, nearBottom, waitingOnKevin,
 } from './mSessionFeed';
 
 /** Auto-refresh cadence. Slower than /admin/dispatch's 15s on purpose: this
@@ -68,8 +76,12 @@ const REFRESH_MS = 30000;
 /** Board-wide comment window. 400 was the measured sample behind this task's
  *  design (131 system transitions, 89 agent reports, 42 R, 6 Kevin, 130 M). */
 const COMMENT_LIMIT = 400;
-/** Per-comment excerpt on the wire; the thread has the rest, one click away. */
-const COMMENT_CHARS = 1400;
+/** Per-comment excerpt on the wire; the thread has the rest, one click away.
+ *  Trimmed 1400 → 600 for board #240: at 300 comments a refresh was carrying up
+ *  to ~420KB of body text every 30s to render 320-char excerpts. 600 still
+ *  clears the feed excerpt with room to spare and leaves an Ask-AI question
+ *  readable in full; anything longer already prints "excerpt of N chars". */
+const COMMENT_CHARS = 600;
 /** Run-log depth — matched to /admin/dispatch so the two agree about history. */
 const RUN_LIMIT = 400;
 /** How much of a body the feed shows before "open the task". */
@@ -154,6 +166,10 @@ export default function AdminMSessionPage() {
   const [showAnswered, setShowAnswered] = useState(false);
   const [showRules, setShowRules] = useState(false);
   const [openBodies, setOpenBodies] = useState<Set<string>>(new Set());
+  // How many pages of the activity log are PAINTED (board #240). Nothing is
+  // dropped from `feed` — this bounds the DOM, not the record.
+  const [feedPages, setFeedPages] = useState(1);
+  const feedScroll = useRef<HTMLDivElement | null>(null);
 
   // ── Step-4 state: M's own store + the rules rendered from source ────────
   const [store, setStore] = useState<MSessionState | null>(null);
@@ -266,16 +282,32 @@ export default function AdminMSessionPage() {
   const oldestComment = useMemo(
     () => (comments.length ? comments[comments.length - 1].created_at : null), [comments]);
 
-  const feedDays = useMemo(() => {
-    const days: { day: string; rows: FeedEvent[] }[] = [];
-    feedRows.forEach((e) => {
-      const d = utcDay(e.at);
-      const last = days[days.length - 1];
-      if (last && last.day === d) last.rows.push(e);
-      else days.push({ day: d, rows: [e] });
-    });
-    return days;
-  }, [feedRows]);
+  // ── The render bound (board #240) ────────────────────────────────────────
+  // `feedRows` is the full filtered record and stays that way; `win` is only
+  // what gets painted. Day grouping runs over the WINDOW, so an unpainted day
+  // costs nothing — the previous code grouped all ~435 rows and mapped every
+  // one of them into the DOM on first paint.
+  const win = useMemo(
+    () => feedWindow(feedRows, feedPages), [feedRows, feedPages]);
+  const feedDays = useMemo(() => groupByDay(win.rows, utcDay), [win.rows]);
+
+  // Changing the filter changes what "page 1" means; keep the bound honest
+  // rather than inheriting a page count grown against the other list.
+  useEffect(() => { setFeedPages(1); }, [showRoutine]);
+
+  const showMore = useCallback(() => setFeedPages((n) => n + 1), []);
+
+  /** Lazy extend: painting the next page as the container nears its bottom is
+   *  the "lazy-load stuff" half. The explicit button below does the same thing
+   *  for anyone who would rather click than scroll — and it is what keeps this
+   *  usable if a browser withholds the scroll event. */
+  const onFeedScroll = useCallback(() => {
+    const el = feedScroll.current;
+    if (!el) return;
+    if (nearBottom(el.scrollTop, el.clientHeight, el.scrollHeight)) {
+      setFeedPages((n) => (n * FEED_PAGE_ROWS < feedRows.length ? n + 1 : n));
+    }
+  }, [feedRows.length]);
 
   const toggleBody = (key: string) => setOpenBodies((prev) => {
     const next = new Set(prev);
@@ -455,7 +487,10 @@ export default function AdminMSessionPage() {
           that gets worse with time. <b>Answered</b> = a later comment on that task authored by the
           M SESSION (<code style={mono}>M</code>) — an <code style={mono}>F·auto</code> report on the
           same thread is <i>not</i> an answer to Kevin, and counting it as one would be exactly the
-          false coverage this dashboard exists to prevent.
+          false coverage this dashboard exists to prevent. <b>Deliberately UNBOUNDED</b>: the
+          activity log below scrolls inside itself and paints incrementally (board #240), and this
+          section pointedly does not — it is the top-priority queue and has to be visible at a
+          glance. It is also small by construction; the log was the 435-row module.
         </>}
         right={inbox.open.length > 0 ? (
           <span style={{
@@ -590,7 +625,7 @@ export default function AdminMSessionPage() {
       {/* ── 2 · ACTIVITY LOG ───────────────────────────────────────────────── */}
       <Panel
         n="2"
-        title={`activity log — ${feedRows.length} shown of ${feed.length}`}
+        title={`activity log — ${win.shown} rendered of ${feedRows.length} shown, ${feed.length} kept`}
         sub={<>
           What happened that <b>M did not do</b>: system transitions, agent reports, Kevin&apos;s
           comments, and run outcomes. <b>Comments authored by the M SESSION are excluded</b> — they
@@ -598,6 +633,10 @@ export default function AdminMSessionPage() {
           were M&apos;s own). <b><code style={mono}>M·auto</code> is NOT the M session</b>: it is a
           dispatched agent, and its reports are precisely what M must react to, so they stay in.
           {' '}Every row carries the RULE that classified it — hover the chip for the reason.
+          {' '}<b>This module scrolls inside itself and paints {FEED_PAGE_ROWS} rows at a time</b>
+          {' '}(board #240 — ~435 rows at once stalled the browser). <b>Render less at a time, not
+          keep less</b>: nothing is dropped, and scrolling to the bottom — or the button there —
+          reaches every older event.
         </>}
         right={
           <button style={{ ...input, cursor: 'pointer', fontSize: 11.5, whiteSpace: 'nowrap' }}
@@ -666,119 +705,153 @@ export default function AdminMSessionPage() {
             {showRoutine ? 'no events in this window.' : 'nothing needing attention in this window.'}
           </div>
         )}
-        {feedDays.map((d) => (
-          <div key={d.day} style={{ marginBottom: 10 }}>
-            <div style={{
-              display: 'flex', gap: 8, alignItems: 'baseline', padding: '4px 0',
-              borderBottom: '1px solid var(--border)', marginBottom: 2,
-            }}>
-              <span style={{ fontSize: 12, fontWeight: 700 }}>{d.day || 'unknown day'}</span>
-              <span style={{ ...dim, fontSize: 11.5 }}>{d.rows.length} events</span>
-            </div>
-            {d.rows.map((e) => {
-              const open = openBodies.has(e.key);
-              const long = e.body.length > FEED_EXCERPT;
-              const mk = markOf.get(e.key);
-              return (
-                <div key={e.key} style={{
-                  padding: '5px 6px', borderRadius: 6, marginBottom: 2,
-                  background: mk ? 'transparent'
-                    : e.cls === 'attention' ? 'rgba(217,140,0,0.05)' : 'transparent',
-                  opacity: mk ? 0.6 : 1,
-                  // An UN-reviewed attention row keeps a live left edge. Visible
-                  // gaps beat false coverage: nothing here ages quietly into
-                  // looking handled.
-                  borderLeft: e.cls === 'attention' && !mk
-                    ? '2px solid var(--amber, #d98c00)' : '2px solid transparent',
-                }}>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12 }}>
-                    <RoleChip role={e.actor.replace('·auto', '')} title={e.actor} />
-                    <span style={{ ...dim, ...mono, minWidth: 68 }}>{utcStamp(e.at, false)}</span>
-                    <TaskLink id={e.taskId} title={taskTitle(e.taskId)} bold={false} />
-                    <ClassChip cls={e.cls} rule={e.rule} why={e.why} />
-                    {e.source === 'run' && <OutcomeChip outcome={e.kind.replace('run-', '')} />}
-                    <span style={{ ...dim, fontSize: 11 }}>{relTime(e.at)}</span>
-                  </div>
-                  <div style={{
-                    fontSize: 12.5, marginLeft: 28, marginTop: 2, whiteSpace: 'pre-wrap',
-                    wordBreak: 'break-word',
-                    color: e.cls === 'attention' ? 'var(--text-primary)' : 'var(--text-secondary)',
+        {/* THE BOUND (board #240). maxHeight + overflowY is the whole "scroll
+            bar inside of the module" ask: the page stops growing with the
+            board, and sections 3/4 and the known-gaps footer stay one scroll
+            away instead of ~435 rows away. The controls above sit OUTSIDE this
+            container on purpose — filtering a list you have scrolled past is
+            how a bounded module becomes annoying. */}
+        <div ref={feedScroll} onScroll={onFeedScroll} style={{
+          maxHeight: FEED_MAX_HEIGHT, overflowY: 'auto', overscrollBehavior: 'contain',
+          paddingRight: 4,
+        }}>
+          {feedDays.map((d) => (
+            <div key={d.day} style={{ marginBottom: 10 }}>
+              <div style={{
+                display: 'flex', gap: 8, alignItems: 'baseline', padding: '4px 0',
+                borderBottom: '1px solid var(--border)', marginBottom: 2,
+              }}>
+                <span style={{ fontSize: 12, fontWeight: 700 }}>{d.day || 'unknown day'}</span>
+                <span style={{ ...dim, fontSize: 11.5 }}>{d.rows.length} events</span>
+              </div>
+              {d.rows.map((e) => {
+                const open = openBodies.has(e.key);
+                const long = e.body.length > FEED_EXCERPT;
+                const mk = markOf.get(e.key);
+                return (
+                  <div key={e.key} style={{
+                    padding: '5px 6px', borderRadius: 6, marginBottom: 2,
+                    background: mk ? 'transparent'
+                      : e.cls === 'attention' ? 'rgba(217,140,0,0.05)' : 'transparent',
+                    opacity: mk ? 0.6 : 1,
+                    // An UN-reviewed attention row keeps a live left edge. Visible
+                    // gaps beat false coverage: nothing here ages quietly into
+                    // looking handled.
+                    borderLeft: e.cls === 'attention' && !mk
+                      ? '2px solid var(--amber, #d98c00)' : '2px solid transparent',
                   }}>
-                    {open || !long ? e.body || e.headline
-                      : `${(e.body || e.headline).slice(0, FEED_EXCERPT)}…`}
-                  </div>
-                  {(long || (e.bodyChars || 0) > e.body.length) && (
-                    <div style={{ marginLeft: 28, marginTop: 2, display: 'flex', gap: 8, alignItems: 'center' }}>
-                      {long && (
-                        <button style={{ ...input, cursor: 'pointer', fontSize: 10.5, padding: '0 6px' }}
-                          onClick={() => toggleBody(e.key)}>{open ? '▾ less' : '▸ more'}</button>
-                      )}
-                      {(e.bodyChars || 0) > e.body.length && (
-                        <span style={{ ...dim, fontSize: 10.5 }}>
-                          excerpt of {e.bodyChars} chars — open the task for the rest
-                        </span>
-                      )}
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 12 }}>
+                      <RoleChip role={e.actor.replace('·auto', '')} title={e.actor} />
+                      <span style={{ ...dim, ...mono, minWidth: 68 }}>{utcStamp(e.at, false)}</span>
+                      <TaskLink id={e.taskId} title={taskTitle(e.taskId)} bold={false} />
+                      <ClassChip cls={e.cls} rule={e.rule} why={e.why} />
+                      {e.source === 'run' && <OutcomeChip outcome={e.kind.replace('run-', '')} />}
+                      <span style={{ ...dim, fontSize: 11 }}>{relTime(e.at)}</span>
                     </div>
-                  )}
-                  {/* The coverage record: event → M saw it → M did X, or judged
-                      nothing was needed. Confirming the rule is one click;
-                      an EXCEPTION gets a real note. */}
-                  {storeReady && (
-                    <div style={{ marginLeft: 28, marginTop: 3, display: 'flex', gap: 6,
-                      alignItems: 'center', flexWrap: 'wrap' }}>
-                      {mk ? (
-                        <>
-                          <span style={{ ...tagChip, borderColor: 'var(--green)', color: 'var(--green)' }}
-                            title={`${mk.state} by ${mk.marked_by || 'M'} at ${utcStamp(mk.marked_at)}`}>
-                            ✓ {mk.state}
+                    <div style={{
+                      fontSize: 12.5, marginLeft: 28, marginTop: 2, whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      color: e.cls === 'attention' ? 'var(--text-primary)' : 'var(--text-secondary)',
+                    }}>
+                      {open || !long ? e.body || e.headline
+                        : `${(e.body || e.headline).slice(0, FEED_EXCERPT)}…`}
+                    </div>
+                    {(long || (e.bodyChars || 0) > e.body.length) && (
+                      <div style={{ marginLeft: 28, marginTop: 2, display: 'flex', gap: 8, alignItems: 'center' }}>
+                        {long && (
+                          <button style={{ ...input, cursor: 'pointer', fontSize: 10.5, padding: '0 6px' }}
+                            onClick={() => toggleBody(e.key)}>{open ? '▾ less' : '▸ more'}</button>
+                        )}
+                        {(e.bodyChars || 0) > e.body.length && (
+                          <span style={{ ...dim, fontSize: 10.5 }}>
+                            excerpt of {e.bodyChars} chars — open the task for the rest
                           </span>
-                          {mk.note && (
-                            <span style={{ fontSize: 11.5, color: 'var(--text-secondary)' }}>
-                              — {mk.note}
+                        )}
+                      </div>
+                    )}
+                    {/* The coverage record: event → M saw it → M did X, or judged
+                        nothing was needed. Confirming the rule is one click;
+                        an EXCEPTION gets a real note. */}
+                    {storeReady && (
+                      <div style={{ marginLeft: 28, marginTop: 3, display: 'flex', gap: 6,
+                        alignItems: 'center', flexWrap: 'wrap' }}>
+                        {mk ? (
+                          <>
+                            <span style={{ ...tagChip, borderColor: 'var(--green)', color: 'var(--green)' }}
+                              title={`${mk.state} by ${mk.marked_by || 'M'} at ${utcStamp(mk.marked_at)}`}>
+                              ✓ {mk.state}
                             </span>
-                          )}
-                          <button style={{ ...input, cursor: 'pointer', fontSize: 10, padding: '0 5px' }}
-                            title="un-mark. A wrong 'I looked at this' is false coverage."
-                            onClick={() => unmark(e)}>undo</button>
-                        </>
-                      ) : (
-                        <>
-                          <button style={{ ...input, cursor: 'pointer', fontSize: 10, padding: '0 6px' }}
-                            title="the rule's verdict stands and M has read it"
-                            onClick={() => mark(e, 'seen')}>seen</button>
-                          <button style={{ ...input, cursor: 'pointer', fontSize: 10, padding: '0 6px' }}
-                            title="M looked and judged nothing was needed — say why"
-                            onClick={() => setMarkNote({ key: e.key, text: '' })}>no action…</button>
-                          <button style={{ ...input, cursor: 'pointer', fontSize: 10, padding: '0 6px' }}
-                            title="M did something — say what"
-                            onClick={() => setMarkNote({ key: e.key, text: '' })}>actioned…</button>
-                        </>
-                      )}
-                      {markNote?.key === e.key && (
-                        <span style={{ display: 'flex', gap: 5, flex: 1, minWidth: 260 }}>
-                          <input autoFocus style={{ ...input, fontSize: 11.5, flex: 1 }}
-                            placeholder="what M did, or why nothing was needed"
-                            value={markNote.text}
-                            onChange={(ev) => setMarkNote({ key: e.key, text: ev.target.value })} />
-                          <button style={{ ...input, cursor: 'pointer', fontSize: 10.5 }}
-                            onClick={() => { mark(e, 'actioned', markNote.text); setMarkNote(null); }}>
-                            actioned
-                          </button>
-                          <button style={{ ...input, cursor: 'pointer', fontSize: 10.5 }}
-                            onClick={() => { mark(e, 'no-action', markNote.text); setMarkNote(null); }}>
-                            no action
-                          </button>
-                          <button style={{ ...input, cursor: 'pointer', fontSize: 10.5 }}
-                            onClick={() => setMarkNote(null)}>✕</button>
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        ))}
+                            {mk.note && (
+                              <span style={{ fontSize: 11.5, color: 'var(--text-secondary)' }}>
+                                — {mk.note}
+                              </span>
+                            )}
+                            <button style={{ ...input, cursor: 'pointer', fontSize: 10, padding: '0 5px' }}
+                              title="un-mark. A wrong 'I looked at this' is false coverage."
+                              onClick={() => unmark(e)}>undo</button>
+                          </>
+                        ) : (
+                          <>
+                            <button style={{ ...input, cursor: 'pointer', fontSize: 10, padding: '0 6px' }}
+                              title="the rule's verdict stands and M has read it"
+                              onClick={() => mark(e, 'seen')}>seen</button>
+                            <button style={{ ...input, cursor: 'pointer', fontSize: 10, padding: '0 6px' }}
+                              title="M looked and judged nothing was needed — say why"
+                              onClick={() => setMarkNote({ key: e.key, text: '' })}>no action…</button>
+                            <button style={{ ...input, cursor: 'pointer', fontSize: 10, padding: '0 6px' }}
+                              title="M did something — say what"
+                              onClick={() => setMarkNote({ key: e.key, text: '' })}>actioned…</button>
+                          </>
+                        )}
+                        {markNote?.key === e.key && (
+                          <span style={{ display: 'flex', gap: 5, flex: 1, minWidth: 260 }}>
+                            <input autoFocus style={{ ...input, fontSize: 11.5, flex: 1 }}
+                              placeholder="what M did, or why nothing was needed"
+                              value={markNote.text}
+                              onChange={(ev) => setMarkNote({ key: e.key, text: ev.target.value })} />
+                            <button style={{ ...input, cursor: 'pointer', fontSize: 10.5 }}
+                              onClick={() => { mark(e, 'actioned', markNote.text); setMarkNote(null); }}>
+                              actioned
+                            </button>
+                            <button style={{ ...input, cursor: 'pointer', fontSize: 10.5 }}
+                              onClick={() => { mark(e, 'no-action', markNote.text); setMarkNote(null); }}>
+                              no action
+                            </button>
+                            <button style={{ ...input, cursor: 'pointer', fontSize: 10.5 }}
+                              onClick={() => setMarkNote(null)}>✕</button>
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+          {/* What is KEPT but not yet PAINTED — printed, never implied. An
+              unpainted event that reads as an absent one is the #157 dead-alarm
+              failure at page scale. */}
+          {win.more && (
+            <div style={{
+              display: 'flex', gap: 9, alignItems: 'center', flexWrap: 'wrap',
+              padding: '8px 2px 2px', borderTop: '1px dashed var(--border)',
+            }}>
+              <button style={{ ...input, cursor: 'pointer', fontSize: 11.5 }} onClick={showMore}>
+                ▾ show {Math.min(FEED_PAGE_ROWS, win.hidden)} more
+              </button>
+              <span style={{ ...dim, fontSize: 11.5 }}>
+                {win.hidden} older event{win.hidden === 1 ? '' : 's'} kept and classified but not yet
+                rendered — keep scrolling and they paint {FEED_PAGE_ROWS} at a time. Nothing here is
+                discarded.
+              </span>
+            </div>
+          )}
+          {!win.more && win.total > FEED_PAGE_ROWS && (
+            <div style={{ ...dim, fontSize: 11.5, padding: '8px 2px 2px', borderTop: '1px dashed var(--border)' }}>
+              end of the window — all {win.total} events rendered.
+            </div>
+          )}
+        </div>
       </Panel>
 
       {/* ── 3 · THE RULES — rendered FROM SOURCE, never restated ───────────── */}
@@ -963,6 +1036,13 @@ export default function AdminMSessionPage() {
               file nobody listed is not on this page. Adding one is a row in{' '}
               <code style={mono}>RULE_SOURCES</code>, not a paragraph typed here — and a missing
               anchor is shown in red rather than skipped.
+            </li>
+            <li>
+              <b>The activity log renders {FEED_PAGE_ROWS} rows at a time inside a{' '}
+              {FEED_MAX_HEIGHT}px scroller</b> (board #240). That is a RENDER bound, not a retention
+              one — the full window is still fetched, classified and counted, and the footer prints
+              how many are kept but unpainted. It does mean <b>ctrl-F finds only what is painted</b>:
+              scroll to the end (or click through) before concluding an event is not there.
             </li>
             <li>
               <b>Self-review caveat, stated not buried:</b> once M both classifies and confirms, that
