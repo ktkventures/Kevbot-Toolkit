@@ -61,7 +61,10 @@ TODO_ROWS = []
 
 def fake_api(method, path, body=None, prefer=None):
     CALLS.append((method, path, body))
-    if method == "GET" and path.startswith("dev_tasks?status=eq.Todo"):
+    # Board #198 replaced the gate filter (`status=eq.Todo`) with the
+    # ai_eligible-OR-Todo form; keyed off the module's own constant so this fake
+    # follows the gate instead of pinning one spelling of it.
+    if method == "GET" and path.startswith(f"dev_tasks?{disp.GATE_FILTER}"):
         return list(TODO_ROWS)
     return []
 

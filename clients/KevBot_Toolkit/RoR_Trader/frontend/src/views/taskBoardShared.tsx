@@ -247,6 +247,10 @@ export interface Task {
   impact?: string;
   kevin_final?: boolean;
   standing_approval?: boolean;
+  // May an AI agent run this task (board #198, dev_tasks_ai_eligible.sql).
+  // Optional so pre-migration rows render; see AiEligibleToggle for the split
+  // this column makes — status says WHERE the task is, this says MAY IT RUN.
+  ai_eligible?: boolean;
   updated_at: string;
 }
 
@@ -728,6 +732,173 @@ export const OutcomeChip = ({ outcome, title }: { outcome: string; title?: strin
   );
 };
 
+/* ── AI-eligible toggle + run-state pill (board #198) ─────────────────────── */
+//
+// One column was doing two unrelated jobs. `status` said BOTH where a task sits
+// on the kanban AND whether an AI may touch it (the dispatch gate read
+// `status=eq.Todo`), and the Run column mixed the eligibility control with the
+// "is it running right now" readout. #198 splits both pairs along the same seam:
+//
+//   INPUT  — AiEligibleToggle : may an agent run this        (ai_eligible)
+//   OUTPUT — RunStatePill     : what the dispatcher is doing (run_history)
+//   ACTION — RunButton        : run it once, now             (run-requested tag)
+//
+// So they render as three visibly different things: a switch, a chip, a button.
+
+/**
+ * The AI-eligible switch — standing permission for a headless agent to pick this
+ * task up wherever it sits on the board. Kevin's Approval stamp arms it
+ * (POST /stamp), and this is the manual override.
+ *
+ * ARMING = LAUNCHING (Kevin's ruling, 07-29): flipping this on can dispatch
+ * within one dispatcher poll (~20s) — "I am okay if flipping the toggle starts
+ * to run in twenty seconds". No confirm, no delay, by his explicit choice; the
+ * tooltip says so plainly instead.
+ *
+ * A switch, not a button, precisely because the Run button sits beside it: this
+ * is a state you leave set, that is a one-off queue jump. Mistaking one for the
+ * other is the confusion #198 exists to kill.
+ */
+export const AiEligibleToggle = ({ task, onToggle, compact = false }: {
+  task: Task;
+  onToggle: (next: boolean) => void;
+  compact?: boolean;
+}) => {
+  const on = !!task.ai_eligible;
+  const h = compact ? 16 : 18;
+  const w = compact ? 30 : 34;
+  const knob = h - 6;
+  const tip = on
+    ? 'AI-eligible: ON — a headless agent may claim this task wherever it sits on the board. '
+      + 'The dispatcher can pick it up on its next poll (~20s). Click to disarm.'
+    : 'AI-eligible: OFF — no agent claims this on its own. (A task in Todo still dispatches '
+      + 'via the status gate, and ▶ Run still forces a one-off run.) Click to arm — it can '
+      + 'dispatch within ~20s.';
+  return (
+    <button type="button" role="switch" aria-checked={on} aria-label="AI-eligible" title={tip}
+      onClick={(e) => { e.stopPropagation(); onToggle(!on); }}
+      style={{
+        display: 'inline-flex', alignItems: 'center', gap: 5, verticalAlign: 'middle',
+        background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit',
+      }}>
+      {/* The OFF knob uses --text-secondary, not --text-tertiary: on the dark
+          board a tertiary knob on a --bg-input track disappeared entirely and
+          the switch read as an empty capsule (caught in the #198 local preview,
+          07-29). A switch that doesn't look like a switch is the same
+          input/output confusion this task is fixing, one layer down. */}
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', boxSizing: 'border-box',
+        width: w, height: h, padding: 2, borderRadius: h, flex: 'none',
+        justifyContent: on ? 'flex-end' : 'flex-start',
+        background: on ? 'var(--green)' : 'var(--bg-input)',
+        border: `1px solid ${on ? 'var(--green)' : 'var(--border)'}`,
+      }}>
+        <span style={{
+          display: 'block', width: knob, height: knob, borderRadius: '50%', flex: 'none',
+          background: on ? '#fff' : 'var(--text-secondary)',
+        }} />
+      </span>
+      {!compact && (
+        <span style={{
+          fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap',
+          color: on ? 'var(--green)' : 'var(--text-tertiary)',
+        }}>🤖 AI-eligible{on ? '' : ' · off'}</span>
+      )}
+    </button>
+  );
+};
+
+export type RunStateKey = 'idle' | 'queued' | 'running' | 'failed';
+
+/** Derived dispatcher state of one task: the pill's label, colour and detail. */
+export interface RunState {
+  key: RunStateKey;
+  color: string;
+  icon: string;
+  label: string;
+  /** short trailing context — elapsed or "ok 2h ago"; '' when there is none. */
+  sub: string;
+  /** the full sentence, shown as the pill's tooltip. */
+  detail: string;
+}
+
+/**
+ * What the dispatcher is actually doing with this task — idle / queued /
+ * running / failed, plus the last outcome and when. A PURE READ of `run_history`
+ * (task_id · agent_letter · run_id · requested_at · started_at · finished_at ·
+ * outcome) and the run-requested tag: #198 needs no new capture, only the split.
+ *
+ * `running` is checked before `queued` so a task whose tag hasn't been cleared
+ * yet at claim time reads as running (what is true NOW), never as merely queued.
+ */
+export function runState(task: Task, latest?: RunRow): RunState {
+  if (latest?.outcome === 'running') {
+    return {
+      key: 'running', color: 'var(--blue)', icon: '⚙', label: 'running',
+      sub: elapsedShort(latest.started_at || latest.requested_at),
+      detail: `${latest.agent_letter}·auto working for `
+        + `${elapsedShort(latest.started_at || latest.requested_at)}`
+        + (latest.run_id ? ` (run ${latest.run_id})` : ''),
+    };
+  }
+  if ((task.tags || []).includes(RUN_REQUESTED_TAG) || latest?.outcome === 'requested') {
+    return {
+      key: 'queued', color: 'var(--amber, #d98c00)', icon: '⏳', label: 'queued',
+      sub: latest?.outcome === 'requested' ? relTime(latest.requested_at) : '',
+      detail: 'run requested — the local dispatcher claims it on its next poll',
+    };
+  }
+  if (!latest) {
+    return {
+      key: 'idle', color: 'var(--text-tertiary)', icon: '·', label: 'idle',
+      sub: 'never run', detail: 'idle — this task has never been dispatched',
+    };
+  }
+  const when = relTime(latest.finished_at || latest.requested_at);
+  const by = latest.requested_by ? `requested by ${latest.requested_by}` : 'queue dispatch';
+  const full = `last run ${latest.outcome} ${when} · ${latest.agent_letter}·auto · ${by}`
+    + (latest.run_id ? ` · run ${latest.run_id}` : '');
+  const style = OUTCOME_STYLE[latest.outcome];
+  // A failed run must not read as a quiet "idle": these two are the states that
+  // need someone's eyes, so they get the red label and keep the outcome word.
+  if (latest.outcome === 'error' || latest.outcome === 'lease-expired') {
+    return {
+      key: 'failed', color: 'var(--red)', icon: style?.icon || '✗',
+      label: latest.outcome === 'error' ? 'failed' : 'lease-expired',
+      sub: when, detail: full,
+    };
+  }
+  return {
+    key: 'idle', color: 'var(--text-tertiary)', icon: style?.icon || '·',
+    label: 'idle', sub: `${latest.outcome} ${when}`.trim(), detail: full,
+  };
+}
+
+/**
+ * The run-state pill (board #198) — the OUTPUT half of the old Run column.
+ * Kevin: *"one thing I do like about the run status is that it kind of shows if
+ * that task is actively being worked on."* That readout now lives in its own
+ * chip, so the button next to it can go back to meaning exactly one thing.
+ */
+export const RunStatePill = ({ task, latestRun, compact = false }: {
+  task: Task;
+  latestRun?: RunRow;
+  compact?: boolean;
+}) => {
+  const st = runState(task, latestRun);
+  const busy = st.key === 'running' || st.key === 'queued';
+  return (
+    <span title={`run state: ${st.label} — ${st.detail}`} style={{
+      ...tagChip, marginLeft: 0, borderColor: st.color, color: st.color,
+      fontWeight: busy || st.key === 'failed' ? 700 : 500,
+      fontSize: compact ? 10 : 10.5,
+    }}>
+      {st.icon} {st.label}
+      {st.sub && <span style={{ opacity: 0.75, fontWeight: 500 }}> · {st.sub}</span>}
+    </span>
+  );
+};
+
 /**
  * Why a task can't be dispatched right now, or null when it can. Mirrors the
  * dispatcher's run-request gates (dispatcher.py run_requested): description
@@ -759,12 +930,18 @@ export function runIneligibleReason(
 }
 
 /**
- * The Run button. States (from run_history + tags):
- *   run-requested tag → "⏳ requested" (disabled; dispatcher will claim)
- *   latest run running → "⚙ running…" (disabled)
- *   eligible → enabled "▶ Run"; ineligible → disabled with the reason as
- *   tooltip. A terminal latest run renders as a small outcome chip alongside
- *   (compact mode folds it into the button title instead).
+ * The Run button — a ONE-OFF QUEUE JUMP: "dispatch this task now", not "may an
+ * agent run it" (that is AiEligibleToggle) and not "is it running" (that is
+ * RunStatePill). Board #198 renamed it "▶ Run once" for exactly that reason: it
+ * was the control Kevin was most likely to mistake for the eligibility switch,
+ * and it does not change ai_eligible.
+ *
+ * It reads "▶ Run once" in EVERY state and only its enabled-ness changes:
+ * queued, already running, ineligible → disabled with the why as tooltip. It no
+ * longer relabels itself "⏳ requested" / "⚙ running…" and no longer draws the
+ * last outcome, because a button that reports status is the exact input/output
+ * conflation #198 exists to remove — RunStatePill owns that readout on both
+ * surfaces, right next to it.
  */
 export const RunButton = ({ task, allTasks, headless, latestRun, onRequest, compact = false }: {
   task: Task;
@@ -789,27 +966,23 @@ export const RunButton = ({ task, allTasks, headless, latestRun, onRequest, comp
     ...input, cursor: 'pointer', fontSize: compact ? 11 : 12, fontWeight: 600,
     padding: compact ? '1px 7px' : '3px 10px', whiteSpace: 'nowrap',
   };
-  let btn: React.ReactNode;
-  if (requested) {
-    btn = <button disabled style={{ ...base, cursor: 'default', color: 'var(--amber, #d98c00)', borderColor: 'var(--amber, #d98c00)' }}
-      title="run requested — the local dispatcher claims it on its next poll">⏳ requested</button>;
-  } else if (running) {
-    btn = <button disabled style={{ ...base, cursor: 'default', color: 'var(--blue)', borderColor: 'var(--blue)' }}
-      title={`running as ${latestRun?.agent_letter}·auto (run ${latestRun?.run_id || '?'})`}>⚙ running…</button>;
-  } else if (reason) {
-    btn = <button disabled style={{ ...base, cursor: 'not-allowed', opacity: 0.4 }}
-      title={`can't dispatch: ${reason}`}>▶ Run</button>;
-  } else {
-    btn = <button style={{ ...base, color: 'var(--green)', borderColor: 'var(--green)' }}
-      title={`dispatch to ${task.assignee}·auto via the local dispatcher${lastTitle ? ` — ${lastTitle}` : ''}`}
-      onClick={(e) => { e.stopPropagation(); onRequest(task.id); }}>▶ Run</button>;
-  }
-  return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-      {btn}
-      {!compact && last && <OutcomeChip outcome={last.outcome} title={lastTitle} />}
-    </span>
-  );
+  // One label, one meaning. `why` non-null = not clickable right now, and the
+  // pill beside it already says which of these it is.
+  const why = running
+    ? `already running as ${latestRun?.agent_letter}·auto`
+      + (latestRun?.run_id ? ` (run ${latestRun.run_id})` : '')
+    : requested
+      ? 'a run is already queued — the local dispatcher claims it on its next poll'
+      : reason ? `can’t dispatch: ${reason}` : null;
+  const btn = why
+    ? <button disabled style={{ ...base, cursor: 'not-allowed', opacity: 0.4 }}
+        title={why}>▶ Run once</button>
+    : <button style={{ ...base, color: 'var(--green)', borderColor: 'var(--green)' }}
+        title={`run once now: dispatch to ${task.assignee}·auto via the local dispatcher — a `
+          + 'one-off queue jump; it does NOT change the 🤖 AI-eligible switch'
+          + `${lastTitle ? ` — ${lastTitle}` : ''}`}
+        onClick={(e) => { e.stopPropagation(); onRequest(task.id); }}>▶ Run once</button>;
+  return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>{btn}</span>;
 };
 
 /** Thin progress bar with n/m at the end; renders nothing when total is 0. */

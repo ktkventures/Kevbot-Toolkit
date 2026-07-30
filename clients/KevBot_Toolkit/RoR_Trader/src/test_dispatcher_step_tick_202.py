@@ -195,8 +195,8 @@ ok("14 inbound check unaffected — absent when the predecessor is kevin's",
 mid = [step("Design", "M", True, "spec it"), step("Build", "F", False, "build it")]
 ok("14 inbound check still renders for a non-kevin predecessor",
    "=== FIRST — INBOUND CHECK ON STEP 1" in D.build_prompt(AGENT, task(mid)))
-ok("14 dispatcher version banner records V4.20",
-   "V4.20 (board #202)" in open(DISP, encoding="utf-8").read())
+ok("14 dispatcher version banner records V4.25",
+   "V4.25 (board #202)" in open(DISP, encoding="utf-8").read())
 
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
