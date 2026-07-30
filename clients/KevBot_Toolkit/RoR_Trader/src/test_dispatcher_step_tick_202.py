@@ -127,8 +127,16 @@ ok("4 does not name a different step number", "STEP 1 of 3" not in r and "STEP 3
 ok("4 the step number matches the step block's own", "STEP 2 of 3" in p.split(MARK)[0])
 
 # ---- 5: names the endpoint that owns completion, with the real task id -----
-ok("5 names POST /steps/complete with this task's id",
-   f"POST /api/dev-tasks/{TID}/steps/complete" in r)
+# Asserted SUBSTANTIVELY, not as one contiguous string (board #217). The tick block
+# now renders an absolute, pre-credentialed call —
+#   curl -sS -X POST "$RORT_BOARD_API_URL/api/dev-tasks/<id>/steps/complete"
+# — so the host variable sits between the verb and the path and a single-substring
+# match fails while the rail itself is MORE satisfied than before (the run no longer
+# has to guess the host). The rail's purpose is that the tick instruction names its
+# target and instructs a POST; both are checked, so it still fails if either is lost.
+ok("5 names the /steps/complete path with this task's id",
+   f"/api/dev-tasks/{TID}/steps/complete" in r)
+ok("5 instructs a POST to it (not a GET, not a bare mention)", "POST" in r)
 ok("5 does NOT instruct a checklist PATCH (a chain PATCH is refused, 409)",
    "checklist[" not in r and "`done` = true" not in r and "done = true" not in r)
 ok("5 the API really does refuse a PATCH tick (the reason this rail exists)",

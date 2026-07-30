@@ -9,6 +9,7 @@ and use the service role key for database access (bypasses RLS).
 """
 
 import os
+import hmac
 import json
 import base64
 import logging
@@ -121,6 +122,66 @@ async def get_current_user(authorization: str = Header(default="")):
     set_current_user(user_id, token)
 
     return {"id": user_id, "email": email}
+
+
+# ── Service-role principal for actor-attributed routes (board #217) ──────────
+#
+# A headless dispatched agent holds the service-role key and NEVER a Supabase
+# *user* JWT, so `get_current_user` is unsatisfiable for it: every HTTP tick a
+# dispatched run has ever attempted was refused `401 Missing Bearer token`, and
+# the fallback was worse than the missing tick — agents hand-rolled the
+# handler's `_next_assignee`/`kevin_final`/hand-off logic through PostgREST,
+# which is exactly what the step-tick contract (#202) exists to forbid.
+#
+# `get_service_or_user` accepts the service-role key as bearer IN ADDITION to a
+# user JWT. It is a SEPARATE dependency on purpose. Blessing the service key
+# inside `get_current_user` would silently open every authenticated route in
+# the product — strategies, backtests, alerts, the lot — which is the widest
+# possible blast radius for the narrowest possible need. Only routes that
+# explicitly opt in get this, and only ones that attribute their write to an
+# explicit `actor` field rather than to the caller's identity.
+#
+# Marginal blast radius: none beyond what the key already grants. Anyone
+# holding the service-role key already has unrestricted PostgREST access to
+# `dev_tasks` — that is how the dispatcher does all of its board I/O. This lets
+# that same holder go through the SERVER-OWNED handler instead of
+# reimplementing it badly.
+
+
+def _service_role_key() -> str:
+    """Read at call time, not import time — the tests flip it, and Railway
+    injects it into the process environment before uvicorn starts."""
+    return (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+
+
+async def get_service_or_user(authorization: str = Header(default="")):
+    """Auth gate for actor-attributed board routes: a user JWT *or* the
+    service-role key. Everything else falls through to `get_current_user` and
+    is refused exactly as before.
+
+    Returns a principal dict shaped like `get_current_user`'s so opted-in
+    handlers need no change; `service_role: True` distinguishes the two.
+
+    Deliberately does NOT set a db.py user context on the service path. The
+    opted-in routes write through the admin client (`get_admin_client`) and
+    attribute by `actor`, so minting a user identity here would grant reach
+    the caller never asked for.
+    """
+    if _DEV_BYPASS:
+        return await get_current_user(authorization)
+
+    if authorization.startswith("Bearer "):
+        token = authorization[7:].strip()
+        service_key = _service_role_key()
+        # Fails CLOSED when the key is unconfigured: an empty `service_key`
+        # must never turn an empty (or any) bearer into a valid principal.
+        # compare_digest so the comparison is constant-time.
+        if service_key and token and hmac.compare_digest(token, service_key):
+            return {"id": None, "email": "service-role", "service_role": True}
+
+    # Not the service key — the ordinary user-JWT path, unchanged, including
+    # its 401s for a missing/malformed/expired/subject-less bearer.
+    return await get_current_user(authorization)
 
 
 def _validate_with_supabase(token: str, jwt_exp: int):

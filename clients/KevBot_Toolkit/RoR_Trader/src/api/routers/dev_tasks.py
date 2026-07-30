@@ -12,7 +12,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
-from api.deps import get_current_user
+from api.deps import get_current_user, get_service_or_user
 
 router = APIRouter(prefix="/api/dev-tasks", tags=["dev-tasks"])
 
@@ -600,10 +600,23 @@ def stamp_approval(task_id: int, payload: dict = Body(...),
 # The server side of the three step buttons (Step 5 UI). Completion state and
 # hand-off live here — NOT in the generic checklist PATCH — so the transition
 # rules (T1/T2/T3/T4'/T8/T9) are API refusals, not UI conventions.
+#
+# TWO of the three — /steps/complete and /steps/raise-issue, and ONLY those
+# two — gate on `get_service_or_user` rather than `get_current_user` (board
+# #217); /steps/stamp is held back, see the note above it. Both attribute
+# their write to payload["actor"], never to the caller's identity: `user` is a
+# pure gate here and is not read by either. A headless dispatched agent holds
+# the service-role key but no Supabase user JWT, so under `get_current_user` the
+# step-tick contract (#202) was unsatisfiable — every HTTP tick ever attempted
+# was refused 401, and agents fell back to hand-rolling this handler's logic
+# through PostgREST, losing completed_at/completed_by/_next_assignee/
+# kevin_final and the hand-off comment. See api/deps.py for the blast-radius
+# argument; the check lives THERE and is opted into HERE, never inside the
+# shared `get_current_user`.
 
 @router.post("/{task_id}/steps/complete")
 def complete_step(task_id: int, payload: dict = Body(default={}),
-                  user=Depends(get_current_user)):
+                  user=Depends(get_service_or_user)):
     """Complete the current step and hand off (T1/T2/T3/T8).
 
     Ticks the FIRST incomplete step only — you cannot complete a later step out
@@ -652,7 +665,7 @@ def complete_step(task_id: int, payload: dict = Body(default={}),
 
 @router.post("/{task_id}/steps/raise-issue")
 def raise_issue(task_id: int, payload: dict = Body(...),
-                user=Depends(get_current_user)):
+                user=Depends(get_service_or_user)):
     """Raise an issue on the current step and route to M (T9).
 
     Requires a comment explaining the problem, posts it (tagged to the current
@@ -688,6 +701,16 @@ def raise_issue(task_id: int, payload: dict = Body(...),
     return _task_row(c, task_id)
 
 
+# NOT opted into `get_service_or_user`, deliberately (board #217). The
+# diagnosis proposed all three step-action routes; this one is held back. A
+# stamp is Kevin's APPROVAL, not an agent's deliverable — it is only ever
+# issued from the UI, where a real user JWT exists, and no headless run has
+# ever needed it (the step-tick contract asks for /steps/complete, and the
+# inbound check for /steps/raise-issue). Opening it would let a bearer of the
+# service key post `{"actor": "kevin", "decision": "approve"}` and manufacture
+# a sign-off through the very route whose output the T8 gate trusts. That the
+# key ALREADY permits the equivalent PostgREST write is an argument for fixing
+# that hole, not for widening a second one to match it.
 @router.post("/{task_id}/steps/stamp")
 def stamp_step(task_id: int, payload: dict = Body(...),
                user=Depends(get_current_user)):

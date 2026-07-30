@@ -225,6 +225,15 @@ POLL_S = 900
 RUN_TIMEOUT_S = 45 * 60  # lease
 CLAUDE_BIN = "claude"
 
+# Board #217 — the app API a dispatched run calls to satisfy the step-tick
+# contract. Named ONCE, here. The tick block used to emit a bare path
+# (`POST /api/dev-tasks/<id>/steps/complete`), so every run had to GUESS the
+# host: the 07-29 run resolved it by grepping the repo for `railway.app`, which
+# makes the call non-deterministic per run and per worktree. Overridable so a
+# session pointed at a local uvicorn can set it, but it must never be *absent*.
+BOARD_API_URL = os.getenv(
+    "RORT_BOARD_API_URL", "https://api-dev-2c9d.up.railway.app").rstrip("/")
+
 # Misc caps (board #135) — every timeout/truncation knob in one place.
 API_TIMEOUT_S = 15         # Supabase REST call timeout
 THREAD_COMMENTS = 5        # recent thread comments quoted in the prompt
@@ -898,11 +907,24 @@ expand scope unilaterally. M owns the chain (board #182 authoring standard).
         # tick in "the same PATCH" as the assignee would be an impossible
         # instruction. /steps/complete also derives the hand-off, which is why the
         # assignee contract is applied to its RESULT rather than alongside it.
+        # Board #217 — the call is rendered ABSOLUTE and PRE-CREDENTIALED. Until
+        # now the block emitted a bare path with no host and no auth, so a run had
+        # to guess the base URL and then got 401 anyway (the endpoint wanted a
+        # Supabase USER JWT, which no headless run has or can get). Both halves are
+        # fixed here: BOARD_API_URL names the host, and spawn() puts the
+        # service-role key — which the route now accepts, see api/deps.py
+        # get_service_or_user — in the run's environment so it never has to go
+        # hunting for src/.env from a worktree that does not carry one.
         tick_block = f"""
 STEP-TICK CONTRACT (board #202 — the chain has to match reality): you were dispatched for
 STEP {idx + 1} of {len(cl)}. If you COMPLETED it, TICK IT in the same wrap-up that sets the
 assignee — one call does both:
-  POST /api/dev-tasks/{task['id']}/steps/complete   body: {{"actor": "{agent['letter']}·auto"}}
+  curl -sS -X POST "$RORT_BOARD_API_URL/api/dev-tasks/{task['id']}/steps/complete" \\
+       -H "Authorization: Bearer $RORT_BOARD_SERVICE_KEY" \\
+       -H "Content-Type: application/json" \\
+       -d '{{"actor": "{agent['letter']}·auto"}}'
+Both variables are already exported in your environment ($RORT_BOARD_API_URL =
+{BOARD_API_URL}); do NOT go looking for a host or a token, and do not echo the key.
 That ticks step {idx + 1}, records who completed it, and hands the task to the next step's
 owner. Then apply the ASSIGNEE CONTRACT above to the RESULT: PATCH `assignee` only if reality
 differs from the chain (you finished, but the task now waits on Kevin).
@@ -992,11 +1014,35 @@ completed checklist steps, list them as 'STEP DONE: <text>' lines. Do not change
 status; do not touch anything outside your scope."""
 
 
+def run_env():
+    """Environment for a dispatched run (board #217).
+
+    Inherits the dispatcher's environment and adds the two values the step-tick
+    contract needs: WHERE to send the call and WHAT to authenticate it with.
+    Both were previously absent, so a run had to grep the repo for a host and
+    read `src/.env` by absolute path from a worktree that does not carry one.
+
+    This grants a run no capability it lacked: every headless run already
+    inherits this process's environment and can already read `{ENV}` directly —
+    that is how the two 07-29 bypass runs worked. It removes a guess, not a
+    barrier. Falls back to no key rather than a crash if the env file is
+    unreadable; the run then gets a clean 401 it can report, not a stack trace.
+    """
+    env = dict(os.environ)
+    env["RORT_BOARD_API_URL"] = BOARD_API_URL
+    try:
+        env["RORT_BOARD_SERVICE_KEY"] = _creds()[1]
+    except Exception as e:
+        print(f"  WARN: no service key for the run env ({e}) — the step tick "
+              f"will 401 and the agent will report it", flush=True)
+    return env
+
+
 def spawn(agent, task, prompt, log_path):
     with open(log_path, "w") as lf:
         return subprocess.Popen(
             [CLAUDE_BIN, "-p", prompt, "--output-format", "json"],
-            cwd=agent_worktree(agent), stdout=lf,
+            cwd=agent_worktree(agent), stdout=lf, env=run_env(),
             stderr=subprocess.STDOUT, start_new_session=True)
 
 
