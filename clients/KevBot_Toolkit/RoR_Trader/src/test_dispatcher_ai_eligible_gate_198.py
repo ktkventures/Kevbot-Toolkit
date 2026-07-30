@@ -27,14 +27,18 @@ rail with no failing test is a comment:
                                    dispatched (it would re-run the whole task),
                                    while a fully-ticked chain sitting in Todo
                                    keeps its legacy behaviour (board #182 walk 4).
-  RAIL 7  terminal statuses      — (step-5 audible) a `Done` or `Blocked` task is
-                                   NEVER dispatched, armed or not: status as
+  RAIL 7  terminal statuses      — (step-5 audible, widened by the step-8
+                                   audible) a `Done`, `Blocked` or `Staged` task
+                                   is NEVER dispatched, armed or not: status as
                                    FINALITY, which is not the status-as-permission
                                    coupling #198 removed. The step-guard cannot
                                    cover it — 129 of the live board's 132 Done
                                    tasks are CHAINLESS, so step_sig() is the
-                                   constant "task". Narrow on purpose: an armed
-                                   Staged/Review/In Progress task still dispatches.
+                                   constant "task". `Staged` = reviewed, waiting
+                                   on a RELEASE, which is R's job via M's brief
+                                   (Kevin, 07-29) — dispatching it would ship
+                                   without the brief. Still narrow on purpose: an
+                                   armed Review/In Progress task DOES dispatch.
   RAIL 6  every earlier gate     — headless assignee, needs-review/scoping tags,
                                    empty description, blocked_by-vs-Done,
                                    chain/assignee agreement and mode=discuss all
@@ -85,15 +89,20 @@ SOURCE = open(DISP).read()
 AGENTS = {"M": {"letter": "M", "status": "headless", "worktree": ".",
                 "scope": "s", "boundaries": "b"},
           "F": {"letter": "F", "status": "headless", "worktree": ".",
+                "scope": "s", "boundaries": "b"},
+          # Enrolled so rail 7's `Staged` checks are genuinely mutation-sensitive:
+          # if the release lane were NOT headless, an armed Staged task would be
+          # refused for its assignee and the test would pass without the fix.
+          "R": {"letter": "R", "status": "headless", "worktree": ".",
                 "scope": "s", "boundaries": "b"}}
 
 ALL_STATUSES = ("Backlog", "Scoping", "Approval", "Todo", "In Progress",
                 "Review", "Staged", "Done", "Blocked")
-# Rail 7 (the step-5 audible): these two are FINAL — an armed task sitting in one
-# of them is refused. Spelled as literals rather than derived from
-# D.TERMINAL_STATUSES so widening that constant cannot silently shrink what rails
-# 1 and 3 still test.
-TERMINAL = ("Done", "Blocked")
+# Rail 7 (the step-5 audible, widened by the step-8 audible): these three are
+# FINAL — an armed task sitting in one of them is refused. Spelled as literals
+# rather than derived from D.TERMINAL_STATUSES so widening that constant cannot
+# silently shrink what rails 1 and 3 still test.
+TERMINAL = ("Done", "Blocked", "Staged")
 LIVE_STATUSES = tuple(s for s in ALL_STATUSES if s not in TERMINAL)
 
 
@@ -160,12 +169,12 @@ for i, s in enumerate(LIVE_STATUSES):
        got == [100 + i],
        f"skipped={[x[1] for x in skipped]}")
 
-got, _, seen = triage([task(id=7, status="Staged", ai_eligible=True,
+got, _, seen = triage([task(id=7, status="Review", ai_eligible=True,
                             assignee="M",
                             checklist=[{"owner": "M", "title": "ship it",
                                         "body": "SOP", "done": False}])])
-ok("the #198 BONUS falls out: an armed Staged task with an open step dispatches",
-   got == [7])
+ok("an armed task with an OPEN step dispatches from a mid-pipeline column "
+   "(here Review — `Staged` is terminal as of the step-8 audible)", got == [7])
 ok("the gate query is the OR filter, not status=eq.Todo",
    any("or=(ai_eligible.eq.true,status.eq.Todo)" in p for p in seen["paths"]),
    str(seen["paths"]))
@@ -353,9 +362,10 @@ ok("...and a DONE blocker does not (the #144 non-bug)",
    [t["id"] for t in out] == [68])
 
 # ── RAIL 7 — TERMINAL statuses: finality, not permission (step-5 audible) ──
-print("― rail 7: a Done or Blocked task is never dispatched, armed or not ―")
-ok("TERMINAL_STATUSES is exactly Done + Blocked",
-   D.TERMINAL_STATUSES == ("Done", "Blocked"), str(D.TERMINAL_STATUSES))
+print("― rail 7: a Done, Blocked or Staged task is never dispatched, armed or not ―")
+ok("TERMINAL_STATUSES is exactly Done + Blocked + Staged",
+   D.TERMINAL_STATUSES == ("Done", "Blocked", "Staged"),
+   str(D.TERMINAL_STATUSES))
 
 # THE MEASURED HOLE: 129 of the live board's 132 Done tasks are CHAINLESS and 89
 # are assigned to a headless lane, so step_sig() is the constant "task" and the
@@ -379,6 +389,31 @@ ok("an ARMED Blocked task is NOT dispatched (reap() parks failed runs there — 
 ok("...quiet as well (reap already commented; the board column IS the signal)",
    skipped and skipped[0][2] is False)
 
+# THE STEP-8 AUDIBLE (Kevin, 07-29: "if something is staged, maybe you consider
+# that something similar to done or blocked"). `Staged` = reviewed, brief held,
+# waiting on a release train, and the actor is R executing a brief M wrote
+# (charter §8). Self-dispatching from `Staged` ships without the brief — the
+# artifact that makes a release auditable. Chainless + empty run state on purpose:
+# nothing but this rail can refuse it.
+got, skipped, _ = triage([task(id=76, status="Staged", ai_eligible=True,
+                               assignee="R")], {"runs": []})
+ok("an ARMED Staged task is NOT dispatched — a release goes out via R on M's "
+   "brief, not by self-dispatch (step-8 audible)", got == [], f"got={got}")
+ok("...the reason says terminal and names Staged",
+   skipped and "terminal" in skipped[0][1] and "Staged" in skipped[0][1],
+   skipped[0][1] if skipped else "")
+ok("...and it is QUIET — a task waiting on a release train is not a stuck queue",
+   skipped and skipped[0][2] is False)
+# The reversal is the POINT, not an oversight: V4.21 advertised an armed Staged
+# task self-dispatching to R·auto as "half of #193 for free". Kevin's ruling makes
+# that a deliberate train-builder design instead of a flag side effect.
+ok("the V4.21 '#193 bonus' is deliberately REVERSED — an armed Staged task with "
+   "an open R-owned step does not self-dispatch either",
+   triage([task(id=77, status="Staged", ai_eligible=True, assignee="R",
+                checklist=[{"owner": "R", "title": "ship the train",
+                            "body": "SOP", "done": False}])], {"runs": []})[0]
+   == [])
+
 open_step = [{"owner": "M", "title": "do it", "body": "SOP", "done": False}]
 for s in TERMINAL:
     got, _, _ = triage([task(id=72, status=s, ai_eligible=True, assignee="M",
@@ -387,17 +422,23 @@ for s in TERMINAL:
     ok(f"an armed {s} task with an OPEN chain step is refused too "
        f"(finality beats an un-ticked step)", got == [], f"got={got}")
 
-# The rail must be NARROW: it is the two terminal columns, not "every status that
-# is not Todo" — that would put the #198 coupling straight back.
-for s in ("Staged", "Review", "In Progress", "Backlog", "Scoping", "Approval"):
+# The rail must stay NARROW: it is the three terminal columns, not "every status
+# that is not Todo" — that would put the #198 coupling straight back. `Staged`
+# left this list in the step-8 audible; everything below must NEVER join it.
+for s in ("Review", "In Progress", "Backlog", "Scoping", "Approval"):
     got, _, _ = triage([task(id=73, status=s, ai_eligible=True, assignee="M",
                              checklist=[dict(x) for x in open_step])],
                        {"runs": []})
     ok(f"an armed {s} task still DISPATCHES (the rail is finality, not a "
        f"whitelist)", got == [73], f"got={got}")
-ok("...which keeps the #193 bonus: an armed Staged task self-dispatches",
-   triage([task(id=74, status="Staged", ai_eligible=True, assignee="M")],
+# The unarmed legacy arm is untouched by the widening: `Todo` is not terminal, and
+# an armed Approval-shaped task still runs — the fix does not over-reach.
+ok("an UNARMED Todo task still dispatches after the widening (rail 2 holds)",
+   triage([task(id=74, status="Todo", ai_eligible=False, assignee="M")],
           {"runs": []})[0] == [74])
+ok("...and an ARMED Approval-shaped task still dispatches",
+   triage([task(id=75, status="Approval", ai_eligible=True, assignee="M")],
+          {"runs": []})[0] == [75])
 
 # A closed task cannot reach the spawn path even through the back-back door: the
 # gate is the only producer of the dispatch list (dispatchable() is a shim).
