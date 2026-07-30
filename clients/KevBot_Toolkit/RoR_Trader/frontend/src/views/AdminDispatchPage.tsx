@@ -15,9 +15,22 @@
  *   3 QUEUE     — the two DELIBERATELY SEPARATE controls: the AI-eligible
  *                 TOGGLE (input) and the run-state PILL (output), with the Run
  *                 button still the one-off queue jump it always was (#198)
- *   4 SHIPPING  — built → pushed → PR'd → staged/done, oldest first, AGE as the
- *                 headline: branch age is what turns a clean merge into
- *                 Monday's conflict (board #166)
+ *   4 SHIPPING  — pushed → PR'd → merged, oldest first, AGE as the headline:
+ *                 branch age is what turns a clean merge into Monday's conflict
+ *                 (board #166)
+ *
+ * BOARD #245 rewrites what panel 4 ADMITS. It keyed off `outcome === 'ok'` —
+ * *any* run that finished successfully — so a Kevin decision (#133), a spec
+ * (#184) and three E-lane diagnoses (#125, #121, #31) rendered as "built" and
+ * sat in a lane about shipping forever. None of them has code. Membership is now
+ * *a recorded pushed branch that has not merged*, which is what "waiting to
+ * ship" actually means. Both halves of that had to be repaired: `pushed_branch`
+ * stopped being written the moment #218 made agents push their own branches (the
+ * loop's backstop correctly declines an already-published branch, and recorded
+ * nothing — the signal was deleted, not degraded, and nothing noticed this panel
+ * depended on it), and merged-ness is read from #242's git-gated ship-step tick.
+ * See `mergeStateOf` for why that source and not another. The lane NEVER
+ * silently empties: what it cannot read, it says.
  *
  * HARD RAIL (spec §3): the app runs on Railway and cannot read the dispatcher's
  * `state.json`, the git worktrees, or GitHub. Anything not capturable —
@@ -225,45 +238,171 @@ export function validateCapInput(raw: string): { ok: boolean; value?: number; re
   return { ok: true, value: n };
 }
 
-/** One row of the shipping lane: work that is built but has not shipped. */
+/**
+ * The release lane's letters, as the owner of a "ship via a release train" step
+ * (charter §1, board #229: `R` is the session, `R-A` the headless executor).
+ * MIRRORS `tools/release_brief/car_ship_tick.py:SHIP_OWNERS` — that sweep is
+ * what ticks the step, so if the two lists ever diverge the lane stops seeing
+ * merges it was told about. Matching only "R" would make the newer convention
+ * invisible, which is the same silent-drop shape board #245 is about.
+ */
+export const SHIP_STEP_OWNERS = ['R', 'R-A'];
+
+/**
+ * Has this task's code landed on `dev`? (board #245)
+ *
+ * **The frontend cannot answer this** — merged-ness is a git fact and the app
+ * runs on Railway with no checkout (spec §3). So it is not computed here; it is
+ * READ, from the one place that already establishes it against real git:
+ *
+ *   `tools/release_brief/car_ship_tick.py` (board #242) sweeps after a train's
+ *   merges and ticks each car's release-lane step, gating EVERY tick on
+ *   `git merge-base --is-ancestor <branch> origin/dev` after a fresh fetch.
+ *   There is no code path in that tool that ticks an unmerged branch.
+ *
+ * A ticked release-lane step is therefore a git-verified merge, recorded in a
+ * field the app already receives. Two sources were rejected: a git check inside
+ * the FastAPI service (the deployed container has no usable `origin/dev` ref and
+ * no credential to fetch one — a web service is the wrong place to answer this),
+ * and a verdict written by the dispatcher loop, which IS a real checkout but
+ * would need a `merged_at` column AND would give us two oracles free to disagree
+ * about the same `--is-ancestor` question.
+ *
+ * Three answers, never two. `unknown` is a first-class result: a task with no
+ * release-lane step in its chain (or a legacy checklist, or a payload with no
+ * chain at all) has an UNREADABLE merge state, and the caller keeps that row and
+ * labels it rather than dropping it. Dropping on unknown is how a lane silently
+ * empties, which is the false-green class of #239 and today's outage.
+ */
+export interface MergeState { state: 'merged' | 'unmerged' | 'unknown'; why: string }
+export function mergeStateOf(task: Task): MergeState {
+  // FINISHED, not literally Done (board #232): a task Kevin has Closed has
+  // shipped, so it must drop off exactly as Done does — otherwise every closed
+  // task reappears as "waiting to go out", forever.
+  if (isFinished(task.status)) {
+    return { state: 'merged', why: `the task is ${task.status} — finished work has shipped` };
+  }
+  const steps = Array.isArray(task.checklist) ? task.checklist : null;
+  if (!steps) {
+    return { state: 'unknown', why: 'the task payload carries no chain, so no merge tick can be read' };
+  }
+  const ship = steps.filter((s) => SHIP_STEP_OWNERS.indexOf(String(stepOwner(s) || '').toUpperCase()) >= 0);
+  if (ship.length === 0) {
+    return { state: 'unknown',
+      why: 'no release-lane (R / R-A) step in this chain — nothing ticks when its branch merges' };
+  }
+  const open = ship.filter((s) => !s.done);
+  if (open.length > 0) {
+    return { state: 'unmerged',
+      why: `release-lane step "${stepTitle(open[0]) || 'ship'}" is still open` };
+  }
+  return { state: 'merged',
+    why: 'every release-lane step is ticked — board #242 gates that tick on '
+       + '`git merge-base --is-ancestor <branch> origin/dev`' };
+}
+
+/** One row of the shipping lane: work with CODE that has not landed. */
 export interface ShipRow {
   task: Task;
   builtAt: string | null;
   builtRun: RunRow;
   pushedBranch: string | null;
   pushedAt: string | null;
+  merge: MergeState;
+  /** What the age is measured from: `'branch'` (pushed_at — the real answer) or
+   *  `'run'` (the fallback). Named, and rendered in the tooltip, because an
+   *  unlabelled proxy is how a dashboard starts lying. Typed `string` rather
+   *  than a union deliberately: this function is LIFTED AND EXECUTED IN NODE by
+   *  src/test_shipping_lane_unmerged_branch_245.py, so its body must contain no
+   *  TS-only syntax (`as const` would be exactly that). */
+  ageFrom: string;
   ageH: number;
 }
 
+/** The lane's own health: which rule produced it, and what it could not read. */
+export interface ShipLane {
+  rows: ShipRow[];
+  /** 'branch' = #245's rule. 'legacy' = the payload carries no `pushed_branch`
+   *  at all, so membership fell back to the pre-#245 any-ok-run rule. */
+  basis: 'branch' | 'legacy';
+  /** Rows whose merge state could not be read (kept, and labelled). */
+  unknownMerges: number;
+  /** Set when the lane is NOT trustworthy as rendered — shown, never swallowed. */
+  warning: string | null;
+}
+
 /**
- * built → pushed → (PR'd) → staged/done, oldest first (spec §7).
+ * pushed → (PR'd) → merged, oldest first (spec §7, rewritten for board #245).
  *
- * "Built" = the task's most recent run that finished `ok`. "Pushed" = the most
- * recent `pushed_branch` on ANY of its runs (#195). A task that is Done has
- * shipped and drops off the panel — this list is the answer to *what is waiting
- * to go out, and for how long*.
+ * **A task is in this lane iff it has a recorded pushed branch that has not
+ * merged into `dev`.** The pre-#245 rule was `rows.find(r => r.outcome === 'ok')`
+ * — *any run that finished ok* — which is not a statement about code at all: a
+ * Kevin decision (#133), a spec (#184) and three E-lane diagnoses (#125, #121,
+ * #31) all rendered as "built" and sat in a lane about shipping forever, because
+ * an agent had once analysed them successfully.
+ *
+ * The `ok` run is still carried on the row (it is who built it, for the lane
+ * chip), but it no longer decides membership. AGE is measured from the BRANCH
+ * (`pushed_at`), because branch age is the merge-conflict predictor Kevin reads
+ * this number for; it falls back to the run and says so in `ageFrom`.
+ *
+ * DEGRADES, NEVER EMPTIES. `pushedKnown` is false when the runs payload carries
+ * no `pushed_branch` key at ALL (un-migrated DB, or an API not serving the
+ * column). Filtering on a field the payload does not carry would empty the lane
+ * and read as "nothing is in flight" — the exact false green this task exists to
+ * kill — so the lane falls back to the legacy rule and SAYS SO. Same for merge
+ * state: an `unknown` row is kept and counted, never dropped.
  */
-export function shippingRows(tasks: Task[], runsByTask: Map<number, RunRow[]>): ShipRow[] {
-  const out: ShipRow[] = [];
-  tasks.forEach((t) => {
-    // FINISHED, not literally Done (board #232): a task Kevin has Closed has
-    // shipped, so it must drop off the shipping panel exactly as Done does —
-    // otherwise every closed task reappears as "waiting to go out", forever.
-    if (isFinished(t.status)) return;
-    const rows = runsByTask.get(t.id) || [];
-    const builtRun = rows.find((r) => r.outcome === 'ok');
-    if (!builtRun) return;
-    const pushed = rows.find((r) => !!r.pushed_branch);
-    const builtAt = builtRun.finished_at || builtRun.requested_at;
-    out.push({
-      task: t, builtAt, builtRun,
-      pushedBranch: pushed?.pushed_branch || null,
-      pushedAt: pushed?.pushed_at || null,
-      ageH: hoursSince(builtAt),
-    });
+export function shippingRows(tasks: Task[], runsByTask: Map<number, RunRow[]>, pushedKnown: boolean): ShipLane {
+  const rows = tasks.flatMap((t) => {
+    const runs = runsByTask.get(t.id) || [];
+    const pushedRun = runs.find((r) => !!r.pushed_branch);
+    const builtRun = runs.find((r) => r.outcome === 'ok');
+    // Membership rail 1 — CODE, not a successful run. With the column readable,
+    // no recorded branch means no artifact, and the task is simply not shipping.
+    if (pushedKnown && !pushedRun) return [];
+    // Legacy fallback: the column is unreadable for everyone, so fall back to
+    // the old rule rather than render an empty lane (`basis` reports it).
+    if (!pushedKnown && !builtRun) return [];
+    const merge = mergeStateOf(t);
+    // Membership rail 2 — a branch that has landed is not waiting to ship.
+    // `unknown` is deliberately NOT filtered: it is kept and labelled.
+    if (merge.state === 'merged') return [];
+    const anchor = pushedRun || builtRun;
+    if (!anchor) return [];
+    const pushedAt = pushedRun?.pushed_at || null;
+    const builtAt = (builtRun || anchor).finished_at || (builtRun || anchor).requested_at;
+    const ageAt = pushedAt || builtAt;
+    const ageFrom = pushedAt ? 'branch' : 'run';
+    return [{
+      task: t, builtAt, builtRun: anchor,
+      pushedBranch: pushedRun?.pushed_branch || null,
+      pushedAt,
+      merge,
+      ageFrom,
+      ageH: hoursSince(ageAt),
+    }];
   });
   // Oldest first — the top of this list is the next merge conflict.
-  return out.sort((a, b) => (b.ageH) - (a.ageH));
+  const sorted = rows.sort((a, b) => (b.ageH) - (a.ageH));
+  const unknownMerges = sorted.filter((r) => r.merge.state === 'unknown').length;
+  const warnings = [
+    pushedKnown ? '' :
+      'run_history carries no `pushed_branch` at all, so "does this task have code?" '
+      + 'cannot be answered — this lane fell back to the pre-#245 rule (ANY run that finished ok) '
+      + 'and will show decisions, specs and diagnoses alongside real branches. '
+      + 'Fix: apply the run_history_pushed_branch.sql migration and run a V4.29+ dispatcher loop.',
+    unknownMerges === 0 ? '' :
+      `${unknownMerges} row(s) have NO release-lane (R / R-A) step, so whether their `
+      + 'branch has merged is unreadable. They are shown — an unreadable row is kept and labelled, '
+      + 'never dropped — but this lane is a superset of what is really in flight until they get one.',
+  ].filter((w) => !!w);
+  return {
+    rows: sorted,
+    basis: pushedKnown ? 'branch' : 'legacy',
+    unknownMerges,
+    warning: warnings.length ? warnings.join(' ') : null,
+  };
 }
 
 /**
@@ -506,8 +645,9 @@ export default function AdminDispatchPage() {
   const pushedKnown = useMemo(
     () => runs.some((r) => r.pushed_branch !== undefined), [runs]);
 
-  const ship = useMemo(
-    () => shippingRows(tasks, runsByTask), [tasks, runsByTask, tick]);     // eslint-disable-line react-hooks/exhaustive-deps
+  const lane = useMemo(
+    () => shippingRows(tasks, runsByTask, pushedKnown), [tasks, runsByTask, pushedKnown, tick]);     // eslint-disable-line react-hooks/exhaustive-deps
+  const ship = lane.rows;
   const staged = useMemo(() => waitBucket('Staged', tasks, runsByTask), [tasks, runsByTask]);
   const inReview = useMemo(() => waitBucket('Review', tasks, runsByTask), [tasks, runsByTask]);
 
@@ -921,14 +1061,19 @@ export default function AdminDispatchPage() {
       </Panel>
 
       {/* ── Panel 4 — Shipping lane ───────────────────────────────────────── */}
-      <Panel title="shipping lane — built → pushed → PR'd → staged/done"
+      <Panel title="shipping lane — pushed → PR'd → merged"
         sub={<>
-          Work that is built but has not shipped, <b>oldest first</b>. Age is the headline
-          number because branch age is what turns a clean merge into a conflict (board #166
-          measured 16-28h). <b>PR&apos;d is NOT tracked</b> — it needs a{' '}
+          Work with <b>code that has not landed on dev</b>, oldest first. A task is here{' '}
+          <b>iff it has a recorded pushed branch that is not merged</b> (board #245) — a run
+          finishing <code style={mono}>ok</code> is not an artifact, so decisions, specs and
+          diagnoses no longer render as &ldquo;built&rdquo;. Age is measured from the{' '}
+          <b>branch</b>, because branch age is what turns a clean merge into a conflict
+          (board #166 measured 16-28h). <b>PR&apos;d is NOT tracked</b> — it needs a{' '}
           <code style={mono}>pr_number</code> field and a GitHub credential the API does not
           have (#193 Half 2), so it renders as a greyed dash rather than a false negative.
-          {' '}<b>Staged/Done here is board state, not git truth.</b>
+          {' '}<b>Merged is board state, not git truth</b>: it is the release-lane step ticked
+          by <code style={mono}>car_ship_tick.py</code> (#242), which gates every tick on{' '}
+          <code style={mono}>git merge-base --is-ancestor</code>. Not read from git here.
         </>}>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
           {[staged, inReview].map((b) => {
@@ -965,7 +1110,30 @@ export default function AdminDispatchPage() {
           })}
         </div>
 
-        {ship.length === 0 && <div style={{ ...dim, fontSize: 13 }}>nothing built and unshipped.</div>}
+        {/*
+          NEVER SILENTLY EMPTY (board #245 rail 3). An empty lane means one of two
+          opposite things — "nothing is in flight" or "we could not tell" — and a
+          dashboard that renders them identically is the false-green class that
+          caused today's outage and #239. So the warning is rendered ABOVE the
+          list, whether the list is empty or not, and the empty-state sentence
+          only claims the good news when the lane is trustworthy.
+        */}
+        {lane.warning && (
+          <div style={{
+            border: '1px solid var(--amber, #d98c00)', borderRadius: 8, padding: '8px 11px',
+            marginBottom: 10, fontSize: 12, color: 'var(--text-secondary)',
+          }}>
+            <b style={{ color: 'var(--amber, #d98c00)' }}>⚠ this lane is not fully readable</b> — {lane.warning}
+          </div>
+        )}
+        {ship.length === 0 && (
+          <div style={{ ...dim, fontSize: 13 }}>
+            {lane.basis === 'branch'
+              ? 'nothing pushed and unmerged — no branch is waiting to ship.'
+              : 'nothing built and unshipped (legacy basis — see the warning above; this is NOT '
+                + 'a statement about branches).'}
+          </div>
+        )}
         {ship.map((s) => (
           <div key={s.task.id} style={{
             display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap',
@@ -973,8 +1141,11 @@ export default function AdminDispatchPage() {
           }}>
             <span style={{
               fontSize: 15, fontWeight: 700, minWidth: 62, color: ageColor(s.ageH),
-            }} title={`built ${utcStamp(s.builtAt)} — age is the merge-conflict predictor`}>
-              {ageShort(s.builtAt) || '—'}
+            }} title={s.ageFrom === 'branch'
+              ? `branch pushed ${utcStamp(s.pushedAt)} — branch age is the merge-conflict predictor`
+              : `built ${utcStamp(s.builtAt)} — its LAST COMPLETED RUN, not the branch: no `
+                + 'pushed_at is recorded for this task'}>
+              {ageShort(s.pushedAt || s.builtAt) || '—'}
             </span>
             <RoleChip role={s.builtRun.agent_letter} />
             <Link href={`/admin/tasks?task=${s.task.id}`}
@@ -982,23 +1153,27 @@ export default function AdminDispatchPage() {
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               #{s.task.id} {s.task.title}
             </Link>
-            <Stage label="built" state="done" detail={utcStamp(s.builtAt)}
-              title={`the task's most recent run that finished ok (run ${s.builtRun.run_id || '—'})`} />
             <Stage
               label="pushed"
               state={s.pushedBranch ? 'done' : 'unknown'}
               detail={s.pushedBranch || (pushedKnown ? 'unknown' : 'unknown (pre-#195)')}
               title={s.pushedBranch
-                ? `pushed ${utcStamp(s.pushedAt)} — branch ${s.pushedBranch}`
+                ? `pushed ${utcStamp(s.pushedAt)} — branch ${s.pushedBranch} (run ${s.builtRun.run_id || '—'})`
                 : 'UNKNOWN, not "not pushed": run_history only records pushed_branch for runs after '
-                  + 'board #195, and this task has none. Check the branch by hand before assuming.'} />
+                  + 'board #195, and this task has none. This row is here on the LEGACY basis '
+                  + '(a run that finished ok) — check the branch by hand before assuming.'} />
             <Stage label="PR'd" state="untracked" detail="not tracked"
               title="Not tracked. Needs a structured pr_number on dev_tasks AND a GitHub token the API does not have — board #193 Half 2, a credential decision rather than a UI one. Never scraped from comment prose: a scraped number goes stale silently." />
             <Stage
-              label={s.task.status === 'Staged' ? 'staged' : 'shipped'}
-              state={s.task.status === 'Staged' ? 'pending' : 'untracked'}
-              detail={s.task.status}
-              title="board state, used as a proxy for the merge: Staged = reviewed and awaiting a release train; Done = shipped. Not read from git." />
+              label="merged"
+              state={s.merge.state === 'unknown' ? 'unknown' : 'pending'}
+              detail={s.merge.state === 'unknown' ? 'unreadable' : `not yet · ${s.task.status}`}
+              title={`merge state: ${s.merge.state.toUpperCase()} — ${s.merge.why}. `
+                + 'Read from the release-lane step ticked by car_ship_tick.py (board #242), which '
+                + 'gates every tick on `git merge-base --is-ancestor <branch> origin/dev`. '
+                + 'That makes this board state, standing in for the merge. Not read from git. '
+                + 'An UNREADABLE row is kept and labelled, never dropped — a lane that hides '
+                + 'what it cannot answer is a false green.'} />
           </div>
         ))}
       </Panel>
