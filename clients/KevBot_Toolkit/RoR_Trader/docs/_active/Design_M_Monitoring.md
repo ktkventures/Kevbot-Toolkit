@@ -145,3 +145,62 @@ documented watch-list, not more automation of execution.
 **Related open items:** #211 (generate the release brief — the last manual hop in
 `Staged → shipped`) · #206 (preflight cannot see the loop's in-memory version) · #133
 (dispatcher loop on cron) · #193 (the dashboard, now live — the *visibility* half of this).
+
+---
+
+## 6. Kevin's follow-up: in-session subagents fed the dispatcher's own prompt
+
+> *"would it be possible for you to use in-session agents that you feed with the same thing
+> you would feed an agent that is on the board directly... so that they're functionally the
+> same thing as an on-board agent except it actually makes you more responsive?"*
+
+**Technically yes, trivially.** `build_prompt()` is a function. M could import it, generate the
+identical prompt — task, current step SOP, thread, all four contracts — and hand it to an
+in-session subagent. Subagents have bash, so they could write to the board themselves rather
+than M transcribing.
+
+**But it optimises the wrong variable.** The dispatcher's poll is 20 seconds. **M's stalls on
+07-29/30 were 15 to 60 MINUTES**, because nothing woke M — the cause Kevin identified himself
+in §1. In-session agents would buy back 20 seconds and cost four things:
+
+1. **They die with M's session.** A headless run is `setsid`-detached and survives; a subagent
+   is bound to the session. This box killed sessions **eight times on 07-29** (board #188).
+   Everything that survived tonight survived *because* it was detached.
+2. **The machinery stops applying.** `run_history`, the reaper, auto-retry (#197), the
+   step-guard, the push leg (#195), `CONCURRENCY=3`, one-run-per-lane, the 24/day cap — all of
+   it exists because runs go through the dispatcher. Subagents run ungoverned unless it is all
+   reimplemented.
+3. **Kevin's board controls stop working when M is not watching.** Flipping `ai_eligible` or
+   pressing Run triggers the *dispatcher*, not M. Moving execution in-session makes the toggle
+   he just shipped dependent on M's attention.
+4. **M's context fills with their output.** ~20 runs tonight. Headless keeps the bulk on the
+   board, where M reads only what it chooses.
+
+**His "agent names as shorthand for prompts" instinct is right — and it is already the
+design.** The registry's per-lane scope/boundaries/worktree *is* that shorthand, and
+`build_prompt` composes it with the step SOP. The value was always in the prompt composition,
+not in which process executes it.
+
+**Where subagents genuinely win:** short research that informs M's next move and leaves no
+artifact — "find every caller of X", "does this doc still say Y". No survivability needed,
+nothing to audit. **M has not used them at all**, because its operating instructions say not
+to unless Kevin asks. Worth deciding deliberately rather than by default.
+
+## 7. Kevin's follow-up: a fourth agent status
+
+> *"could we add a fourth option that's called in-session subagent or whatever? I think live
+> session kind of implies it's like a chat thread... but that's what I thought headless was."*
+
+**His confusion is the naming's fault.** `headless` does not mean in-session — it means *"the
+dispatcher may spawn this lane as a detached `claude -p` process."* That is a poor name for
+that, and renaming it is cheap and worth doing on its own.
+
+**A status is only as real as the code that reads it.** Today the sole consumer is the registry
+query `status=eq.headless`. A fourth value means nothing until something honours it — so it is
+a dispatcher change, not a label.
+
+**On subscription vs API:** the dispatcher shells out to `CLAUDE_BIN = "claude"` — the same CLI,
+on the same machine, under the same auth as the M session. So there is no evident
+subscription-vs-API difference between a detached run and an in-session one. **Flagged as
+unverified**: neither Kevin nor M has confirmed how the CLI bills in each path, and it should
+not be leaned on until someone does.
