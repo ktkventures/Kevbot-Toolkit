@@ -592,7 +592,11 @@ def stamp_approval(task_id: int, payload: dict = Body(...),
 
     ONE stamp, `approved to start` (board #232): arms `ai_eligible` (board
     #198), moves Approval → Todo, ticks the pending Kevin checklist step (board
-    #151) and writes one system comment naming the stamp and who recorded it (M
+    #151 — legacy `role`/`text` AND #182 chain `owner`/`title`, board #225),
+    hands the task off to the next incomplete step's owner (board #225, via the
+    same `_next_assignee` /steps/complete uses — a stamped task must never be
+    left sitting on `kevin`), and writes one system comment naming the stamp,
+    the ticked step, the hand-off and who recorded it (M
     relaying Kevin's verbal OK passes author='kevin' and says so on the thread).
     It NO LONGER sets `kevin_final` — Kevin's look at the finished work is the
     `Closed` status now, after `Done`, where it blocks nothing.
@@ -612,8 +616,8 @@ def stamp_approval(task_id: int, payload: dict = Body(...),
             detail=f"mode must be one of {sorted(_STAMP_MODE_ALIASES)}")
     author = (payload.get("author") or "kevin").strip() or "kevin"
     c = _admin()
-    rows = c.table("dev_tasks").select("id,status,checklist").eq("id", task_id) \
-        .execute().data
+    rows = c.table("dev_tasks").select("id,status,checklist,assignee") \
+        .eq("id", task_id).execute().data
     if not rows:
         raise HTTPException(status_code=404, detail="task not found")
     if rows[0].get("status") != "Approval":
@@ -636,23 +640,43 @@ def stamp_approval(task_id: int, payload: dict = Body(...),
     # Todo forever (dispatchable=0) — looking approved but going nowhere.
     # Tick ONLY the first un-done kevin step: a later Kevin review/close step
     # must stay open so its own sign-off is still asked for.
+    #
+    # Board #225: read the step through `_step_owner`/`_step_title`, NOT through
+    # the legacy `role`/`text` keys. A #182 process chain carries `owner`/
+    # `title`, so the raw-key version matched NOTHING on every chained task —
+    # the stamp silently did half its job (3 stamps on 07-30, 2 hand-ticked).
+    # #151's test stayed green because it builds a LEGACY checklist; the chain
+    # cases below are the ones that fail without this.
     checklist = rows[0].get("checklist") or []
     ticked = None
     for step in checklist:
         if (not step.get("done")
-                and (step.get("role") or "").strip().lower() == "kevin"):
+                and str(_step_owner(step) or "").strip().lower() == "kevin"):
             step["done"] = True
-            ticked = step.get("text")
+            ticked = _step_title(step)
             update["checklist"] = checklist  # JSONB is replaced whole
             break
 
+    # Second half of #225: ticking the step is not the hand-off. Without this
+    # the task lands in Todo still assigned to `kevin` — it will not dispatch,
+    # and it trips preflight invariant (7). Same helper /steps/complete uses, so
+    # the two paths cannot drift on who the task waits on next.
+    old_assignee = rows[0].get("assignee")
+    new_assignee = old_assignee
+    if ticked is not None:
+        new_assignee = _next_assignee(checklist, old_assignee)
+        if (new_assignee or None) != (old_assignee or None):
+            update["assignee"] = new_assignee
+
     c.table("dev_tasks").update(update).eq("id", task_id).execute()
     tick_note = f' · checklist: ticked "{ticked}"' if ticked else ""
+    hand_note = (f" · handed off: {old_assignee or '—'} → {new_assignee}"
+                 if "assignee" in update else "")
     c.table("dev_task_comments").insert({
         "task_id": task_id, "author": "system",
         "body": f"stamp: {_STAMP_LABEL} (by {author}) · "
                 f"status: Approval → Todo · ai_eligible: true"
-                f"{tick_note}"}).execute()
+                f"{tick_note}{hand_note}"}).execute()
     res = c.table("dev_tasks").select("*").eq("id", task_id).execute().data
     return res[0] if res else {"status": "stamped"}
 
