@@ -193,7 +193,18 @@ ok("10 step block still renders", "=== YOUR STEP — STEP 2 of 3" in p)
 SRC_TEXT = open(DISP, encoding="utf-8").read()
 head = SRC_TEXT[:SRC_TEXT.index("def ")]
 ok("11 version banner records V4.26", "V4.26 (board #218" in head)
-ok("11 module version string bumped", "Team dispatcher (V4.26)" in head)
+# The MODULE version is asserted ">= V4.26", not "== V4.26". This step shipped as
+# V4.26 and its own sibling (#218 step 3, worktree ownership) landed STACKED on top
+# as V4.27, rewriting the header line — so an equality check goes red on a change
+# that is not a regression. R hit exactly this in Wave 23 and correctly refused to
+# improvise past it. What this rail protects is that the module still DECLARES a
+# version and has not gone BACKWARDS; the changelog assertion above already proves
+# V4.26's own contribution survived the stack.
+_mv = re.search(r"Team dispatcher \(V(\d+)\.(\d+)\)", head)
+ok("11 module declares a version at all", _mv is not None, head[:120])
+ok("11 module version is >= V4.26 (a later step may legitimately bump it)",
+   _mv is not None and (int(_mv.group(1)), int(_mv.group(2))) >= (4, 26),
+   _mv.group(0) if _mv else "no version string")
 ok("11 docstring no longer says agents are TOLD they cannot push",
    "is TOLD it cannot push" not in head)
 ok("11 V4.23's entry is preserved, not deleted", "V4.23 (board #195)" in head)
