@@ -240,12 +240,15 @@ raises("stamping a task that is not in Approval is still a 409", 409,
        lambda: dt.stamp_approval(plain["id"], {"mode": "final"}, user=None))
 
 
-# ── walk 5: INERT until Step 4 — today's dispatcher still gates on Todo ────
-# The whole point of the additive design: after Step 2 the board behaves
-# EXACTLY as it did. Proven against the real dispatcher, not a description of
-# it. Step 4 (a different lane's file) is what makes ai_eligible load-bearing.
+# ── walk 5: END TO END — the API's column reaches the real dispatch gate ───
+# Written for Step 2, when the dispatcher still gated on `status=eq.Todo` and this
+# walk proved the column was INERT. Step 4 landed the gate, so the same walk now
+# proves the other half of the additive claim: what the API arms, the dispatcher
+# dispatches — and what it does not arm behaves exactly as it did before #198.
+# (The gate's own rails — step-guard, completed-chain, every pre-#198 refusal —
+# live in test_dispatcher_ai_eligible_gate_198.py.)
 
-print("― walk 5: the live dispatcher gate is unchanged by this step ―")
+print("― walk 5: an ARMED task reaches the real dispatch gate ―")
 spec = importlib.util.spec_from_file_location(
     "team_dispatcher",
     os.path.join(ROOT, "tools", "team_dispatcher", "dispatcher.py"))
@@ -260,12 +263,29 @@ dt.update_task(todo_unarmed["id"], {"status": "Todo", "actor": "M"},
                user=None)
 
 STATUS_RE = re.compile(r"status=eq\.([^&]+)")
+OR_RE = re.compile(r"or=\(([^)]*)\)")
+
+backlog_unarmed = mk("plain Backlog, never armed")
+dt.update_task(backlog_unarmed["id"], {"status": "Backlog", "actor": "M"},
+               user=None)
 
 
 def fake_api(method, path, body=None, prefer=None):
-    """Serve the dispatcher's PostgREST query from the fake board, HONOURING
-    the status filter — so a gate that ignored `status` would be caught."""
+    """Serve the dispatcher's PostgREST query from the fake board, HONOURING the
+    filter it was given — the Step-4 OR gate or a bare `status=eq.` — so a gate
+    that ignored its own filter would be caught."""
     board = [_deep(r) for r in FAKE.store["dev_tasks"]]
+    m = OR_RE.search(path)
+    if m:
+        keep = []
+        for r in board:
+            for clause in m.group(1).split(","):
+                col, _, val = clause.partition(".eq.")
+                if (r.get(col) is True if val == "true"
+                        else str(r.get(col)) == val):
+                    keep.append(r)
+                    break
+        return keep
     m = STATUS_RE.search(path)
     if m:
         board = [r for r in board if r.get("status") == m.group(1)]
@@ -278,16 +298,18 @@ agents = {"F": {"letter": "F", "status": "headless", "worktree": ".",
 got, _skipped = disp.triage_todo(agents, set())
 got_ids = [x["id"] for x in got]
 
-ok("ai_eligible=true on a NON-Todo task does NOT dispatch yet "
-   "(the gate is still status=eq.Todo — Step 4 changes that)",
-   armed_elsewhere["id"] not in got_ids)
+ok("ai_eligible=true on a NON-Todo (Staged) task DISPATCHES — the column the "
+   "API sets is the column the gate reads (Step 4)",
+   armed_elsewhere["id"] in got_ids, f"got={got_ids}")
 ok("a Todo task with ai_eligible=false STILL dispatches "
    "(today's queue is untouched)",
    todo_unarmed["id"] in got_ids)
-ok("the stamped tasks from walk 4 are in the Todo queue as before",
+ok("an UNARMED non-Todo task still does NOT dispatch (additive, not a free-for-all)",
+   backlog_unarmed["id"] not in got_ids, f"got={got_ids}")
+ok("the stamped tasks from walk 4 are in the queue as before",
    len(got_ids) >= 3)
-ok("dispatcher module has no ai_eligible logic yet — Step 4 owns that",
-   "ai_eligible" not in
+ok("the dispatcher gate reads ai_eligible (Step 4 shipped in the same branch)",
+   "ai_eligible" in
    open(os.path.join(ROOT, "tools", "team_dispatcher",
                      "dispatcher.py")).read())
 
