@@ -291,7 +291,28 @@ export interface RunRow {
   finished_at: string | null;
   outcome: string;               // requested | running | ok | error | lease-expired | ignored
   log_tail: string | null;
+  // Board #195 (run_history_pushed_branch.sql): what the run pushed at reap.
+  // OPTIONAL — the key is ABSENT on an un-migrated DB and NULL on every run
+  // recorded before #195. Absent/NULL means UNKNOWN, never "not pushed"
+  // (Spec_Dispatch_Dashboard.md §7 rail 1) — a false red here would send
+  // Kevin hunting for a branch that shipped days ago.
+  pushed_branch?: string | null;
+  pushed_at?: string | null;
 }
+
+/**
+ * Dispatcher constants, mirrored for the UI (board #193, Spec §4).
+ *
+ * SSOT: `tools/team_dispatcher/dispatcher.py` (~L127 — CONCURRENCY / DAILY_CAP
+ * / RUN_TIMEOUT_S). The app runs on Railway and cannot read that file, so these
+ * are declared ONCE here and labelled "configured" wherever they render, so a
+ * drift is legible rather than invisible.
+ *
+ * POLL_S is the OPERATIONAL value the loop is started with (`--loop --poll 20`),
+ * not the module default (900) — it is used only to word the "can lag one poll"
+ * note, never to compute a state.
+ */
+export const DISPATCHER = { CONCURRENCY: 3, DAILY_CAP: 24, RUN_TIMEOUT_S: 2700, POLL_S: 20 };
 
 // The agreed pipeline (Kevin+M 07-25, board #136): Backlog → Scoping →
 // Approval → Todo → In Progress → Review → Staged → Done; Blocked is the
@@ -478,6 +499,58 @@ export function relTime(iso: string | undefined): string {
   const h = Math.round(m / 60);
   if (h < 48) return `${h}h ago`;
   return `${Math.round(h / 24)}d ago`;
+}
+
+/**
+ * UTC wall-clock stamp — `07-29 20:14:03Z`. Board #193 renders every timestamp
+ * in UTC with an explicit `Z`, paired with relTime()'s "ago": the deploy log,
+ * the dispatcher logs and Kevin's own chat are all UTC, so a local-time render
+ * would desync this page from every other surface he reads.
+ */
+export function utcStamp(iso: string | null | undefined, withDate = true): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return '';
+  const p = (n: number) => String(n).padStart(2, '0');
+  const time = `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}Z`;
+  return withDate ? `${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${time}` : time;
+}
+
+/** UTC calendar day of a timestamp — `2026-07-29`. Day grouping and the
+ *  "started today" count both key off this, never off local midnight. */
+export function utcDay(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (!Number.isFinite(d.getTime())) return '';
+  return d.toISOString().slice(0, 10);
+}
+
+/** Whole hours since a timestamp; -1 when it is missing/unparseable. Age is
+ *  the headline number of the shipping lane (board #166: 16-28h branch age is
+ *  what turned a clean merge into Monday's conflicts). */
+export function hoursSince(iso: string | null | undefined): number {
+  if (!iso) return -1;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return -1;
+  return (Date.now() - t) / 3600000;
+}
+
+/** Age colour thresholds, calibrated on board #166's measured 16-28h:
+ *  <12h neutral · ≥12h amber · ≥24h red. */
+export function ageColor(hours: number): string {
+  if (hours < 0) return 'var(--text-tertiary)';
+  if (hours >= 24) return 'var(--red)';
+  if (hours >= 12) return 'var(--amber, #d98c00)';
+  return 'var(--text-secondary)';
+}
+
+/** Compact age — `4h` / `2d 3h` / `18m`. Empty when unknown. */
+export function ageShort(iso: string | null | undefined): string {
+  const h = hoursSince(iso);
+  if (h < 0) return '';
+  if (h < 1) return `${Math.max(1, Math.round(h * 60))}m`;
+  if (h < 48) return `${Math.round(h)}h`;
+  return `${Math.floor(h / 24)}d ${Math.round(h % 24)}h`;
 }
 
 /** Vision predicate: tagged 'vision' OR already has subtasks (pre-tag data
