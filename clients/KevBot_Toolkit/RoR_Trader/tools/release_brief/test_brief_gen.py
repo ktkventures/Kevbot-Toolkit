@@ -444,11 +444,166 @@ def _main_with_no_wave():
             setattr(B, n, v)
 
 
+# ---------------------------------------------------------------------------
+# M-REVIEW GAPS (07-30) -- each of these was a real miss when the generator was
+# replayed against the hand-written Wave 14 / Wave 16 briefs. Every check below
+# FAILS against the pre-review generator.
+# ---------------------------------------------------------------------------
+
+NO_R_CHAIN = [
+    step("kevin", "Approve — STAMP"),
+    step("M", "Build the thing"),
+    step("M", "M review — judge the rails"),
+    step("M", "Prove it on a real task, then ship", done=False),
+]
+
+
+def t_gap_no_r_step_is_loud():
+    """GAP 1: Waves 14 and 16 each carried a car whose chain named no R step
+    (tasks #200 and #194). The generator dropped both SILENTLY."""
+    t = task(200, "task-chain skill", NO_R_CHAIN)
+    p = train([t], {200: "docs/skills-200"},
+              {"docs/skills-200": [APP + "docs/a.md"]})
+    check("GAP 1: a Staged task with no R step is not a car", not p["cars"])
+    check("GAP 1: ...and is REFUSED OUT LOUD, not dropped silently",
+          any(who == "#200" for who, _ in p["refusals"]), str(p["refusals"]))
+    check("GAP 1: the refusal says what to do about it",
+          any("NO R step" in why and "task-chain" in why for _, why in p["refusals"]),
+          str(p["refusals"]))
+    check("GAP 1: the refusal is rendered into the brief", "#200" in B.render(p))
+
+    # NEGATIVE PROOF: a chain that DOES name R, still mid-chain, stays quiet --
+    # otherwise every in-flight task would spam the brief.
+    mid = [step("kevin", "Approve — STAMP"), step("M", "Build", done=False),
+           step("R", "Ship with a release train", done=False)]
+    p = train([task(201, "mid-chain", mid)], {201: "feat/x-201"},
+              {"feat/x-201": [APP + "src/a.py"]})
+    check("GAP 1 negative proof: a mid-chain task with an R step stays quiet",
+          not p["cars"] and not p["refusals"], str(p["refusals"]))
+
+
+def t_gap_suite_list_tracks_reality():
+    """GAP 2: DISPATCHER_SUITES is a constant. Replaying Wave 14 named
+    `test_dispatcher_step_tick_202.py`, which #202 had not yet added -- R would
+    have aborted on a missing file."""
+    gone = B.DISPATCHER_SUITES[0]
+    live = B.resolve_dispatcher_suites(lambda p: p != gone)
+    check("GAP 2: a suite that no longer exists is dropped", gone not in live)
+    check("GAP 2: the surviving suites keep the constant's order",
+          live == [s for s in B.DISPATCHER_SUITES if s != gone], str(live))
+
+    newcomer = "src/test_dispatcher_brand_new_999.py"
+    live = B.resolve_dispatcher_suites(lambda p: True, discovered={newcomer})
+    check("GAP 2: a suite the constant does not name is appended",
+          newcomer in live and live[-1] == newcomer, str(live))
+    check("GAP 2: a non-suite file is never appended as a gate",
+          B.resolve_dispatcher_suites(lambda p: True,
+                                      discovered={"src/local_update.py"})
+          == list(B.DISPATCHER_SUITES))
+
+    # ...and the resolved set is what a dispatcher car actually gates on.
+    t = task(500, "dispatcher change", REVIEWED_CHAIN)
+    rb, df, fb = fakes({500: "feat/d-500"},
+                       {"feat/d-500": [APP + B.DISPATCHER_FILE]})
+    p = B.build_train([t], rb, df, fb, wave=99, base_sha="deadbee",
+                      date="2026-07-30", suites=["src/test_only_this.py"])
+    check("GAP 2: build_train gates on the RESOLVED set, not the constant",
+          p["gates"] == ["python3 src/test_only_this.py"], str(p["gates"]))
+
+
+def t_gap_owed_log_stale_base_warns():
+    """GAP 3: an owed deploy-log is stale BY CONSTRUCTION -- that is what owed
+    means. Holding on it made the generator refuse the Wave-14 backlog case it
+    exists to clear."""
+    log = "docs/deploy-log-wave11-0730"
+    rb, df, fb = fakes({}, {log: [APP + "docs/Deploy_Log.md"]}, behind={log: 8})
+    p = B.build_train([], rb, df, fb, owed_logs=[log], wave=99,
+                      base_sha="deadbee", date="2026-07-30")
+    check("GAP 3: a stale owed deploy-log does NOT hold the train",
+          not p["holds"], str(p["holds"]))
+    check("GAP 3: it still auto-dispatches", p["auto_dispatch"] is True)
+    check("GAP 3: the staleness is still stated, as a warning",
+          any("fork-behind 8" in w for w in p["warns"]), str(p["warns"]))
+    check("GAP 3: the warning still tells R to abort on a real conflict",
+          any("ABORT" in w for w in p["warns"]), str(p["warns"]))
+
+    # NEGATIVE PROOF: the exemption is scoped to append-only log paths only. A
+    # deploy-log branch that also touches code holds like anything else.
+    rb, df, fb = fakes({}, {log: [APP + "docs/Deploy_Log.md", APP + "src/a.py"]},
+                       behind={log: 8})
+    p = B.build_train([], rb, df, fb, owed_logs=[log], wave=99,
+                      base_sha="deadbee", date="2026-07-30")
+    check("GAP 3 negative proof: a log branch that also touches code still holds",
+          p["holds"] and p["auto_dispatch"] is False, str(p["holds"]))
+
+
+def t_gap_loop_version_is_read():
+    """GAP 4: `live_loop_version()` returned None against the REAL banner -- the
+    old regex required the word "version" on the line, and the banner reads
+    `Team dispatcher (V4.25) - dispatches ...`. Every brief silently lost it."""
+    real = '"""Team dispatcher (V4.25) — dispatches board tasks to headless agents.\n'
+    check("GAP 4: the real banner shape parses", B._banner_version(real) == "4.25",
+          repr(B._banner_version(real)))
+    check("GAP 4: a file with no banner returns None",
+          B._banner_version("import os\n") is None)
+    check("GAP 4: only the HEAD of the file is scanned",
+          B._banner_version("\n" * 40 + "V9.9\n") is None)
+
+    t = task(902, "loop change", REVIEWED_CHAIN)
+    p = train([t], {902: "feat/l-902"}, {"feat/l-902": [APP + B.DISPATCHER_FILE]})
+    p["loop_version"], p["target_version"] = "4.24", "4.25"
+    body = B.render(p)
+    check("GAP 4: the brief names BOTH versions, like the hand-written ones did",
+          "V4.25" in body and "V4.24" in body, body)
+
+
+def t_gap_armed_state_is_checked():
+    """GAP 5: the brief asserted "nothing in this train needs arming" without
+    looking. Both hand-written briefs named the armed task explicitly."""
+    t = dict(task(903, "armed car", REVIEWED_CHAIN), ai_eligible=True)
+    p = train([t], {903: "feat/a-903"}, {"feat/a-903": [APP + "src/a.py"]})
+    check("GAP 5: the car records its armed state", p["cars"][0]["armed"] is True)
+    body = B.render(p)
+    check("GAP 5: an armed car is named in DO NOT",
+          "#903" in body.split("## DO NOT")[1], body)
+    check("GAP 5: ...and R is told not to disarm it",
+          "ARMED" in body and "disarm" in body)
+
+    # NEGATIVE PROOF: unarmed car -> the flat constant, no false claim either way
+    t = dict(task(903, "unarmed car", REVIEWED_CHAIN), ai_eligible=False)
+    p = train([t], {903: "feat/a-903"}, {"feat/a-903": [APP + "src/a.py"]})
+    body = B.render(p)
+    check("GAP 5 negative proof: unarmed train says no car is armed",
+          "No car in this train is armed" in body and "ARMED**" not in body, body)
+
+
+def t_gap_nonoverlapping_paths_still_stated():
+    """GAP 6: the per-car path summary was suppressed whenever ANY overlap
+    existed -- i.e. exactly the briefs that needed it (Wave 14 spelled out that
+    #141 and #142 did not touch the logs)."""
+    logs = ["docs/deploy-log-wave11-0730", "docs/deploy-log-wave12-0730"]
+    t = task(197, "reaper fix", REVIEWED_CHAIN)
+    rb, df, fb = fakes({197: "fix/r-197"},
+                       {logs[0]: [APP + "docs/Deploy_Log.md"],
+                        logs[1]: [APP + "docs/Deploy_Log.md"],
+                        "fix/r-197": [APP + B.DISPATCHER_FILE]})
+    p = B.build_train([t], rb, df, fb, owed_logs=logs, wave=99,
+                      base_sha="deadbee", date="2026-07-30")
+    body = B.render(p)
+    check("GAP 6: overlapping cars are still called out",
+          "WILL conflict with each other" in body, body)
+    check("GAP 6: the NON-overlapping car's paths are stated too",
+          "do **not** overlap" in body and "#197" in body.split("## GATING")[0], body)
+
+
 TESTS = [t_car_selection, t_rail_unreviewed, t_rail_unreviewed_taskless,
          t_rail_overlap, t_rail_overlap_append_only, t_rail_dispatcher_suites,
          t_rail_stale_base, t_rail_no_branch, t_rail_already_merged, t_order,
          t_hard_limits, t_procedure_shape, t_frontend_note, t_r_task_row,
-         t_empty_train, t_paths, t_wave_guard]
+         t_empty_train, t_paths, t_wave_guard,
+         t_gap_no_r_step_is_loud, t_gap_suite_list_tracks_reality,
+         t_gap_owed_log_stale_base_warns, t_gap_loop_version_is_read,
+         t_gap_armed_state_is_checked, t_gap_nonoverlapping_paths_still_stated]
 
 
 def run():

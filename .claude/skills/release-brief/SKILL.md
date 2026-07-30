@@ -39,6 +39,8 @@ enforced mechanically instead of by attention. Two distinct verdicts:
   diff, or a branch already merged into `dev`;
 - a **hold** keeps the whole train and its brief but routes it to **M** — overlapping
   paths with no recorded resolution (two cars on `dispatcher.py`), or a stale base.
+  **Exception:** an owed deploy-log is stale by construction, so its staleness warns
+  rather than holds — otherwise the tool refuses the log backlog it exists to clear.
 
 `--create-task` honours that: AUTO → `assignee=R`, `status=Todo`, `ai_eligible=true`
 (the loop dispatches it). HELD → `assignee=M`, `status=Review`, unarmed — visible,
@@ -48,6 +50,22 @@ The generator **never** merges, pushes, rebases, runs a gate, flips a flag, or t
 a worktree. It reads, prints, and at most writes one `dev_tasks` row.
 
 Rails suite: `python3 tools/release_brief/test_brief_gen.py` (expect `ALL PASS`).
+
+### What the generator does NOT derive (M review, 07-30)
+
+Validated by replaying Waves 14 and 16 through it and diffing against the briefs M
+hand-wrote for them. Six gaps were found and fixed; the derived gate block now
+matches the hand-written one byte-for-byte on both waves. These stay M's to add:
+
+- **gate RESULTS** (`# 74 checks passed`) — the generator may never run a gate.
+- **the `#` column is the BOARD id**, not the GitHub PR number. R merges by branch.
+- **narrative context** — *why* three logs are owed, which suite is load-bearing.
+- **armed tasks that are not cars** — that inventory is `/preflight`'s.
+- **whether a PR exists yet** — R opens one if missing.
+
+⚠️ **A `Staged` task whose chain names no R step is REFUSED, not shipped.** That was
+2 of the 5 real cars across Waves 14/16, and it used to be a silent drop. The brief
+now names it under *Refused cars* — retrofit the chain with `/task-chain`, re-run.
 
 **Still M's job, every time:** read the generated brief, and resolve anything it held.
 The shape it emits is what R is tuned to execute — when that shape needs to change,

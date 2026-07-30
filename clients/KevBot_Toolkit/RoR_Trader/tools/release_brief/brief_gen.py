@@ -33,6 +33,42 @@ Usage (from the app root, `clients/KevBot_Toolkit/RoR_Trader`):
 The core is pure: `build_train()` takes the board rows and three injected
 callables (branch resolver / differ / base checker) so every rail is testable
 without a database or a git repo. See `test_brief_gen.py`.
+
+M REVIEW, 07-30 (task #211 step 3). The generator was replayed against the real
+board + git state of Waves 14 and 16 and diffed line-by-line against the briefs M
+hand-wrote for them. Six gaps were found and FIXED -- see the `t_gap_*` rails, each
+of which fails against the pre-review generator:
+
+  1. a `Staged` task whose chain names no R step was dropped SILENTLY (2 of the 5
+     real cars across the two waves: #200, #194) -> now refused OUT LOUD;
+  2. `DISPATCHER_SUITES` was a constant, so replaying Wave 14 gated on a test #202
+     had not yet added -> resolved against the merged tip instead;
+  3. an owed deploy-log is stale BY CONSTRUCTION, so the stale-base HOLD fired on
+     the very backlog case this tool exists to clear -> warns for append-only logs;
+  4. `live_loop_version()` returned None against the real banner, so every brief
+     silently lost the version -> fixed, and the TARGET version is read too;
+  5. "nothing needs arming" was asserted without looking -> reads `ai_eligible`;
+  6. the per-car path summary vanished whenever any overlap existed -> always shown.
+
+After the fixes the derived GATE BLOCK is byte-identical (commands and order) to
+the hand-written one for both waves.
+
+ACCEPTED LIMITATIONS -- known, deliberate, and M's job to fill in when they matter:
+
+  * per-gate RESULTS (`# 74 checks passed`). The generator must never run a gate,
+    so it says "all green at M's review" instead of quoting numbers.
+  * the `#` column is the BOARD task id, not the GitHub PR number the hand-written
+    briefs used. The Kind column disambiguates (`board #197 -- ...`). Resolving real
+    PR numbers would add `gh` as a third data source; branch + board is enough for
+    R, which merges by branch.
+  * narrative context ("three logs are owed because trains ran back-to-back",
+    "#195's and #198's suites are the load-bearing ones"). Judgement, not data.
+  * armed NON-car tasks. Wave 14's brief warned that #202 -- not a car -- was armed.
+    Only the cars' `ai_eligible` is read here; a fleet-wide armed inventory is
+    `/preflight`'s job, not the brief's.
+  * whether a car already HAS a PR. Task cars always print their board id; R opens
+    a PR if one is missing, which its own SOP already covers.
+  * ASCII punctuation (`--`, `->`) rather than em-dashes and arrows.
 """
 
 import argparse
@@ -102,10 +138,17 @@ DOCS_PREFIXES = ("docs/", ".claude/", "clients/KevBot_Toolkit/RoR_Trader/docs/")
 BRANCH_TOKEN_RE = re.compile(
     r"\b((?:feat|fix|docs|chore|refactor|test|perf|merge|verify|spec)/[A-Za-z0-9._\-/]+)")
 
-# The hard-limits block. Two derived slots; the rest is the constant.
+# Every dispatcher/mentions suite lives under one of these two dirs with this name
+# shape. Used to REPLACE the constant above with what actually exists at the merged
+# tip -- the constant went stale the moment #202 added a tenth suite, and a brief
+# that names a file R cannot run is a false abort.
+SUITE_RE = re.compile(
+    r"^(?:src|tools/team_dispatcher)/test_(?:dispatcher|mentions_agent)[A-Za-z0-9_]*\.py$")
+
+# The hard-limits block. Three derived slots; the rest is the constant.
 HARD_LIMITS = """## DO NOT
 - **Do NOT restart the dispatcher loop.** {loop_note}
-- **Do not arm or disarm any task.** Nothing in this train needs arming.
+- {arm_note}
 - Do not touch {other_branches}.
 - No rebase, no force-push, no reset, no flag flips, no `railway`.
 - Do not work in the main checkout (`{app_root}`) -- a live dispatcher loop runs from it.
@@ -158,6 +201,21 @@ def r_step_index(task):
     return None
 
 
+def has_r_step(task):
+    """True when the chain names an R step at all, ticked or not.
+
+    A `Staged` task with NO R step anywhere is the gap M review found on 07-30:
+    two of the five real cars across Waves 14 and 16 (task #200's skills branch,
+    task #194's preflight branch) were exactly this, and `r_step_index()` returns
+    None for them — indistinguishable from a task still mid-chain. 44 of the 52
+    chained tasks on the board are in this class, so it is the common case, not
+    an edge one. It must be REFUSED OUT LOUD, never dropped silently."""
+    for s in task.get("checklist") or []:
+        if isinstance(s, dict) and (_step_owner(s) or "").upper() == "R":
+            return True
+    return False
+
+
 def review_step(task, r_idx):
     """The ticked M-owned review step in front of the R step, or None.
 
@@ -199,7 +257,23 @@ def classify(paths):
     return "docs" if paths and all(is_docs_path(p) for p in paths) else "code"
 
 
-def gates_for(paths):
+def resolve_dispatcher_suites(exists, discovered=()):
+    """The suite set as it exists AT THE MERGED TIP, not as of the day the
+    constant was typed.
+
+    `DISPATCHER_SUITES` supplies the ORDER M ran them in and nothing else: any
+    entry that no longer exists is dropped (R would abort on a missing file --
+    replaying Wave 14 named `test_dispatcher_step_tick_202.py`, which #202 had
+    not yet added), and any suite present at the tip that the constant does not
+    name is appended (so the next dispatcher test is gated the day it lands)."""
+    out = [t for t in DISPATCHER_SUITES if exists(t)]
+    for t in sorted(discovered):
+        if t not in out and SUITE_RE.match(t) and exists(t):
+            out.append(t)
+    return out
+
+
+def gates_for(paths, suites=DISPATCHER_SUITES):
     """Gate commands derivable from the diff.
 
     Two sources, in order: the full dispatcher suite set whenever
@@ -208,7 +282,7 @@ def gates_for(paths):
     cmds = []
     rel = [app_relative(p) for p in paths]
     if DISPATCHER_FILE in rel:
-        cmds.extend(f"python3 {t}" for t in DISPATCHER_SUITES)
+        cmds.extend(f"python3 {t}" for t in suites)
     for p in rel:
         base = os.path.basename(p)
         if not (base.startswith("test_") and base.endswith(".py")):
@@ -260,14 +334,33 @@ def assess(cars):
                 f"recorded resolution. M reconciles before this train runs.")
 
     for c in cars:
-        if c["fork_behind"]:
-            holds.append(
-                f"{c['label']} (`{c['branch']}`) is cut from a STALE base (fork-behind "
-                f"{c['fork_behind']}). Its `git diff origin/dev` shows phantom deletions; "
-                f"verify with `git show --stat`, not a two-dot diff. M rebases or confirms "
-                f"the merge is clean before this train runs.")
+        if not c["fork_behind"]:
+            continue
+        msg = (f"{c['label']} (`{c['branch']}`) is cut from a STALE base (fork-behind "
+               f"{c['fork_behind']}). Its `git diff origin/dev` shows phantom deletions; "
+               f"verify with `git show --stat`, not a two-dot diff.")
+        if _append_only_log(c):
+            # An owed deploy-log that has SAT is stale BY CONSTRUCTION -- that is
+            # what "owed" means, and it is precisely the backlog this generator
+            # exists to clear (Wave 14 cleared three at fork-behind 8). Holding on
+            # it would make the tool refuse its own core case, and the resolution
+            # is already recorded: append oldest-first, abort on anything else.
+            warns.append(msg + " It is an append-only deploy-log entry, so this is "
+                               "expected -- merge it oldest-first and **ABORT if the "
+                               "conflict is anything other than two dated entries "
+                               "wanting the same spot.**")
+        else:
+            holds.append(msg + " M rebases or confirms the merge is clean before this "
+                               "train runs.")
 
     return holds, warns
+
+
+def _append_only_log(car):
+    """An owed-deploy-log car touching nothing but append-only paths."""
+    return (OWED_LOG_RE.match(car["branch"] or "")
+            and bool(car["paths"])
+            and all(app_relative(p) in APPEND_ONLY_PATHS for p in car["paths"]))
 
 
 # ---------------------------------------------------------------------------
@@ -277,13 +370,14 @@ def assess(cars):
 def build_train(tasks, resolve_branch, diff_files, fork_behind,
                 owed_logs=(), wave=None, base_sha="", date=None,
                 session="headless", other_branches=(), loop_version=None,
-                already_merged=None):
+                already_merged=None, suites=DISPATCHER_SUITES, target_version=None):
     """Assemble a train plan from board rows + injected git facts.
 
     resolve_branch(task) -> (branch|None, source)
     diff_files(branch)   -> [git-root-relative path, ...]
     fork_behind(branch)  -> int commits of origin/dev the branch does not have
     already_merged(br)   -> True when the branch tip is already an ancestor of dev
+    suites               -> the dispatcher suite set AS IT EXISTS at the merged tip
     """
     already_merged = already_merged or (lambda b: False)
     cars, refusals = [], []
@@ -294,12 +388,20 @@ def build_train(tasks, resolve_branch, diff_files, fork_behind,
                                  "(`docs/deploy-log-waveN-MMDD`) -- nothing reviewed it"))
             continue
         cars.append(_car(None, "(open a PR)", br, "docs -- owed deploy-log entry",
-                         diff_files(br), fork_behind(br)))
+                         diff_files(br), fork_behind(br), suites=suites))
 
     for t in sorted(tasks, key=lambda t: t["id"]):
         idx = r_step_index(t)
         if idx is None:
-            continue                      # not waiting on a train
+            if not has_r_step(t):
+                # Loud, not silent: a Staged task whose chain never names R is
+                # invisible to the car rule but VERY visible to Kevin, who staged
+                # it expecting it to ship.
+                refusals.append((f"#{t['id']}", "`Staged` but its chain names NO R step, "
+                                 "so the car rule (current step is R-owned) cannot see "
+                                 "it. Retrofit the chain with `/task-chain`, or dispatch "
+                                 "R by hand for it."))
+            continue                      # otherwise: still mid-chain, correctly quiet
         if review_step(t, idx) is None:
             refusals.append((f"#{t['id']}", "no TICKED M-review step in front of the "
                                             "R step -- unreviewed work never enters a train"))
@@ -325,7 +427,8 @@ def build_train(tasks, resolve_branch, diff_files, fork_behind,
             continue
         cars.append(_car(t["id"], f"#{t['id']}", branch,
                          f"board #{t['id']} -- {t['title']}", paths, fork_behind(branch),
-                         branch_source=src))
+                         branch_source=src, armed=bool(t.get("ai_eligible")),
+                         suites=suites))
 
     # RAIL: docs first, code last. Stable within a kind (owed logs, then id order).
     cars.sort(key=lambda c: 0 if c["kind"] == "docs" else 1)
@@ -344,11 +447,13 @@ def build_train(tasks, resolve_branch, diff_files, fork_behind,
         "auto_dispatch": bool(cars) and not holds,
         "other_branches": list(other_branches),
         "loop_version": loop_version,
+        "target_version": target_version,
         "gates": _merged_gates(cars),
     }
 
 
-def _car(task_id, pr_label, branch, what, paths, behind, branch_source="owed-log"):
+def _car(task_id, pr_label, branch, what, paths, behind, branch_source="owed-log",
+         armed=False, suites=DISPATCHER_SUITES):
     return {
         "task_id": task_id,
         "label": pr_label if task_id else f"`{branch}`",
@@ -358,9 +463,10 @@ def _car(task_id, pr_label, branch, what, paths, behind, branch_source="owed-log
         "paths": sorted(paths),
         "kind": classify(paths),
         "fork_behind": behind,
-        "gates": gates_for(paths),
+        "gates": gates_for(paths, suites),
         "frontend": frontend_touched(paths),
         "branch_source": branch_source,
+        "armed": armed,
     }
 
 
@@ -400,6 +506,16 @@ def render(plan):
         out.append("**Zero file overlap** between cars: " + " · ".join(
             f"{c['label']} = {_paths_summary(c['paths'])}" for c in plan["cars"]) + ".")
         out.append("")
+    else:
+        # The hand-written briefs ALWAYS said where the non-conflicting cars live
+        # ("#141 touches only `.claude/skills/**` ... neither overlaps the logs").
+        # Suppressing that whenever ANY overlap existed dropped it from exactly the
+        # briefs that needed it most.
+        clean = [c for c in plan["cars"] if not any(p in ov for p in c["paths"])]
+        if clean:
+            out.append("The other cars do **not** overlap: " + " · ".join(
+                f"{c['label']} = {_paths_summary(c['paths'])}" for c in clean) + ".")
+            out.append("")
     for w in plan["warns"]:
         out += [w, ""]
 
@@ -431,15 +547,30 @@ def render(plan):
     touches_loop = any(app_relative(p) == DISPATCHER_FILE
                        for c in plan["cars"] for p in c["paths"])
     if touches_loop:
-        v = plan.get("loop_version")
-        running = " (V%s)" % v if v else ""
+        # Both versions, the way every hand-written brief said it ("#202 makes it
+        # V4.25; the loop is V4.24") -- the delta is what tells M the restart is
+        # actually required.
+        tgt, run_v = plan.get("target_version"), plan.get("loop_version")
+        if tgt and run_v:
+            vers = f" A car makes it **V{tgt}**; the running loop is V{run_v}."
+        elif run_v:
+            vers = f" The running loop is V{run_v}."
+        else:
+            vers = ""
         loop_note = ("A car changes `dispatcher.py`, so the merged tip is NEWER than the "
-                     "running loop%s. **M restarts and verifies.**" % running)
+                     "running loop.%s **M restarts and verifies.**" % vers)
     else:
         loop_note = "No car touches it; it is correctly on the running version."
+    armed = [c["label"] for c in plan["cars"] if c["armed"]]
+    if armed:
+        # Asserting "nothing needs arming" without looking was a claim, not a fact.
+        arm_note = (f"**{', '.join(armed)} {'is' if len(armed) == 1 else 'are'} ARMED** "
+                    f"(`ai_eligible=true`). Do **not** disarm, and do not arm anything else.")
+    else:
+        arm_note = "**Do not arm or disarm any task.** No car in this train is armed."
     others = ", ".join(f"`{b}`" for b in plan["other_branches"]) or "any branch not listed above"
-    out.append(HARD_LIMITS.format(loop_note=loop_note, other_branches=others,
-                                  app_root=MAIN_CHECKOUT))
+    out.append(HARD_LIMITS.format(loop_note=loop_note, arm_note=arm_note,
+                                  other_branches=others, app_root=MAIN_CHECKOUT))
 
     if plan["refusals"]:
         out += ["", "## Refused cars (NOT in this train)"]
@@ -619,21 +750,54 @@ def live_wave():
     return n + 1 if n else None
 
 
-def live_loop_version():
-    """Version banner of the RUNNING loop, read from the main checkout (read-only)."""
-    path = f"{MAIN_CHECKOUT}/{DISPATCHER_FILE}"
-    try:
-        for line in open(path, encoding="utf-8"):
-            m = re.search(r"V(\d+\.\d+)", line)
-            if m and "version" in line.lower():
-                return m.group(1)
-    except Exception:
-        pass
+def _banner_version(text):
+    """The dispatcher's version from its module docstring.
+
+    The banner reads `Team dispatcher (V4.25) - dispatches board tasks ...`, so the
+    old `"version" in line` guard never matched and every brief silently lost the
+    version it was supposed to state. Take the first `V<maj>.<min>` in the head of
+    the file, which is the banner by construction."""
+    for line in text.splitlines()[:20]:
+        m = re.search(r"\bV(\d+\.\d+)", line)
+        if m:
+            return m.group(1)
     return None
 
 
+def live_loop_version():
+    """Version banner of the RUNNING loop, read from the main checkout (read-only)."""
+    try:
+        with open(f"{MAIN_CHECKOUT}/{DISPATCHER_FILE}", encoding="utf-8") as fh:
+            return _banner_version(fh.read())
+    except Exception:
+        return None
+
+
+def live_target_version(cars):
+    """Version the merged tip will be: the banner on whichever car edits the loop."""
+    for c in cars:
+        if not any(app_relative(p) == DISPATCHER_FILE for p in c["paths"]):
+            continue
+        rc, out, _ = git("show", f"{c['branch']}:{APP_PREFIX}{DISPATCHER_FILE}")
+        if rc != 0:
+            rc, out, _ = git("show", f"{c['branch']}:{DISPATCHER_FILE}")
+        v = _banner_version(out) if rc == 0 else None
+        if v:
+            return v
+    return None
+
+
+def live_suite_env(car_paths):
+    """(exists, discovered) for the MERGED tip = `origin/dev` plus what cars add."""
+    rc, out, _ = git("ls-tree", "-r", "--name-only", BASE)
+    present = {app_relative(p) for p in out.splitlines()} if rc == 0 else set()
+    present |= {app_relative(p) for p in car_paths}
+    return (lambda p: p in present), {p for p in present if SUITE_RE.match(p)}
+
+
 def staged_tasks():
-    return api("GET", "dev_tasks?status=eq.Staged&select=id,title,status,assignee,checklist") or []
+    return api("GET", "dev_tasks?status=eq.Staged"
+                      "&select=id,title,status,assignee,checklist,ai_eligible") or []
 
 
 # ---------------------------------------------------------------------------
@@ -677,12 +841,29 @@ def main(argv=None):
     owed = () if args.no_owed_logs else live_owed_logs()
     _, base_sha, _ = git("rev-parse", "--short", BASE)
 
-    plan = build_train(
-        tasks, live_resolve_branch, live_diff_files, live_fork_behind,
-        already_merged=live_already_merged,
-        owed_logs=owed, wave=args.wave or live_wave(), base_sha=base_sha,
-        date=datetime.now(timezone.utc).date().isoformat(),
-        session=args.session, loop_version=live_loop_version())
+    diff_cache = {}
+
+    def cached_diff(branch):
+        if branch not in diff_cache:
+            diff_cache[branch] = live_diff_files(branch)
+        return diff_cache[branch]
+
+    def assemble(**kw):
+        return build_train(
+            tasks, live_resolve_branch, cached_diff, live_fork_behind,
+            already_merged=live_already_merged,
+            owed_logs=owed, wave=args.wave or live_wave(), base_sha=base_sha,
+            date=datetime.now(timezone.utc).date().isoformat(),
+            session=args.session, loop_version=live_loop_version(), **kw)
+
+    # Pass 1 discovers the cars; the suite set and the target version are both
+    # functions of what those cars touch, so pass 2 assembles the real plan.
+    # `cached_diff` keeps this to one `git diff` per branch.
+    scout = assemble()
+    car_paths = [p for c in scout["cars"] for p in c["paths"]]
+    exists, discovered = live_suite_env(car_paths)
+    plan = assemble(suites=resolve_dispatcher_suites(exists, discovered),
+                    target_version=live_target_version(scout["cars"]))
     plan["other_branches"] = live_other_branches({c["branch"] for c in plan["cars"]})
 
     if plan["wave"] is None:
