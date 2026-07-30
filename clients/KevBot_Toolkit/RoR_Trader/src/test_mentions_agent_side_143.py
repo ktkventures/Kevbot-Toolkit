@@ -208,7 +208,9 @@ def fake_api(method, path, body=None, prefer=None):
     # so it matches either spelling.
     if method == "GET" and path.startswith(f"dev_tasks?{disp.GATE_FILTER}"):
         return [dict(TASK)]
-    if method == "GET" and path.startswith("dev_tasks?status=eq.Done"):
+    # Board #232: the blocked_by lookup is the shared FINISHED set now
+    # (`status=in.(Done,Closed)`), not the literal `status=eq.Done`.
+    if method == "GET" and path.startswith(f"dev_tasks?{disp.FINISHED_FILTER}"):
         return []
     if method == "GET" and path.startswith("dev_task_comments?task_id="):
         return []

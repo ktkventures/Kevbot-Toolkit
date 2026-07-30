@@ -324,26 +324,50 @@ export interface RunRow {
  */
 export const DISPATCHER = { CONCURRENCY: 4, DAILY_CAP: 50, RUN_TIMEOUT_S: 2700, POLL_S: 20 };
 
-// The agreed pipeline (Kevin+M 07-25, board #136): Backlog → Scoping →
-// Approval → Todo → In Progress → Review → Staged → Done; Blocked is the
-// anywhere-exception. Vision rows are EXEMPT (VISION_STATUSES below).
-export const STATUSES = ['Backlog', 'Scoping', 'Approval', 'Todo', 'In Progress', 'Review', 'Staged', 'Blocked', 'Done'];
+// The agreed pipeline (Kevin+M 07-25, board #136; extended by #232): Backlog →
+// Scoping → Approval → Todo → In Progress → Review → Staged → Done → Closed.
+// `Blocked` and `Stand By` are the two anywhere-exceptions and they are NOT the
+// same thing — see STATUS_DEF. Vision rows are EXEMPT (VISION_STATUSES below).
+export const STATUSES = ['Backlog', 'Scoping', 'Approval', 'Todo', 'In Progress', 'Review', 'Staged', 'Blocked', 'Stand By', 'Done', 'Closed'];
 // Vision items track via their subtasks, not the pipeline — no Approval /
-// Review / Staged on them.
-export const VISION_STATUSES = ['Backlog', 'Scoping', 'Todo', 'In Progress', 'Blocked', 'Done'];
+// Review / Staged on them. `Stand By` and `Closed` apply to a vision the same
+// way they apply to a task: Kevin can park one, and he closes one out himself.
+export const VISION_STATUSES = ['Backlog', 'Scoping', 'Todo', 'In Progress', 'Blocked', 'Stand By', 'Done', 'Closed'];
+
+/* ── THE ONE SHARED "FINISHED" SET (board #232) ─────────────────────────────
+ * Two statuses mean a task is OVER: `Done` (M's close) and `Closed` (Kevin's
+ * retrospective look, which comes after it). Everything asking "is this task
+ * finished?" — open counts, hide-done filters, roll-ups, dependency checks,
+ * dimming — reads THIS, never a bare `status === 'Done'`.
+ *
+ * WHY IT IS A CONSTANT AND NOT 14 COMPARISONS: `Done` meant "finished" in ~14
+ * load-bearing places. Adding `Closed` by hand-editing each one is how one gets
+ * missed, and the one that matters fails SILENTLY — the dispatcher's `done_ids`
+ * resolves `blocked_by`, so a blocker moving Done → Closed would drop out and
+ * re-block every dependent task with no error. Mirrored server-side in
+ * dispatcher.FINISHED_STATUSES and api/routers/dev_tasks.FINISHED_STATUSES.
+ *
+ * NOT "is this dispatchable" — `Blocked`, `Staged` and `Stand By` are undispatchable
+ * but emphatically NOT finished, and must keep blocking anything that depends
+ * on them. Adding status number three should be a one-line change here. */
+export const FINISHED_STATUSES = ['Done', 'Closed'];
+export const isFinished = (status?: string | null): boolean =>
+  !!status && FINISHED_STATUSES.includes(status);
 // One-liners VERBATIM from Session_Charters.md §7 (Kevin+M 07-25 kanban
 // lifecycle — supersedes the 07-23 set) — shown as tooltips on every status
 // select. Charter changes re-sync here.
 export const STATUS_DEF: Record<string, string> = {
   'Backlog': 'captured, not next',
   'Scoping': 'M fleshes out purpose/plan/impact so Kevin can judge it',
-  'Approval': 'awaiting Kevin\u2019s stamp; NOTHING runs from here (dispatcher is Todo-only by construction); Kevin stamps one of two ways: \u201cApprove \u2014 M closes\u201d or \u201cApprove + I review before Done\u201d (kevin_final)',
+  'Approval': 'awaiting Kevin\u2019s stamp; NOTHING runs from here. ONE stamp (board #232): \u201capproved to start\u201d \u2014 permission to execute, not a verdict that the outcome looks great',
   'Todo': 'approved and queued; dispatch-eligible',
   'In Progress': 'actively worked or dispatch-claimed',
-  'Review': 'output done, awaiting sign-off (M always; Kevin closes iff kevin_final)',
+  'Review': 'output done, awaiting M\u2019s sign-off',
   'Staged': 'reviewed, brief held, waiting for a release train (trains ship everything Staged)',
-  'Blocked': 'anywhere-exception, blocker named',
-  'Done': 'shipped/closed, never self-set by the agent that did the work',
+  'Blocked': 'anywhere-exception, blocker named \u2014 something PREVENTS progress and someone should look',
+  'Stand By': 'Kevin has SEEN it, wants it, and chose NOT YET \u2014 deliberately parked, no action needed from anyone. Not Blocked: nothing is preventing it, so it must not sit in the queue of things someone should come look at',
+  'Done': 'shipped/closed by M, never self-set by the agent that did the work \u2014 then it goes to Kevin to Close',
+  'Closed': 'Kevin\u2019s version of done, AFTER Done \u2014 his retrospective look at finished work, so he sees what shipped and can spawn a follow-up while it is fresh. Blocks NOTHING: the work is already live by then',
 };
 export const AREAS = ['engine', 'backtest', 'frontend', 'infra', 'data', 'docs', 'other'];
 // Team roles per Session_Charters.md §1. Legacy values ('claude', …) still
@@ -364,10 +388,16 @@ export const COLLAPSED_LS_KEY = 'ror_board_collapsed_visions';
 // New-stage colors track who acts there: Approval gold = Kevin's stamp inbox
 // (his role color), Review sky = eyes on output, Staged teal = R's
 // release-train queue (R's role color).
+// Board #232: `Stand By` is a MUTED STEEL BLUE, deliberately calm and as far
+// from Blocked's red as the palette gets — the two must never be mistaken for
+// each other at a glance, because that is the whole reason the status exists.
+// `Closed` is a DEEPER green than Done's: same family (it is finished), one
+// step further along.
 export const STATUS_COLOR: Record<string, string> = {
   'Backlog': 'var(--text-tertiary)', 'Scoping': '#a855f7', 'Approval': '#c9a227',
   'Todo': 'var(--blue)', 'In Progress': 'var(--amber, #d98c00)', 'Review': '#0ea5e9',
-  'Staged': '#2aa8a0', 'Blocked': 'var(--red)', 'Done': 'var(--green)',
+  'Staged': '#2aa8a0', 'Blocked': 'var(--red)', 'Stand By': '#6b83a8',
+  'Done': 'var(--green)', 'Closed': '#1f7a4d',
 };
 // Impact = blast-radius chip next to status (board #136), M-editable,
 // prominent in the Approval view. Colors escalate with radius.
@@ -493,16 +523,27 @@ export const defaultChain = (assignee?: string | null): ChecklistStep[] => [
   { text: 'Ship / close', done: false, role: 'M' },
 ];
 
+/** The stamp mode the UI sends. ONE mode since board #232 — the type is a union
+ *  of one on purpose, so a second mode cannot be added without a deliberate edit
+ *  here and in api/routers/dev_tasks._STAMP_MODE_ALIASES. */
+export type StampMode = 'start';
+
 /**
- * The two Approval-stage stamp buttons (board #136) — Kevin's two-touch
- * choice, rendered only while the task sits in Approval. 'delegate' =
- * "Approve — M closes" (→ Todo, kevin_final=false); 'final' = "Approve + I
- * review before Done" (→ Todo, kevin_final=true; only Kevin then signs off
- * Review → Staged/Done). Both hit POST /stamp, which logs the system
- * comment. stopPropagation: the board renders them inside the title cell.
+ * THE Approval-stage stamp button (board #136, reduced to one by #232) —
+ * rendered only while the task sits in Approval. It hits POST /stamp, which
+ * moves the task to Todo, arms it, ticks the pending Kevin step and logs the
+ * system comment.
+ *
+ * It WAS two buttons: "Approve — M closes" and "Approve + I review before Done"
+ * (kevin_final). Kevin's ruling: the stamp is PERMISSION TO START, not a verdict
+ * that the outcome looks great, so it says exactly that now. The second button
+ * was a PRE-commitment to review, days before the work landed and easy to forget
+ * by then; the `Closed` status replaces it with a POST check on finished work
+ * that blocks nothing. Keeping both would ask him to review twice.
+ * stopPropagation: the board renders it inside the title cell.
  */
 export const StampButtons = ({ t, onStamp, compact = false }: {
-  t: Task; onStamp: (id: number, mode: 'delegate' | 'final') => void; compact?: boolean;
+  t: Task; onStamp: (id: number, mode: StampMode) => void; compact?: boolean;
 }) => {
   if (t.status !== 'Approval') return null;
   const base: React.CSSProperties = {
@@ -512,19 +553,17 @@ export const StampButtons = ({ t, onStamp, compact = false }: {
   return (
     <span style={{ display: 'inline-flex', gap: 6, marginLeft: compact ? 6 : 0 }}>
       <button style={{ ...base, color: 'var(--green)', borderColor: 'var(--green)' }}
-        title="stamp: Approve — M closes. Task → Todo; M signs it off at Review."
-        onClick={(e) => { e.stopPropagation(); onStamp(t.id, 'delegate'); }}>
-        ✅ Approve · M closes</button>
-      <button style={{ ...base, color: '#c9a227', borderColor: '#c9a227' }}
-        title="stamp: Approve + I review before Done (two-touch). Task → Todo; only Kevin signs it off Review → Staged/Done."
-        onClick={(e) => { e.stopPropagation(); onStamp(t.id, 'final'); }}>
-        ✅👀 Approve · I review</button>
+        title="stamp: approved to start — permission to execute, NOT a verdict that the outcome looks great. Task → Todo and armed; you get your look at the finished work when M moves it to Done and it comes to you to Close."
+        onClick={(e) => { e.stopPropagation(); onStamp(t.id, 'start'); }}>
+        ✅ Approve to start</button>
     </span>
   );
 };
 
-/** Two-touch marker: Kevin stamped "I review before Done" — his sign-off
- *  gates Review → Staged/Done. Set by the stamps; renders wherever chips do. */
+/** LEGACY two-touch marker (board #136): rows stamped "I review before Done"
+ *  before board #232 retired that mode. Nothing SETS `kevin_final` any more, but
+ *  the column, its rows and the API's close guard all still stand, so the chip
+ *  keeps rendering — a task stamped two-touch must keep looking like one. */
 export const TwoTouchChip = ({ t }: { t: Task }) => !t.kevin_final ? null : (
   <span style={{ ...tagChip, borderColor: '#c9a227', color: '#c9a227', fontWeight: 700 }}
     title="two-touch: Kevin stamped 'Approve + I review before Done' — only Kevin signs this off Review → Staged/Done">
@@ -663,12 +702,17 @@ export function groupBoard(tasks: Task[]): {
 export function nextActor(t: Task, subtasks: Task[]): { next: string | null; handoff: boolean } {
   let next: string | null;
   if (subtasks.length > 0) {
-    const firstOpen = subtasks.find((s) => s.status !== 'Done');
+    // FINISHED, not literally Done (board #232) — a Closed subtask is over too,
+    // and treating it as open would make the vision's next-actor chip point at
+    // whoever owned work Kevin already closed out.
+    const firstOpen = subtasks.find((s) => !isFinished(s.status));
     next = firstOpen ? (firstOpen.assignee || null) : null;
   } else if (t.status === 'Approval') {
     next = 'kevin'; // his stamp is the gate (board #136)
   } else if (t.status === 'Review') {
-    // Two-touch stamp: Kevin signs off; otherwise M closes (board #136).
+    // M signs off at Review. LEGACY two-touch rows (stamped before board #232
+    // retired that mode) still route to Kevin — nothing sets kevin_final now,
+    // but a task stamped two-touch must keep behaving as stamped.
     next = t.kevin_final ? 'kevin' : 'M';
   } else if (t.status === 'Staged') {
     next = 'R'; // the next release train ships everything Staged
@@ -1101,8 +1145,13 @@ export function runIneligibleReason(
   t: Task, allTasks: Task[], headless: Set<string>,
 ): string | null {
   if (t.status === 'In Progress') return 'already In Progress';
-  if (t.status === 'Done') return 'task is Done';
+  // FINISHED, not literally Done (board #232) — mirrors the dispatcher's
+  // is_finished() refusal in run_requested().
+  if (isFinished(t.status)) return `task is ${t.status}`;
   if (t.status === 'Blocked') return 'task is Blocked';
+  // Kevin SAW it and chose not yet. The Run button overrides queue ORDER, never
+  // a human's explicit "not yet" (board #232).
+  if (t.status === 'Stand By') return 'Stand By — parked on purpose';
   // The button overrides queue ORDER, never "not workable yet" (M, #109 review).
   if (t.status === 'Scoping') return 'Scoping — not workable yet';
   // Board #136 pipeline stages — mirrored by the run-request endpoint and the
@@ -1114,8 +1163,12 @@ export function runIneligibleReason(
   if (!(t.description || '').trim()) return 'no description — never dispatch unscoped work';
   if (!(t.assignee || '').trim()) return 'no assignee';
   if (!headless.has(t.assignee!)) return `${t.assignee} is not headless-enrolled`;
+  // THE RAIL (board #232): a blocker Kevin has since CLOSED is still finished.
+  // Spelled `!== 'Done'` this silently re-blocked every dependent task the
+  // moment a blocker moved Done → Closed — the same defect as the dispatcher's
+  // `done_ids`, and this is the mirror the button's tooltip reads.
   const open = (t.blocked_by || []).filter((b) =>
-    allTasks.find((x) => x.id === b)?.status !== 'Done');
+    !isFinished(allTasks.find((x) => x.id === b)?.status));
   if (open.length > 0) return `blocked by #${open.join(', #')}`;
   return null;
 }

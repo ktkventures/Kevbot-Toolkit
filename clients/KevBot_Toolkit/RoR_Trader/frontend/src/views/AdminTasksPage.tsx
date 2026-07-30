@@ -27,7 +27,7 @@ import {
   statusOptionsFor, cell, input, badge, tagChip, NextChip, ProgressBar, RunButton,
   RETIRED_TAGS, StampButtons, TwoTouchChip, ImpactSelect, defaultChain,
   groupBoard, isVisionTask, StuckChip, isStuckInTodo, HandoffChain,
-  AiEligibleToggle, RunStatePill, runState,
+  AiEligibleToggle, RunStatePill, runState, isFinished, StampMode,
   AgentMeta, AgentRegistryContext, agentRegistryMap,
 } from './taskBoardShared';
 
@@ -243,7 +243,8 @@ export default function AdminTasksPage() {
   const runningCount = tasks.filter(isRunning).length;
 
   const matches = (t: Task) =>
-    (!hideDone || t.status !== 'Done') &&
+    // "hide done" means hide FINISHED (board #232) — Done and Closed alike.
+    (!hideDone || !isFinished(t.status)) &&
     (!liveOnly || t.impacts_live) &&
     (!reviewOnly || t.status === 'Review') &&
     (!awaitingOk || (t.status === 'Approval' && !isVision(t))) &&
@@ -265,9 +266,10 @@ export default function AdminTasksPage() {
     [tasks, hideDone, liveOnly, reviewOnly, awaitingOk, stuckOnly, armedOnly,
       runningOnly, latestRunByTask, areaFilter, assigneeFilter]);
 
-  // Approval stamps (board #136): POST /stamp flips Approval → Todo, sets
-  // kevin_final per mode, and logs the system comment server-side.
-  const stamp = async (id: number, mode: 'delegate' | 'final') => {
+  // THE Approval stamp (board #136, one mode since #232): POST /stamp flips
+  // Approval → Todo, arms the task and logs the system comment server-side. It
+  // no longer sets kevin_final — the stamp is permission to START.
+  const stamp = async (id: number, mode: StampMode) => {
     try {
       await apiFetch(`/api/dev-tasks/${id}/stamp`, {
         method: 'POST', body: JSON.stringify({ mode, author: commentAuthor }),
@@ -279,7 +281,7 @@ export default function AdminTasksPage() {
   // Default-chain backfill (board #134 item 2): open LEAF tasks (not vision,
   // no subtasks) with an empty checklist get the universal 4-step chain.
   const chainless = useMemo(() => tasks.filter((t) =>
-    t.status !== 'Done' && (t.checklist || []).length === 0 &&
+    !isFinished(t.status) && (t.checklist || []).length === 0 &&
     !((t.tags || []).includes('vision') || byParent.has(t.id))), [tasks, byParent]);
   const backfillChains = async () => {
     if (chainless.length === 0) return;
@@ -331,8 +333,10 @@ export default function AdminTasksPage() {
     prev?.key === key ? (prev.dir === 1 ? { key, dir: -1 } : null) : { key, dir: 1 });
   const sortMark = (key: string) => sort?.key === key ? (sort.dir === 1 ? ' ▲' : ' ▼') : '';
 
-  const openCount = tasks.filter((t) => t.status !== 'Done').length;
-  const liveCount = tasks.filter((t) => t.impacts_live && t.status !== 'Done').length;
+  // OPEN = not FINISHED (board #232). Counting only `!== 'Done'` would keep
+  // every task Kevin has closed out in the "open" number forever.
+  const openCount = tasks.filter((t) => !isFinished(t.status)).length;
+  const liveCount = tasks.filter((t) => t.impacts_live && !isFinished(t.status)).length;
   const modalTask = (modal && tasks.find((t) => t.id === modal.id)) || null;
   const ntParent = nt.parent_id != null ? tasks.find((t) => t.id === nt.parent_id) : null;
 
@@ -365,7 +369,7 @@ export default function AdminTasksPage() {
   }) => (
     <tr key={t.id} style={{
       borderBottom: '1px solid var(--border)',
-      opacity: t.status === 'Done' ? 0.55 : 1,
+      opacity: isFinished(t.status) ? 0.55 : 1,
       background: rollup ? 'var(--bg-input)' : undefined,
     }}>
       <td style={{ ...cell, color: 'var(--text-tertiary)', fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>#{t.id}</td>
@@ -423,7 +427,7 @@ export default function AdminTasksPage() {
       </td>
       <td style={cell}>
         {t.impacts_live && <span style={badge('var(--red)')} title="touches live engine/trading code — deploy carefully">🔴 live</span>}
-        {t.status !== 'Done' && (t.needs_live_validation
+        {!isFinished(t.status) && (t.needs_live_validation
           ? <span style={badge('#a06800')} title="needs live-market data to confirm">⏳ validate</span>
           : <span style={badge('#2e7d32')} title="fully validatable offline — safe to work now">🟢 offline-ok</span>)}
         <span style={{ cursor: 'pointer' }} title="toggle urgent" onClick={() => patch(t.id, { is_urgent: !t.is_urgent })}>
@@ -466,7 +470,7 @@ export default function AdminTasksPage() {
       if (!matches(v) && shownKids.length === 0) return;
       groupedRows.push(
         <TaskRow key={v.id} t={v}
-          rollup={{ done: kids.filter((k) => k.status === 'Done').length, total: kids.length }} />);
+          rollup={{ done: kids.filter((k) => isFinished(k.status)).length, total: kids.length }} />);
       if (!collapsed.has(v.id)) {
         shownKids.forEach((k) => groupedRows.push(<TaskRow key={k.id} t={k} indent />));
       }

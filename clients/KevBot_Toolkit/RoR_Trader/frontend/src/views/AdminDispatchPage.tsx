@@ -40,7 +40,7 @@ import {
   OutcomeChip, RoleChip, RunButton, RunRow, RunStatePill,
   STATUS_COLOR, Task, ageColor, ageShort, elapsedShort, hoursSince, input,
   isProcessChain, relTime, roleAbbrev, roleColor, runIneligibleReason, stepOwner,
-  stepTitle, tagChip, utcDay, utcStamp,
+  stepTitle, tagChip, utcDay, utcStamp, isFinished,
   AgentRegistryContext, agentRegistryMap,
 } from './taskBoardShared';
 
@@ -141,7 +141,10 @@ export interface ShipRow {
 export function shippingRows(tasks: Task[], runsByTask: Map<number, RunRow[]>): ShipRow[] {
   const out: ShipRow[] = [];
   tasks.forEach((t) => {
-    if (t.status === 'Done') return;
+    // FINISHED, not literally Done (board #232): a task Kevin has Closed has
+    // shipped, so it must drop off the shipping panel exactly as Done does —
+    // otherwise every closed task reappears as "waiting to go out", forever.
+    if (isFinished(t.status)) return;
     const rows = runsByTask.get(t.id) || [];
     const builtRun = rows.find((r) => r.outcome === 'ok');
     if (!builtRun) return;
@@ -332,7 +335,7 @@ export default function AdminDispatchPage() {
   // of a letter's runs share one worktree), so a free global slot is NOT enough.
   const laneRows = useMemo(() => headlessLetters.map((letter) => {
     const busy = liveRuns.find((r) => r.agent_letter === letter) || null;
-    const nextUp = tasks.find((t) => t.assignee === letter && t.status !== 'Done'
+    const nextUp = tasks.find((t) => t.assignee === letter && !isFinished(t.status)
       && !runIneligibleReason(t, tasks, headless)) || null;
     const queued = queuedRuns.find((r) => r.agent_letter === letter) || null;
     return { letter, busy, nextUp, queued };
@@ -342,7 +345,7 @@ export default function AdminDispatchPage() {
   // dispatch-eligible-now and waiting-with-the-reason.
   const queueRows = useMemo(() => {
     const rows = tasks.filter((t) => t.assignee && headless.has(t.assignee)
-      && t.status !== 'Done'
+      && !isFinished(t.status)
       && !liveRuns.some((r) => r.task_id === t.id));
     const eligible = rows.filter((t) => !runIneligibleReason(t, tasks, headless));
     const waiting = rows.filter((t) => !!runIneligibleReason(t, tasks, headless));

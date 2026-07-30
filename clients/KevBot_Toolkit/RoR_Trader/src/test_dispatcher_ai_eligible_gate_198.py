@@ -97,12 +97,13 @@ AGENTS = {"M": {"letter": "M", "status": "headless", "worktree": ".",
                 "scope": "s", "boundaries": "b"}}
 
 ALL_STATUSES = ("Backlog", "Scoping", "Approval", "Todo", "In Progress",
-                "Review", "Staged", "Done", "Blocked")
-# Rail 7 (the step-5 audible, widened by the step-8 audible): these three are
-# FINAL — an armed task sitting in one of them is refused. Spelled as literals
-# rather than derived from D.TERMINAL_STATUSES so widening that constant cannot
-# silently shrink what rails 1 and 3 still test.
-TERMINAL = ("Done", "Blocked", "Staged")
+                "Review", "Staged", "Done", "Closed", "Blocked", "Stand By")
+# Rail 7 (the step-5 audible, widened by the step-8 audible and again by board
+# #232's `Closed`/`Stand By`): these are FINAL — an armed task sitting in one of
+# them is refused. Spelled as literals rather than derived from
+# D.TERMINAL_STATUSES so widening that constant cannot silently shrink what
+# rails 1 and 3 still test.
+TERMINAL = ("Done", "Closed", "Blocked", "Staged", "Stand By")
 LIVE_STATUSES = tuple(s for s in ALL_STATUSES if s not in TERMINAL)
 
 
@@ -115,11 +116,13 @@ def task(**kw):
 
 
 # ── the fake board: PostgREST filter parsing, so the gate is really tested ──
-# Handles exactly the two filter shapes the dispatcher emits: `status=eq.X` and
+# Handles exactly the three filter shapes the dispatcher emits: `status=eq.X`,
+# `status=in.(A,B)` (board #232's FINISHED lookup) and
 # `or=(ai_eligible.eq.true,status.eq.Todo)`. Anything else raises, so a gate that
 # invents a filter this test does not model fails LOUDLY instead of silently
 # matching the whole board.
 _OR_RE = re.compile(r"or=\(([^)]*)\)")
+_IN_RE = re.compile(r"(\w+)=in\.\(([^)]*)\)")
 _EQ_RE = re.compile(r"(\w+)=eq\.([^&]+)")
 
 
@@ -145,6 +148,10 @@ def board_api(rows):
         if m:
             clauses = m.group(1).split(",")
             return [r for r in rows if any(_matches(r, c) for c in clauses)]
+        m = _IN_RE.search(q)
+        if m:
+            col, vals = m.group(1), [v.strip() for v in m.group(2).split(",")]
+            return [r for r in rows if str(r.get(col)) in vals]
         m = _EQ_RE.search(q)
         if m:
             col, val = m.group(1), m.group(2)
@@ -216,10 +223,16 @@ TASK_QUERIES = re.findall(r"dev_tasks\?[^\"']*", SOURCE)
 STATUS_QUERIES = [q for q in TASK_QUERIES if "status=eq." in q]
 ok("no dev_tasks query filters on status=eq.Todo any more",
    not [q for q in TASK_QUERIES if "status=eq.Todo" in q], str(TASK_QUERIES))
-ok("...and the ONE remaining status=eq. task query is the blocked_by Done lookup "
-   "(the BLOCKER's state, not permission)",
-   len(STATUS_QUERIES) == 1 and "status=eq.Done" in STATUS_QUERIES[0],
-   str(STATUS_QUERIES))
+# Board #232 respelled the blocked_by lookup from `status=eq.Done` to the shared
+# FINISHED set, so no `status=eq.` task query survives at all: the one status
+# filter left is the interpolated FINISHED_FILTER, and it is a read of the
+# BLOCKER's state, never permission.
+ok("no bare status=eq. task query is left anywhere",
+   not STATUS_QUERIES, str(STATUS_QUERIES))
+ok("...the blocked_by lookup is the shared FINISHED set, not a literal 'Done'",
+   D.FINISHED_FILTER == "status=in.(Done,Closed)"
+   and any("{FINISHED_FILTER}" in q for q in TASK_QUERIES),
+   f"{D.FINISHED_FILTER} · {TASK_QUERIES}")
 ok("reap() still WRITES Review — status is write-only, not unused",
    '"status": "Review"' in SOURCE)
 
@@ -363,8 +376,9 @@ ok("...and a DONE blocker does not (the #144 non-bug)",
 
 # ── RAIL 7 — TERMINAL statuses: finality, not permission (step-5 audible) ──
 print("― rail 7: a Done, Blocked or Staged task is never dispatched, armed or not ―")
-ok("TERMINAL_STATUSES is exactly Done + Blocked + Staged",
-   D.TERMINAL_STATUSES == ("Done", "Blocked", "Staged"),
+ok("TERMINAL_STATUSES is exactly Done + Closed + Blocked + Staged + Stand By "
+   "(board #232 added the last two)",
+   D.TERMINAL_STATUSES == ("Done", "Closed", "Blocked", "Staged", "Stand By"),
    str(D.TERMINAL_STATUSES))
 
 # THE MEASURED HOLE: 129 of the live board's 132 Done tasks are CHAINLESS and 89

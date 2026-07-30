@@ -40,6 +40,7 @@ import {
   MENTION_ROLES, HandoffChain, isProcessChain, stepOwner, stepTitle, MODE_DEF,
   SlashItem, SlashMenu, filterSlashItems, applySlashInsert, detectSlash,
   makeChainStep, chainStarted, AiEligibleToggle, RunStatePill, LaneKindChip,
+  isFinished, StampMode,
 } from './taskBoardShared';
 import { Md, MD_CSS } from './taskMarkdown';
 
@@ -168,11 +169,11 @@ export default function TaskDetailModal({
     onRunRequested?.();
   };
 
-  // Approval stamps (board #136): the server flips Approval → Todo, sets
-  // kevin_final per mode, and logs the system comment — refresh the thread
-  // here and FORCE a board refresh via onPollTick() with no arg (board #148:
-  // the status changed, so don't wait on the probe).
-  const stampTask = async (id: number, mode: 'delegate' | 'final') => {
+  // THE Approval stamp (board #136, one mode since #232 — "approved to start"):
+  // the server flips Approval → Todo, arms the task and logs the system comment
+  // — refresh the thread here and FORCE a board refresh via onPollTick() with no
+  // arg (board #148: the status changed, so don't wait on the probe).
+  const stampTask = async (id: number, mode: StampMode) => {
     try {
       await apiFetch(`/api/dev-tasks/${id}/stamp`, {
         method: 'POST', body: JSON.stringify({ mode, author: commentAuthor }),
@@ -435,7 +436,7 @@ export default function TaskDetailModal({
   // Header-level counts describe the MODAL task; the Process tab describes
   // the scoped item (a selected subtask is always a leaf — one-level rule).
   const doneCount = vision
-    ? subtasks.filter((s) => s.status === 'Done').length
+    ? subtasks.filter((s) => isFinished(s.status)).length   // FINISHED, not just Done (#232)
     : (task.checklist || []).filter((s) => s.done).length;
   const totalCount = vision ? subtasks.length : (task.checklist || []).length;
   const stripRows = vision ? subtasks : [];
@@ -827,11 +828,11 @@ export default function TaskDetailModal({
                       background: selected === s.id ? 'var(--bg-input)' : 'transparent',
                       border: `1px solid ${selected === s.id ? 'var(--blue)' : 'transparent'}`,
                     }}>
-                      <span style={{ fontSize: 14 }}>{s.status === 'Done' ? '☑' : '☐'}</span>
+                      <span style={{ fontSize: 14 }}>{isFinished(s.status) ? '☑' : '☐'}</span>
                       <span style={{
                         flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                        textDecoration: s.status === 'Done' ? 'line-through' : 'none',
-                        opacity: s.status === 'Done' ? 0.6 : 1,
+                        textDecoration: isFinished(s.status) ? 'line-through' : 'none',
+                        opacity: isFinished(s.status) ? 0.6 : 1,
                       }}>
                         {s.title}
                         {s.origin === 'discovered' && <span style={{ ...tagChip, marginLeft: 6 }}>🔍</span>}

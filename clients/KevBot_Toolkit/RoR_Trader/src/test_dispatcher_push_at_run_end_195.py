@@ -105,7 +105,9 @@ def fake_api(method, path, body=None, prefer=None):
     CALLS.append((method, path, body))
     if method == "GET" and path.startswith("dev_task_comments"):
         return []
-    if method == "GET" and path.startswith("dev_tasks?status=eq.Done"):
+    # Board #232: the blocked_by lookup is the shared FINISHED set now
+    # (`status=in.(Done,Closed)`), not the literal `status=eq.Done`.
+    if method == "GET" and path.startswith(f"dev_tasks?{disp.FINISHED_FILTER}"):
         return []
     if method == "GET" and path.startswith("run_history"):
         return []

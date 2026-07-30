@@ -82,11 +82,29 @@ _EDITABLE = {
 # Blast-radius chip values (board #136) — see migrations/dev_tasks_lifecycle.sql.
 _IMPACTS = {"contained", "app", "engine", "live"}
 
+# Board #232 — THE ONE SHARED "FINISHED" SET for the API side. Mirrors
+# dispatcher.FINISHED_STATUSES: `Done` is M's close, `Closed` is Kevin's
+# retrospective look after it, and BOTH mean the task is over. Every "is this
+# task finished?" read in this module goes through `_is_finished`, never a bare
+# `== "Done"` — the failure #232 exists to kill is a finished-check that knows
+# only one of the two spellings and silently changes behaviour when a task moves
+# from one to the other.
+# NOT the same question as "not dispatchable": see _UNDISPATCHABLE_STAGES.
+FINISHED_STATUSES = ("Done", "Closed")
+
+
+def _is_finished(status) -> bool:
+    """True when the task is OVER — `Done` or `Closed` (board #232)."""
+    return status in FINISHED_STATUSES
+
+
 # Kanban pipeline stages that are NOT dispatchable work (board #136):
-# Approval = awaiting Kevin's stamp; Review/Staged = the work already ran.
+# Approval = awaiting Kevin's stamp; Review/Staged = the work already ran;
+# Stand By = Kevin SAW it, wants it, and chose not yet (board #232) — the Run
+# button overrides queue ORDER, never a human's explicit "not yet".
 # The organic dispatcher queue is status=Todo only; these guard the
-# run-request button lane.
-_UNDISPATCHABLE_STAGES = ("Approval", "Review", "Staged")
+# run-request button lane. Mirrors dispatcher.run_requested()'s refusals.
+_UNDISPATCHABLE_STAGES = ("Approval", "Review", "Staged", "Stand By")
 
 # 'discovered' marks rabbit-hole work found mid-task, parented under the
 # vision item that spawned it (Team Board convention).
@@ -360,7 +378,11 @@ def list_tasks(include_done: bool = True, assignee: Optional[str] = None,
     c = _admin()
     q = c.table("dev_tasks").select("*")
     if not include_done:
-        q = q.neq("status", "Done")
+        # Board #232 — FINISHED, not the literal `Done`. A Closed task is just as
+        # over; leaving it in would put Kevin's own closed work back in every
+        # role session's "open queue" the moment he started using the status.
+        for s in FINISHED_STATUSES:
+            q = q.neq("status", s)
     if assignee:
         q = q.eq("assignee", assignee)
     rows = q.order("priority_phase").order("priority_seq") \
@@ -409,7 +431,8 @@ def update_task(task_id: int, payload: dict = Body(...),
     # TERMINAL_STATUSES rail is the one that cannot be forgotten. Both exist
     # deliberately — this one means the refusal never has to fire, and it keeps
     # the DATA honest for the board UI's toggle column.
-    if row.get("status") == "Done":
+    # Board #232: FINISHED, not the literal `Done` — `Closed` disarms too.
+    if _is_finished(row.get("status")):
         row["ai_eligible"] = False
     c = _admin()
     if row:
@@ -431,6 +454,14 @@ def update_task(task_id: int, payload: dict = Body(...),
         # review before Done", only Kevin's hand moves the task to Staged or
         # Done. Staged → Done is exempt — that transition is the R release
         # train shipping a task Kevin already signed off Review → Staged.
+        #
+        # LITERAL `Done` ON PURPOSE (board #232 audit) — NOT the FINISHED set.
+        # This is a TRANSITION rule about specific lifecycle columns, not the
+        # question "is this task over". `Closed` is Kevin's own status, reached
+        # from `Done` by Kevin himself, so the guard has nothing to protect
+        # there. #232 stopped SETTING kevin_final (the stamp is one mode now)
+        # but deliberately left the column, its rows and this guard standing:
+        # existing two-touch tasks must keep behaving exactly as stamped.
         if (prev is not None and prev.get("kevin_final")
                 and row.get("status") in ("Staged", "Done")
                 and prev.get("status") not in ("Staged", "Done")
@@ -487,8 +518,11 @@ def request_run(task_id: int, payload: dict = Body(default={}),
     if t.get("status") == "In Progress":
         raise HTTPException(
             status_code=409, detail="task is already In Progress")
-    if t.get("status") == "Done":
-        raise HTTPException(status_code=400, detail="task is Done")
+    # Board #232: FINISHED, not the literal `Done` — a Closed task cannot be
+    # started either. Mirrors dispatcher.run_requested()'s is_finished() refusal.
+    if _is_finished(t.get("status")):
+        raise HTTPException(status_code=400,
+                            detail=f"task is {t['status']}")
     # The button overrides queue ORDER, never "not workable yet" (M, #109
     # review) — mirror of the dispatcher's run_requested() refusals.
     if t.get("status") == "Scoping":
@@ -522,11 +556,33 @@ def request_run(task_id: int, payload: dict = Body(default={}),
     return res.data[0] if res.data else {"status": "requested"}
 
 
-# The two Approval-stage stamp buttons (board #136, Kevin+M 07-25).
-# 'delegate' = "Approve — M closes" · 'final' = "Approve + I review before
-# Done" (two-touch: kevin_final=TRUE, only Kevin signs off Review →
-# Staged/Done). Both send the task to Todo and log ONE system comment.
-_STAMP_MODES = {"delegate": False, "final": True}
+# THE Approval-stage stamp — ONE mode (board #232, Kevin 07-30).
+#
+# It was two (board #136): 'delegate' = "Approve — M closes" and 'final' =
+# "Approve + I review before Done" (kevin_final, two-touch). Kevin's ruling:
+# *"instead of 'approved and closes', we just have 'approved to start'… it's
+# clear that the approval is to start. It's not necessarily 'approved that it
+# looks great'."* The stamp is PERMISSION TO EXECUTE, not a verdict on the
+# outcome, and the label now says so.
+#
+# WHY THE TWO-TOUCH MODE WENT AWAY RATHER THAN STAYING BESIDE IT: 'final' is a
+# PRE-gate — Kevin commits up front to reviewing before Done, which is easy to
+# forget by the time the work lands, days later. The new `Closed` status is a
+# POST check on finished work, and it blocks nothing (the work has already
+# shipped). Keeping both would make him review the same task twice.
+#
+# `kevin_final` is now VESTIGIAL and this endpoint never sets it. The COLUMN,
+# its existing rows, its validation and the two-touch close guard all stay
+# standing on purpose (#136/#151) — tasks stamped two-touch before today must
+# keep behaving exactly as stamped. Removing the column is a follow-up.
+#
+# 'delegate' is accepted as a LEGACY ALIAS (same behaviour, one stamp) so a
+# stored caller does not 400. 'final' is REFUSED LOUDLY rather than silently
+# downgraded: a caller asking for a two-touch gate that no longer exists must
+# find out, not be told yes and get something else.
+_STAMP_MODE = "start"
+_STAMP_MODE_ALIASES = ("start", "delegate")
+_STAMP_LABEL = "approved to start"
 
 
 @router.post("/{task_id}/stamp")
@@ -534,17 +590,26 @@ def stamp_approval(task_id: int, payload: dict = Body(...),
                    user=Depends(get_current_user)):
     """Record Kevin's approval stamp on a task sitting in Approval.
 
-    Atomic replacement for the hand flow M ran on board #136 itself: sets
-    kevin_final per the stamp mode, arms `ai_eligible` (board #198), moves
-    Approval → Todo, and writes one system comment naming the stamp and who
-    recorded it (M relaying Kevin's verbal OK passes author='kevin' and says so
-    on the thread).
+    ONE stamp, `approved to start` (board #232): arms `ai_eligible` (board
+    #198), moves Approval → Todo, ticks the pending Kevin checklist step (board
+    #151) and writes one system comment naming the stamp and who recorded it (M
+    relaying Kevin's verbal OK passes author='kevin' and says so on the thread).
+    It NO LONGER sets `kevin_final` — Kevin's look at the finished work is the
+    `Closed` status now, after `Done`, where it blocks nothing.
     """
-    mode = payload.get("mode")
-    if mode not in _STAMP_MODES:
+    mode = payload.get("mode") or _STAMP_MODE
+    if mode == "final":
+        # LOUD, not a silent downgrade — see _STAMP_MODE above.
         raise HTTPException(
             status_code=400,
-            detail=f"mode must be one of {sorted(_STAMP_MODES)}")
+            detail="the two-touch stamp ('final') was retired by board #232 — "
+                   "there is one stamp now, 'approved to start' (mode='start'), "
+                   "and Kevin's look at the finished work is the `Closed` "
+                   "status after `Done`")
+    if mode not in _STAMP_MODE_ALIASES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"mode must be one of {sorted(_STAMP_MODE_ALIASES)}")
     author = (payload.get("author") or "kevin").strip() or "kevin"
     c = _admin()
     rows = c.table("dev_tasks").select("id,status,checklist").eq("id", task_id) \
@@ -556,23 +621,21 @@ def stamp_approval(task_id: int, payload: dict = Body(...),
             status_code=409,
             detail=f"task is {rows[0].get('status')} — stamps only apply "
                    "to tasks in Approval")
-    kevin_final = _STAMP_MODES[mode]
     # The stamp ARMS the task for AI work (board #198). Kevin's review stays the
     # arming gate — nothing runs unapproved — but the guarantee now rides on
     # `ai_eligible` instead of on the task sitting in `Todo`, so the chain can
-    # re-arm itself between steps without shoving the card back across the
-    # board. Both stamp modes arm: 'final' vs 'delegate' decides who CLOSES the
-    # task, not whether an agent may work it.
-    update = {"status": "Todo", "kevin_final": kevin_final,
-              "ai_eligible": True}
+    # re-arm itself between steps without shoving the card back across the board.
+    # `kevin_final` is DELIBERATELY ABSENT from this patch (board #232): the
+    # stamp is permission to START, and it no longer decides who closes.
+    update = {"status": "Todo", "ai_eligible": True}
 
     # The stamp IS the completion of the first pending Kevin checklist step
     # (board #151). Without ticking it, next_actor() keeps returning 'kevin'
     # after the task lands in Todo; the dispatcher's eligibility gate
     # (next_actor == assignee) then skips it, and an approved task sits in
     # Todo forever (dispatchable=0) — looking approved but going nowhere.
-    # Tick ONLY the first un-done kevin step: a later two-touch review step
-    # (kevin_final) must stay open so its Review sign-off is still gated.
+    # Tick ONLY the first un-done kevin step: a later Kevin review/close step
+    # must stay open so its own sign-off is still asked for.
     checklist = rows[0].get("checklist") or []
     ticked = None
     for step in checklist:
@@ -584,12 +647,10 @@ def stamp_approval(task_id: int, payload: dict = Body(...),
             break
 
     c.table("dev_tasks").update(update).eq("id", task_id).execute()
-    label = ("two-touch (Kevin reviews before Done)" if kevin_final
-             else "M closes")
     tick_note = f' · checklist: ticked "{ticked}"' if ticked else ""
     c.table("dev_task_comments").insert({
         "task_id": task_id, "author": "system",
-        "body": f"stamp: approved — {label} (by {author}) · "
+        "body": f"stamp: {_STAMP_LABEL} (by {author}) · "
                 f"status: Approval → Todo · ai_eligible: true"
                 f"{tick_note}"}).execute()
     res = c.table("dev_tasks").select("*").eq("id", task_id).execute().data

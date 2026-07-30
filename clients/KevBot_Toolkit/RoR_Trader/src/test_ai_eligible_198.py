@@ -206,10 +206,13 @@ ok("the refused PATCH left the row alone",
    dt.update_task(plain["id"], {}, user=None)["ai_eligible"] is False)
 
 
-# ── walk 4: Kevin's Approval stamp arms it (both modes) ────────────────────
+# ── walk 4: Kevin's Approval stamp arms it ─────────────────────────────────
+# Board #232 cut the two stamp modes down to ONE ("approved to start"); this walk
+# still runs the legacy 'delegate' alias beside it, because the arming behaviour
+# #198 added must be identical on both spellings.
 
 print("― walk 4: the Approval stamp sets ai_eligible=true ―")
-for mode, label in (("final", "two-touch"), ("delegate", "M closes")):
+for mode, label in (("start", "approved to start"), ("delegate", "legacy alias")):
     st = mk(f"awaiting stamp ({mode})",
             checklist=[{"text": "Kevin stamps", "done": False,
                         "role": "kevin"},
@@ -225,8 +228,9 @@ for mode, label in (("final", "two-touch"), ("delegate", "M closes")):
     ok(f"[{mode}] the stamp ARMS the task", r["ai_eligible"] is True)
     ok(f"[{mode}] the stamp still moves Approval → Todo (unchanged)",
        r["status"] == "Todo")
-    ok(f"[{mode}] kevin_final unchanged by #198",
-       r["kevin_final"] is (mode == "final"))
+    ok(f"[{mode}] the stamp no longer sets kevin_final (board #232 — the "
+       f"stamp is permission to START, not a promise to review)",
+       r["kevin_final"] is False)
     ok(f"[{mode}] the system comment names the arming",
        any("ai_eligible: true" in b and "stamp: approved" in b
            for b in comments_for(sid)))
@@ -237,7 +241,7 @@ for mode, label in (("final", "two-touch"), ("delegate", "M closes")):
            for b in comments_for(sid)))
 
 raises("stamping a task that is not in Approval is still a 409", 409,
-       lambda: dt.stamp_approval(plain["id"], {"mode": "final"}, user=None))
+       lambda: dt.stamp_approval(plain["id"], {"mode": "start"}, user=None))
 
 
 # ── walk 5: END TO END — the API's column reaches the real dispatch gate ───
