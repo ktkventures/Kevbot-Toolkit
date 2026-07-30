@@ -46,12 +46,35 @@ of which fails against the pre-review generator:
   3. an owed deploy-log is stale BY CONSTRUCTION, so the stale-base HOLD fired on
      the very backlog case this tool exists to clear -> warns for append-only logs;
   4. `live_loop_version()` returned None against the real banner, so every brief
-     silently lost the version -> fixed, and the TARGET version is read too;
+     silently lost the version -> fixed (the version is INFORMATIONAL only; see
+     board #224 gap 2 for why it can never be the restart trigger);
   5. "nothing needs arming" was asserted without looking -> reads `ai_eligible`;
   6. the per-car path summary vanished whenever any overlap existed -> always shown.
 
 After the fixes the derived GATE BLOCK is byte-identical (commands and order) to
 the hand-written one for both waves.
+
+BOARD #224, 07-30 -- three more gaps, found by running the generator on Waves 19
+and 20. None broke a train; all three are the generator REASONING about a change
+instead of READING it:
+
+  1. per-car prose came from the board task TITLE, so Wave 19's cargo line named
+     `DAILY_CAP` and shipped `CONCURRENCY 3->4` UNDESCRIBED -> the prose is now
+     derived from `git log --oneline origin/dev..<branch>`: the task title is the
+     header, the commit subjects are the contents, and a multi-commit car is
+     flagged so a reviewer sees there is more than one thing in it;
+  2. the restart trigger compared version banners. Wave 19 carried `V4.25` on
+     BOTH sides of the merge, so no comparison could ever have exposed the drift
+     -> the trigger is now "a car touched `dispatcher.py`", full stop, and the
+     check that works for a constant-only train is process-start-time vs.
+     checkout-pull-time (`live_loop_staleness()`);
+  3. zero cars were SILENT. Wave 20 returned a clean `0 car(s)` with two
+     mergeable PRs open, because the entry point is `dev_tasks?status=eq.Staged`
+     and a branch with no board task never enters the candidate set -- which is
+     exactly the class of work M authors directly. `0 car(s)` read identically to
+     "nothing to ship" -> a zero-car verdict is now UNVERIFIED (open PRs could
+     not be listed), SUSPICIOUS (open mergeable PRs no car claims -- named), or
+     CLEAN, and never a bare zero.
 
 ACCEPTED LIMITATIONS -- known, deliberate, and M's job to fill in when they matter:
 
@@ -97,6 +120,7 @@ MAIN_CHECKOUT = "/home/kevin/projects/Kevbot-Toolkit/clients/KevBot_Toolkit/RoR_
 
 API_TIMEOUT_S = 15
 GIT_TIMEOUT_S = 120
+GH_TIMEOUT_S = 45
 BASE = "origin/dev"
 
 # ---------------------------------------------------------------------------
@@ -134,6 +158,12 @@ APPEND_ONLY_PATHS = ("docs/Deploy_Log.md",)
 OWED_LOG_RE = re.compile(r"^docs/deploy-log-wave\d+-\d{4}$")
 
 DOCS_PREFIXES = ("docs/", ".claude/", "clients/KevBot_Toolkit/RoR_Trader/docs/")
+
+# How far apart the loop's process-start and its `dispatcher.py` mtime must be
+# before "the file is newer" means anything. Measured live on 07-30: 36s, which
+# is a restart landing next to a pull, not a stale process. Inside the margin the
+# brief reports both timestamps and asks M to confirm; outside it, it claims.
+LOOP_STALE_MARGIN_S = 120
 
 BRANCH_TOKEN_RE = re.compile(
     r"\b((?:feat|fix|docs|chore|refactor|test|perf|merge|verify|spec)/[A-Za-z0-9._\-/]+)")
@@ -364,13 +394,70 @@ def _append_only_log(car):
 
 
 # ---------------------------------------------------------------------------
+# #224 GAP 3 -- zero cars must never be quiet.
+#
+# The candidate set starts at `dev_tasks?status=eq.Staged`, so a branch with NO
+# board task never enters it and branch derivation's three fallbacks never even
+# run. Everything a dispatched agent produces has a task; everything M authors
+# directly does not -- so M's own output is the one class of work the generator
+# structurally cannot see. Wave 20 returned a clean `0 car(s)` with two mergeable
+# PRs open and was hand-authored as a result.
+#
+# The fix is not to widen the candidate set (auto-creating tasks for orphan
+# branches is a design question, not this one); it is to make the ABSENCE
+# checkable: read the open PRs, and say out loud which ones no car claims.
+# ---------------------------------------------------------------------------
+
+def unclaimed_prs(open_prs, car_branches):
+    """Open PRs that could merge and that no car in this train accounts for.
+
+    Drafts and PRs GitHub already knows are CONFLICTING are excluded -- neither
+    is a candidate for a train. `UNKNOWN` mergeability is KEPT: gh reports it
+    whenever the merge commit has not been computed yet, and treating unknown as
+    "not mergeable" would reintroduce the silence this rail exists to break."""
+    out = []
+    for pr in open_prs or []:
+        if pr.get("isDraft"):
+            continue
+        if (pr.get("headRefName") or "") in car_branches:
+            continue
+        if (pr.get("mergeable") or "").upper() == "CONFLICTING":
+            continue
+        out.append(pr)
+    return out
+
+
+def zero_car_verdict(cars, open_prs, unclaimed):
+    """None when there ARE cars; else which KIND of zero this is.
+
+    `UNVERIFIED` -- the PR check could not run, so "nothing to ship" is unproven.
+    `SUSPICIOUS` -- open mergeable PRs exist that no car claims (the Wave-20 shape).
+    `CLEAN`      -- the PRs were listed and every one is claimed or unmergeable.
+    """
+    if cars:
+        return None
+    if open_prs is None:
+        return "UNVERIFIED"
+    return "SUSPICIOUS" if unclaimed else "CLEAN"
+
+
+def _pr_line(pr):
+    num = pr.get("number")
+    head = pr.get("headRefName") or "?"
+    title = (pr.get("title") or "").strip()
+    state = (pr.get("mergeable") or "UNKNOWN").upper()
+    return f"PR #{num} `{head}` -- {title} (mergeable: {state})"
+
+
+# ---------------------------------------------------------------------------
 # Train assembly (pure -- everything external is injected)
 # ---------------------------------------------------------------------------
 
 def build_train(tasks, resolve_branch, diff_files, fork_behind,
                 owed_logs=(), wave=None, base_sha="", date=None,
                 session="headless", other_branches=(), loop_version=None,
-                already_merged=None, suites=DISPATCHER_SUITES, target_version=None):
+                already_merged=None, suites=DISPATCHER_SUITES,
+                commits=None, open_prs=None, loop_staleness=None):
     """Assemble a train plan from board rows + injected git facts.
 
     resolve_branch(task) -> (branch|None, source)
@@ -378,8 +465,14 @@ def build_train(tasks, resolve_branch, diff_files, fork_behind,
     fork_behind(branch)  -> int commits of origin/dev the branch does not have
     already_merged(br)   -> True when the branch tip is already an ancestor of dev
     suites               -> the dispatcher suite set AS IT EXISTS at the merged tip
+    commits(branch)      -> ["<sha> <subject>", ...] from `git log --oneline
+                            origin/dev..<branch>`, or None when unknown (#224 gap 1)
+    open_prs             -> `gh pr list` rows, or None when the check could not run
+                            (#224 gap 3 -- None is UNVERIFIED, never a clean zero)
+    loop_staleness       -> {"stale": bool, ...} from process-start vs pull time
     """
     already_merged = already_merged or (lambda b: False)
+    commits = commits or (lambda b: None)
     cars, refusals = [], []
 
     for br in owed_logs:
@@ -388,7 +481,8 @@ def build_train(tasks, resolve_branch, diff_files, fork_behind,
                                  "(`docs/deploy-log-waveN-MMDD`) -- nothing reviewed it"))
             continue
         cars.append(_car(None, "(open a PR)", br, "docs -- owed deploy-log entry",
-                         diff_files(br), fork_behind(br), suites=suites))
+                         diff_files(br), fork_behind(br), suites=suites,
+                         commits=commits(br)))
 
     for t in sorted(tasks, key=lambda t: t["id"]):
         idx = r_step_index(t)
@@ -428,12 +522,13 @@ def build_train(tasks, resolve_branch, diff_files, fork_behind,
         cars.append(_car(t["id"], f"#{t['id']}", branch,
                          f"board #{t['id']} -- {t['title']}", paths, fork_behind(branch),
                          branch_source=src, armed=bool(t.get("ai_eligible")),
-                         suites=suites))
+                         suites=suites, commits=commits(branch)))
 
     # RAIL: docs first, code last. Stable within a kind (owed logs, then id order).
     cars.sort(key=lambda c: 0 if c["kind"] == "docs" else 1)
 
     holds, warns = assess(cars)
+    unclaimed = unclaimed_prs(open_prs, {c["branch"] for c in cars})
 
     return {
         "wave": wave,
@@ -447,13 +542,16 @@ def build_train(tasks, resolve_branch, diff_files, fork_behind,
         "auto_dispatch": bool(cars) and not holds,
         "other_branches": list(other_branches),
         "loop_version": loop_version,
-        "target_version": target_version,
+        "loop_staleness": loop_staleness,
+        "pr_check": "unavailable" if open_prs is None else "ok",
+        "unclaimed_prs": unclaimed,
+        "zero_car_verdict": zero_car_verdict(cars, open_prs, unclaimed),
         "gates": _merged_gates(cars),
     }
 
 
 def _car(task_id, pr_label, branch, what, paths, behind, branch_source="owed-log",
-         armed=False, suites=DISPATCHER_SUITES):
+         armed=False, suites=DISPATCHER_SUITES, commits=None):
     return {
         "task_id": task_id,
         "label": pr_label if task_id else f"`{branch}`",
@@ -467,6 +565,10 @@ def _car(task_id, pr_label, branch, what, paths, behind, branch_source="owed-log
         "frontend": frontend_touched(paths),
         "branch_source": branch_source,
         "armed": armed,
+        # #224 gap 1: what the car CARRIES, read from the commits rather than
+        # inferred from the task title. None = the commit list was not injected.
+        "commits": list(commits) if commits is not None else None,
+        "multi_commit": bool(commits is not None and len(commits) > 1),
     }
 
 
@@ -489,6 +591,8 @@ def render(plan):
     out = [HEADER.format(wave=plan["wave"], date=plan["date"],
                          car_count=car_count, session=plan["session"]), ""]
 
+    out += _coverage_block(plan)
+
     if plan["holds"]:
         out += ["> ⚠️ **HELD FOR M -- NOT AUTO-DISPATCHED.** The generator found "
                 "risk it cannot resolve:", ""]
@@ -498,8 +602,11 @@ def render(plan):
     out += ["## Merge in this order",
             "| # | Branch | Kind |", "|---|--------|------|"]
     for c in plan["cars"]:
-        out.append(f"| **{c['pr']}** | `{c['branch']}` | {c['what']} |")
+        flag = f" · **{len(c['commits'])} commits**" if c["multi_commit"] else ""
+        out.append(f"| **{c['pr']}** | `{c['branch']}` | {c['what']}{flag} |")
     out.append("")
+
+    out += _cargo_block(plan)
 
     ov = overlaps(plan["cars"])
     if not ov:
@@ -544,23 +651,7 @@ def render(plan):
     out += [PROCEDURE.format(wave=plan["wave"], mmdd=plan["date"][5:].replace("-", ""),
                              base_sha=plan["base_sha"]), ""]
 
-    touches_loop = any(app_relative(p) == DISPATCHER_FILE
-                       for c in plan["cars"] for p in c["paths"])
-    if touches_loop:
-        # Both versions, the way every hand-written brief said it ("#202 makes it
-        # V4.25; the loop is V4.24") -- the delta is what tells M the restart is
-        # actually required.
-        tgt, run_v = plan.get("target_version"), plan.get("loop_version")
-        if tgt and run_v:
-            vers = f" A car makes it **V{tgt}**; the running loop is V{run_v}."
-        elif run_v:
-            vers = f" The running loop is V{run_v}."
-        else:
-            vers = ""
-        loop_note = ("A car changes `dispatcher.py`, so the merged tip is NEWER than the "
-                     "running loop.%s **M restarts and verifies.**" % vers)
-    else:
-        loop_note = "No car touches it; it is correctly on the running version."
+    loop_note = _loop_note(plan)
     armed = [c["label"] for c in plan["cars"] if c["armed"]]
     if armed:
         # Asserting "nothing needs arming" without looking was a claim, not a fact.
@@ -577,6 +668,143 @@ def render(plan):
         out += [f"- **{who}** -- {why}" for who, why in plan["refusals"]]
 
     return "\n".join(out) + "\n"
+
+
+def _loop_note(plan):
+    """#224 GAP 2 -- the restart trigger is "a car touched `dispatcher.py`".
+
+    It used to be phrased as a version delta ("a car makes it V4.25; the loop is
+    V4.24"), which cannot work: Wave 19 carried **V4.25 on both sides of the
+    merge** and shipped a real dispatcher change, so no banner comparison could
+    ever have exposed the drift. A constant-only edit never moves the banner.
+    The banner is now INFORMATIONAL only, and the check that actually decides
+    whether the RUNNING process is stale is process-start-time vs. the time the
+    checkout last pulled that file (`live_loop_staleness()`)."""
+    touches_loop = any(app_relative(p) == DISPATCHER_FILE
+                       for c in plan["cars"] for p in c["paths"])
+    who = [c["label"] for c in plan["cars"]
+           if any(app_relative(p) == DISPATCHER_FILE for p in c["paths"])]
+    st = plan.get("loop_staleness") or {}
+
+    if not touches_loop:
+        note = "No car touches `dispatcher.py`, so no restart is owed for this train."
+        if st.get("stale"):
+            delta = _ago(st.get("file_mtime"), st.get("loop_started"))
+            if _delta_s(st) < LOOP_STALE_MARGIN_S:
+                # A pull landing seconds after the process started is just as
+                # likely to BE the restart as to have missed it. Say which fact
+                # we have (two timestamps, this close) rather than pick a story.
+                note += (f" Its `dispatcher.py` was written {delta} after the process "
+                         "started -- inside restart/pull race noise, so this is NOT a "
+                         "staleness claim. **M confirms which came first.**")
+            else:
+                note += (" **But the RUNNING loop is ALREADY stale** -- its "
+                         f"`dispatcher.py` was written {delta} AFTER the process "
+                         "started, so the process is executing code the checkout no "
+                         "longer has. Restart it anyway, and tell M.")
+        return note
+
+    run_v = plan.get("loop_version")
+    vers = f" (the running loop reports V{run_v}; the banner is informational -- " \
+           f"a constant-only change does not move it)" if run_v else ""
+    note = (f"{', '.join(who)} changes `dispatcher.py`, so the merged tip is code the "
+            f"running loop is not executing{vers}. **M restarts and verifies.** "
+            "The trigger is the dispatcher-touch itself, NEVER a version comparison "
+            "-- Wave 19 carried the same banner on both sides of a real change.")
+    if st.get("stale"):
+        note += (" Confirmed: the running process started BEFORE its current "
+                 "`dispatcher.py` was pulled.")
+    elif st:
+        note += (" Verify the restart by process start time vs. the checkout's "
+                 "`dispatcher.py` mtime, not by the banner.")
+    return note
+
+
+def _delta_s(st):
+    try:
+        return max(0.0, float(st.get("file_mtime")) - float(st.get("loop_started")))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _ago(later, earlier):
+    try:
+        secs = max(0, int(float(later) - float(earlier)))
+    except (TypeError, ValueError):
+        return "some time"
+    if secs < 60:
+        return f"{secs}s"                  # NOT "0m" -- a 36s delta is not zero
+    return f"{secs // 60}m" if secs < 7200 else f"{secs // 3600}h"
+
+
+def _coverage_block(plan):
+    """#224 GAP 3 -- the block that makes a zero-car train impossible to misread.
+
+    `0 car(s)` and "nothing to ship" are the same sentence to a reader, and only
+    one of them is a fact. Whichever it is, say which."""
+    v = plan.get("zero_car_verdict")
+    unclaimed = plan.get("unclaimed_prs") or []
+    if v == "SUSPICIOUS":
+        out = ["> 🚨 **ZERO CARS -- AND THAT IS SUSPICIOUS. DO NOT READ THIS AS "
+               "\"NOTHING TO SHIP\".** No `Staged` board task has a current R "
+               f"step, yet {len(unclaimed)} open PR(s) are mergeable and no car "
+               "claims them:", ""]
+        out += [f"> - {_pr_line(p)}" for p in unclaimed]
+        out += ["",
+                "> The generator's entry point is `dev_tasks?status=eq.Staged`, so a "
+                "branch with no board task never enters the candidate set -- which is "
+                "exactly the class of work M authors directly (session docs, handoffs, "
+                "notes). **M reviews the PRs above by hand before concluding this train "
+                "is empty.**", ""]
+        return out
+    if v == "UNVERIFIED":
+        return ["> ⚠️ **ZERO CARS -- UNVERIFIED.** No `Staged` board task has a current "
+                "R step, AND the open-PR cross-check could not run (`gh` unavailable or "
+                "failed). \"Nothing to ship\" is therefore UNPROVEN -- M checks "
+                "`gh pr list --state open` by hand before closing this out.", ""]
+    if v == "CLEAN":
+        return ["> **ZERO CARS -- checked.** No `Staged` board task has a current R step, "
+                "and every open PR is either already a car or not mergeable. This one is "
+                "a real empty train.", ""]
+    if unclaimed:
+        # Cars exist, so the train is not empty -- but an unclaimed mergeable PR
+        # is still work the board cannot see, and the same silence hid Wave 20.
+        out = [f"> ℹ️ **{len(unclaimed)} open PR(s) are NOT in this train** and no car "
+               "claims them. Not a blocker; M decides whether they belong here:", ""]
+        out += [f"> - {_pr_line(p)}" for p in unclaimed]
+        out += [""]
+        return out
+    return []
+
+
+def _cargo_block(plan):
+    """#224 GAP 1 -- what each car CARRIES, read from its commits.
+
+    Wave 19's cargo line named `DAILY_CAP` (the task title) and shipped
+    `CONCURRENCY 3->4` undescribed. The change was in the diff and gated
+    correctly; only the human-readable summary -- the part a reviewer trusts --
+    was wrong. Task title stays the header; the commit subjects are the contents."""
+    if not any(c["commits"] is not None for c in plan["cars"]):
+        return []                      # commit facts were not injected -- say nothing
+    out = ["## What each car carries", ""]
+    for c in plan["cars"]:
+        if c["commits"] is None:
+            out.append(f"- **{c['label']}** `{c['branch']}` -- {c['what']} "
+                       f"(commit list unavailable -- R reads the PR)")
+            continue
+        n = len(c["commits"])
+        if n == 1:
+            out.append(f"- **{c['label']}** `{c['branch']}` -- {c['what']}")
+        elif n == 0:
+            out.append(f"- **{c['label']}** `{c['branch']}` -- {c['what']} "
+                       f"(no commits ahead of {BASE})")
+        else:
+            out.append(f"- **{c['label']}** `{c['branch']}` -- {c['what']} "
+                       f"-- **{n} commits: this car carries more than its title says.**")
+        for line in c["commits"]:
+            out.append(f"  - `{line}`")
+    out.append("")
+    return out
 
 
 def _paths_summary(paths, limit=2):
@@ -673,6 +901,74 @@ def live_diff_files(branch):
     manufacture phantom deletions (the Wave-16 trap)."""
     rc, out, _ = git("diff", "--name-only", f"{BASE}...{branch}")
     return out.splitlines() if rc == 0 else []
+
+
+def live_commits(branch):
+    """`git log --oneline origin/dev..<branch>` -- what the car actually carries.
+
+    Two-dot on purpose: the commits the branch has that dev does not, which is
+    the cargo. (The DIFF is read three-dot, against the merge base, so a stale
+    base cannot manufacture phantom deletions -- different question, different
+    operator.) None on failure, so the brief says "unavailable" instead of
+    silently claiming a car is empty."""
+    rc, out, _ = git("log", "--oneline", "--no-decorate", f"{BASE}..{branch}")
+    if rc != 0:
+        return None
+    return [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+
+def live_open_prs():
+    """Open PRs via `gh`, or None when the check could not run (#224 gap 3).
+
+    None and `[]` mean very different things here and must not collapse: `[]` is
+    "GitHub says there are no open PRs", None is "nobody asked". Only the first
+    can license a clean zero-car verdict."""
+    try:
+        p = subprocess.run(
+            ["gh", "pr", "list", "--state", "open", "--limit", "60",
+             "--json", "number,title,headRefName,mergeable,isDraft,url"],
+            cwd=GIT_ROOT, capture_output=True, text=True, timeout=GH_TIMEOUT_S)
+    except Exception:
+        return None
+    if p.returncode != 0:
+        return None
+    try:
+        rows = json.loads(p.stdout)
+    except ValueError:
+        return None
+    return rows if isinstance(rows, list) else None
+
+
+def live_loop_staleness():
+    """Is the RUNNING loop older than the `dispatcher.py` it runs from?
+
+    The sound restart check (#224 gap 2). A version banner cannot answer this --
+    Wave 19 carried V4.25 on both sides of a real change -- but two timestamps
+    can: when the process started, and when the checkout last wrote the file it
+    loaded. Returns None when the loop cannot be found (nothing to claim)."""
+    path = f"{MAIN_CHECKOUT}/{DISPATCHER_FILE}"
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+    try:
+        p = subprocess.run(["pgrep", "-f", DISPATCHER_FILE],
+                           capture_output=True, text=True, timeout=10)
+        pids = [x for x in p.stdout.split() if x.isdigit()]
+        started = None
+        for pid in pids:
+            q = subprocess.run(["ps", "-o", "etimes=", "-p", pid],
+                               capture_output=True, text=True, timeout=10)
+            el = q.stdout.strip()
+            if not el.isdigit():
+                continue
+            cand = time.time() - int(el)
+            started = cand if started is None else min(started, cand)
+        if started is None:
+            return None
+    except Exception:
+        return None
+    return {"loop_started": started, "file_mtime": mtime, "stale": mtime > started}
 
 
 def live_already_merged(branch):
@@ -773,18 +1069,12 @@ def live_loop_version():
         return None
 
 
-def live_target_version(cars):
-    """Version the merged tip will be: the banner on whichever car edits the loop."""
-    for c in cars:
-        if not any(app_relative(p) == DISPATCHER_FILE for p in c["paths"]):
-            continue
-        rc, out, _ = git("show", f"{c['branch']}:{APP_PREFIX}{DISPATCHER_FILE}")
-        if rc != 0:
-            rc, out, _ = git("show", f"{c['branch']}:{DISPATCHER_FILE}")
-        v = _banner_version(out) if rc == 0 else None
-        if v:
-            return v
-    return None
+# NOTE (#224 gap 2): there used to be a `live_target_version()` here, reading the
+# banner off whichever car edits the loop so the brief could print "a car makes it
+# V4.25; the loop is V4.24". It is DELETED, not fixed. The delta it computed was
+# never the restart trigger and could not be: Wave 19 shipped a real dispatcher
+# change with V4.25 on both sides, and any constant-only edit does the same. The
+# trigger is the dispatcher-touch; the staleness check is `live_loop_staleness()`.
 
 
 def live_suite_env(car_paths):
@@ -841,29 +1131,36 @@ def main(argv=None):
     owed = () if args.no_owed_logs else live_owed_logs()
     _, base_sha, _ = git("rev-parse", "--short", BASE)
 
-    diff_cache = {}
+    diff_cache, commit_cache = {}, {}
 
     def cached_diff(branch):
         if branch not in diff_cache:
             diff_cache[branch] = live_diff_files(branch)
         return diff_cache[branch]
 
+    def cached_commits(branch):
+        if branch not in commit_cache:
+            commit_cache[branch] = live_commits(branch)
+        return commit_cache[branch]
+
+    open_prs = live_open_prs()
+
     def assemble(**kw):
         return build_train(
             tasks, live_resolve_branch, cached_diff, live_fork_behind,
-            already_merged=live_already_merged,
+            already_merged=live_already_merged, commits=cached_commits,
+            open_prs=open_prs, loop_staleness=live_loop_staleness(),
             owed_logs=owed, wave=args.wave or live_wave(), base_sha=base_sha,
             date=datetime.now(timezone.utc).date().isoformat(),
             session=args.session, loop_version=live_loop_version(), **kw)
 
-    # Pass 1 discovers the cars; the suite set and the target version are both
-    # functions of what those cars touch, so pass 2 assembles the real plan.
-    # `cached_diff` keeps this to one `git diff` per branch.
+    # Pass 1 discovers the cars; the suite set is a function of what those cars
+    # touch, so pass 2 assembles the real plan. The caches keep this to one
+    # `git diff` and one `git log` per branch.
     scout = assemble()
     car_paths = [p for c in scout["cars"] for p in c["paths"]]
     exists, discovered = live_suite_env(car_paths)
-    plan = assemble(suites=resolve_dispatcher_suites(exists, discovered),
-                    target_version=live_target_version(scout["cars"]))
+    plan = assemble(suites=resolve_dispatcher_suites(exists, discovered))
     plan["other_branches"] = live_other_branches({c["branch"] for c in plan["cars"]})
 
     if plan["wave"] is None:
@@ -879,10 +1176,22 @@ def main(argv=None):
     else:
         print(brief)
 
-    verdict = "AUTO-DISPATCH" if plan["auto_dispatch"] else "HELD FOR M"
+    # #224 gap 3: the one-line verdict is what a reader actually reads. A bare
+    # `0 car(s)` is indistinguishable from "nothing to ship", so a zero-car train
+    # never gets one -- it gets its KIND, and the unclaimed PRs by number.
+    zero = plan["zero_car_verdict"]
+    verdict = ("AUTO-DISPATCH" if plan["auto_dispatch"]
+               else f"ZERO CARS -- {zero}" if zero else "HELD FOR M")
     print(f"\n--- verdict: {verdict} · {len(plan['cars'])} car(s) · "
           f"{len(plan['refusals'])} refused · {len(plan['holds'])} hold(s) ---",
           file=sys.stderr)
+    if plan["unclaimed_prs"]:
+        print(f"--- {len(plan['unclaimed_prs'])} open PR(s) NO CAR CLAIMS: "
+              + ", ".join(f"#{p.get('number')} {p.get('headRefName')}"
+                          for p in plan["unclaimed_prs"]) + " ---", file=sys.stderr)
+    elif zero == "UNVERIFIED":
+        print("--- open-PR cross-check did NOT run (`gh` unavailable): "
+              "\"nothing to ship\" is UNPROVEN ---", file=sys.stderr)
 
     if args.create_task:
         if not plan["cars"]:
