@@ -114,7 +114,15 @@ class Board:
                 return [dict(self.agent)]
             if path.startswith("dev_tasks?status=eq.Done"):
                 return []
-            if path.startswith("dev_tasks?status=eq.Todo"):
+            if path.startswith(f"dev_tasks?{disp.GATE_FILTER}"):
+                # V4.21 (#198) replaced the `status=eq.Todo` queue with
+                # `ai_eligible OR status=Todo`. Emulated from the SAME dict the
+                # PATCHes land in, and keyed off the shipped GATE_FILTER so the
+                # stub cannot drift from the gate: §7's self-heal has to re-enter
+                # the queue through the real gate to prove anything.
+                return [dict(t) for t in self.tasks.values()
+                        if t.get("ai_eligible") or t.get("status") == "Todo"]
+            if path.startswith("dev_tasks?status=eq.Todo"):    # pre-V4.21 gate
                 return [dict(t) for t in self.tasks.values() if t["status"] == "Todo"]
             if path.startswith("dev_tasks?id=eq."):
                 # The audible's re-read (status_now). Served from the SAME dict
@@ -126,7 +134,11 @@ class Board:
                     raise RuntimeError("simulated board read failure")
                 tid = int(path.split("id=eq.")[1].split("&")[0])
                 t = self.tasks.get(tid)
-                return [{"status": t["status"]}] if t else []
+                # V4.24 serves `ai_eligible` alongside the status: post-#198 the
+                # queue is `ai_eligible OR Todo`, so "will this restore actually
+                # re-dispatch?" needs both.
+                return ([{"status": t["status"],
+                          "ai_eligible": bool(t.get("ai_eligible"))}] if t else [])
             return []                       # run-requests, comments, run_history
         if method == "POST":
             if path == "dev_task_comments":
@@ -152,10 +164,10 @@ def use(board):
     return board
 
 
-def mktask(tid, assignee="Z", status="Todo"):
+def mktask(tid, assignee="Z", status="Todo", ai_eligible=False):
     return {"id": tid, "title": f"test task {tid}", "assignee": assignee,
             "status": status, "description": "a scoped description", "tags": [],
-            "blocked_by": [], "checklist": []}
+            "blocked_by": [], "checklist": [], "ai_eligible": ai_eligible}
 
 
 def write_log(name, text):
@@ -308,6 +320,22 @@ ok("§6e the comment does NOT promise an automatic retry that cannot happen "
    not any("automatic retry" in x for x in b.bodies(506))
    and any("NOT auto-retried" in x for x in b.bodies(506)), f"got {b.bodies(506)}")
 
+# ══ §6-ter — V4.24: an ARMED non-Todo task IS re-dispatched, so say so ════
+# The mirror image of §6-bis, and a merge consequence rather than a new idea:
+# #197 wrote "NOT auto-retried from X" when the queue was `status=eq.Todo`.
+# V4.21 (#198) widened it to `ai_eligible OR Todo`, so for an ARMED task that
+# sentence became false — the dispatcher denying a retry it then performs is
+# #197's own defect wearing a different hat.
+print("\n[§6-ter] an ARMED non-Todo task: the retry IS promised, because it happens")
+b = use(Board([mktask(510, status="In Progress", ai_eligible=True)]))  # the claim
+reap_one(b, mkrun("r-armed", 510, write_log("armed", terminal("boom", True)),
+                  status0="Approval"))
+ok("§6f restored to Approval (pre-dispatch status, not Todo, not Review)",
+   b.tasks[510]["status"] == "Approval", f"got {b.statuses(510)}")
+ok("§6g the comment promises the retry AND names why it happens (ai_eligible)",
+   any("automatic retry 1 of" in x and "ai_eligible" in x for x in b.bodies(510))
+   and not any("NOT auto-retried" in x for x in b.bodies(510)), f"got {b.bodies(510)}")
+
 
 # ══ §7 — REAL TOPOLOGY: dispatch → real process → real reap ═══════════════
 print("\n[§7] end-to-end: one_pass() dispatches a run that really fails, then reaps it")
@@ -353,8 +381,19 @@ ok("§7b the dispatch recorded the PRE-DISPATCH status on the run",
    first.get("status0") == "Todo", f"got {first.get('status0')!r}")
 ok("§7c the board shows the claim (In Progress)", b.tasks[TID]["status"] == "In Progress")
 
+# V4.24 — every run this ladder produces is collected AS IT HAPPENS. The merge
+# with #198 made that necessary: the retry leg calls forget_task_runs(), so a
+# failed run is dropped from state on the pass that retries it and the final
+# state.json is no longer the run log. Reading it after the fact would silently
+# weaken §7g/§7l/§7m into assertions about ONE run.
+all_runs = [first]
+seen = {first["run_id"]}
 for _ in range(MAX_RETRIES + 1):                            # passes 2..N — reap + re-arm
     disp.one_pass(live=True)
+    for r in json.load(open(disp.STATE_FILE))["runs"]:
+        if r["run_id"] not in seen:
+            seen.add(r["run_id"])
+            all_runs.append(r)
     if b.tasks[TID]["status"] == "In Progress":
         wait_for_terminal()
 
@@ -367,7 +406,20 @@ ok("§7e the whole real-topology status walk is exactly claim → restore → "
 ok("§7f the failure SELF-HEALED — it was re-dispatched with no human touch",
    seq.count("In Progress") == MAX_RETRIES + 1, f"got {seq}")
 ok(f"§7g exactly {MAX_RETRIES + 1} runs, then it stopped re-arming",
-   len(json.load(open(disp.STATE_FILE))["runs"]) == MAX_RETRIES + 1)
+   len(all_runs) == MAX_RETRIES + 1, f"got {[r['run_id'] for r in all_runs]}")
+# ── the #198 coupling, proved through the real path ──────────────────────────
+# step_already_ran() refuses a step a FINISHED run already covered, and a run
+# that DIED is finished. Without report_failed_run()'s forget_task_runs() call
+# the retry granted above is refused on the very next poll: the ladder stops
+# dead at ["In Progress", "Todo"] and the task sits armed and silent — #197's
+# stall relocated. §7e/§7f fail without it; this names WHY they do.
+ok("§7g-bis the retry was NOT refused by the #198 step-guard (forget_task_runs)",
+   not disp.step_already_ran(json.load(open(disp.STATE_FILE)), mktask(TID))
+   or b.tasks[TID]["status"] == "Blocked")
+ok("§7g-ter the escalated run is STILL in state (only retried runs are forgotten)",
+   [r["run_id"] for r in json.load(open(disp.STATE_FILE))["runs"]]
+   == [all_runs[-1]["run_id"]],
+   f"got {json.load(open(disp.STATE_FILE))['runs']}")
 ok(f"§7h '{SIGNOFF}' was never posted for this task",
    not any(SIGNOFF in x for x in b.bodies(TID)))
 ok("§7i every real run reported FAILED on the thread",
@@ -379,7 +431,7 @@ ok("§7k a Blocked task is no longer dispatch-eligible (queue leaves it alone)",
 # Self-heal made same-SECOND re-dispatch reachable, and run_id is second-resolution:
 # without the uniqueness suffix all three runs share an id, so they overwrite each
 # other's log and rh_finish() patches all three run_history rows at once.
-runs = json.load(open(disp.STATE_FILE))["runs"]
+runs = all_runs
 ok("§7l each re-dispatch got its own run_id (no same-second collision)",
    len({r["run_id"] for r in runs}) == len(runs), f"got {[r['run_id'] for r in runs]}")
 ok("§7m each run kept its own log file (a collision would overwrite the evidence)",
@@ -399,6 +451,34 @@ ok(f"§7o and DOES carry the '{SIGNOFF}' comment",
    any(SIGNOFF in x for x in b.bodies(TID2)))
 ok("§7p the agent's real result is on the thread",
    any(c["author"] == "Z·auto" and "here is the report" in c["body"] for c in b.comments))
+
+
+# ══ §7-armed — THE #198 COUPLING, through the real path ═══════════════════
+# The legacy Todo arm has no step-guard, so §7 above cannot exercise the
+# coupling #198's step_already_ran() docstring wrote down. An ARMED task can:
+# it never falls out of the queue, so the guard is the ONLY thing between a
+# granted retry and a re-dispatch. Without report_failed_run()'s
+# forget_task_runs() call the ladder stops dead after ONE restore and the task
+# sits armed, In-Progress-free and silent — #197's stall in a new place.
+print("\n[§7-armed] an ARMED task's granted retry is not refused by the #198 step-guard")
+TID4 = 200
+b = use(Board([mktask(TID4, status="Approval", ai_eligible=True)]))
+os.remove(disp.STATE_FILE)
+disp.CLAUDE_BIN = fake_claude("claude_fail3.sh", "API Error: 500 · run died", True, 1)
+disp.one_pass(live=True)
+wait_for_terminal()
+for _ in range(MAX_RETRIES + 1):
+    disp.one_pass(live=True)
+    if b.tasks[TID4]["status"] == "In Progress":
+        wait_for_terminal()
+seq4 = b.statuses(TID4)
+ok("§7q the armed ladder really re-dispatched (step-guard did NOT eat the retry)",
+   seq4.count("In Progress") == MAX_RETRIES + 1, f"got {seq4}")
+ok("§7r ...restoring Approval each time, never Todo and never Review",
+   seq4 == ["In Progress"] + ["Approval", "In Progress"] * MAX_RETRIES + ["Blocked"],
+   f"got {seq4}")
+ok("§7s and it still escalates once the cap is spent",
+   b.tasks[TID4]["status"] == "Blocked")
 
 
 # ══ §8 — AUDIBLE: a human's mid-run status change is never reverted ═══════

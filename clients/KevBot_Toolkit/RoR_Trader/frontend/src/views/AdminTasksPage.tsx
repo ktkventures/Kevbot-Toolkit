@@ -27,7 +27,16 @@ import {
   statusOptionsFor, cell, input, badge, tagChip, NextChip, ProgressBar, RunButton,
   RETIRED_TAGS, StampButtons, TwoTouchChip, ImpactSelect, defaultChain,
   groupBoard, isVisionTask, StuckChip, isStuckInTodo, HandoffChain,
+  AiEligibleToggle, RunStatePill, runState,
 } from './taskBoardShared';
+
+// Board #198 column headers — the split spelled out where Kevin hovers it.
+const AI_COL_TIP = 'AI-eligible — standing permission for a headless agent to claim this task, '
+  + 'independent of where it sits on the kanban. Kevin’s Approval stamp arms it; this switch '
+  + 'is the manual override. ON can dispatch within one dispatcher poll (~20s).';
+const RUN_COL_TIP = 'Run state (what the dispatcher is doing: idle / queued / running / failed, '
+  + 'with the last outcome) + ▶ Run once (a one-off queue jump — it does NOT change the '
+  + 'AI-eligible switch).';
 
 export default function AdminTasksPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -45,6 +54,10 @@ export default function AdminTasksPage() {
   // contradiction: queue-eligible yet undispatchable). Needs byParent, so its
   // predicate lives after grouping (see `stuck`/`matches`).
   const [stuckOnly, setStuckOnly] = useState(false);
+  // Board #198 — the two at-a-glance questions the toggle/pill split makes
+  // askable: which tasks are ARMED for an agent, and which are RUNNING now.
+  const [armedOnly, setArmedOnly] = useState(false);
+  const [runningOnly, setRunningOnly] = useState(false);
   // Column sort applies to the FLAT view only — the grouped view's order IS
   // the pipeline (priority within vision), so it stays fixed.
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
@@ -215,12 +228,20 @@ export default function AdminTasksPage() {
   const stuck = (t: Task) => isStuckInTodo(t, byParent.get(t.id) || []);
   const stuckCount = tasks.filter(stuck).length;
 
+  // Board #198: armed = the AI-eligible switch is on; busy = the dispatcher is
+  // queued/running on it right now (a pure read of run_history via runState).
+  const isRunning = (t: Task) => runState(t, latestRunByTask.get(t.id)).key === 'running';
+  const armedCount = tasks.filter((t) => t.ai_eligible).length;
+  const runningCount = tasks.filter(isRunning).length;
+
   const matches = (t: Task) =>
     (!hideDone || t.status !== 'Done') &&
     (!liveOnly || t.impacts_live) &&
     (!reviewOnly || t.status === 'Review') &&
     (!awaitingOk || (t.status === 'Approval' && !isVision(t))) &&
     (!stuckOnly || stuck(t)) &&
+    (!armedOnly || !!t.ai_eligible) &&
+    (!runningOnly || isRunning(t)) &&
     (!areaFilter || t.area === areaFilter) &&
     (!assigneeFilter || (t.assignee || '') === assigneeFilter);
 
@@ -233,7 +254,8 @@ export default function AdminTasksPage() {
 
   const visible = useMemo(() => tasks.filter(matches),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tasks, hideDone, liveOnly, reviewOnly, awaitingOk, stuckOnly, areaFilter, assigneeFilter]);
+    [tasks, hideDone, liveOnly, reviewOnly, awaitingOk, stuckOnly, armedOnly,
+      runningOnly, latestRunByTask, areaFilter, assigneeFilter]);
 
   // Approval stamps (board #136): POST /stamp flips Approval → Todo, sets
   // kevin_final per mode, and logs the system comment server-side.
@@ -410,9 +432,19 @@ export default function AdminTasksPage() {
           {withLegacy(roles, t.assignee || '').map((a) => <option key={a} value={a}>{a || '—'}</option>)}
         </select>
       </td>
+      {/* board #198 — INPUT: standing permission for an agent to claim this */}
       <td style={cell}>
-        <RunButton task={t} allTasks={tasks} headless={headless}
-          latestRun={latestRunByTask.get(t.id)} onRequest={requestRun} compact />
+        <AiEligibleToggle task={t} compact
+          onToggle={(v) => patch(t.id, { ai_eligible: v })} />
+      </td>
+      {/* board #198 — OUTPUT (pill: what the dispatcher is doing) + ACTION
+          (button: run it once now). Deliberately not the same control. */}
+      <td style={cell}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 3 }}>
+          <RunStatePill task={t} latestRun={latestRunByTask.get(t.id)} compact />
+          <RunButton task={t} allTasks={tasks} headless={headless}
+            latestRun={latestRunByTask.get(t.id)} onRequest={requestRun} compact />
+        </div>
       </td>
       <td style={cell}><span style={{ cursor: 'pointer', color: 'var(--red)' }} onClick={() => del(t.id)}>✕</span></td>
     </tr>
@@ -435,7 +467,7 @@ export default function AdminTasksPage() {
     if (shownLoose.length > 0) {
       groupedRows.push(
         <tr key="loose-header">
-          <td colSpan={10} style={{ ...cell, color: 'var(--text-tertiary)', fontSize: 11, paddingTop: 14 }}>
+          <td colSpan={11} style={{ ...cell, color: 'var(--text-tertiary)', fontSize: 11, paddingTop: 14 }}>
             ungrouped — tasks without a vision parent
           </td>
         </tr>);
@@ -454,6 +486,9 @@ export default function AdminTasksPage() {
         🔴 = touches live engine/trading code (deploy carefully); ⚡ = urgent (a tag, not a priority);
         🔍 = discovered mid-work (rabbit-hole fix, parented under its vision item);
         🔏 = two-touch (Kevin reviews before Done); Impact = blast radius (contained | app | engine | live).
+        🤖 AI = may an agent claim this task (armed by Kevin’s Approval stamp, independent of the
+        kanban status) · the Run column reads out what the dispatcher is doing (idle / queued /
+        running / failed) next to ▶ Run once, a one-off queue jump.
       </p>
 
       {err && <Card><div style={{ color: 'var(--red)', fontSize: 13 }}>⚠ {err}</div></Card>}
@@ -541,6 +576,22 @@ export default function AdminTasksPage() {
               onClick={() => setStuckOnly(!stuckOnly)}>
               ⚠ stuck in Todo ({stuckCount})</button>
           )}
+          {/* board #198 — the two questions the toggle/pill split makes askable
+              at a glance: what is ARMED for an agent, and what is RUNNING now */}
+          <button style={{
+            ...input, cursor: 'pointer', fontWeight: armedOnly ? 700 : 400, color: 'var(--green)',
+            borderColor: armedOnly ? 'var(--green)' : 'var(--border)',
+          }}
+            title={`tasks armed for AI work (ai_eligible = true) — ${AI_COL_TIP}`}
+            onClick={() => setArmedOnly(!armedOnly)}>
+            🤖 AI-eligible ({armedCount})</button>
+          <button style={{
+            ...input, cursor: 'pointer', fontWeight: runningOnly ? 700 : 400, color: 'var(--blue)',
+            borderColor: runningOnly ? 'var(--blue)' : 'var(--border)',
+          }}
+            title="tasks a headless agent is working RIGHT NOW (latest run_history row still open)"
+            onClick={() => setRunningOnly(!runningOnly)}>
+            ⚙ running ({runningCount})</button>
           <label><input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} /> hide Done</label>
           <label><input type="checkbox" checked={liveOnly} onChange={(e) => setLiveOnly(e.target.checked)} /> 🔴 live only</label>
           <label title="tasks sitting in the Review stage (replaces the needs-review tag)">
@@ -581,7 +632,8 @@ export default function AdminTasksPage() {
                     <th style={{ ...cell, width: 170 }}>Flags</th>
                     <th style={{ ...cell, width: 110, cursor: 'pointer' }} title="sort" onClick={() => clickSort('area')}>Area{sortMark('area')}</th>
                     <th style={{ ...cell, width: 100, cursor: 'pointer' }} title="sort" onClick={() => clickSort('who')}>Who{sortMark('who')}</th>
-                    <th style={{ ...cell, width: 78 }} title="dispatch this task to its agent (local dispatcher)">Run</th>
+                    <th style={{ ...cell, width: 56, whiteSpace: 'nowrap' }} title={AI_COL_TIP}>🤖 AI</th>
+                    <th style={{ ...cell, width: 118 }} title={RUN_COL_TIP}>Run</th>
                     <th style={{ ...cell, width: 32 }}></th>
                   </>
                 ) : (
@@ -589,7 +641,8 @@ export default function AdminTasksPage() {
                     <th style={{ ...cell, width: 44 }}>ID</th><th style={{ ...cell, width: 96 }}>Pri</th><th style={cell}>Task</th><th style={{ ...cell, width: 130 }}>Status</th>
                     <th style={{ ...cell, width: 92 }} title="blast radius: contained | app | engine | live (M-editable)">Impact</th>
                     <th style={{ ...cell, width: 170 }}>Flags</th><th style={{ ...cell, width: 110 }}>Area</th><th style={{ ...cell, width: 100 }}>Who</th>
-                    <th style={{ ...cell, width: 78 }} title="dispatch this task to its agent (local dispatcher)">Run</th>
+                    <th style={{ ...cell, width: 56, whiteSpace: 'nowrap' }} title={AI_COL_TIP}>🤖 AI</th>
+                    <th style={{ ...cell, width: 118 }} title={RUN_COL_TIP}>Run</th>
                     <th style={{ ...cell, width: 32 }}></th>
                   </>
                 )}
@@ -600,7 +653,7 @@ export default function AdminTasksPage() {
                 ? sortedVisible.map((t) => <TaskRow key={t.id} t={t} />)
                 : groupedRows}
               {((view === 'flat' && visible.length === 0) || (view === 'grouped' && groupedRows.length === 0)) &&
-                <tr><td colSpan={10} style={{ ...cell, color: 'var(--text-tertiary)' }}>No tasks match the filters.</td></tr>}
+                <tr><td colSpan={11} style={{ ...cell, color: 'var(--text-tertiary)' }}>No tasks match the filters.</td></tr>}
             </tbody>
           </table>
         </Card>
