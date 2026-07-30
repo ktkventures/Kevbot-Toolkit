@@ -277,7 +277,7 @@ export interface Mention {
 // The @-mention token set (board #143): registry letters + kevin. Sourced from
 // the agents registry at runtime; this is the fallback + the compose picker's
 // order. Adding a role is one line here + one registry row.
-export const MENTION_ROLES = ['M', 'M-A', 'E', 'E2', 'F', 'P', 'R', 'kevin'];
+export const MENTION_ROLES = ['M', 'M-A', 'E', 'E2', 'F', 'P', 'R', 'R-A', 'kevin'];
 
 /** One dispatcher run of a board task (run_history table, board #109). */
 export interface RunRow {
@@ -348,7 +348,7 @@ export const STATUS_DEF: Record<string, string> = {
 export const AREAS = ['engine', 'backtest', 'frontend', 'infra', 'data', 'docs', 'other'];
 // Team roles per Session_Charters.md §1. Legacy values ('claude', …) still
 // render: selects append any unknown current value instead of blanking it.
-export const ASSIGNEES = ['', 'M', 'M-A', 'E', 'E2', 'F', 'P', 'R', 'kevin'];
+export const ASSIGNEES = ['', 'M', 'M-A', 'E', 'E2', 'F', 'P', 'R', 'R-A', 'kevin'];
 export const ORIGINS = ['planned', 'discovered', 'kevin'];
 export const AUTHOR_LS_KEY = 'ror_task_comment_author';
 // RETIRED by the board-#136 pipeline: needs-review became the Review STATUS;
@@ -382,15 +382,18 @@ export const IMPACT_DEF: Record<string, string> = {
   engine: 'engine — engine code paths, correctness risk',
   live: 'live — touches live trading, deploy carefully',
 };
+// A split lane's headless half takes a LIGHTER tint of the same hue (M/M-A,
+// R/R-A) — same family reads as "same lane", the tint is only the secondary
+// cue. The primary one is shape, set by the registry (see isSessionLane).
 export const ROLE_COLOR: Record<string, string> = {
   M: '#7c5cff', 'M-A': '#a48cff', E: '#d9534f', E2: '#e08a3c', F: '#3b82f6',
-  P: '#2e9e5b', R: '#2aa8a0', kevin: '#c9a227', claude: '#64748b',
-  system: '#556070',
+  P: '#2e9e5b', R: '#2aa8a0', 'R-A': '#5fc9c2', kevin: '#c9a227',
+  claude: '#64748b', system: '#556070',
 };
 export const roleColor = (r: string) => ROLE_COLOR[r] || '#64748b';
 export const roleAbbrev = (r: string) =>
   r === 'kevin' ? 'K' : r === 'claude' ? 'C' : r === 'system' ? '⚙'
-    : r === 'M-A' ? 'MA' : r;
+    : r === 'M-A' ? 'MA' : r === 'R-A' ? 'RA' : r;
 
 /* ── Lane kind: session vs headless agent (board #222) ──────────────────────
  * `M` used to mean two actors at once — the long-running manager SESSION and
@@ -402,7 +405,13 @@ export const roleAbbrev = (r: string) =>
  * The rule is read from the REGISTRY, never from a letter check: any owner whose
  * row says `status='live-session'` (or `kind='human'`) renders as a session. So
  * the next lane that goes live-session inherits the treatment for free, and this
- * file needs no edit for it. */
+ * file needs no edit for it.
+ *
+ * Board #229 CASHED THAT CHEQUE: splitting `R` into R (session conductor) +
+ * `R-A` (headless executor) needed no change below this comment at all — only a
+ * colour, an abbreviation and two list entries above it. Everything that decides
+ * session-vs-agent already reads the registry, so the second split cost nothing,
+ * which is the evidence the claim above was true rather than merely intended. */
 export interface AgentMeta {
   letter: string;
   status: string;                 // live-session | headless | dormant | …
@@ -421,10 +430,13 @@ export const agentRegistryMap = (rows: AgentMeta[] | null | undefined) =>
 
 /** Owners that render as a session when the registry is UNREACHABLE. Mirrors
  *  the dispatcher's own stub posture (AdminTasksPage does the same for the
- *  headless set): a fallback for an API outage, not the rule. Kevin is a human
- *  and M is the session the #222 split created — being wrong in this direction
- *  is the safe way to be wrong, because it under-promises dispatch. */
-const SESSION_FALLBACK = new Set(['kevin', 'M']);
+ *  headless set): a fallback for an API outage, not the rule. Kevin is a human;
+ *  M is the session the #222 split created and R the one #229 creates — being
+ *  wrong in this direction is the safe way to be wrong, because it
+ *  under-promises dispatch. This set is ONLY consulted when the registry
+ *  answered with nothing, so while a lane's `live-session` flip is still held
+ *  the live board keeps reading the true (headless) status from the row. */
+const SESSION_FALLBACK = new Set(['kevin', 'M', 'R']);
 
 /** True when this owner is a live session / human — i.e. NEVER auto-dispatched;
  *  a task parked here waits on a person, which is the designed state. */
