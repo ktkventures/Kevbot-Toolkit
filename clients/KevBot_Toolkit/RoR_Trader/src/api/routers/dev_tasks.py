@@ -592,7 +592,9 @@ def stamp_approval(task_id: int, payload: dict = Body(...),
 
     ONE stamp, `approved to start` (board #232): arms `ai_eligible` (board
     #198), moves Approval → Todo, ticks the pending Kevin checklist step (board
-    #151 — legacy `role`/`text` AND #182 chain `owner`/`title`, board #225),
+    #151 — legacy `role`/`text` AND #182 chain `owner`/`title`, board #225,
+    recording `completed_at`/`completed_by` and settling that step's own stamp
+    gate to `approved`, board #244),
     hands the task off to the next incomplete step's owner (board #225, via the
     same `_next_assignee` /steps/complete uses — a stamped task must never be
     left sitting on `kevin`), and writes one system comment naming the stamp,
@@ -647,12 +649,43 @@ def stamp_approval(task_id: int, payload: dict = Body(...),
     # the stamp silently did half its job (3 stamps on 07-30, 2 hand-ticked).
     # #151's test stayed green because it builds a LEGACY checklist; the chain
     # cases below are the ones that fail without this.
+    #
+    # Board #244 — the tick must RECORD ITSELF, on both fields that describe it:
+    #
+    #  (a) `completed_at`/`completed_by`. This tick used to write `done` alone,
+    #      so #243 — the first stamp to auto-tick — recorded WHO with a None.
+    #      The whole reason agents tick through /steps/complete instead of
+    #      PATCHing `done` is that the handler keeps that audit trail; a tick
+    #      through the stamp is the same event and owes the same record. The
+    #      actor is `author` — the person the stamp comment already attributes
+    #      it to, so the two can never name different people (M relaying
+    #      Kevin's verbal OK passes author='kevin' and both say kevin).
+    #
+    #  (b) `stamp.state`. A kevin step that gates on a stamp kept `pending`
+    #      while the system comment said approved and the step read done — the
+    #      modal drew a gold "🔏 needs stamp" chip beside its own ✓. This stamp
+    #      IS that step's approval, so it settles the gate the same way
+    #      /steps/stamp does (state/by/at), and the two paths agree. Only a
+    #      step that ALREADY carries a stamp block is settled — a step with no
+    #      gate has nothing to settle, and inventing one would rewrite the
+    #      chain. A prior `rejected` is superseded rather than preserved: the
+    #      stamp is the later act by the same authority (and it cannot arise in
+    #      practice — a rejected step routes to M, leaving Approval behind).
     checklist = rows[0].get("checklist") or []
     ticked = None
     for step in checklist:
         if (not step.get("done")
                 and str(_step_owner(step) or "").strip().lower() == "kevin"):
+            now = _now_iso()
             step["done"] = True
+            step["completed_at"] = now
+            step["completed_by"] = author
+            stamp = step.get("stamp")
+            if isinstance(stamp, dict):
+                stamp["state"] = "approved"
+                stamp["by"] = author
+                stamp["at"] = now
+                step["stamp"] = stamp
             ticked = _step_title(step)
             update["checklist"] = checklist  # JSONB is replaced whole
             break
