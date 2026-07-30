@@ -19,6 +19,16 @@ still ticks the step for the board's progress bar (walks 1/3/4, unchanged);
 walk 2 now asserts the gate is GONE and dispatch holds with an un-ticked
 checklist either way.
 
+Board #225 UPDATE — the reason this file grew walks 5-8: every walk above builds
+a LEGACY checklist ({role, text}), and the handler matched raw step["role"] /
+step["text"]. #182 process chains carry {owner, title}, so on every CHAINED task
+the loop matched nothing: 2 of 3 stamps on 07-30 (#222, #224) left their Kevin
+step un-ticked and the task sitting `Todo`/`kevin`, which will not dispatch and
+trips preflight invariant (7). The test was GREEN while the behaviour was
+BROKEN. Walks 5-8 close that by exercising the chain schema directly, and cover
+the second half of the same gap: the stamp never wrote `assignee`, so ticking
+alone still left the task on kevin. Both halves fail without the fix.
+
 Offline + hermetic, same shape as test_board_lifecycle_136.py: the real
 `api.routers.dev_tasks` router functions run against an in-memory fake Supabase
 client, and the real `tools/team_dispatcher/dispatcher.py` gate functions run
@@ -232,5 +242,100 @@ ok("role match is case-insensitive ('Kevin' ticks too)",
    r4["checklist"][1]["done"] is True)
 ok("comment names the second (first un-done) Kevin step",
    any('checklist: ticked "Kevin final stamp"' in b for b in comments_for(tid4)))
+
+# ── walks 5-8: board #225 — the SAME contract against the #182 CHAIN schema ─
+# Everything above builds a LEGACY checklist ({role, text}). That is precisely
+# why #151 stayed green while the behaviour was broken: process chains carry
+# {owner, title}, the handler matched raw step["role"], and so it matched
+# NOTHING on any chained task — 2 of 3 stamps on 07-30 left their Kevin step
+# un-ticked and the task sitting `Todo`/`kevin`, which will not dispatch and
+# trips preflight invariant (7). These walks fail without the fix; walk 1 keeps
+# the legacy path honest alongside them.
+
+print("― walk 5: chain schema (owner/title) — stamp ticks + hands off ―")
+CHAIN = [
+    {"owner": "kevin", "title": "Approve the fix (fast stamp)", "done": False,
+     "mode": "discuss", "origin": "planned"},
+    {"owner": "F", "title": "Build it", "done": False, "mode": "execute"},
+    {"owner": "M", "title": "Review", "done": False, "mode": "discuss"},
+    {"owner": "kevin", "title": "Kevin looks before Done", "done": False,
+     "mode": "discuss"},                                  # later two-touch step
+]
+t5 = dt.create_task({"title": "chained task", "description": "d",
+                     "assignee": "kevin", "checklist": CHAIN}, user=None)
+tid5 = t5["id"]
+dt.update_task(tid5, {"status": "Approval", "actor": "M"}, user=None)
+r5 = dt.stamp_approval(tid5, {"mode": "start", "author": "kevin"}, user=None)
+
+cl5 = r5["checklist"]
+ok("chain step matched on `owner` — the Kevin step IS ticked",
+   cl5[0]["done"] is True)
+ok("agent build step untouched", cl5[1]["done"] is False)
+ok("LATER kevin two-touch step stays OPEN (guard survives the chain schema)",
+   cl5[3]["done"] is False)
+ok("assignee HANDED OFF kevin → F (next incomplete step's owner) — the task "
+   "can now dispatch and invariant (7) holds",
+   r5["assignee"] == "F")
+ok("tick note reads the chain's `title`, so the stamp comment is auditable",
+   any('checklist: ticked "Approve the fix (fast stamp)"' in b
+       for b in comments_for(tid5)))
+ok("stamp comment records the hand-off",
+   any("handed off: kevin → F" in b for b in comments_for(tid5)))
+ok("still exactly ONE system comment for the stamp",
+   sum("stamp: approved" in b for b in comments_for(tid5)) == 1)
+# The hand-off must AGREE with /steps/complete's, not merely resemble it —
+# same helper, same answer, or the two paths drift (board #202).
+ok("hand-off matches _next_assignee, the helper /steps/complete uses",
+   dt._next_assignee(cl5, "kevin") == "F")
+
+print("― walk 6: chain — a kevin step that is NOT first still ticks + hands off ―")
+CHAIN6 = [
+    {"owner": "M", "title": "Spec it", "done": True, "mode": "execute"},
+    {"owner": "kevin", "title": "Approve the spec", "done": False,
+     "mode": "discuss"},
+    {"owner": "E", "title": "Implement", "done": False, "mode": "execute"},
+]
+t6 = dt.create_task({"title": "chain, kevin mid-list", "description": "d",
+                     "assignee": "kevin", "checklist": CHAIN6}, user=None)
+tid6 = t6["id"]
+dt.update_task(tid6, {"status": "Approval", "actor": "M"}, user=None)
+r6 = dt.stamp_approval(tid6, {"mode": "start"}, user=None)
+ok("already-done chain step stays done", r6["checklist"][0]["done"] is True)
+ok("first UN-done kevin step ticks", r6["checklist"][1]["done"] is True)
+ok("assignee advances kevin → E", r6["assignee"] == "E")
+
+print("― walk 7: chain — Kevin owns the LAST step → hand off to M, not kevin ―")
+# T2: the chain never ends on kevin; closing is M's follow-through.
+CHAIN7 = [
+    {"owner": "F", "title": "Ship it", "done": True, "mode": "execute"},
+    {"owner": "Kevin", "title": "Kevin signs off", "done": False,
+     "mode": "discuss"},                       # capitalised — case-insensitive
+]
+t7 = dt.create_task({"title": "chain ends on kevin", "description": "d",
+                     "assignee": "kevin", "checklist": CHAIN7}, user=None)
+tid7 = t7["id"]
+dt.update_task(tid7, {"status": "Approval", "actor": "M"}, user=None)
+r7 = dt.stamp_approval(tid7, {"mode": "start"}, user=None)
+ok("owner match is case-insensitive on the chain schema too ('Kevin')",
+   r7["checklist"][1]["done"] is True)
+ok("chain complete → assignee M (never left on kevin — T2)",
+   r7["assignee"] == "M")
+
+print("― walk 8: no kevin step in the chain → no tick, and NO hand-off ―")
+# The hand-off rides on the tick. A stamp that ticked nothing must not quietly
+# reassign the task out from under whoever holds it.
+CHAIN8 = [{"owner": "F", "title": "Just build it", "done": False,
+           "mode": "execute"}]
+t8 = dt.create_task({"title": "chain, no kevin step", "description": "d",
+                     "assignee": "P", "checklist": CHAIN8}, user=None)
+tid8 = t8["id"]
+dt.update_task(tid8, {"status": "Approval", "actor": "M"}, user=None)
+r8 = dt.stamp_approval(tid8, {"mode": "start"}, user=None)
+ok("nothing ticked when the chain has no kevin step",
+   r8["checklist"][0]["done"] is False)
+ok("assignee untouched when nothing was ticked", r8["assignee"] == "P")
+ok("comment carries neither a tick note nor a hand-off note",
+   all("checklist: ticked" not in b and "handed off" not in b
+       for b in comments_for(tid8)))
 
 print(f"\nALL PASS ({PASS} checks)")
