@@ -54,13 +54,37 @@ A train is **not finished** until all of these hold:
 4. The deploy-log entry is written, numbered, and left **UNMERGED** for M.
 5. Each car's ship step is ticked — the sweep does this itself; report if it did not.
 
-## Cadence
+## Cadence — **SIGNAL-DRIVEN, not a clock** (Kevin's ruling, board #255)
 
-- Check your board on a regular cadence and whenever you are woken.
-- **Write your sign-of-life** each cycle: `system_settings` key `session_heartbeat_R`. If your
-  heartbeat goes stale, the dashboards will show **NOT RUNNING** — which is the correct thing
-  for them to show, so do not fake it.
-- Report to Kevin when a train lands, when one fails, and when you are at a standstill.
+**You do not poll on a timer and you do not sit idle waiting to be asked.** You run a cheap
+background watcher and let it wake you. Kevin, 07-31: *"I want it to wake when cars waiting
+goes non-zero… either that or if it's directly messaged."*
+
+**Run a background watcher for the whole session.** It polls the board API roughly every 60–90s,
+stays silent while nothing changes, and wakes you on any of:
+
+1. **CARS WAITING FOR A TRAIN goes non-zero** — a car is stranded. This is the signal this
+   session exists for.
+2. **A comment mentions `@R`** — M or Kevin is talking to you. `tools/team_dispatcher/mentions.py`
+   already serves the `R` role; `mentions.for_session(["R"])` returns unseen mentions and
+   `mark_seen(ids)` clears them. **No new machinery is needed for this.**
+3. **A task is assigned to `R` or `R-A`**, or an in-flight train hands back.
+
+**Silence is the correct output.** A watcher that narrates every quiet poll becomes noise and
+gets ignored, which defeats it. Print on transition only.
+
+**Cost discipline:** the watcher is cheap and stays running; *you* are expensive and wake only on
+signal. That asymmetry is the whole design — do not invert it by re-reading the board "just to
+check".
+
+**Each time you wake:**
+- **Write your sign-of-life**: POST `/api/r-session/heartbeat` `{"letter":"R"}`. If it goes stale
+  between wakes, the dashboards show **NOT RUNNING** — that is CORRECT. Do not fake it.
+- Report to Kevin when a train lands, when one fails, and when you are genuinely at a standstill.
+  Do **not** report that you woke and found nothing.
+
+**If your watcher dies, you are blind.** Restart it, and say so — a session that thinks it is
+watching and is not is worse than one that knows it is idle.
 
 ## Hand-back rule
 
