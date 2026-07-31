@@ -28,8 +28,11 @@ import {
   RETIRED_TAGS, StampButtons, TwoTouchChip, ImpactSelect, defaultChain,
   groupBoard, isVisionTask, StuckChip, isStuckInTodo, HandoffChain,
   AiEligibleToggle, RunStatePill, runState, isFinished, StampMode,
-  AgentMeta, AgentRegistryContext, agentRegistryMap,
+  AgentMeta, AgentRegistryContext, agentRegistryMap, MultiSelectFilter,
 } from './taskBoardShared';
+// Board #246 — multi-select predicates, in a plain-JS module so a test can
+// execute them for real rather than source-scan them (see taskFilters.js).
+import { taskMatchesSelects, activeSelectCount, UNASSIGNED_LABEL } from './taskFilters';
 
 // Board #198 column headers — the split spelled out where Kevin hovers it.
 const AI_COL_TIP = 'AI-eligible — standing permission for a headless agent to claim this task, '
@@ -46,11 +49,19 @@ export default function AdminTasksPage() {
   const [view, setView] = useState<'grouped' | 'flat' | 'messages'>('grouped');
   const [hideDone, setHideDone] = useState(false);
   const [liveOnly, setLiveOnly] = useState(false);
-  const [areaFilter, setAreaFilter] = useState('');
-  // reviewOnly = status Review (board #136 — replaces the needs-review tag);
-  // awaitingOk = Kevin's inbox preset (status Approval; vision rows exempt).
-  const [reviewOnly, setReviewOnly] = useState(false);
-  const [awaitingOk, setAwaitingOk] = useState(false);
+  // Board #246 — area / assignee / STATUS are MULTI-SELECT (checkbox lists).
+  // An EMPTY array means NO FILTER, never "show nothing" — see taskFilters.js.
+  //
+  // The status filter REPLACES two booleans that were status filters wearing a
+  // different hat (Kevin, 07-30: *"I'm okay with you removing that redundant
+  // toggle"*): `reviewOnly` was `status === 'Review'`, and `awaitingOk` was
+  // `status === 'Approval'`. Keeping both paths would let the page contradict
+  // itself — tick "in Review", also tick "Staged", get an empty board and read
+  // it as a bug. `✋ Awaiting my OK` survives as a PRESET over this one filter
+  // (it carries a count, which no filter does), not as a second path.
+  const [areaFilter, setAreaFilter] = useState<string[]>([]);
+  const [assigneeFilter, setAssigneeFilter] = useState<string[]>([]);
+  const [statusFilter, setStatusFilter] = useState<string[]>([]);
   // stuckOnly = board #151 tell — Todo tasks whose next actor is Kevin (a
   // contradiction: queue-eligible yet undispatchable). Needs byParent, so its
   // predicate lives after grouping (see `stuck`/`matches`).
@@ -62,7 +73,6 @@ export default function AdminTasksPage() {
   // Column sort applies to the FLAT view only — the grouped view's order IS
   // the pipeline (priority within vision), so it stays fixed.
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
-  const [assigneeFilter, setAssigneeFilter] = useState('');
   const [modal, setModal] = useState<{ id: number; sel?: number } | null>(null);
   const [commentAuthor, setCommentAuthor] = useState('kevin');
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
@@ -246,25 +256,43 @@ export default function AdminTasksPage() {
     // "hide done" means hide FINISHED (board #232) — Done and Closed alike.
     (!hideDone || !isFinished(t.status)) &&
     (!liveOnly || t.impacts_live) &&
-    (!reviewOnly || t.status === 'Review') &&
-    (!awaitingOk || (t.status === 'Approval' && !isVision(t))) &&
     (!stuckOnly || stuck(t)) &&
     (!armedOnly || !!t.ai_eligible) &&
     (!runningOnly || isRunning(t)) &&
-    (!areaFilter || t.area === areaFilter) &&
-    (!assigneeFilter || (t.assignee || '') === assigneeFilter);
+    // Board #246: union WITHIN each multi-select, intersection ACROSS them.
+    // Empty selection = no constraint (matchesMulti), so the default view is
+    // the whole board, not an empty one.
+    taskMatchesSelects(t, { areas: areaFilter, assignees: assigneeFilter, statuses: statusFilter });
 
+  // '' is now a pickable value ("(unassigned)"), not the all-pass sentinel it
+  // was under single-select — so unassigned tasks became reachable for free.
   const assigneeOptions = useMemo(() => {
     const known = roles.filter(Boolean);
     const legacy = Array.from(new Set(tasks.map((t) => t.assignee).filter(Boolean) as string[]))
       .filter((a) => !known.includes(a));
-    return [...known, ...legacy];
+    return ['', ...known, ...legacy];
   }, [tasks, roles]);
 
   const visible = useMemo(() => tasks.filter(matches),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tasks, hideDone, liveOnly, reviewOnly, awaitingOk, stuckOnly, armedOnly,
-      runningOnly, latestRunByTask, areaFilter, assigneeFilter]);
+    [tasks, hideDone, liveOnly, stuckOnly, armedOnly,
+      runningOnly, latestRunByTask, areaFilter, assigneeFilter, statusFilter]);
+
+  // How many of the three multi-selects are constraining the view, for the
+  // tell beside the controls and the empty-state line. A filtered board must
+  // never be mistakable for a board that lost its rows.
+  const activeFilters = activeSelectCount({
+    areas: areaFilter, assignees: assigneeFilter, statuses: statusFilter,
+  });
+
+  // `✋ Awaiting my OK` is now a PRESET over the status filter, not a rival
+  // boolean: it is "on" exactly when the status filter is {Approval}, and
+  // clicking it sets or clears that. One path, so the two controls can never
+  // disagree. Its COUNT keeps the vision exemption (board #136 — vision rows
+  // never wait on a stamp); the filtered view is therefore a superset of the
+  // count, never a subset, which is the safe direction to be wrong in.
+  const awaitingCount = tasks.filter((t) => t.status === 'Approval' && !isVision(t)).length;
+  const awaitingOk = statusFilter.length === 1 && statusFilter[0] === 'Approval';
 
   // THE Approval stamp (board #136, one mode since #232): POST /stamp flips
   // Approval → Todo, arms the task and logs the system comment server-side. It
@@ -579,9 +607,9 @@ export default function AdminTasksPage() {
             ...input, cursor: 'pointer', fontWeight: awaitingOk ? 700 : 400, color: '#c9a227',
             borderColor: awaitingOk ? '#c9a227' : 'var(--border)',
           }}
-            title="Kevin's inbox — tasks sitting in Approval awaiting a stamp (vision rows are exempt from the pipeline)"
-            onClick={() => setAwaitingOk(!awaitingOk)}>
-            ✋ Awaiting my OK ({tasks.filter((t) => t.status === 'Approval' && !isVision(t)).length})</button>
+            title="Kevin's inbox — tasks sitting in Approval awaiting a stamp. A PRESET over the status filter (board #246): it sets status = {Approval}; click again to clear. The count excludes vision rows, which are exempt from the pipeline (board #136)."
+            onClick={() => setStatusFilter(awaitingOk ? [] : ['Approval'])}>
+            ✋ Awaiting my OK ({awaitingCount})</button>
           {/* board #151: a Todo task whose next actor is Kevin can't dispatch —
               surfaced only when the class exists so it never hides again */}
           {(stuckCount > 0 || stuckOnly) && (
@@ -611,14 +639,25 @@ export default function AdminTasksPage() {
             ⚙ running ({runningCount})</button>
           <label><input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} /> hide Done</label>
           <label><input type="checkbox" checked={liveOnly} onChange={(e) => setLiveOnly(e.target.checked)} /> 🔴 live only</label>
-          <label title="tasks sitting in the Review stage (replaces the needs-review tag)">
-            <input type="checkbox" checked={reviewOnly} onChange={(e) => setReviewOnly(e.target.checked)} /> 👀 in Review</label>
-          <span>area: <select style={input} value={areaFilter} onChange={(e) => setAreaFilter(e.target.value)}>
-            <option value="">all</option>{AREAS.map((a) => <option key={a} value={a}>{a}</option>)}
-          </select></span>
-          <span>assignee: <select style={input} value={assigneeFilter} onChange={(e) => setAssigneeFilter(e.target.value)}>
-            <option value="">all</option>{assigneeOptions.map((a) => <option key={a} value={a}>{a}</option>)}
-          </select></span>
+          {/* Board #246 — three checkbox multi-selects, identical behaviour.
+              STATUSES is the SSOT for the status list (never a literal), so a
+              twelfth status appears here for free. The old `👀 in Review`
+              checkbox is gone: it was this filter with one box ticked. */}
+          <MultiSelectFilter label="status" options={STATUSES} selected={statusFilter}
+            onChange={setStatusFilter} colors={STATUS_COLOR}
+            title="status filter — tick any number (e.g. Review + Staged). None ticked = every status." />
+          <MultiSelectFilter label="area" options={AREAS} selected={areaFilter}
+            onChange={setAreaFilter}
+            title="area filter — tick any number. None ticked = every area." />
+          <MultiSelectFilter label="assignee" options={assigneeOptions} selected={assigneeFilter}
+            onChange={setAssigneeFilter} allLabel="all"
+            title={`assignee filter — tick any number, including ${UNASSIGNED_LABEL}. None ticked = everyone.`} />
+          {activeFilters > 0 && (
+            <button style={{ ...input, cursor: 'pointer', color: 'var(--blue)', borderColor: 'var(--blue)' }}
+              title="clear the status / area / assignee filters — the board is filtered, not empty"
+              onClick={() => { setStatusFilter([]); setAreaFilter([]); setAssigneeFilter([]); }}>
+              ✕ clear {activeFilters} filter{activeFilters > 1 ? 's' : ''}</button>
+          )}
           <button style={{ ...input, cursor: 'pointer' }} onClick={load}>↻ refresh</button>
           {chainless.length > 0 && (
             <button style={{ ...input, cursor: 'pointer' }} onClick={backfillChains}
@@ -669,8 +708,17 @@ export default function AdminTasksPage() {
               {view === 'flat'
                 ? sortedVisible.map((t) => <TaskRow key={t.id} t={t} />)
                 : groupedRows}
+              {/* Board #246: an empty board must never read as data loss — say
+                  how many rows were fetched and what is hiding them. */}
               {((view === 'flat' && visible.length === 0) || (view === 'grouped' && groupedRows.length === 0)) &&
-                <tr><td colSpan={11} style={{ ...cell, color: 'var(--text-tertiary)' }}>No tasks match the filters.</td></tr>}
+                <tr><td colSpan={11} style={{ ...cell, color: 'var(--text-tertiary)' }}>
+                  No tasks match the filters — {tasks.length} loaded
+                  {activeFilters > 0 ? `, ${activeFilters} filter${activeFilters > 1 ? 's' : ''} narrowing them` : ''}.
+                  {activeFilters > 0 && <> Nothing hidden by a filter is lost; <button
+                    style={{ ...input, cursor: 'pointer', marginLeft: 6, fontSize: 11, padding: '2px 6px' }}
+                    onClick={() => { setStatusFilter([]); setAreaFilter([]); setAssigneeFilter([]); }}>
+                    show all</button></>}
+                </td></tr>}
             </tbody>
           </table>
         </Card>
