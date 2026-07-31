@@ -115,12 +115,30 @@ const navItems: NavItem[] = [
       { href: '/admin/trade-snapshots', label: 'Trade Snapshots' },
       { href: '/admin/tasks', label: 'Tasks' },
       { href: '/admin/roadmap', label: 'Roadmap' },
+    ],
+  },
+  // Board #252 — `Team` is the TEAM's operating surface (who is running what),
+  // split out of `Admin`, which is the PLATFORM's. This is a NAVIGATION-ONLY
+  // move: the pages keep their `/admin/*` routes on purpose, because
+  // `docs/_active/R_Session_Opener.md` hands a live R session the literal path
+  // `/admin/r-session` and Kevin has these bookmarked. Moving the URLs would
+  // break instructions already in flight for no gain the regrouping needs.
+  // Each entry lives here and ONLY here — two nav paths to one page is how a
+  // sidebar starts lying. `Tasks` and `Roadmap` deliberately stay under
+  // `Admin`: Kevin named exactly these four, and the board's home is his call.
+  {
+    href: '/admin/agents', label: 'Team', icon: '⚑',
+    children: [
       { href: '/admin/agents', label: 'Agents' },
       { href: '/admin/dispatch', label: 'Dispatch' },
       // Board #220 — /admin/dispatch answers STATE (what is running); this
       // answers HISTORY (what happened that M has to react to). Adjacent on
       // purpose; deliberately not merged (see #193 step 7).
       { href: '/admin/m-session', label: 'M Session' },
+      // Board #251 shipped this page and its router but never a nav link, so
+      // it was reachable only by typing the URL. That miss is what produced
+      // #252; the rail in test_team_nav_section_252.py keeps it reachable.
+      { href: '/admin/r-session', label: 'R Session' },
     ],
   },
   {
