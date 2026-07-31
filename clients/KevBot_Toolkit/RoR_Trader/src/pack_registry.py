@@ -23,6 +23,7 @@ Usage:
 
 import importlib.util
 import json
+import os
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -248,6 +249,7 @@ def load_single_pack(pack_dir: Path) -> RegisteredPack:
 
     # If validation passed, import the modules
     incremental_class = None
+    ind_module = interp_module = inc_module = None
     if not errors:
         # Load the incremental sibling FIRST (if declared), and register it
         # under its bare name in sys.modules so indicator.py can do
@@ -327,6 +329,32 @@ def load_single_pack(pack_dir: Path) -> RegisteredPack:
         except Exception as e:
             errors.append(f"Failed to import interpreter.py: {e}")
 
+        # Flag-gated variant selection (board #73). A pack may ship an
+        # alternative implementation in the SAME files, selected by a
+        # runtime env flag. Default OFF == the pack's declared functions
+        # and manifest, untouched — so an unarmed flag is a no-op.
+        #
+        # This lives here because user packs are AST-sandboxed and may
+        # not import `os` (pack_spec.DISALLOWED_MODULES), so a pack can
+        # never read its own flag. The engine resolves it at load; a
+        # Railway var-set + restart re-runs scan_and_load_all and picks
+        # up the change.
+        if not errors:
+            try:
+                manifest, indicator_func, interpreter_func, trigger_func, \
+                    incremental_class = _apply_flag_variant(
+                        manifest, errors, slug,
+                        ind_module=ind_module,
+                        interp_module=interp_module,
+                        inc_module=inc_module,
+                        indicator_func=indicator_func,
+                        interpreter_func=interpreter_func,
+                        trigger_func=trigger_func,
+                        incremental_class=incremental_class,
+                    )
+            except Exception as e:
+                errors.append(f"flag_variants resolution failed: {e}")
+
     # Run non-blocking audits (warnings, not errors). Surfaces gaps
     # like missing trigger_levels for cross-style triggers — pack still
     # registers + works, but Hi-Fi sub-second refinement won't be
@@ -373,6 +401,106 @@ def load_single_pack(pack_dir: Path) -> RegisteredPack:
         validation_errors=errors,
         validation_warnings=warnings,
     )
+
+
+# =============================================================================
+# FLAG-GATED VARIANTS (board #73)
+# =============================================================================
+
+_FLAG_TRUE = ("1", "true", "yes", "on")
+
+
+def env_flag_on(name: str) -> bool:
+    """Runtime-read boolean env flag. Absent/blank/anything else == OFF."""
+    return os.environ.get(name, "").strip().lower() in _FLAG_TRUE
+
+
+def select_flag_variant(manifest: dict) -> Optional[dict]:
+    """First `flag_variants` entry whose env flag is armed, else None.
+
+    Read at pack-load time (`scan_and_load_all`), which is where the
+    engine, the parity simulator and every probe all obtain their
+    callables — so one resolution point covers batch AND live.
+
+    Packs cannot read their own flag: `pack_spec.DISALLOWED_MODULES`
+    bans `os` inside a pack, by design. That is why this lives here.
+    """
+    for variant in manifest.get("flag_variants") or []:
+        env = variant.get("env")
+        if env and env_flag_on(env):
+            return variant
+    return None
+
+
+def _apply_flag_variant(
+    manifest, errors, slug,
+    ind_module, interp_module, inc_module,
+    indicator_func, interpreter_func, trigger_func, incremental_class,
+):
+    """Swap in a variant's callables + manifest overrides when armed.
+
+    Returns the (possibly unchanged) 5-tuple ``(manifest, indicator_func,
+    interpreter_func, trigger_func, incremental_class)``. Flag OFF is a
+    strict no-op: the same manifest object and the same callables come
+    back out.
+
+    A variant naming a missing symbol is a hard error — an armed flag
+    must never silently fall back to the legacy implementation
+    (feedback_no_silent_defaults).
+    """
+    variant = select_flag_variant(manifest)
+    if not variant:
+        return (manifest, indicator_func, interpreter_func,
+                trigger_func, incremental_class)
+
+    def _resolve(module, attr_name, kind):
+        if not attr_name:
+            return None, False
+        if module is None:
+            errors.append(
+                f"flag_variants[{variant.get('env')}]: cannot resolve "
+                f"{kind} '{attr_name}' — module not imported"
+            )
+            return None, False
+        obj = getattr(module, attr_name, None)
+        if obj is None:
+            errors.append(
+                f"flag_variants[{variant.get('env')}]: {kind} "
+                f"'{attr_name}' not found in the pack"
+            )
+            return None, False
+        return obj, True
+
+    obj, ok = _resolve(ind_module, variant.get("indicator_function"),
+                       "indicator_function")
+    if ok:
+        indicator_func = obj
+    obj, ok = _resolve(interp_module, variant.get("interpreter_function"),
+                       "interpreter_function")
+    if ok:
+        interpreter_func = obj
+    obj, ok = _resolve(interp_module, variant.get("trigger_function"),
+                       "trigger_function")
+    if ok:
+        trigger_func = obj
+    obj, ok = _resolve(inc_module, variant.get("incremental_class"),
+                       "incremental_class")
+    if ok:
+        incremental_class = obj
+
+    overrides = variant.get("manifest_overrides")
+    if overrides:
+        # Shallow copy — the on-disk manifest dict is never mutated, so
+        # a flag flip cannot leak into an unarmed process or a reload.
+        manifest = dict(manifest)
+        manifest.update(overrides)
+
+    print(
+        f"[pack_registry] {slug}: flag_variants armed via "
+        f"{variant.get('env')} — {variant.get('description', '')[:120]}"
+    )
+    return (manifest, indicator_func, interpreter_func,
+            trigger_func, incremental_class)
 
 
 def register_pack(pack: RegisteredPack) -> None:
