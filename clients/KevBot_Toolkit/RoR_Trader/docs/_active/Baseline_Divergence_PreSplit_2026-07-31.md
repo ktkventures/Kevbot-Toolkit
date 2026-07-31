@@ -4,7 +4,9 @@
 **Board:** #264 (E) · pre-split ruler for V5 / #162 environment split  
 **`dev` commit at capture:** `80ae7db0`  
 **Instrument:** `api.routers.strategy_health.get_strategy_health` — the dashboard's own code path, called in-process. No new metric was invented.  
-**Generator (re-run this):** `src/_divergence_baseline_264.py`
+**Generators (re-run these):** `src/_divergence_baseline_264.py` (§0–§11, pairing) · `src/_lag_baseline_264.py` (§12, latency dispersion — appended 2026-07-31T20:48Z)
+
+> **This artifact has TWO halves and they are one document on purpose.** §0–§11 answer *did the alert pair?*; §12 answers *when did the data arrive?* A split baseline invites re-running half of it, and the half most likely to be skipped is the one that catches the failure mode the other cannot see.
 
 > Measurement SSOT: `docs/_active/Plan_Measurement_Trust.md`.
 > This artifact is READ-ONLY output. Nothing was armed, recomputed or deployed to produce it.
@@ -15,7 +17,9 @@
 
 That is the BEFORE. If the same invocation over the same window after the split returns materially different numbers **and the stored lane has not been re-trued in between**, the split changed something.
 
-**It is a fidelity ruler, not a health certificate.** It measures ONE thing: do recorded alerts pair with stored backtest trades. §9 lists — at length and on purpose — what it does not measure. Read §9 before using this to clear anything. In particular it would **not** have caught the 2026-07-27 signal (an alert-latency dispersion change, p90 6.9s → 13.9s), which is close to the single most likely way an environment split goes wrong.
+**It is a fidelity ruler, not a health certificate.** It measures ONE thing: do recorded alerts pair with stored backtest trades. §9 lists — at length and on purpose — what it does not measure. Read §9 before using this to clear anything. In particular §0–§11 would **not** have caught the 2026-07-27 signal (a latency dispersion change, p90 6.9s → 13.9s), which is close to the single most likely way an environment split goes wrong — **that is what §12 was added for.**
+
+**The second number, from §12: `ws_agg` 1Min RTH write-lag over the SAME window — p50 3.41s / p90 4.72s, worst symbol p50 3.85s against the #118 6.0s tripwire (CLEAR).** Cite both numbers or neither: pairing intact with delivery degraded is a real state, and it is the state the 07-27 scare was in.
 
 ## 1. Capture conditions
 
@@ -270,7 +274,7 @@ RORT_VALIDATE_WARMUP_FLAG  RORT_WARMUP_PREV_CHAIN  RORT_WORKER_HEARTBEAT_FILE
 
 **A baseline that overclaims is worse than none**, because the after-comparison reads as a regression that was never actually measured. Every item below is a hole. If the post-split question falls in one of these, this artifact cannot answer it and must not be cited as if it could.
 
-**1. Latency and its dispersion — the biggest hole.** This measures *whether* an alert paired, not *when* it arrived. The 07-27 divergence scare was a p90 write-lag change (6.9s → 13.9s) with pairing largely intact. The gateway split's own design doc names symmetric sub-second delivery as the load-bearing property. **This baseline does not measure delivery latency at all.** A separate `live_bars` `written_at`-lag distribution capture is required and is NOT in here (tripwire definition: board #118).
+**1. Latency and its dispersion — the biggest hole. → NARROWED 2026-07-31 by §12.** This measures *whether* an alert paired, not *when* it arrived. The 07-27 divergence scare was a p90 write-lag change (6.9s → 13.9s) with pairing largely intact. The gateway split's own design doc names symmetric sub-second delivery as the load-bearing property. **§0–§11 do not measure delivery latency at all** — still true, and still the reason to read §12 beside them. The `live_bars` `written_at`-lag distribution capture called for here **is now part of this artifact as §12** (generator `src/_lag_baseline_264.py`; tripwire definition board #118). It is *narrowed*, not closed: §12 instruments the `live_bars` write hop only — not end-to-end alert latency — and establishes a new series with no continuity to the 07-27 figures. See §12.9 for §12's own does-NOT-cover list.
 
 **2. The replay ceiling — no ops-vs-logic splitter.** `/replay-check` (`src/replay_harness.py`) is the instrument that separates operational loss from a real logic residual from the WS/REST floor. It is a multi-minute *per-strategy* offline job and was not run fleet-wide here. Consequence: a post-split drop in these numbers **cannot be attributed** to logic vs operations from this artifact alone. To close this hole, per sid:
 
@@ -328,3 +332,272 @@ Rules for the re-run, in priority order:
 
 Cheap enough to re-run daily. Given §9 item 9, **it should be** — several pre-split settled-day captures are what turns a single number into a noise floor.
 
+
+## 12. Latency-dispersion baseline — `live_bars` `written_at` lag
+
+**Captured:** 2026-07-31T20:45:21Z · **`dev` commit:** `759af1d7` · **Generator (re-run this):** `src/_lag_baseline_264.py`
+
+> **Why this section exists.** §9 item 1 named latency dispersion as this baseline's biggest hole, and M inserted a step to close it. §0–§11 measure *whether* an alert paired; this section measures *when the data arrived*. They are deliberately in ONE artifact — a split baseline invites re-running half of it.
+
+### 12.0 The numbers
+
+| lane | n | **p50** | **p90** | p99 | max | mean |
+|---|---:|---:|---:|---:|---:|---:|
+| `ws_agg` 1Min (the #118 lane) | 2900 | **3.41s** | **4.72s** | 77.84s | 317.05s | 6.38s |
+| `ws` 10Sec (the direct-WS control) | 8557 | **3.22s** | **3.72s** | 49.20s | 240.29s | 4.84s |
+
+**#118 tripwire (ws_agg 1Min p50 > 6s RTH): worst symbol = 3.85s — 🟢 CLEAR.** That is the BEFORE. If the same invocation after the split returns materially different numbers, the split changed delivery.
+
+**Read p90, not p50.** The centre of this distribution barely moves — five settled sessions (§12.5) put the `ws_agg` 1Min p50 inside a ~0.2s band. The 07-27 scare was a **p90** move (6.9s → 13.9s) that left p50 and pairing largely intact, which is precisely why §0–§11 would have read that day as healthy. p90 is where this section earns its keep.
+
+### 12.1 What is measured (exact definition)
+
+```
+lag_s = written_at - (bar_start + timeframe_seconds)
+      = seconds after the bar CLOSED that the row first landed in the DB
+```
+
+- **`written_at`, not `last_updated_at`.** `written_at` is `NOT NULL DEFAULT now()`; `live_bars_writer._write_bar_sync` never includes it in the upsert payload and no trigger touches it on UPDATE, so it holds **first arrival** and survives Polygon rebroadcasts. `last_updated_at` is bumped by `live_bars_preserve_first_trg` on every rebroadcast — that pair is reported separately in §12.6 as *settle duration*.
+- **This is the #118 tripwire's own definition**, reused verbatim: *watch `live_bars` ws_agg 1Min `written_at - (bar_start+60s)` per symbol; **med >6s RTH = saturation returning***.
+- **`ws` and `ws_agg` are different producers, not two views of one thing.** `ws` = bars Polygon delivers directly (the 10/15/30Sec fleet TFs, plus a sparse scatter of coarse rows); `ws_agg` = bars the worker aggregates client-side and closes on the wall-clock boundary (1Min and coarser). #118 was a `ws_agg`-only pathology: the boundary burst is what saturates, and the direct `ws` path stayed clean throughout. **Any post-split comparison must keep them separate** or a `ws_agg` regression will be diluted by clean `ws` rows.
+- **RTH = `bar_start` time-of-day in `[13:30Z, 20:00Z)` on Mon–Fri.** Correct for July (ET = UTC-4). ⚠️ A re-run between November and March must widen to `14:30Z–21:00Z` or it will silently measure the wrong hours.
+
+**The referent is IMMUTABLE — this is a stronger baseline than §0–§11.** §9 item 3 warns that the stored backtest lane is mutable, so re-reading the same window later can return different pairing numbers with no split and no code change. Nothing rewrites `written_at`. The only way this population moves is a *late INSERT* of a bar that was previously absent (`rest_insert` / `rest_correction` / `rest_backfill`), which is exactly why every table below is scoped **by `source`** and never pooled across sources.
+
+### 12.2 Capture conditions
+
+| condition | value |
+|---|---|
+| Market session | **CLOSED** — captured after 20:00Z on 2026-07-31, same post-close / quiet-DB rail as the §1 pairing capture |
+| Instrument | one aggregate `SELECT` per section over `live_bars`, percentiles computed **server-side** (`percentile_cont`) — no bulk row transfer, negligible DB load |
+| Mutations | **none.** Read-only; nothing armed, recomputed or deployed |
+| `dev` commit | `759af1d7` |
+| Window | `W1_settled_2d` = 2026-07-29T13:30:00Z → 2026-07-31T00:00:00Z — **the same absolute window as §3–§6** |
+
+No straddle guard is needed here (contrast §1): a recompute cannot mutate `written_at`, so there is no subset>superset failure mode for this metric.
+
+### 12.3 PRIMARY — `W1_settled_2d` RTH, by source × timeframe
+
+All figures in **seconds after bar close**. Sorted by source then TF.
+
+| source | TF | n | min | p50 | p90 | p99 | max | mean | note |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---|
+| `rest_backfill` | 1Min | 9 | 272.04 | **284.41** | **1000.52** | 1100.89 | 1112.04 | 460.15 | low-n |
+| `rest_backfill` | 3Min | 3 | 276.94 | **280.42** | **286.30** | 287.62 | 287.77 | 281.71 | low-n |
+| `rest_backfill` | 2Hour | 1 | 1081.71 | **1081.71** | **1081.71** | 1081.71 | 1081.71 | 1081.71 | low-n |
+| `rest_correction` | 10Sec | 69 | 3.11 | **3.21** | **3.47** | 16.95 | 44.12 | 3.86 | low-n |
+| `rest_correction` | 15Sec | 63 | 3.12 | **3.28** | **3.55** | 3.91 | 4.06 | 3.33 | low-n |
+| `rest_correction` | 30Sec | 1 | 3.26 | **3.26** | **3.26** | 3.26 | 3.26 | 3.26 | low-n |
+| `rest_correction` | 1Min | 1 | 3.11 | **3.11** | **3.11** | 3.11 | 3.11 | 3.11 | low-n |
+| `rest_insert` | 10Sec | 392 | 3.02 | **35.04** | **92.89** | 229.02 | 258.81 | 46.91 |  |
+| `rest_insert` | 15Sec | 87 | 3.14 | **33.58** | **71.45** | 239.65 | 252.02 | 45.42 | low-n |
+| `rest_insert` | 30Sec | 14 | 3.27 | **33.63** | **185.19** | 275.46 | 279.27 | 55.93 | low-n |
+| `rest_insert` | 1Min | 70 | 3.12 | **61.73** | **121.46** | 127.80 | 139.43 | 67.27 | low-n |
+| `rest_insert` | 2Min | 1 | 122.49 | **122.49** | **122.49** | 122.49 | 122.49 | 122.49 | low-n |
+| `warmup_seed` | 10Sec | 341 | 2.07 | **70.78** | **506.95** | 694.01 | 6899.20 | 195.76 |  |
+| `warmup_seed` | 15Sec | 148 | 1.60 | **94.26** | **474.71** | 666.21 | 1328.75 | 173.25 |  |
+| `warmup_seed` | 30Sec | 91 | 3.33 | **102.58** | **461.09** | 674.09 | 701.09 | 168.57 | low-n |
+| `warmup_seed` | 1Min | 140 | 3.45 | **88.64** | **373.13** | 603.59 | 632.79 | 139.35 |  |
+| `warmup_seed` | 2Min | 29 | 5.02 | **75.75** | **439.30** | 568.53 | 573.50 | 158.81 | low-n |
+| `warmup_seed` | 3Min | 18 | 4.49 | **68.70** | **330.79** | 461.76 | 468.26 | 130.25 | low-n |
+| `warmup_seed` | 5Min | 9 | 3.63 | **123.57** | **492.07** | 530.70 | 534.99 | 188.33 | low-n |
+| `warmup_seed` | 10Min | 9 | 17.84 | **78.02** | **211.18** | 253.89 | 258.63 | 99.84 | low-n |
+| `warmup_seed` | 15Min | 1 | 45.40 | **45.40** | **45.40** | 45.40 | 45.40 | 45.40 | low-n |
+| `warmup_seed` | 30Min | 1 | 149.87 | **149.87** | **149.87** | 149.87 | 149.87 | 149.87 | low-n |
+| `warmup_seed` | 1Hour | 3 | 63.20 | **133.97** | **163.86** | 170.58 | 171.33 | 122.83 | low-n |
+| `ws` | 10Sec | 8557 | 1.69 | **3.22** | **3.72** | 49.20 | 240.29 | 4.84 |  |
+| `ws` | 15Sec | 2821 | 3.09 | **3.25** | **3.91** | 56.72 | 245.16 | 5.04 |  |
+| `ws` | 30Sec | 1454 | 3.23 | **3.46** | **4.33** | 65.75 | 255.20 | 5.70 |  |
+| `ws` | 2Min | 48 | 0.46 | **6.00** | **99.00** | 205.62 | 209.57 | 36.01 | low-n |
+| `ws` | 3Min | 25 | 0.09 | **40.14** | **102.43** | 208.32 | 210.61 | 53.55 | low-n |
+| `ws` | 5Min | 13 | 10.62 | **44.92** | **186.20** | 208.64 | 210.65 | 78.76 | low-n |
+| `ws` | 10Min | 5 | 41.52 | **74.61** | **211.00** | 216.91 | 217.56 | 116.00 | low-n |
+| `ws` | 15Min | 1 | 188.49 | **188.49** | **188.49** | 188.49 | 188.49 | 188.49 | low-n |
+| `ws` | 30Min | 1 | 217.45 | **217.45** | **217.45** | 217.45 | 217.45 | 217.45 | low-n |
+| `ws` | 1Hour | 3 | 190.62 | **210.76** | **254.71** | 264.59 | 265.69 | 222.36 | low-n |
+| `ws_agg` | 1Min | 2900 | 2.46 | **3.41** | **4.72** | 77.84 | 317.05 | 6.38 |  |
+| `ws_agg` | 2Min | 702 | 0.09 | **1.17** | **2.08** | 13.16 | 314.38 | 2.78 |  |
+| `ws_agg` | 3Min | 474 | 0.08 | **1.22** | **2.11** | 12.89 | 262.67 | 2.83 |  |
+| `ws_agg` | 5Min | 290 | 0.10 | **1.29** | **2.15** | 7.67 | 62.56 | 1.90 |  |
+| `ws_agg` | 10Min | 142 | 0.33 | **1.76** | **8.21** | 45.87 | 62.69 | 3.66 |  |
+| `ws_agg` | 15Min | 50 | 0.09 | **0.88** | **1.65** | 2.77 | 3.61 | 0.95 | low-n |
+| `ws_agg` | 30Min | 24 | 0.93 | **5.66** | **15.64** | 20.94 | 21.98 | 6.91 | low-n |
+| `ws_agg` | 1Hour | 30 | 0.67 | **6.24** | **18.16** | 28.09 | 30.54 | 8.31 | low-n |
+| `ws_agg` | 2Hour | 5 | 9.32 | **16.60** | **20.34** | 21.93 | 22.10 | 15.92 | low-n |
+| `ws_agg` | 4Hour | 4 | 6.97 | **19.98** | **36.09** | 39.78 | 40.19 | 21.78 | low-n |
+
+**Reading that table:**
+
+- **Only `ws` and `ws_agg` are delivery latency.** `warmup_seed`, `rest_insert`, `rest_correction` and `rest_backfill` are gap-fill/seed writes whose lag records *when a job ran*, not how fast data arrived. Their large numbers here are correct and expected. Do not put them in a verdict (§12.9 hole 5).
+- **The coarse `ws_agg` TFs (2Min+) read LOWER than `ws_agg` 1Min, and that is not a paradox.** §12.6 shows those rows are ~100% rebroadcast: the coarse bar is written promptly when its boundary passes and then updated as it settles, so `written_at` is early by construction. **`ws_agg` 1Min is the lane the fleet actually trades on and the lane #118 named — it is the ruler; the coarse rows are context.**
+- **`ws` sub-minute has a hard floor around 3.1s.** min, p50 and p90 all sit just above 3s across every sub-minute row. That floor is a property of the current pipeline, not of the market, and it is the single most useful thing to re-measure after the split: **a gateway that preserves pairing but moves this floor has changed the system in a way §0–§11 cannot see.**
+
+### 12.4 #118 tripwire read — `ws_agg` 1Min per symbol, RTH, `W1_settled_2d`
+
+**Threshold: p50 > 6.0s RTH = minute-boundary saturation returning** (board #118). June-2026 healthy baseline was 4.0–4.8s; the 07-08→07-21 degraded era ran 12.6–12.7s; post-cull sessions have run 3.2–3.5s.
+
+| symbol | n | min | p50 | p90 | p99 | max | mean | p50 vs 6s |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| NVDA | 727 | 3.08 | **3.35** | **3.83** | 67.33 | 315.72 | 6.11 | 🟢 under |
+| SPY | 722 | 2.95 | **3.29** | **3.85** | 73.74 | 314.76 | 6.10 | 🟢 under |
+| TSLA | 727 | 2.46 | **3.31** | **4.12** | 86.70 | 317.05 | 6.19 | 🟢 under |
+| TSLL | 724 | 3.09 | **3.85** | **7.16** | 75.64 | 312.73 | 7.11 | 🟢 under |
+
+**Where today sits: worst per-symbol p50 = 3.85s against the 6.0s tripwire — 🟢 CLEAR.** This is the pre-split reading. A post-split run that moves a symbol from under to over has reproduced #118 on the new topology.
+
+**Two pre-split facts in that table, stated so a post-split reader does not rediscover them as regressions:**
+
+1. **`mean` sits far above `p50` for every symbol** NVDA 6.11 vs 3.35, SPY 6.10 vs 3.29, TSLA 6.19 vs 3.31, TSLL 7.11 vs 3.85. The distribution is **already heavy-tailed pre-split** — a small minority of minutes land tens of seconds late (see the p99/max columns). That is the BEFORE state, not a defect introduced later.
+2. **Symbol dispersion is not uniform: TSLL p90 = 7.16s against NVDA at 3.83s**, a 3.33s spread across symbols on identical infrastructure. A per-fleet comparison after the split must compare **like symbol to like symbol**; pooling symbols would let a single-symbol regression hide inside this existing spread.
+
+### 12.5 Day-to-day spread of the same metric (the poor man's noise floor)
+
+§9 item 9 says a single capture gives no run-to-run variance estimate, so a small post-split delta is uninterpretable. For THIS metric the sessions inside `W3_settled_5d` give a usable spread for free. **A post-split move smaller than the spread below is not signal.**
+
+**`ws_agg` / 1Min — one row per RTH session**
+
+| session (UTC date) | n | min | p50 | p90 | p99 | max | mean |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2026-07-24 | 1552 | 2.86 | **3.53** | 4.24 | 33.61 | 79.84 | 4.43 |
+| 2026-07-27 | 1556 | 3.09 | **3.57** | 5.23 | 41.72 | 108.16 | 5.10 |
+| 2026-07-28 | 1484 | 2.67 | **3.42** | 4.45 | 26.76 | 69.12 | 4.38 |
+| 2026-07-29 | 1519 | 2.95 | **3.44** | 4.66 | 35.63 | 63.76 | 4.44 |
+| 2026-07-30 | 1381 | 2.46 | **3.39** | 5.11 | 190.13 | 317.05 | 8.50 |
+
+→ **p50 spans 3.39–3.57s** (range 0.18s) · **p90 spans 4.24–5.23s** (range 0.99s) · p99 spans 26.76–190.13s (range 163.37s).
+
+**Read the ranges, not just the medians: the centre of this distribution is stable to well under a second day-to-day, while the p99 tail moves by 163s across the same five sessions with nothing changed.** For `ws_agg`/1Min that makes ~0.18s a **lower bound** on p50 noise and ~0.99s a lower bound on p90 noise — five sessions of one regime cannot establish an upper bound, so treat these as 'at least this much movement means nothing', not as significance thresholds. A p99 move is not interpretable from five sessions at all. **The p90 is the usable middle and the one to compare first.**
+
+**`ws` / 10Sec — one row per RTH session**
+
+| session (UTC date) | n | min | p50 | p90 | p99 | max | mean |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2026-07-24 | 4640 | 3.11 | **3.24** | 3.76 | 21.64 | 79.63 | 3.83 |
+| 2026-07-27 | 4610 | 3.12 | **3.27** | 4.19 | 41.38 | 86.90 | 4.53 |
+| 2026-07-28 | 4411 | 3.10 | **3.22** | 3.81 | 15.09 | 66.29 | 3.69 |
+| 2026-07-29 | 4515 | 3.09 | **3.22** | 3.61 | 20.16 | 63.93 | 3.73 |
+| 2026-07-30 | 4042 | 1.69 | **3.23** | 4.09 | 116.37 | 240.29 | 6.09 |
+
+→ **p50 spans 3.22–3.27s** (range 0.05s) · **p90 spans 3.61–4.19s** (range 0.58s) · p99 spans 15.09–116.37s (range 101.28s).
+
+**Read the ranges, not just the medians: the centre of this distribution is stable to well under a second day-to-day, while the p99 tail moves by 101s across the same five sessions with nothing changed.** For `ws`/10Sec that makes ~0.05s a **lower bound** on p50 noise and ~0.58s a lower bound on p90 noise — five sessions of one regime cannot establish an upper bound, so treat these as 'at least this much movement means nothing', not as significance thresholds. A p99 move is not interpretable from five sessions at all. **The p90 is the usable middle and the one to compare first.**
+
+### 12.5b `ws` sub-minute per symbol, RTH, `W1_settled_2d`
+
+The direct-WS path, which #118 found IMMUNE to the boundary burst. It is the control: if a post-split run moves `ws_agg` and NOT this, the cause is boundary-chain saturation; if it moves BOTH, the cause is upstream of the worker (feed, gateway, network).
+
+| TF | symbol | n | min | p50 | p90 | p99 | max | mean |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 10Sec | SPY | 4305 | 3.09 | **3.25** | **3.73** | 49.06 | 240.29 | 4.87 |
+| 10Sec | TSLA | 4252 | 1.69 | **3.21** | **3.69** | 48.31 | 240.17 | 4.81 |
+| 15Sec | TSLA | 2821 | 3.09 | **3.25** | **3.91** | 56.72 | 245.16 | 5.04 |
+| 30Sec | TSLA | 1454 | 3.23 | **3.46** | **4.33** | 65.75 | 255.20 | 5.70 |
+
+### 12.5c Reconciliation with the 2026-07-27 reference figure — **it does not fully reconcile, and that matters**
+
+The step that commissioned this section cites the 07-27 scare as **p90 write-lag 6.9s → 13.9s**. Anyone comparing a post-split run against §12 will reach for those numbers, so the relationship has to be stated rather than assumed.
+
+**Under this section's primary scoping (`ws_agg` 1Min, RTH, per session), 07-27 reads p90 = 5.23s — it is NOT elevated** (§12.5). So the 07-27 figures were not produced by the recipe §12.3/§12.4 use.
+
+Widening the scope to **all engine-consumed WS sources, all TFs, full 24h** does land on the reference number:
+
+| UTC date | n | p50 | p90 | p99 |
+|---|---:|---:|---:|---:|
+| 2026-07-22 | 18763 | 3.38 | **6.92** | 49.06 |
+| 2026-07-23 | 20036 | 3.36 | **6.64** | 35.11 |
+| 2026-07-24 | 19447 | 3.55 | **6.99** | 49.10 |
+| 2026-07-27 | 18628 | 3.68 | **7.13** | 48.90 |
+| 2026-07-28 | 18561 | 3.50 | **6.99** | 46.10 |
+| 2026-07-29 | 19495 | 3.46 | **6.93** | 41.09 |
+| 2026-07-30 | 17821 | 3.57 | **7.18** | 117.13 |
+| 2026-07-31 | 16304 | 3.38 | **6.82** | 39.96 |
+
+⚠️ The final row is the capture day and is **still accumulating** (post-close and overnight bars land after this capture), so its `n` is not comparable to the complete sessions above it. Every other table in §12 ends at or before 2026-07-31T00:00:00Z and is frozen.
+
+**That pooled p90 sits at 6.64–7.18s on every one of these 8 sessions — the 6.9s half of the reference figure, essentially exactly.** That is strong circumstantial evidence the 07-27 recipe was this pooled/unscoped one.
+
+**But it is circumstantial, and this artifact does not claim more.** The 07-27 recipe is not recorded anywhere this capture can read: the elevated 13.9s half is not reproducible here (07-27 pooled p90 reads 7.13s), which is consistent with the incident having been measured on an intraday slice rather than a whole session, but is equally consistent with a different metric altogether. **Two consequences, both binding:**
+
+1. **Compare §12 against §12's own re-run, never against the 07-27 numbers.** Cross-recipe comparison is exactly the overclaiming §9 forbids.
+2. The pooled table above is included **only** as a legacy bridge. It mixes producers with different latency profiles and TFs whose bar-close semantics differ, so a move in it is not attributable. **`ws_agg` 1Min RTH (§12.4) remains the ruler.**
+
+### 12.6 Settle duration — `last_updated_at − written_at`, RTH, `W1_settled_2d`
+
+How long a bar kept being rebroadcast/corrected after first arrival. Distinct from delivery lag and reported so a post-split change in *correction behaviour* is not mistaken for a change in *delivery*. Groups with n < 50 omitted.
+
+| source | TF | n | rows rebroadcast | p50 | p90 | max |
+|---|---|---:|---:|---:|---:|---:|
+| `ws` | 10Sec | 8557 | 28 (0.3%) | 0.00 | 0.00 | 117.14 |
+| `ws` | 15Sec | 2821 | 14 (0.5%) | 0.00 | 0.00 | 92.71 |
+| `ws` | 30Sec | 1454 | 10 (0.7%) | 0.00 | 0.00 | 34.85 |
+| `ws_agg` | 1Min | 2900 | 26 (0.9%) | 0.00 | 0.00 | 89.00 |
+| `ws_agg` | 2Min | 702 | 699 (99.6%) | 2.50 | 4.72 | 80.21 |
+| `ws_agg` | 3Min | 474 | 472 (99.6%) | 2.32 | 3.44 | 80.21 |
+| `ws_agg` | 5Min | 290 | 290 (100.0%) | 2.37 | 4.41 | 80.08 |
+| `ws_agg` | 10Min | 142 | 142 (100.0%) | 2.53 | 19.86 | 80.14 |
+| `ws_agg` | 15Min | 50 | 50 (100.0%) | 3.32 | 28.27 | 71.51 |
+
+### 12.7 The other two pairing windows (same metric, for one-to-one comparability)
+
+§3 reports pairing over `W2_today_unsettled` and `W3_settled_5d` as well. The same lag metric over those exact windows, so every pairing row in this artifact has a latency row beside it. **`W2` is the capture day and is UNSETTLED for pairing — but lag is unaffected by settlement**, so W2's lag figures ARE directly comparable (a rare case where W2 is usable head-to-head).
+
+**`W2_today_unsettled`** (2026-07-31T13:30:00Z → 2026-07-31T20:00:00Z) — RTH, `ws_agg`/1Min and `ws` sub-minute only
+
+| source | TF | n | min | p50 | p90 | p99 | max | mean |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `ws` | 10Sec | 4584 | 3.10 | **3.23** | **3.69** | 8.48 | 88.34 | 3.60 |
+| `ws` | 15Sec | 1487 | 3.09 | **3.25** | **4.13** | 13.18 | 64.19 | 3.71 |
+| `ws` | 30Sec | 770 | 3.23 | **3.44** | **4.36** | 20.89 | 64.32 | 4.01 |
+| `ws_agg` | 1Min | 1532 | 2.49 | **3.44** | **4.56** | 27.59 | 68.43 | 4.25 |
+
+**`W3_settled_5d`** (2026-07-24T13:30:00Z → 2026-07-31T00:00:00Z) — RTH, `ws_agg`/1Min and `ws` sub-minute only
+
+| source | TF | n | min | p50 | p90 | p99 | max | mean |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `ws` | 10Sec | 22218 | 1.69 | **3.23** | **3.86** | 34.70 | 240.29 | 4.34 |
+| `ws` | 15Sec | 7314 | 3.09 | **3.27** | **3.92** | 36.55 | 245.16 | 4.45 |
+| `ws` | 30Sec | 3730 | 3.23 | **3.50** | **4.32** | 41.69 | 255.20 | 4.94 |
+| `ws_agg` | 1Min | 7492 | 2.46 | **3.47** | **4.55** | 46.72 | 317.05 | 5.32 |
+
+### 12.8 `W1_settled_2d` WITHOUT RTH scoping (the literal pairing window)
+
+§3–§6 score the whole `W1` span, extended hours included. This is the same literal span for lag, so nobody has to wonder whether the RTH scoping above changed the answer. Extended-hours tape is thin and `ws_agg` closes on the boundary regardless of prints, so these run higher — **use §12.3, not this, as the ruler**; this is here to keep the two halves honestly aligned.
+
+| source | TF | n | min | p50 | p90 | p99 | max | mean |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| `ws` | 10Sec | 14291 | 1.69 | **3.31** | **6.36** | 47.49 | 240.29 | 5.48 |
+| `ws` | 15Sec | 5311 | 3.09 | **3.50** | **6.50** | 56.70 | 245.16 | 5.83 |
+| `ws` | 30Sec | 2888 | 3.10 | **3.88** | **6.69** | 64.03 | 255.20 | 6.41 |
+| `ws_agg` | 1Min | 5751 | 2.46 | **3.97** | **18.13** | 94.54 | 317.05 | 9.70 |
+
+### 12.9 What the LATENCY baseline does NOT cover
+
+Same rule as §9: a baseline that overclaims is worse than none. These are holes in §12 specifically, on top of every hole in §9.
+
+1. **This is DB-write lag, not end-to-end alert latency.** The chain is `Polygon emits → worker receives → bar closes → live_bars write → shadow/monitor pipeline → alert insert`. `written_at` instruments ONE hop. #118 happened to be visible there because the write sat inside the saturated synchronous chain — but a regression that lands entirely AFTER the write (monitor pipeline, alert insert) is invisible to this section. `alerts.fired_at` vs bar close would cover that hop and is NOT captured here.
+2. **No provider-side latency.** `bar_start` is Polygon's timestamp; the lag from real-world trade to Polygon emitting is upstream of everything we can see and is folded into these numbers as an unknown constant. If the gateway changes the *provider connection* (not just the routing), part of any move will be provider-side and this metric cannot separate it.
+3. **Distribution shape only at 4 points.** p50/p90/p99/max. A bimodal distribution — say, most bars fast and a periodic slow cohort — can move materially with all four points roughly intact. If a post-split delta is ambiguous, pull the raw lag column for the window and compare full distributions rather than adding percentiles to this table after the fact.
+4. **Absent bars are invisible.** A bar the worker never wrote contributes no row and therefore no lag. **Infinite latency reads as no data, not as a big number** — so §12 must always be read next to a coverage/row-count check (the `n` columns are there for exactly this; a post-split `n` that drops materially is a coverage regression masquerading as a clean latency table).
+5. **`rest_insert` / `rest_correction` / `rest_backfill` rows are gap-fill, not delivery.** Their lag measures when a backfill ran, which is a scheduling fact, not a latency fact. They are reported in §12.3 for completeness and excluded from every verdict.
+6. **Two RTH sessions in the primary window.** §12.5 widens to five for the spread, but that is still five days of one market regime. A quiet-tape week and a volatile week are not interchangeable here.
+7. **No per-strategy attribution.** This is per (source, TF, symbol). It cannot say which strategy ate the lag, and it does not connect a lag figure to a specific missed/phantom edge in §4.
+8. **No continuity with the 07-27 reference figure.** §12.5c shows the 07-27 numbers are not reproducible under this section's scoping and only half-reproducible under a pooled one. **§12 therefore establishes a NEW series starting today, not a continuation of an existing one** — it cannot be used to re-litigate 07-27, and pre-07-31 latency history remains un-baselined.
+9. **The day-to-day spread in §12.5 is a LOWER bound on noise, not a significance threshold.** Five sessions of one market regime, all on the post-cull fleet. It can prove a small move is meaningless; it cannot prove a moderate move is meaningful. Closing this properly needs the capture run on more pre-split sessions — the same ask §9 item 9 makes of the pairing half, and the generator is cheap enough to run daily.
+
+### 12.10 How to re-run §12 after the split
+
+```
+cd clients/KevBot_Toolkit/RoR_Trader/src
+../.venv/bin/python _lag_baseline_264.py \
+    --dev-sha $(git rev-parse --short HEAD) \
+    --out ../docs/_active/_lag_section_<YYYY-MM-DD>.md
+```
+
+1. **Do NOT edit `WINDOWS`.** They are the same absolute windows as `_divergence_baseline_264.py`. Changing either copy desynchronises the two halves of this artifact.
+2. **Run it against BOTH fleets** and diff them against each other as well as against this file. Symmetric delivery between fleets is the #164 gateway's load-bearing claim; a cross-fleet diff is the only thing that tests it.
+3. **For the #163 pilot, expect a constant offset by construction** (~3.5s). Subtract the *designed* offset before reading a regression — and if the offset is not constant across symbols and TFs, that itself is the finding.
+4. **Compare p90 before p50.** The 07-27 scare moved p90 6.9→13.9s. A p50 that holds while p90 doubles is the exact shape of the failure this section exists to catch.
+5. **Check `n` first** (hole 4). A clean latency table over half the rows is worse than a dirty one over all of them.
+6. Read §12.9 and §9 before declaring anything proved.
+
+*§12 capture cost: 3.4s of DB time.*
