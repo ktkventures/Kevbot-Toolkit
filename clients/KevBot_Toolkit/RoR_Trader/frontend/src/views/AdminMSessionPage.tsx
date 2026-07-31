@@ -98,7 +98,9 @@ const Panel = ({ n, title, sub, right, children }: {
   <div style={{ marginBottom: 16 }}>
     <Card>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 10 }}>
-        <div style={{ flex: 1 }}>
+        {/* board #278 — `minWidth: 0` so a long token in `sub` cannot push
+            `right` (the headline number) off the card. */}
+        <div style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
           <div style={{
             fontSize: 11, fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase',
             color: 'var(--text-tertiary)',
@@ -436,7 +438,10 @@ export default function AdminMSessionPage() {
             )}
           </div>
           <div style={{
-            fontSize: 13, marginTop: 4, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+            // board #278 — `anywhere`, not the deprecated `word-break: break-word`:
+            // this is agent prose full of paths and flag constants, and only
+            // `anywhere` lets the box shrink below its longest token.
+            fontSize: 13, marginTop: 4, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
             color: 'var(--text-primary)',
           }}>{c.body}</div>
           {(c.body_chars || 0) > c.body.length && (
@@ -768,7 +773,7 @@ export default function AdminMSessionPage() {
                     </div>
                     <div style={{
                       fontSize: 12.5, marginLeft: 28, marginTop: 2, whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word',
+                      overflowWrap: 'anywhere',                       // board #278
                       color: e.cls === 'attention' ? 'var(--text-primary)' : 'var(--text-secondary)',
                     }}>
                       {open || !long ? e.body || e.headline

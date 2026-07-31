@@ -47,10 +47,25 @@ import {
 } from './taskBoardShared';
 import { Md, MD_CSS } from './taskMarkdown';
 
+// `minHeight: 0` / `minWidth: 0` are BOTH load-bearing, and for the same reason
+// (board #278): a flex item's `min-*: auto` refuses to shrink it below its
+// content, so without these a panel's content dictates its box instead of the
+// other way round. The height half was already here; the width half was not, and
+// one long token in the Activity thread starved the Context panel next to it.
 const panel: React.CSSProperties = {
   border: '1px solid var(--border)', borderRadius: 10, background: 'var(--bg-card, var(--bg-input))',
-  display: 'flex', flexDirection: 'column', minHeight: 0,
+  display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0,
 };
+/**
+ * Board #278 — the readability floor for the left column.
+ *
+ * `minWidth: 0` alone stops the starvation but says nothing about how narrow is
+ * too narrow, so the two columns would just share the squeeze. The left panel is
+ * what Kevin is reading when he authorises something, so it gets an explicit
+ * floor: 340px, or 45% of the row on a viewport too small to give it 340. The
+ * `min()` keeps the floor from becoming its own overflow bug on a phone.
+ */
+const CONTEXT_MIN_WIDTH = 'min(340px, 45%)';
 const panelHead: React.CSSProperties = {
   fontSize: 11, fontWeight: 700, letterSpacing: 0.6, color: 'var(--text-tertiary)',
   padding: '8px 12px', borderBottom: '1px solid var(--border)', textTransform: 'uppercase',
@@ -585,9 +600,16 @@ export default function TaskDetailModal({
           {runErr && <span style={{ color: 'var(--red)', fontSize: 11, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={runErr}>{runErr}</span>}
         </div>
 
-        {/* ── Body: left (context [+ vision strip]) · right (activity) ── */}
+        {/* ── Body: left (context [+ vision strip]) · right (activity) ──
+            Board #278: BOTH children carry `minWidth`. The left one keeps a
+            readable floor (CONTEXT_MIN_WIDTH); the right one is free to shrink
+            (`minWidth: 0` on `panel`) so a long token in a comment can never
+            make the Activity column the one that dictates the split. */}
         <div style={{ display: 'flex', gap: 12, flex: 1, minHeight: 0 }}>
-          <div style={{ flex: 2, display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
+          <div style={{
+            flex: 2, display: 'flex', flexDirection: 'column', gap: 10,
+            minWidth: CONTEXT_MIN_WIDTH,
+          }}>
 
             {/* Context panel with tab chips */}
             <div style={{ ...panel, flex: 1 }}>
@@ -885,8 +907,14 @@ export default function TaskDetailModal({
                           {r.log_tail && (
                             <details style={{ marginTop: 4 }}>
                               <summary style={{ cursor: 'pointer', fontSize: 11, color: 'var(--text-secondary)' }}>log tail</summary>
+                              {/* Board #278 — a run log is the densest source of
+                                  unbreakable tokens on the page (paths, run ids,
+                                  tracebacks). It scrolls in its own box and is
+                                  capped at the panel width, so it can never be
+                                  the thing that sets the column's floor. */}
                               <pre style={{
                                 fontSize: 11, whiteSpace: 'pre-wrap', maxHeight: 180, overflowY: 'auto',
+                                overflowX: 'auto', maxWidth: '100%', overflowWrap: 'anywhere',
                                 background: 'var(--bg-input)', padding: 6, borderRadius: 6, margin: '4px 0 0',
                               }}>{r.log_tail}</pre>
                             </details>
@@ -951,8 +979,10 @@ export default function TaskDetailModal({
             )}
           </div>
 
-          {/* Activity panel */}
-          <div style={{ ...panel, flex: 1 }}>
+          {/* Activity panel. `minWidth: 0` is inherited from `panel` and is the
+              actual #278 fix — spelled out here too because this is the column
+              that was refusing to shrink. */}
+          <div style={{ ...panel, flex: 1, minWidth: 0 }}>
             <div style={panelHead}>
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 Activity — {scoped.id === task.id ? 'this task' : `#${scoped.id} ${scoped.title.slice(0, 30)}`}
@@ -976,7 +1006,11 @@ export default function TaskDetailModal({
               {thread.map((cm) => cm.author === 'system' ? (
                 <div key={cm.id} className="cm-in" style={{ fontSize: 11.5, color: 'var(--text-tertiary)', fontStyle: 'italic', margin: '6px 0', display: 'flex', gap: 6, alignItems: 'baseline' }}>
                   <RoleChip role="system" title="system" />
-                  <span>{cm.body} · {relTime(cm.created_at)}</span>
+                  {/* Board #278 — system lines are NOT markdown, so MD_CSS never
+                      reached them, and they are the ones carrying branch names
+                      and worktree paths ("dispatch skipped: …"). Own row, own
+                      wrap rule. */}
+                  <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{cm.body} · {relTime(cm.created_at)}</span>
                 </div>
               ) : (
                 <div key={cm.id} className="cm-in" style={{ fontSize: 13, margin: '8px 0', paddingBottom: 6, borderBottom: '1px solid var(--border)' }}>
