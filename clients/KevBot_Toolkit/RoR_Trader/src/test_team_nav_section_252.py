@@ -155,8 +155,15 @@ ok("Team is IMMEDIATELY between them (no section wedged in)",
    and LABELS.index("Settings") == LABELS.index("Team") + 1, LABELS)
 
 team_kids = [(l, h) for h, l in BY_LABEL["Team"][2]]
-ok("Team's children are exactly Agents · Dispatch · M Session · R Session, in order",
-   team_kids == MOVED, team_kids)
+# Board #257 added `Your Dashboard` to this section, so the rail is no longer
+# EQUALITY — it is CONTAINMENT AND ORDER: the four pages #252 moved must all
+# still be here, still in this order, and none may be dropped or re-parented by
+# a later addition. That is what #252 was actually protecting; an equality check
+# would simply forbid the section from ever growing, which is not the rule.
+ok("the four pages #252 moved are all still under Team, in their original order",
+   [k for k in team_kids if k in MOVED] == MOVED, team_kids)
+ok("...and none of them was dropped when the section grew",
+   all(k in team_kids for k in MOVED), team_kids)
 ok("Team is a real top-level section with an icon", bool(BY_LABEL["Team"][1]) and
    re.search(r"label: 'Team', icon: '\S+'", SIDEBAR) is not None)
 
