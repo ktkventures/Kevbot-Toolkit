@@ -108,6 +108,13 @@ APP_ROOT = os.path.dirname(os.path.dirname(HERE))          # .../RoR_Trader
 APP_PREFIX = "clients/KevBot_Toolkit/RoR_Trader/"
 ENV = f"{APP_ROOT}/src/.env"
 
+sys.path.insert(0, HERE)
+# WHO may own a ship step. Imported, never re-typed -- board #269: this file
+# matched `== "R"` while every chain on the board had owned its ship step to
+# `R-A` since the #229 split, so the generator was blind to EVERY car while
+# `car_ship_tick.py` was ticking the same steps. See `release_lane.py`.
+from release_lane import SHIP_OWNERS, is_ship_owner  # noqa: E402
+
 # Git reads run against WHICHEVER checkout this script was invoked from -- every
 # worktree shares the same object store and refs, so branch/diff facts are
 # identical, and reading from here means the generator never has to reach into
@@ -255,12 +262,17 @@ def _step_title(step):
 
 
 def r_step_index(task):
-    """Index of the first incomplete step when that step is R-owned, else None.
+    """Index of the first incomplete step when that step is RELEASE-LANE-owned.
 
-    "Current chain step is R-owned" is the car definition from the SOP. Reading
-    the FIRST incomplete step (not "any R step") is what makes it mean
-    `reviewed, waiting for a train` -- every earlier step is ticked by
-    construction."""
+    "Current chain step is release-lane-owned" is the car definition from the
+    SOP. Reading the FIRST incomplete step (not "any release step") is what
+    makes it mean `reviewed, waiting for a train` -- every earlier step is
+    ticked by construction.
+
+    BOARD #269: this read `== "R"`, and every chain has owned its ship step to
+    `R-A` since the #229 split -- so it returned None for every car on the
+    board. Ownership is now a membership test against the ONE definition in
+    `release_lane.py`, shared with `car_ship_tick.py`."""
     cl = task.get("checklist") or []
     if not isinstance(cl, list):
         return None
@@ -268,21 +280,26 @@ def r_step_index(task):
         if not isinstance(s, dict):
             continue
         if not s.get("done"):
-            return i if (_step_owner(s) or "").upper() == "R" else None
+            return i if is_ship_owner(_step_owner(s)) else None
     return None
 
 
 def has_r_step(task):
-    """True when the chain names an R step at all, ticked or not.
+    """True when the chain names a release-lane step at all, ticked or not.
 
-    A `Staged` task with NO R step anywhere is the gap M review found on 07-30:
-    two of the five real cars across Waves 14 and 16 (task #200's skills branch,
-    task #194's preflight branch) were exactly this, and `r_step_index()` returns
-    None for them — indistinguishable from a task still mid-chain. 44 of the 52
-    chained tasks on the board are in this class, so it is the common case, not
-    an edge one. It must be REFUSED OUT LOUD, never dropped silently."""
+    A `Staged` task with NO release step anywhere is the gap M review found on
+    07-30: two of the five real cars across Waves 14 and 16 (task #200's skills
+    branch, task #194's preflight branch) were exactly this, and
+    `r_step_index()` returns None for them — indistinguishable from a task still
+    mid-chain. 44 of the 52 chained tasks on the board are in this class, so it
+    is the common case, not an edge one. It must be REFUSED OUT LOUD, never
+    dropped silently.
+
+    Board #269: `R-A` counts here too. Before the fix, a chain reading
+    `(R-A) Ship via a release train` produced the refusal *"its chain names NO R
+    step"* — a true-sounding sentence about a chain that named one."""
     for s in task.get("checklist") or []:
-        if isinstance(s, dict) and (_step_owner(s) or "").upper() == "R":
+        if isinstance(s, dict) and is_ship_owner(_step_owner(s)):
             return True
     return False
 
@@ -532,10 +549,11 @@ def build_train(tasks, resolve_branch, diff_files, fork_behind,
                 # Loud, not silent: a Staged task whose chain never names R is
                 # invisible to the car rule but VERY visible to Kevin, who staged
                 # it expecting it to ship.
-                refusals.append((f"#{t['id']}", "`Staged` but its chain names NO R step, "
-                                 "so the car rule (current step is R-owned) cannot see "
+                refusals.append((f"#{t['id']}", "`Staged` but its chain names NO "
+                                 "release-lane step (owner `R` or `R-A`), so the car "
+                                 "rule (current step is release-lane-owned) cannot see "
                                  "it. Retrofit the chain with `/task-chain`, or dispatch "
-                                 "R by hand for it."))
+                                 "R-A by hand for it."))
             continue                      # otherwise: still mid-chain, correctly quiet
         if review_step(t, idx) is None:
             refusals.append((f"#{t['id']}", "no TICKED M-review step in front of the "
@@ -789,8 +807,8 @@ def _coverage_block(plan):
     unclaimed = plan.get("unclaimed_prs") or []
     if v == "SUSPICIOUS":
         out = ["> 🚨 **ZERO CARS -- AND THAT IS SUSPICIOUS. DO NOT READ THIS AS "
-               "\"NOTHING TO SHIP\".** No `Staged` board task has a current R "
-               f"step, yet {len(unclaimed)} open PR(s) are mergeable and no car "
+               "\"NOTHING TO SHIP\".** No `Staged` board task has a current "
+               f"release-lane (R/R-A) step, yet {len(unclaimed)} open PR(s) are mergeable and no car "
                "claims them:", ""]
         out += [f"> - {_pr_line(p)}" for p in unclaimed]
         out += ["",
@@ -802,11 +820,12 @@ def _coverage_block(plan):
         return out
     if v == "UNVERIFIED":
         return ["> ⚠️ **ZERO CARS -- UNVERIFIED.** No `Staged` board task has a current "
-                "R step, AND the open-PR cross-check could not run (`gh` unavailable or "
+                "release-lane (R/R-A) step, AND the open-PR cross-check could not run (`gh` unavailable or "
                 "failed). \"Nothing to ship\" is therefore UNPROVEN -- M checks "
                 "`gh pr list --state open` by hand before closing this out.", ""]
     if v == "CLEAN":
-        return ["> **ZERO CARS -- checked.** No `Staged` board task has a current R step, "
+        return ["> **ZERO CARS -- checked.** No `Staged` board task has a current "
+                "release-lane (R/R-A) step, "
                 "and every open PR is either already a car or not mergeable. This one is "
                 "a real empty train.", ""]
     if unclaimed:

@@ -12,10 +12,15 @@ Run:  python3 tools/release_brief/test_brief_gen.py
 """
 
 import os
+import re
+import subprocess
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import brief_gen as B  # noqa: E402
+import car_ship_tick as C  # noqa: E402  (board #269 -- the two must SHARE the set)
+import release_lane as L  # noqa: E402
 
 PASS = FAIL = 0
 FAILURES = []
@@ -56,6 +61,17 @@ UNREVIEWED_CHAIN = [
     step("kevin", "Approve the approach — STAMP"),
     step("M", "Build: the thing"),
     step("R", "Ship with a release train", done=False),
+]
+
+# The shape EVERY chain on the board has carried since the #229 registry split,
+# and the shape the generator could not see until board #269: the ship step is
+# owned by `R-A`, the headless half of the release lane, not by `R`.
+RA_REVIEWED_CHAIN = [
+    step("kevin", "Approve the approach — STAMP"),
+    step("M-A", "Build: the thing"),
+    step("M", "M review — full suite from a clean worktree"),
+    step("R-A", "Ship via a release train", done=False),
+    step("kevin", "Confirm, then close", done=False),
 ]
 
 
@@ -509,8 +525,11 @@ def t_gap_no_r_step_is_loud():
     check("GAP 1: a Staged task with no R step is not a car", not p["cars"])
     check("GAP 1: ...and is REFUSED OUT LOUD, not dropped silently",
           any(who == "#200" for who, _ in p["refusals"]), str(p["refusals"]))
+    # Board #269 reworded this: the refusal used to say "NO R step" about chains
+    # that named `R-A`, which read as a fact and was false.
     check("GAP 1: the refusal says what to do about it",
-          any("NO R step" in why and "task-chain" in why for _, why in p["refusals"]),
+          any("NO release-lane step" in why and "task-chain" in why
+              for _, why in p["refusals"]),
           str(p["refusals"]))
     check("GAP 1: the refusal is rendered into the brief", "#200" in B.render(p))
 
@@ -815,6 +834,169 @@ def t_gap224_zero_cars_are_loud():
           "PR #155" in body and "NOT in this train" in body, body)
 
 
+# ---------------------------------------------------------------------------
+# BOARD #269 -- the car rule reads the SHARED release-lane owner set
+#
+# Found by R on 07-31 while assembling Wave 34 by hand. The generator matched
+# the ship-step owner with `== "R"`; every chain has owned that step to `R-A`
+# since the #229 registry split, so it saw ZERO cars on a board with ten, and
+# refused chains whose step literally read `(R-A) Ship via a release train`.
+# `car_ship_tick.py` and the frontend already knew about `R-A` -- only this file
+# was left behind, which is why the fix is a SHARED definition and not a second
+# list. Waves 34, 35 and 36 were hand-authored for this one bug; #249 sat
+# staged and stranded until R's watcher noticed.
+#
+# Every check below FAILS against the pre-fix generator.
+# ---------------------------------------------------------------------------
+
+def t_269_ra_owned_ship_step_is_a_car():
+    t = task(269, "brief_gen is blind to every car", RA_REVIEWED_CHAIN)
+
+    # The unit-level claim, stated on its own so a failure names the cause.
+    check("#269: r_step_index() sees an R-A-owned ship step",
+          B.r_step_index(t) == 3, str(B.r_step_index(t)))
+    check("#269: has_r_step() sees a chain that names R-A", B.has_r_step(t))
+
+    # ...and the end-to-end claim: it becomes a car in a real train.
+    p = train([t], {269: "fix/brief-gen-ship-owners-269"},
+              {"fix/brief-gen-ship-owners-269": [APP + "tools/release_brief/brief_gen.py"]})
+    check("#269: an R-A car enters the train", len(p["cars"]) == 1,
+          str(p["refusals"]))
+    check("#269: ...and is NOT refused as chainless",
+          not p["refusals"], str(p["refusals"]))
+    check("#269: ...carrying its branch",
+          p["cars"] and p["cars"][0]["branch"] == "fix/brief-gen-ship-owners-269")
+
+    # A mixed board is the real board: pre-split chains say R, everything since
+    # says R-A, and ONE train has to carry both.
+    old = task(194, "a pre-split chain", REVIEWED_CHAIN)
+    p = train([old, t], {194: "fix/old-194", 269: "fix/new-269"},
+              {"fix/old-194": [APP + "src/a.py"], "fix/new-269": [APP + "src/b.py"]})
+    check("#269: R and R-A cars ship on the SAME train",
+          sorted(c["branch"] for c in p["cars"]) == ["fix/new-269", "fix/old-194"],
+          str([c["branch"] for c in p["cars"]]) + " " + str(p["refusals"]))
+
+    # Case, because the board is typed by hand.
+    lower = task(270, "lowercase owner", [step("M", "M review"),
+                                          step("r-a", "Ship", done=False)])
+    check("#269: owner matching is case-insensitive", B.r_step_index(lower) == 1)
+
+    # NEGATIVE PROOF -- the widening is EXACTLY two letters, not "anything
+    # starting with R". A numbered subordinate (`R2`) and a typo (`RA`) are not
+    # release owners, and must still be refused OUT LOUD (the #211 gap-1 rail).
+    for bogus in ("R2", "RA", "R-B", "M-A"):
+        t2 = task(271, "bogus owner", [step("M", "M review"),
+                                       step(bogus, "Ship", done=False)])
+        p = train([t2], {271: "feat/x-271"}, {"feat/x-271": [APP + "src/a.py"]})
+        check(f"#269 negative proof: `{bogus}` is not a release owner",
+              not p["cars"], str(p["cars"]))
+        check(f"#269 negative proof: `{bogus}` chain is refused out loud",
+              any(w == "#271" and "release-lane step" in why
+                  for w, why in p["refusals"]), str(p["refusals"]))
+
+    # ...and a chain that DOES name R-A but is still mid-chain stays QUIET --
+    # widening who owns a ship step must not turn in-flight work into cars.
+    mid = [step("M", "Build", done=False), step("R-A", "Ship", done=False)]
+    p = train([task(272, "mid-chain", mid)], {272: "feat/x-272"},
+              {"feat/x-272": [APP + "src/a.py"]})
+    check("#269: a mid-chain R-A task is neither a car nor a refusal",
+          not p["cars"] and not p["refusals"], str(p["refusals"]))
+
+
+# The named constants that MEAN "who owns a ship step". A fourth copy under any
+# other name is a different bug; this pins the ones that exist.
+_OWNER_DEF_RE = re.compile(
+    r"^[ \t]*(SHIP_OWNERS|SHIP_STEP_OWNERS|RELEASE_OWNERS|RELEASE_LANE_OWNERS)"
+    r"[ \t]*=[ \t]*[(\[{]")
+_SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".next",
+              ".mypy_cache", ".pytest_cache", "dist", "build", ".playwright-mcp"}
+
+
+def _owner_set_definitions(root):
+    """[(relpath, lineno, line)] for every LITERAL release-owner set under `root`.
+
+    An `import` line is not a definition and is deliberately not matched -- the
+    whole point is that importers may be many and definitions exactly one."""
+    hits = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for fn in filenames:
+            if not fn.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, fn)
+            try:
+                src = open(path, encoding="utf-8", errors="replace").read()
+            except OSError:
+                continue
+            for lineno, line in enumerate(src.splitlines(), 1):
+                if _OWNER_DEF_RE.match(line):
+                    hits.append((os.path.relpath(path, root), lineno, line.strip()))
+    return hits
+
+
+def t_269_one_definition_in_the_python_tree():
+    """THE RAIL: exactly ONE release-lane owner set exists in the Python tree.
+
+    This is the rail the bug asks for. #229 updated two of the three readers and
+    the third drifted for two days without a single failing test, because there
+    was nothing that could notice. A fourth copy now fails loudly HERE rather
+    than silently in a train."""
+    defs = _owner_set_definitions(B.APP_ROOT)
+    check("#269 RAIL: exactly ONE release-owner set is DEFINED in the Python tree",
+          len(defs) == 1, str(defs))
+    check("#269 RAIL: ...and it lives in release_lane.py",
+          defs and defs[0][0].replace(os.sep, "/") == "tools/release_brief/release_lane.py",
+          str(defs))
+
+    # It is one OBJECT, not two equal literals -- the difference is the whole
+    # fix. `is` cannot be satisfied by a copy that merely happens to agree.
+    # `getattr`, not attribute access: a module that lost the name entirely must
+    # report THIS check as failed, not crash the rail and skip the ones below.
+    b_set, c_set = getattr(B, "SHIP_OWNERS", None), getattr(C, "SHIP_OWNERS", None)
+    check("#269 RAIL: brief_gen and car_ship_tick share the SAME object",
+          b_set is L.SHIP_OWNERS and c_set is L.SHIP_OWNERS,
+          f"brief_gen={b_set!r} car_ship_tick={c_set!r} release_lane={L.SHIP_OWNERS!r}")
+    check("#269 RAIL: the set is exactly the two release lanes",
+          tuple(L.SHIP_OWNERS) == ("R", "R-A"), str(L.SHIP_OWNERS))
+
+    # The exact regression shape: an equality test against one letter.
+    for mod in ("brief_gen.py", "car_ship_tick.py", "backfill_car_status_249.py"):
+        src = open(os.path.join(B.HERE, mod), encoding="utf-8").read()
+        check(f"#269 RAIL: no `.upper() == \"R\"` owner comparison left in {mod}",
+              not re.search(r"""\.upper\(\)\s*==\s*['"]R-?A?['"]""", src), mod)
+
+    # NEGATIVE PROOF that the scanner has teeth: given a tree with two copies it
+    # reports two. Without this, "exactly 1" could be a scanner that finds nothing.
+    with tempfile.TemporaryDirectory() as tmp:
+        os.makedirs(os.path.join(tmp, "pkg"))
+        open(os.path.join(tmp, "a.py"), "w").write('SHIP_OWNERS = ("R", "R-A")\n')
+        open(os.path.join(tmp, "pkg", "b.py"), "w").write("SHIP_STEP_OWNERS = ['R']\n")
+        open(os.path.join(tmp, "c.py"), "w").write("from a import SHIP_OWNERS\n")
+        found = _owner_set_definitions(tmp)
+        check("#269 RAIL negative proof: a tree with two copies reports TWO",
+              len(found) == 2, str(found))
+        check("#269 RAIL negative proof: an IMPORT is not counted as a definition",
+              all(not f[0].endswith("c.py") for f in found), str(found))
+
+
+def t_269_no_import_cycle():
+    """`car_ship_tick` imports `brief_gen`, so the shared set CANNOT live in
+    either of them -- it would close a cycle whose success depends on which
+    module Python loads first. `release_lane` is a leaf, and this proves both
+    import orders work in a cold interpreter."""
+    for first, second in (("car_ship_tick", "brief_gen"),
+                          ("brief_gen", "car_ship_tick")):
+        code = (f"import sys; sys.path.insert(0, {B.HERE!r});"
+                f" import {first}, {second};"
+                f" assert {first}.SHIP_OWNERS is {second}.SHIP_OWNERS;"
+                f" print('ok')")
+        r = subprocess.run([sys.executable, "-c", code],
+                           capture_output=True, text=True, timeout=60)
+        check(f"#269: importing {first} before {second} works in a cold interpreter",
+              r.returncode == 0 and r.stdout.strip() == "ok",
+              (r.stderr or r.stdout).strip()[-300:])
+
+
 TESTS = [t_car_selection, t_rail_unreviewed, t_rail_unreviewed_taskless,
          t_rail_overlap, t_rail_overlap_append_only, t_rail_dispatcher_suites,
          t_rail_stale_base, t_rail_no_branch, t_rail_already_merged, t_order,
@@ -825,7 +1007,9 @@ TESTS = [t_car_selection, t_rail_unreviewed, t_rail_unreviewed_taskless,
          t_gap_owed_log_stale_base_warns, t_gap_loop_version_is_read,
          t_gap_armed_state_is_checked, t_gap_nonoverlapping_paths_still_stated,
          t_gap224_prose_from_the_diff, t_gap224_restart_trigger_is_dispatcher_touch,
-         t_gap224_zero_cars_are_loud]
+         t_gap224_zero_cars_are_loud,
+         t_269_ra_owned_ship_step_is_a_car, t_269_one_definition_in_the_python_tree,
+         t_269_no_import_cycle]
 
 
 def run():
