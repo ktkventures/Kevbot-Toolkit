@@ -188,10 +188,49 @@ RUN_REQUESTED_TAG = "run-requested"
 _STEP_MODES = {"execute", "discuss"}
 _STEP_ORIGINS = {"planned", "audible"}
 _STAMP_STATES = {"pending", "approved", "rejected"}
-_NEW_SHAPE_KEYS = ("id", "owner", "title", "body", "mode", "origin", "stamp")
+_NEW_SHAPE_KEYS = ("id", "owner", "title", "body", "mode", "origin", "stamp",
+                   "deliverables")
 # Completion state is server-owned (managed by the /steps/* action endpoints);
 # a generic PATCH may edit structure but never these fields on an existing step.
 _STEP_COMPLETION_FIELDS = ("done", "completed_at", "completed_by")
+
+# ── Step deliverables (board #184) ───────────────────────────────────────────
+# A step may declare DELIVERABLES — the evidence it asks for, captured where it
+# is asked for rather than in a comment the surface cannot see. Purely additive
+# and feature-detected exactly like the #182 step object: a step with no
+# `deliverables` key behaves byte-identically to today. See
+# migrations/dev_tasks_step_deliverables.sql and docs/_active/Spec_Step_Deliverables.md.
+#
+# THE CENTRAL RULE (spec §2, mirroring _STEP_COMPLETION_FIELDS): a deliverable's
+# SPEC (kind/label/required/hint) is author-owned and editable through the
+# generic checklist PATCH; its FILLED STATE is server-owned and reachable only
+# through the /steps/deliverables/* endpoints. A PATCH that touches a fill field
+# is a 409, not a silently-accepted write.
+_DELIVERABLE_FILL_FIELDS = ("value", "filename", "size_bytes", "content_type",
+                            "filled_at", "filled_by")
+_DELIVERABLE_SPEC_FIELDS = ("id", "kind", "label", "required", "hint")
+# Three kinds, no more (spec §1). The moment this grows selects/dates/numbers it
+# stops being a step and starts being a form builder.
+_DELIVERABLE_KINDS = ("text", "link", "file")
+_MAX_DELIVERABLES_PER_STEP = 8
+_DELIVERABLE_LABEL_MAX = 120
+_DELIVERABLE_TEXT_MAX = 4000
+_DELIVERABLE_HINT_MAX = 200
+_DELIVERABLE_FILE_MAX_BYTES = 10 * 1024 * 1024
+# The upload gate is the FILE EXTENSION, not the client-declared content-type:
+# the extension is a durable property of the stored object, while a
+# Content-Type header is whatever the uploader claims. The declared type is
+# still recorded (the read path needs it) after a shape check — recorded, not
+# trusted. 415 names this list, so a refusal is readable.
+_DELIVERABLE_EXTS = ("png", "jpg", "jpeg", "gif", "webp", "pdf", "csv", "txt",
+                     "md", "json", "log", "zip")
+# Private bucket (spec §4). NOT created by this code — creating a prod bucket is
+# the same class of action as DDL and is Kevin's to authorize; the migration
+# file records exactly what is needed. Upload/sign go through the SAME storage
+# client `src/bar_cache_store.py` already uses (`get_admin_client().storage`),
+# deliberately: one client path, not two.
+DELIVERABLES_BUCKET = "task-deliverables"
+_DELIVERABLE_URL_TTL_S = 3600   # §3.4 — minted on click, never on board load
 
 
 def _now_iso() -> str:
@@ -261,7 +300,168 @@ def _ensure_step_ids(checklist):
     for s in (checklist or []):
         if isinstance(s, dict) and not s.get("id"):
             s["id"] = uuid.uuid4().hex[:12]
+    _ensure_deliverable_ids(checklist)
     return checklist
+
+
+# ── Deliverable helpers (board #184) ─────────────────────────────────────────
+
+def _deliverables(step) -> list:
+    """A step's deliverable list — [] when the step never declared one.
+
+    ABSENT and EMPTY are the same thing to every reader here, which is what
+    makes back-compat hold: a pre-#184 step simply has nothing to ask for."""
+    d = (step or {}).get("deliverables")
+    return d if isinstance(d, list) else []
+
+
+def _ensure_deliverable_ids(checklist):
+    """Assign a stable id to any deliverable that lacks one — the exact
+    `_ensure_step_ids` pattern, and for the same reason: the fill endpoints
+    address a deliverable BY ID, so a reorder or an inserted row must not
+    silently re-point a stored value at a different ask."""
+    for s in (checklist or []):
+        if not isinstance(s, dict):
+            continue
+        for d in _deliverables(s):
+            if isinstance(d, dict) and not d.get("id"):
+                d["id"] = uuid.uuid4().hex[:12]
+    return checklist
+
+
+def _is_filled(d) -> bool:
+    return bool((d or {}).get("value"))
+
+
+def _unfilled(step, required: bool) -> list:
+    """Labels of this step's unfilled deliverables, required ones or optional
+    ones. The two halves of T10: required-unfilled BLOCKS (§3.5), and
+    optional-unfilled is RECORDED (never blocked, decision D2)."""
+    return [str(d.get("label") or "(unlabelled)")
+            for d in _deliverables(step)
+            if isinstance(d, dict) and bool(d.get("required")) is required
+            and not _is_filled(d)]
+
+
+def _find_deliverable(checklist, deliverable_id: str):
+    """(step_index, step, deliverable) for an id, or (None, None, None)."""
+    for i, s in enumerate(checklist or []):
+        if not isinstance(s, dict):
+            continue
+        for d in _deliverables(s):
+            if isinstance(d, dict) and d.get("id") == deliverable_id:
+                return i, s, d
+    return None, None, None
+
+
+def _validate_deliverable_specs(step):
+    """Fail loud on a malformed / over-limit deliverable SPEC (§1 limits).
+
+    Runs on the generic PATCH path, where specs are authored. Fill values are
+    validated at their own endpoints, where the kind is already known.
+    """
+    ds = _deliverables(step)
+    if len(ds) > _MAX_DELIVERABLES_PER_STEP:
+        raise HTTPException(
+            status_code=400,
+            detail=f"a step may declare at most {_MAX_DELIVERABLES_PER_STEP} "
+                   f"deliverables (got {len(ds)}) — if a step needs more than "
+                   "that, it is really two steps")
+    for d in ds:
+        if not isinstance(d, dict):
+            raise HTTPException(
+                status_code=400, detail="each deliverable must be an object")
+        if d.get("kind") not in _DELIVERABLE_KINDS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"deliverable kind must be one of "
+                       f"{sorted(_DELIVERABLE_KINDS)} (got {d.get('kind')!r})")
+        label = d.get("label")
+        if not isinstance(label, str) or not label.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="a deliverable needs a label — the ask, in one line")
+        if len(label) > _DELIVERABLE_LABEL_MAX:
+            raise HTTPException(
+                status_code=400,
+                detail=f"deliverable label is {len(label)} chars — the limit is "
+                       f"{_DELIVERABLE_LABEL_MAX} (put the detail in the hint)")
+        if "required" in d and not isinstance(d["required"], bool):
+            raise HTTPException(
+                status_code=400, detail="deliverable.required must be a boolean")
+        hint = d.get("hint")
+        if hint is not None and (not isinstance(hint, str)
+                                 or len(hint) > _DELIVERABLE_HINT_MAX):
+            raise HTTPException(
+                status_code=400,
+                detail=f"deliverable hint must be a string of at most "
+                       f"{_DELIVERABLE_HINT_MAX} chars")
+
+
+def _guard_deliverable_patch(c, task_id: int, incoming_step, prev_step):
+    """The §2 rule as an API refusal: a generic PATCH may edit deliverable
+    SPECS on a not-yet-done step, and may NEVER touch a fill.
+
+    Four refusals, each one a thing that would otherwise corrupt the record:
+      • changing a fill field           → 409 (fills are endpoint-owned)
+      • a NEW deliverable arriving filled → 400 (same shape as "an inserted
+        step cannot start completed")
+      • ANY change to a COMPLETED step's deliverables → 409 (T4' immutability)
+      • deleting a FILLED deliverable on an open step → ALLOWED, because the
+        author may have asked for the wrong thing while the step is still
+        open — but it posts a system comment naming what was dropped, so the
+        audit trail survives the edit.
+    """
+    prev_by_id = {d["id"]: d for d in _deliverables(prev_step)
+                  if isinstance(d, dict) and d.get("id")}
+    incoming = _deliverables(incoming_step)
+    incoming_ids = set()
+    if prev_step.get("done"):
+        # A completed step is part of the audit trail — its asks and its
+        # evidence are frozen together (T4').
+        same = ([_deliverable_identity(d) for d in incoming]
+                == [_deliverable_identity(d) for d in _deliverables(prev_step)])
+        if not same:
+            raise HTTPException(
+                status_code=409,
+                detail='a completed step\'s deliverables are immutable — they '
+                       "are part of the audit trail (T4'; course-correct by "
+                       "inserting an origin='audible' step instead)")
+        return
+    for d in incoming:
+        if not isinstance(d, dict):
+            continue
+        did = d.get("id")
+        prev = prev_by_id.get(did) if did else None
+        if prev is not None:
+            incoming_ids.add(did)
+            if any(d.get(f) != prev.get(f) for f in _DELIVERABLE_FILL_FIELDS):
+                raise HTTPException(
+                    status_code=409,
+                    detail="a deliverable's value is managed by "
+                           "/steps/deliverables — a PATCH cannot fill or clear "
+                           "one")
+        elif any(d.get(f) is not None for f in _DELIVERABLE_FILL_FIELDS):
+            raise HTTPException(
+                status_code=400,
+                detail="a newly inserted deliverable cannot start filled "
+                       "(value must be absent)")
+    for did, prev in prev_by_id.items():
+        if did not in incoming_ids and _is_filled(prev):
+            _sys_comment(
+                c, task_id,
+                f'⚠️ filled deliverable "{prev.get("label")}" was removed from '
+                f'step "{_step_title(prev_step)}" — its recorded value was '
+                f'`{str(prev.get("filename") or prev.get("value"))[:120]}`')
+
+
+def _deliverable_identity(d):
+    """Everything about a deliverable, for the completed-step equality check."""
+    if not isinstance(d, dict):
+        return d
+    return tuple(sorted((k, v) for k, v in d.items()
+                        if k in _DELIVERABLE_SPEC_FIELDS
+                        or k in _DELIVERABLE_FILL_FIELDS))
 
 
 def _prepare_checklist_patch(c, task_id: int, row: dict):
@@ -285,10 +485,15 @@ def _prepare_checklist_patch(c, task_id: int, row: dict):
                     if isinstance(s, dict) and s.get("id")}
     incoming_ids = set()
     for s in incoming:
+        # Board #184 — spec limits on the deliverable SPECS this PATCH authors.
+        # Runs for every step (new or existing); the fill/immutability guards
+        # below need a stored counterpart and so only run for existing ones.
+        _validate_deliverable_specs(s)
         sid = s.get("id")
         prev = stored_by_id.get(sid) if sid else None
         if prev is not None:
             incoming_ids.add(sid)
+            _guard_deliverable_patch(c, task_id, s, prev)
             if bool(s.get("done")) != bool(prev.get("done")) or any(
                     s.get(f) != prev.get(f)
                     for f in _STEP_COMPLETION_FIELDS if f != "done"):
@@ -308,6 +513,16 @@ def _prepare_checklist_patch(c, task_id: int, row: dict):
                 status_code=400,
                 detail="a newly inserted step cannot start completed "
                        "(done must be false)")
+        else:
+            # Board #184 — the same rule one level down: a step arriving for the
+            # first time may declare asks, never answers.
+            for d in _deliverables(s):
+                if isinstance(d, dict) and any(
+                        d.get(f) is not None for f in _DELIVERABLE_FILL_FIELDS):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="a newly inserted deliverable cannot start "
+                               "filled (value must be absent)")
     for sid, prev in stored_by_id.items():
         if sid not in incoming_ids and prev.get("done"):
             raise HTTPException(
@@ -358,6 +573,15 @@ def _validate_step_shape(s) -> bool:
         if "required" in stamp and not isinstance(stamp["required"], bool):
             return False
         if stamp.get("state") is not None and stamp["state"] not in _STAMP_STATES:
+            return False
+    # Board #184 — shape only (a list of objects). The SPEC limits and the
+    # fill-ownership rules are enforced in _prepare_checklist_patch, where the
+    # STORED counterpart is available to compare against; a shape check has no
+    # way to tell an edit from an insert.
+    if "deliverables" in s:
+        if not isinstance(s["deliverables"], list):
+            return False
+        if not all(isinstance(d, dict) for d in s["deliverables"]):
             return False
     return True
 
@@ -669,6 +893,89 @@ def request_run(task_id: int, payload: dict = Body(default={}),
     return res.data[0] if res.data else {"status": "requested"}
 
 
+# ── THE ONE COMPLETION PATH (board #182 T-gates + board #184 §3.6) ───────────
+# Defined here, ABOVE its first caller: both the task-level `/stamp` and
+# `/steps/complete` tick a step, and two paths that tick a step will always
+# drift — they already had (see the docstring).
+def _complete_current_step(c, task, actor: str, extra_update: Optional[dict] = None,
+                           post_comment: bool = True,
+                           now: Optional[str] = None) -> dict:
+    """THE completion path — tick the current step, hand off, record it.
+
+    Board #184 §3.6 extracted this out of `complete_step` so the task-level
+    `/stamp` can run the SAME code instead of its own hand-rolled tick. That
+    divergence is why a stamped chain step carried `done: True` with a null
+    `completed_at`, no per-step `stamp{state,by,at}` and no T-gate: two paths
+    that tick a step will always drift, so there is one path now.
+
+    Enforces T8 (approved stamp) and T10 (required deliverables) in that order —
+    the stamp gate first, because it is the older and more fundamental refusal.
+
+    Returns a receipt describing what happened, so a caller that writes its own
+    system comment (the stamp) can name the same facts this one would have.
+
+    `now` lets a caller that is recording the SAME EVENT under two names — the
+    stamp writes `stamp.at`, this writes `completed_at` — pass one timestamp so
+    the two cannot describe different instants (asserted by #151's suite).
+    """
+    now = now or _now_iso()
+    task_id = task["id"]
+    cl = task.get("checklist") or []
+    idx = _current_step_index(cl)
+    if idx is None:
+        raise HTTPException(
+            status_code=409, detail="every step is already complete")
+    step = cl[idx]
+    stamp = step.get("stamp") or {}
+    if stamp.get("required") and stamp.get("state") != "approved":
+        raise HTTPException(
+            status_code=409,
+            detail=f'step "{_step_title(step)}" needs an approved stamp before '
+                   "it can be completed (T8) — use /steps/stamp")
+    # ── T10 (board #184) — required deliverables gate completion ──────────────
+    # Required-unfilled BLOCKS; optional-unfilled never does (decision D2). The
+    # refusal names the escalation path IN LINE (D3) so an agent that hits this
+    # wall takes the one existing road instead of inventing a workaround.
+    missing = _unfilled(step, required=True)
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail=f'step "{_step_title(step)}" needs its required deliverable '
+                   f'"{missing[0]}" before it can be completed (T10) — fill it, '
+                   "or ⚠ Raise issue → M if you cannot")
+    skipped = _unfilled(step, required=False)
+    step["done"] = True
+    step["completed_at"] = now
+    step["completed_by"] = actor
+    _ensure_step_ids(cl)
+    old_assignee = task.get("assignee")
+    new_assignee = _next_assignee(cl, old_assignee)
+    update = {"checklist": cl, "assignee": new_assignee,
+              "kevin_final": _derive_kevin_final(cl, task.get("kevin_final"))}
+    update.update(extra_update or {})
+    c.table("dev_tasks").update(update).eq("id", task_id).execute()
+    if _current_step_index(cl) is None:
+        tail = f"chain complete → assignee {new_assignee} (close)"
+    elif (old_assignee or None) != (new_assignee or None):
+        tail = f"handed off: {old_assignee or '—'} → {new_assignee}"
+    else:
+        tail = f"still on {new_assignee}"
+    # The DURABLE half of "visible, not silent" (D2). A UI dialog nobody records
+    # is not visibility — the thread has to be able to answer "what did we skip?"
+    # months later, when the dialog is long gone.
+    note = (f' · {len(skipped)} optional deliverable'
+            f'{"s" if len(skipped) != 1 else ""} left unfilled: '
+            + ", ".join(f'"{s}"' for s in skipped)) if skipped else ""
+    if post_comment:
+        _sys_comment(
+            c, task_id,
+            f'step {idx + 1} "{_step_title(step)}" complete (by {actor}) · '
+            f'{tail}{note}', step_order=idx)
+    return {"idx": idx, "title": _step_title(step), "tail": tail,
+            "optional_note": note, "old_assignee": old_assignee,
+            "new_assignee": new_assignee}
+
+
 # THE Approval-stage stamp — ONE mode (board #232, Kevin 07-30).
 #
 # It was two (board #136): 'delegate' = "Approve — M closes" and 'final' =
@@ -784,40 +1091,94 @@ def stamp_approval(task_id: int, payload: dict = Body(...),
     #      chain. A prior `rejected` is superseded rather than preserved: the
     #      stamp is the later act by the same authority (and it cannot arise in
     #      practice — a rejected step routes to M, leaving Approval behind).
+    #
+    # Board #184 §3.6 — THE STAMP GOES INTO THE STEP IT WAS MADE ON.
+    #
+    # (a) above records the stamp on the TASK. What it did not record is WHICH
+    #     step Kevin signed off: a chain step's own `stamp` block stayed None, so
+    #     the chain remembered that a sign-off happened but not what it was for.
+    #     Kevin's ask ("move the stamp into the step") is the same principle as
+    #     this task's original one — an artifact that is task-global but
+    #     semantically step-local belongs where it was made.
+    #
+    # (b) The tick itself now runs through `_complete_current_step`, the SAME
+    #     body /steps/complete uses, so a stamped step gets completion
+    #     provenance, the hand-off, kevin_final and the T-gates instead of a
+    #     hand-rolled half of them.
+    #
+    # FENCED to the case where the first un-done kevin step IS the current step,
+    # because the shared path completes the CURRENT step (T3, strict order) and
+    # nothing else. When they differ — a kevin step sitting behind an open F step
+    # — routing through it would tick the WRONG step, which is worse than the gap
+    # it fixes. Legacy (non-chain) checklists take the same fall-back, byte
+    # for byte, so the 42 existing tasks are untouched. No retroactive backfill.
     checklist = rows[0].get("checklist") or []
-    ticked = None
-    for step in checklist:
-        if (not step.get("done")
-                and str(_step_owner(step) or "").strip().lower() == "kevin"):
-            now = _now_iso()
-            step["done"] = True
-            step["completed_at"] = now
-            step["completed_by"] = author
-            stamp = step.get("stamp")
-            if isinstance(stamp, dict):
-                stamp["state"] = "approved"
-                stamp["by"] = author
-                stamp["at"] = now
-                step["stamp"] = stamp
-            ticked = _step_title(step)
-            update["checklist"] = checklist  # JSONB is replaced whole
-            break
-
-    # Second half of #225: ticking the step is not the hand-off. Without this
-    # the task lands in Todo still assigned to `kevin` — it will not dispatch,
-    # and it trips preflight invariant (7). Same helper /steps/complete uses, so
-    # the two paths cannot drift on who the task waits on next.
     old_assignee = rows[0].get("assignee")
     new_assignee = old_assignee
-    if ticked is not None:
-        new_assignee = _next_assignee(checklist, old_assignee)
-        if (new_assignee or None) != (old_assignee or None):
-            update["assignee"] = new_assignee
+    kevin_idx = next(
+        (i for i, s in enumerate(checklist)
+         if isinstance(s, dict) and not s.get("done")
+         and str(_step_owner(s) or "").strip().lower() == "kevin"), None)
+    chain_path = (_is_process_chain(checklist) and kevin_idx is not None
+                  and kevin_idx == _current_step_index(checklist))
 
-    c.table("dev_tasks").update(update).eq("id", task_id).execute()
-    tick_note = f' · checklist: ticked "{ticked}"' if ticked else ""
-    hand_note = (f" · handed off: {old_assignee or '—'} → {new_assignee}"
-                 if "assignee" in update else "")
+    if chain_path:
+        step = checklist[kevin_idx]
+        now = _now_iso()
+        # The stamp IS this step's approval — record it ON the step, whether or
+        # not the step declared a stamp gate. A gated step gets its `required`
+        # preserved (that is the gate #244 settles); an ungated one gets
+        # `required: False` and the same provenance, which is the #184 half: the
+        # chain now carries WHICH step was signed off, by whom, when.
+        stamp = step.get("stamp") if isinstance(step.get("stamp"), dict) else {}
+        stamp.setdefault("required", False)
+        stamp["state"] = "approved"
+        stamp["by"] = author
+        stamp["at"] = now
+        step["stamp"] = stamp
+        task_row = dict(rows[0])
+        task_row["checklist"] = checklist
+        # One write: the stamp's own columns ride along with the completion.
+        receipt = _complete_current_step(
+            c, task_row, author, extra_update=update, post_comment=False,
+            now=now)   # ONE instant: stamp.at and completed_at are one event
+        ticked, new_assignee = receipt["title"], receipt["new_assignee"]
+        tick_note = f' · checklist: ticked "{ticked}"{receipt["optional_note"]}'
+        hand_note = ("" if (new_assignee or None) == (old_assignee or None)
+                     else f" · handed off: {old_assignee or '—'} → {new_assignee}")
+    else:
+        ticked = None
+        for step in checklist:
+            if (not step.get("done")
+                    and str(_step_owner(step) or "").strip().lower() == "kevin"):
+                now = _now_iso()
+                step["done"] = True
+                step["completed_at"] = now
+                step["completed_by"] = author
+                stamp = step.get("stamp")
+                if isinstance(stamp, dict):
+                    stamp["state"] = "approved"
+                    stamp["by"] = author
+                    stamp["at"] = now
+                    step["stamp"] = stamp
+                ticked = _step_title(step)
+                update["checklist"] = checklist  # JSONB is replaced whole
+                break
+
+        # Second half of #225: ticking the step is not the hand-off. Without this
+        # the task lands in Todo still assigned to `kevin` — it will not dispatch,
+        # and it trips preflight invariant (7). Same helper /steps/complete uses, so
+        # the two paths cannot drift on who the task waits on next.
+        if ticked is not None:
+            new_assignee = _next_assignee(checklist, old_assignee)
+            if (new_assignee or None) != (old_assignee or None):
+                update["assignee"] = new_assignee
+
+        c.table("dev_tasks").update(update).eq("id", task_id).execute()
+        tick_note = f' · checklist: ticked "{ticked}"' if ticked else ""
+        hand_note = (f" · handed off: {old_assignee or '—'} → {new_assignee}"
+                     if "assignee" in update else "")
+
     c.table("dev_task_comments").insert({
         "task_id": task_id, "author": "system",
         "body": f"stamp: {_STAMP_LABEL} (by {author}) · "
@@ -848,50 +1209,241 @@ def stamp_approval(task_id: int, payload: dict = Body(...),
 @router.post("/{task_id}/steps/complete")
 def complete_step(task_id: int, payload: dict = Body(default={}),
                   user=Depends(get_service_or_user)):
-    """Complete the current step and hand off (T1/T2/T3/T8).
+    """Complete the current step and hand off (T1/T2/T3/T8/T10).
 
     Ticks the FIRST incomplete step only — you cannot complete a later step out
     of order (T3). A step that gates on a stamp cannot be completed until the
-    stamp is approved (T8). Records completed_at/by and reassigns the task to
-    the next incomplete step's owner — 'M' when the chain finishes, never kevin
-    (T2). One action, one write.
+    stamp is approved (T8); a step with an unfilled REQUIRED deliverable cannot
+    be completed at all (T10, board #184). Records completed_at/by and reassigns
+    the task to the next incomplete step's owner — 'M' when the chain finishes,
+    never kevin (T2). One action, one write.
     """
     actor = (payload.get("actor") or "").strip() or "system"
     c = _admin()
+    _complete_current_step(c, _task_row(c, task_id), actor)
+    return _task_row(c, task_id)
+
+
+# ── Step deliverables — the capture endpoints (board #184, spec §3) ──────────
+# `get_service_or_user`, on the same #217 argument /steps/complete uses and for
+# the same reason: a deliverable is an AGENT'S EVIDENCE, and a headless agent
+# holds the service key but no user JWT. Held to the same discipline too — the
+# write is attributed to payload["actor"], never to the caller's identity.
+# /steps/stamp stays user-only; a stamp is authority, evidence is not.
+
+def _load_deliverable(c, task_id: int, deliverable_id: str, *, for_write: bool):
+    """(task, checklist, step_index, step, deliverable) or the right refusal.
+
+    `for_write` adds the T4' fence: a COMPLETED step's deliverables are frozen
+    with the rest of it. Any NOT-yet-done step may be filled, not just the
+    current one — evidence often arrives early, and refusing it would push
+    people to park it in a comment where no surface can see it (spec §2).
+    """
     task = _task_row(c, task_id)
     cl = task.get("checklist") or []
-    idx = _current_step_index(cl)
-    if idx is None:
+    idx, step, d = _find_deliverable(cl, deliverable_id)
+    if d is None:
         raise HTTPException(
-            status_code=409, detail="every step is already complete")
-    step = cl[idx]
-    stamp = step.get("stamp") or {}
-    if stamp.get("required") and stamp.get("state") != "approved":
+            status_code=404,
+            detail=f"no deliverable {deliverable_id!r} on task #{task_id}")
+    if for_write and step.get("done"):
         raise HTTPException(
             status_code=409,
-            detail=f'step "{_step_title(step)}" needs an approved stamp before '
-                   "it can be completed (T8) — use /steps/stamp")
-    step["done"] = True
-    step["completed_at"] = _now_iso()
-    step["completed_by"] = actor
+            detail=f'step "{_step_title(step)}" is complete — its deliverables '
+                   "are part of the audit trail and can no longer be changed "
+                   "(T4')")
+    return task, cl, idx, step, d
+
+
+def _save_checklist(c, task_id: int, cl):
+    """Whole-array write. NEVER a partial merge — a partial dict REPLACES a
+    JSONB value rather than merging into it (memory: jsonb_partial_updates)."""
     _ensure_step_ids(cl)
-    old_assignee = task.get("assignee")
-    new_assignee = _next_assignee(cl, old_assignee)
-    kevin_final = _derive_kevin_final(cl, task.get("kevin_final"))
-    c.table("dev_tasks").update(
-        {"checklist": cl, "assignee": new_assignee,
-         "kevin_final": kevin_final}).eq("id", task_id).execute()
-    if _current_step_index(cl) is None:
-        tail = f"chain complete → assignee {new_assignee} (close)"
-    elif (old_assignee or None) != (new_assignee or None):
-        tail = f"handed off: {old_assignee or '—'} → {new_assignee}"
-    else:
-        tail = f"still on {new_assignee}"
+    c.table("dev_tasks").update({"checklist": cl}).eq("id", task_id).execute()
+
+
+@router.post("/{task_id}/steps/deliverables/{deliverable_id}")
+def fill_deliverable(task_id: int, deliverable_id: str,
+                     payload: dict = Body(...),
+                     user=Depends(get_service_or_user)):
+    """Fill a text or link deliverable (spec §3.1). A file goes to /upload."""
+    actor = (payload.get("actor") or "").strip() or "system"
+    c = _admin()
+    task, cl, idx, step, d = _load_deliverable(
+        c, task_id, deliverable_id, for_write=True)
+    kind = d.get("kind")
+    if kind not in ("text", "link"):
+        raise HTTPException(
+            status_code=409,
+            detail=f'deliverable "{d.get("label")}" is a {kind} — POST the file '
+                   "to .../upload instead")
+    value = payload.get("value")
+    if not isinstance(value, str) or not value.strip():
+        raise HTTPException(
+            status_code=400, detail="value is required (a non-empty string)")
+    value = value.strip()
+    if kind == "text" and len(value) > _DELIVERABLE_TEXT_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=f"a text deliverable is at most {_DELIVERABLE_TEXT_MAX} "
+                   f"chars (got {len(value)}) — attach a file instead")
+    if kind == "link" and not re.match(r"^https?://\S+$", value):
+        raise HTTPException(
+            status_code=400,
+            detail="a link deliverable must be an http(s):// URL")
+    d["value"] = value
+    d["filled_at"] = _now_iso()
+    d["filled_by"] = actor
+    _save_checklist(c, task_id, cl)
     _sys_comment(
         c, task_id,
-        f'step {idx + 1} "{_step_title(step)}" complete (by {actor}) · {tail}',
-        step_order=idx)
+        f'deliverable "{d.get("label")}" filled (by {actor}) on step {idx + 1} '
+        f'"{_step_title(step)}"', step_order=idx)
     return _task_row(c, task_id)
+
+
+@router.post("/{task_id}/steps/deliverables/{deliverable_id}/upload")
+def upload_deliverable(task_id: int, deliverable_id: str,
+                       payload: dict = Body(...),
+                       user=Depends(get_service_or_user)):
+    """Upload a file deliverable (spec §3.2): {filename, content_type, b64}.
+
+    JSON+base64, NOT multipart, deliberately: `python-multipart` is not a
+    dependency of this service (nothing in the API declares File()/UploadFile),
+    and the frontend's `apiFetch` pins `Content-Type: application/json` on every
+    request. Choosing multipart would mean a new runtime dependency plus a
+    second client path — for a 10 MB ceiling whose base64 overhead is 33%. The
+    spec left the choice open precisely so this one path serves the screenshots
+    helper too (§4).
+
+    Validates size + type BEFORE touching storage, so a refusal never leaves an
+    orphan object behind.
+    """
+    import base64
+    import binascii
+
+    actor = (payload.get("actor") or "").strip() or "system"
+    c = _admin()
+    task, cl, idx, step, d = _load_deliverable(
+        c, task_id, deliverable_id, for_write=True)
+    if d.get("kind") != "file":
+        raise HTTPException(
+            status_code=409,
+            detail=f'deliverable "{d.get("label")}" is a {d.get("kind")} — POST '
+                   "its value to the fill endpoint instead")
+    filename = (payload.get("filename") or "").strip()
+    if not filename:
+        raise HTTPException(status_code=400, detail="filename is required")
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in _DELIVERABLE_EXTS:
+        raise HTTPException(
+            status_code=415,
+            detail=f"'{ext or filename}' is not an accepted file type — "
+                   f"allowed: {', '.join(_DELIVERABLE_EXTS)}")
+    content_type = payload.get("content_type")
+    if content_type is not None and not isinstance(content_type, str):
+        raise HTTPException(
+            status_code=400, detail="content_type must be a string")
+    try:
+        blob = base64.b64decode(payload.get("b64") or "", validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(
+            status_code=400, detail="b64 must be base64-encoded file bytes")
+    if not blob:
+        raise HTTPException(status_code=400, detail="the file is empty")
+    if len(blob) > _DELIVERABLE_FILE_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"the file is {len(blob) // 1024} KB — the limit is "
+                   f"{_DELIVERABLE_FILE_MAX_BYTES // (1024 * 1024)} MB")
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename)[:96]
+    path = (f"task-{task_id}/step-{step.get('id') or idx}/"
+            f"{uuid.uuid4().hex}-{safe}")
+    # The SAME storage client bar_cache_store.py:125 uses — one client path in
+    # this repo, not two (spec §4). A storage failure must NOT half-write the
+    # checklist, so the object lands first and the record only after.
+    from db import get_admin_client
+    try:
+        get_admin_client().storage.from_(DELIVERABLES_BUCKET).upload(
+            path, blob,
+            {"content-type": content_type or "application/octet-stream",
+             "upsert": "true"})
+    except Exception as e:  # noqa: BLE001 — fail LOUD, never a silent no-op
+        log.warning("deliverable upload failed (task %s, %s): %s",
+                    task_id, path, e)
+        raise HTTPException(
+            status_code=502,
+            detail=f"storage upload failed — is the '{DELIVERABLES_BUCKET}' "
+                   f"bucket created? ({e})")
+    d["value"] = path            # the OBJECT PATH, never a URL (spec §1)
+    d["filename"] = filename
+    d["size_bytes"] = len(blob)
+    d["content_type"] = content_type
+    d["filled_at"] = _now_iso()
+    d["filled_by"] = actor
+    _save_checklist(c, task_id, cl)
+    _sys_comment(
+        c, task_id,
+        f'deliverable "{d.get("label")}" filled (by {actor}) on step {idx + 1} '
+        f'"{_step_title(step)}" — 📎 {filename}', step_order=idx)
+    return _task_row(c, task_id)
+
+
+@router.delete("/{task_id}/steps/deliverables/{deliverable_id}/value")
+def clear_deliverable(task_id: int, deliverable_id: str,
+                      actor: Optional[str] = None,
+                      user=Depends(get_service_or_user)):
+    """Clear a fill on a not-yet-done step (spec §3.3).
+
+    Deliberately does NOT delete the stored object: making an audit-trail edit
+    destructive is how evidence disappears. The orphan sweep is a named
+    follow-up (spec §9.1), not a silent omission.
+    """
+    who = (actor or "").strip() or "system"
+    c = _admin()
+    task, cl, idx, step, d = _load_deliverable(
+        c, task_id, deliverable_id, for_write=True)
+    if not _is_filled(d):
+        return _task_row(c, task_id)          # already empty — idempotent
+    was = d.get("filename") or d.get("value")
+    for f in _DELIVERABLE_FILL_FIELDS:
+        d[f] = None
+    _save_checklist(c, task_id, cl)
+    _sys_comment(
+        c, task_id,
+        f'deliverable "{d.get("label")}" cleared (by {who}) on step {idx + 1} '
+        f"— was `{str(was)[:120]}`", step_order=idx)
+    return _task_row(c, task_id)
+
+
+@router.get("/{task_id}/steps/deliverables/{deliverable_id}/url")
+def deliverable_url(task_id: int, deliverable_id: str,
+                    user=Depends(get_service_or_user)):
+    """Mint a short-lived signed read URL for a file deliverable (spec §3.4).
+
+    ON CLICK, never on board load: the bucket is private (the board is
+    admin-gated and a public-read URL walks straight past that gate), and the
+    120-row board fetch must stay cheap.
+    """
+    c = _admin()
+    _t, _cl, _i, _s, d = _load_deliverable(
+        c, task_id, deliverable_id, for_write=False)
+    if d.get("kind") != "file" or not _is_filled(d):
+        raise HTTPException(
+            status_code=404,
+            detail="that deliverable has no stored file to read")
+    from db import get_admin_client
+    try:
+        res = get_admin_client().storage.from_(DELIVERABLES_BUCKET) \
+            .create_signed_url(d["value"], _DELIVERABLE_URL_TTL_S)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"could not sign URL: {e}")
+    url = (res or {}).get("signedURL") or (res or {}).get("signedUrl")
+    if not url:
+        raise HTTPException(
+            status_code=502, detail="storage returned no signed URL")
+    return {"url": url, "filename": d.get("filename"),
+            "content_type": d.get("content_type")}
 
 
 @router.post("/{task_id}/steps/raise-issue")

@@ -41,6 +41,9 @@ import {
   SlashItem, SlashMenu, filterSlashItems, applySlashInsert, detectSlash,
   makeChainStep, chainStarted, AiEligibleToggle, RunStatePill, LaneKindChip,
   isFinished, StampMode, taskTypeOf, TaskTypeIcon, TASK_TYPES,
+  StepDeliverable, DeliverableKind, DELIVERABLE_KINDS, deliverableIcon,
+  stepDeliverables, isDeliverableFilled, unfilledDeliverables, makeDeliverable,
+  fileSize,
   GOAL_PARAM_FIELDS, AUTONOMY_DEF, Autonomy, autonomyOf, autonomyPatch,
   goalParamsOf, goalParamsPatch, missingGoalParams, renderGoalBlock,
   goalNestError, GoalFieldDef, inheritedAutonomy,
@@ -70,7 +73,12 @@ const cfgHint: React.CSSProperties = { fontSize: 11, color: 'var(--text-tertiary
 // skips ticks entirely while the tab is hidden.
 const POLL_MS = 15000;
 
-type Tab = 'summary' | 'process' | 'config' | 'goal';
+type Tab = 'summary' | 'process' | 'config' | 'goal' | 'deliverables';
+
+/** ≤ 10 MB, mirrored from the API's _DELIVERABLE_FILE_MAX_BYTES. Checked here
+ *  so an over-size file is refused BEFORE a 13 MB base64 round-trip, never
+ *  INSTEAD of the server check — the API refusal is the real gate. */
+const DELIVERABLE_MAX_BYTES = 10 * 1024 * 1024;
 
 /** One consolidated modal-poll round-trip (board #148, GET .../poll). */
 interface PollResponse {
@@ -247,10 +255,83 @@ export default function TaskDetailModal({
     } catch (e) { setStepErr(String(e)); }
     finally { setStepBusy(false); }
   };
-  const completeStep = () => stepAction('complete');
   const stampStep = (decision: 'approve' | 'reject') => stepAction('stamp', { decision });
   const raiseIssue = (issueBody: string) => {
     if (issueBody.trim()) stepAction('raise-issue', { body: issueBody.trim() });
+  };
+
+  // ── Step deliverables (board #184) ─────────────────────────────────────────
+  // Fills are SERVER-owned exactly as completion is: they go to dedicated
+  // endpoints, never through the checklist PATCH (which 409s on a fill field).
+  // Specs, by contrast, ARE authored through the checklist PATCH — that split
+  // is why `setSteps` handles the StepForm's deliverable rows and these
+  // handlers handle the values.
+  const deliverableAction = async (
+    path: string, init: RequestInit,
+  ): Promise<boolean> => {
+    setStepErr(null); setStepBusy(true);
+    try {
+      await apiFetch(`/api/dev-tasks/${scoped.id}/steps/deliverables/${path}`, init);
+      loadThread(scoped.id);
+      onPollTick?.();
+      return true;
+    } catch (e) { setStepErr(String(e)); return false; }
+    finally { setStepBusy(false); }
+  };
+  const fillDeliverable = (id: string, value: string) => deliverableAction(id, {
+    method: 'POST', body: JSON.stringify({ value, actor: commentAuthor }),
+  });
+  const clearDeliverable = (id: string) => deliverableAction(
+    `${id}/value?actor=${encodeURIComponent(commentAuthor)}`, { method: 'DELETE' });
+  /** Read the picked file as base64 and POST it. JSON+base64, not multipart —
+   *  `apiFetch` pins Content-Type: application/json on every request, and the
+   *  API has no multipart dependency (see upload_deliverable's docstring). */
+  const uploadDeliverable = async (id: string, file: File) => {
+    if (file.size > DELIVERABLE_MAX_BYTES) {
+      setStepErr(`"${file.name}" is ${Math.round(file.size / 1024 / 1024)} MB — the limit is 10 MB`);
+      return;
+    }
+    const b64 = await new Promise<string>((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onerror = () => reject(new Error('could not read that file'));
+      fr.onload = () => resolve(String(fr.result).split(',')[1] || '');
+      fr.readAsDataURL(file);
+    }).catch((e) => { setStepErr(String(e)); return ''; });
+    if (!b64) return;
+    await deliverableAction(`${id}/upload`, {
+      method: 'POST',
+      body: JSON.stringify({
+        filename: file.name, content_type: file.type || null, b64,
+        actor: commentAuthor,
+      }),
+    });
+  };
+  /** Signed read URL, minted ON CLICK (spec §3.4) — the bucket is private and
+   *  the board fetch must stay cheap, so nothing is signed on load. */
+  const openDeliverableFile = async (id: string) => {
+    setStepErr(null);
+    try {
+      const res = await apiFetch<{ url: string }>(
+        `/api/dev-tasks/${scoped.id}/steps/deliverables/${id}/url`);
+      if (res?.url) window.open(res.url, '_blank', 'noopener');
+    } catch (e) { setStepErr(String(e)); }
+  };
+
+  // T10's UI half. Required-and-unfilled BLOCKS (the server refuses it anyway —
+  // this only makes the wall visible before the click); optional-and-unfilled
+  // asks for a confirm and is never a block (decision D2). The confirm is the
+  // volatile half of "visible, not silent"; the durable half is the system
+  // comment the server appends, which outlives any dialog.
+  const completeStep = () => {
+    const cl = scoped.checklist || [];
+    const cur = cl.find((s) => !s.done);
+    const skipped = unfilledDeliverables(cur, false);
+    if (skipped.length && !window.confirm(
+      `${skipped.length} optional deliverable${skipped.length === 1 ? '' : 's'} `
+      + `${skipped.length === 1 ? 'is' : 'are'} unfilled:\n\n`
+      + skipped.map((d) => `  • ${d.label}`).join('\n')
+      + '\n\nComplete the step anyway? (they will be named on the thread)')) return;
+    stepAction('complete');
   };
 
   useEffect(() => { loadThread(scoped.id); loadRuns(scoped.id); setCtxEdit(false); setCtxPreview(false); }, [scoped.id, loadThread, loadRuns]);
@@ -349,7 +430,9 @@ export default function TaskDetailModal({
 
   // Checklist ops operate on the SCOPED item (the selected pipeline row, or
   // the task itself) — ALWAYS send the whole array (JSONB replace).
-  const steps: ChecklistStep[] = scoped.checklist || [];
+  // Memoized because #184's deliverables useMemo depends on it: `|| []` mints a
+  // fresh array every render, which would make that memo recompute every time.
+  const steps: ChecklistStep[] = useMemo(() => scoped.checklist || [], [scoped]);
   const isChain = isProcessChain(steps);   // #182 rich chain vs legacy checklist
   const setSteps = (next: ChecklistStep[]) => patch(scoped.id, { checklist: next });
   const addStep = () => {
@@ -378,16 +461,31 @@ export default function TaskDetailModal({
   const currentIdx = steps.findIndex((s) => !s.done);   // -1 → chain complete
   const submitStepForm = (f: {
     owner: string | null; title: string; mode: 'execute' | 'discuss'; body: string;
+    deliverables: ChecklistStep['deliverables'];
   }) => {
     if (!stepForm) return;
+    // Board #184: `deliverables` rides the same STRUCTURAL PATCH the rest of the
+    // step does — specs are author-owned. The form never emits a fill value (an
+    // existing row keeps its server-owned fields verbatim; a new one is minted
+    // unfilled), so this stays a structural edit and the API's fill guard is
+    // never tripped. An empty list is omitted entirely, so a step that declares
+    // no deliverables writes no `deliverables` key at all — the back-compat rail.
+    const dels = f.deliverables && f.deliverables.length
+      ? { deliverables: f.deliverables } : {};
     if (stepForm.mode === 'insert') {
-      const step = makeChainStep(f, started);
+      const step = { ...makeChainStep(f, started), ...dels };
       setSteps([...steps.slice(0, stepForm.index), step, ...steps.slice(stepForm.index)]);
     } else {
-      // Edit touches only owner/title/mode/body — id, origin, stamp, done and
-      // completion provenance are preserved so the PATCH stays a structural edit.
-      setSteps(steps.map((s, i) => i === stepForm.index
-        ? { ...s, owner: f.owner, title: f.title, mode: f.mode, body: f.body } : s));
+      // Edit touches only owner/title/mode/body/deliverables — id, origin, stamp,
+      // done and completion provenance are preserved so the PATCH stays structural.
+      setSteps(steps.map((s, i) => {
+        if (i !== stepForm.index) return s;
+        const next: ChecklistStep = {
+          ...s, owner: f.owner, title: f.title, mode: f.mode, body: f.body, ...dels,
+        };
+        if (!f.deliverables?.length) delete next.deliverables;
+        return next;
+      }));
     }
     setStepForm(null);
   };
@@ -478,9 +576,21 @@ export default function TaskDetailModal({
       ? allTasks.find((t) => t.id === scoped.parent_id) || null : null),
     [scoped.parent_id, allTasks]);
   const parentIsGoal = !!scopedParent && taskTypeOf(scopedParent, true) === 'goal';
+  // Board #184 §6 — the deliverables TAB (Half 2 Phase 1; the strip is a later
+  // step, Kevin's order: tab before strip). It exists ONLY when the scoped
+  // chain actually declares a deliverable, so a task with none gets no new
+  // chrome at all. Scope FOLLOWS the context panel — selecting a subtask
+  // re-scopes it exactly as it re-scopes the accordion; cross-subtask
+  // aggregation on a vision is a deliberate non-goal (spec §8).
+  const scopedDeliverables = useMemo(
+    () => steps.flatMap((s, i) => stepDeliverables(s).map((d) => ({ d, step: s, i }))),
+    [steps]);
+  const deliverablesTabOk = scopedIsLeaf && scopedDeliverables.length > 0;
+  const deliverablesFilled = scopedDeliverables.filter((r) => isDeliverableFilled(r.d)).length;
   // Process tab is invalid when the scope is the vision itself — fall back.
   const effTab: Tab = (tab === 'process' && !scopedIsLeaf)
-    || (tab === 'goal' && !goalTabOk) ? 'summary' : tab;
+    || (tab === 'goal' && !goalTabOk)
+    || (tab === 'deliverables' && !deliverablesTabOk) ? 'summary' : tab;
 
   const selectRow = (id: number) => setSelected(id);
 
@@ -606,6 +716,12 @@ export default function TaskDetailModal({
                   </button>
                 )}
                 <button style={chipBtn(effTab === 'config')} onClick={() => setTab('config')}>config</button>
+                {deliverablesTabOk && (
+                  <button style={chipBtn(effTab === 'deliverables')} onClick={() => setTab('deliverables')}
+                    title="everything delivered against this task — files, links and answers, in one place">
+                    deliverables {deliverablesFilled}/{scopedDeliverables.length}
+                  </button>
+                )}
                 <span style={{ flex: 1 }} />
                 {effTab === 'summary' && !ctxEdit &&
                   <button style={chipBtn(true)} onClick={() => setCtxEdit(true)}>edit</button>}
@@ -647,7 +763,11 @@ export default function TaskDetailModal({
                         onComplete={completeStep} onStamp={stampStep} onRaiseIssue={raiseIssue}
                         onInsert={(i) => setStepForm({ mode: 'insert', index: i })}
                         onEdit={(i) => setStepForm({ mode: 'edit', index: i })}
-                        onRemove={removeStep} onMove={moveStep} />
+                        onRemove={removeStep} onMove={moveStep}
+                        onFillDeliverable={fillDeliverable}
+                        onClearDeliverable={clearDeliverable}
+                        onUploadDeliverable={uploadDeliverable}
+                        onOpenDeliverable={openDeliverableFile} />
                     )}
                   </>
                 )}
@@ -706,6 +826,77 @@ export default function TaskDetailModal({
 
                 {effTab === 'goal' && goalTabOk && (
                   <GoalPanel task={task} type={taskType} patch={patch} />
+                )}
+
+                {/* Board #184 §6 — everything delivered against this task, in
+                    one place. Grouped BY STEP in chain order, because the step
+                    is the context that makes a bare URL mean something; and an
+                    unfilled row shows a muted "— not provided", so the gaps are
+                    exactly as visible as the fills. */}
+                {effTab === 'deliverables' && deliverablesTabOk && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <div style={{ ...cfgHint, marginBottom: 4 }}>
+                      {deliverablesFilled} of {scopedDeliverables.length} delivered
+                      {' · '}<span style={{ color: 'var(--red)' }}>*</span> = required
+                      {scoped.id !== task.id && ' · scoped to the selected subtask'}
+                    </div>
+                    {deliverablesFilled === 0 && (
+                      <div style={{ ...cfgHint, padding: '6px 0' }}>nothing delivered yet.</div>
+                    )}
+                    {steps.map((s, i) => {
+                      const ds = stepDeliverables(s);
+                      if (!ds.length) return null;
+                      const owner = stepOwner(s);
+                      return (
+                        <div key={s.id || i} style={{ marginBottom: 10 }}>
+                          <div style={{
+                            display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5,
+                            color: 'var(--text-tertiary)', marginBottom: 2,
+                          }}>
+                            <span>▸ Step {i + 1}</span>
+                            {owner && <RoleChip role={owner} />}
+                            <span style={{
+                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                            }}>{stepTitle(s)}</span>
+                            {s.done && <span style={{ color: 'var(--green)' }}>✓</span>}
+                          </div>
+                          {ds.map((d, di) => (
+                            <div key={d.id || di} style={{
+                              display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+                              padding: '4px 0 4px 14px', fontSize: 12.5,
+                              borderTop: '1px dashed var(--border)',
+                            }}>
+                              <span style={{ flex: 'none' }} title={d.kind}>{deliverableIcon(d.kind)}</span>
+                              <span style={{ flex: 'none', color: 'var(--text-secondary)' }}
+                                title={d.hint || undefined}>
+                                {d.label}
+                                {d.required && <span style={{ color: 'var(--red)', fontWeight: 700 }}> *</span>}
+                              </span>
+                              <span style={{ flex: 1, minWidth: 120, wordBreak: 'break-word' }}>
+                                {!isDeliverableFilled(d) ? <span style={cfgHint}>— not provided</span>
+                                  : d.kind === 'file' ? (
+                                    <button style={{ ...input, cursor: 'pointer', fontSize: 11.5, padding: '1px 7px' }}
+                                      onClick={() => d.id && openDeliverableFile(d.id)}
+                                      title="open the stored file (signed link, 1h)">
+                                      📎 {d.filename} <span style={cfgHint}>({fileSize(d.size_bytes)})</span>
+                                    </button>
+                                  ) : d.kind === 'link' ? (
+                                    <a href={d.value || '#'} target="_blank" rel="noopener noreferrer"
+                                      style={{ color: 'var(--blue)' }}>{d.value}</a>
+                                  ) : d.value}
+                              </span>
+                              {isDeliverableFilled(d) && (
+                                <span style={{ ...cfgHint, flex: 'none', whiteSpace: 'nowrap' }}>
+                                  {d.filled_by}{d.filled_at ? ` · ${relTime(d.filled_at)}` : ''}
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                    {stepErr && <div style={{ color: 'var(--red)', fontSize: 11 }} title={stepErr}>{stepErr}</div>}
+                  </div>
                 )}
 
                 {effTab === 'config' && (
@@ -1216,6 +1407,107 @@ function StampChip({ stamp }: { stamp?: StepStamp | null }) {
 }
 
 /**
+ * One deliverable row inside a step's accordion body (board #184, spec §5.1) —
+ * the ask, its control, and its fill provenance, rendered where the ask was
+ * made. Controls are live only on a NOT-yet-done step; a completed step renders
+ * read-only, the same immutability the rest of a completed step already shows.
+ */
+function DeliverableRow({
+  d, editable, busy, onFill, onClear, onUpload, onOpen,
+}: {
+  d: StepDeliverable;
+  editable: boolean;
+  busy: boolean;
+  onFill: (id: string, value: string) => void;
+  onClear: (id: string) => void;
+  onUpload: (id: string, file: File) => void;
+  onOpen: (id: string) => void;
+}) {
+  const [draft, setDraft] = useState(d.value || '');
+  const fileRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { setDraft(d.value || ''); }, [d.value]);
+  const filled = isDeliverableFilled(d);
+  const id = d.id || '';
+  const commit = () => {
+    const v = draft.trim();
+    if (v && v !== (d.value || '')) onFill(id, v);
+  };
+  const kindDef = DELIVERABLE_KINDS.find((k) => k.key === d.kind);
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+      padding: '5px 0', borderTop: '1px dashed var(--border)',
+    }}>
+      <span style={{ flex: 'none', fontSize: 13 }} title={kindDef?.def || d.kind}>
+        {deliverableIcon(d.kind)}
+      </span>
+      <span style={{ flex: 'none', fontSize: 12, color: 'var(--text-secondary)' }}
+        title={d.hint || undefined}>
+        {d.label}
+        {d.required && <span style={{ color: 'var(--red)', fontWeight: 700 }} title="required — this step cannot be completed until it is filled (T10)"> *</span>}
+      </span>
+      {/* ── the control ── */}
+      {!editable ? (
+        // Completed step: read-only. A gap still SHOWS as a gap.
+        <span style={{ flex: 1, minWidth: 120, fontSize: 12 }}>
+          {!filled ? <span style={cfgHint}>— not provided</span>
+            : d.kind === 'file' ? (
+              <button style={{ ...input, cursor: 'pointer', fontSize: 11.5, padding: '1px 7px' }}
+                onClick={() => onOpen(id)} title="open the stored file (signed link, 1h)">
+                📎 {d.filename} {d.size_bytes != null && <span style={cfgHint}>({fileSize(d.size_bytes)})</span>}
+              </button>
+            ) : d.kind === 'link' ? (
+              <a href={d.value || '#'} target="_blank" rel="noopener noreferrer"
+                style={{ color: 'var(--blue)' }}>{d.value}</a>
+            ) : <span>{d.value}</span>}
+        </span>
+      ) : d.kind === 'file' ? (
+        <span style={{ flex: 1, minWidth: 160, display: 'flex', gap: 6, alignItems: 'center' }}>
+          {filled ? (
+            <button style={{ ...input, cursor: 'pointer', fontSize: 11.5, padding: '1px 7px' }}
+              onClick={() => onOpen(id)} title="open the stored file (signed link, 1h)">
+              📎 {d.filename} {d.size_bytes != null && <span style={cfgHint}>({fileSize(d.size_bytes)})</span>}
+            </button>
+          ) : (
+            <>
+              <input ref={fileRef} type="file" style={{ display: 'none' }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) onUpload(id, f);
+                  e.target.value = '';
+                }} />
+              <button style={{ ...input, cursor: busy ? 'default' : 'pointer', fontSize: 11.5 }}
+                disabled={busy} onClick={() => fileRef.current?.click()}
+                title="upload a file (≤ 10 MB): png jpg gif webp pdf csv txt md json log zip">
+                ⬆ upload…
+              </button>
+            </>
+          )}
+        </span>
+      ) : (
+        <input style={{ ...input, flex: 1, minWidth: 160, fontSize: 12 }}
+          value={draft} disabled={busy}
+          placeholder={d.hint || (d.kind === 'link' ? 'https://…' : 'your answer…')}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } }} />
+      )}
+      {filled && (
+        <span style={{ ...cfgHint, flex: 'none', whiteSpace: 'nowrap' }}
+          title={`filled by ${d.filled_by}${d.filled_at ? ` ${relTime(d.filled_at)}` : ''}`}>
+          ✓ {d.filled_by}
+        </span>
+      )}
+      {editable && filled && (
+        <button style={{ ...input, cursor: 'pointer', fontSize: 11, padding: '0 6px', color: 'var(--red)', borderColor: 'var(--red)' }}
+          disabled={busy} onClick={() => onClear(id)}
+          title="clear this value (the stored file is kept — clearing must not be destructive)">✕</button>
+      )}
+    </div>
+  );
+}
+
+/**
  * The process chain rendered as ordered accordion steps (board #182, Step 4) —
  * the body of the Summary tab. Each section's header carries one line of
  * substance even when collapsed (owner avatar · number · title · mode/audible/
@@ -1235,6 +1527,7 @@ function StampChip({ stamp }: { stamp?: StepStamp | null }) {
 function ProcessChain({
   steps, viewer, openSteps, onToggle, onComplete, onStamp, onRaiseIssue, busy, err,
   onInsert, onEdit, onRemove, onMove,
+  onFillDeliverable, onClearDeliverable, onUploadDeliverable, onOpenDeliverable,
 }: {
   steps: ChecklistStep[];
   viewer: string;
@@ -1249,6 +1542,10 @@ function ProcessChain({
   onEdit: (index: number) => void;
   onRemove: (index: number) => void;
   onMove: (index: number, dir: number) => void;
+  onFillDeliverable: (id: string, value: string) => void;
+  onClearDeliverable: (id: string) => void;
+  onUploadDeliverable: (id: string, file: File) => void;
+  onOpenDeliverable: (id: string) => void;
 }) {
   const [issueFor, setIssueFor] = useState<string | null>(null);
   const [issueDraft, setIssueDraft] = useState('');
@@ -1279,6 +1576,17 @@ function ProcessChain({
         const accent = owner ? roleColor(owner) : '#64748b';
         const mark = s.done ? '✓' : isCurrent ? '▶' : '·';
         const stampBlocks = !!s.stamp?.required && s.stamp?.state !== 'approved';
+        // Board #184 T10 — the SAME visual language as the stamp gate, not a
+        // second one: one "this step is blocked" treatment, two reasons.
+        const missing = unfilledDeliverables(s, true);
+        const ds = stepDeliverables(s);
+        const blocks = stampBlocks || missing.length > 0;
+        const blockWhy = stampBlocks
+          ? 'this step needs an approved stamp first (T8)'
+          : missing.length
+            ? `needs its required deliverable "${missing[0].label}" before it can be `
+              + 'completed (T10) — fill it, or ⚠ Raise issue → M if you cannot'
+            : '';
         return (
           <div key={key} style={{
             border: '1px solid var(--border)',
@@ -1324,6 +1632,23 @@ function ProcessChain({
                 {s.body
                   ? <Md text={s.body} />
                   : <span style={cfgHint}>_no SOP written for this step yet_</span>}
+                {/* Board #184 §5.1 — the deliverables this step asks for, BELOW
+                    the SOP and ABOVE the Step-6 controls: the ask and the place
+                    you answer it are the same place, which is the whole point.
+                    Renders nothing at all when the step declares none, so every
+                    pre-#184 step is untouched. */}
+                {ds.length > 0 && (
+                  <div style={{ marginTop: 10 }}>
+                    <div style={{ ...cfgHint, marginBottom: 2 }}>
+                      Deliverables <span style={{ color: 'var(--red)' }}>*</span> = required
+                    </div>
+                    {ds.map((d, di) => (
+                      <DeliverableRow key={d.id || di} d={d} editable={!s.done} busy={busy}
+                        onFill={onFillDeliverable} onClear={onClearDeliverable}
+                        onUpload={onUploadDeliverable} onOpen={onOpenDeliverable} />
+                    ))}
+                  </div>
+                )}
                 {/* Step 6 — structured editing on open (not-yet-done) steps.
                     Completed steps are immutable (T4'), so no controls there. */}
                 {!s.done && (
@@ -1358,14 +1683,13 @@ function ProcessChain({
                           title="reject the stamp — records it and routes the task to M (T9)">⛔ Reject</button>
                       </>
                     )}
-                    <button disabled={busy || stampBlocks} onClick={onComplete}
+                    <button disabled={busy || blocks} onClick={onComplete}
                       style={{
-                        ...input, cursor: busy || stampBlocks ? 'default' : 'pointer', fontWeight: 700,
+                        ...input, cursor: busy || blocks ? 'default' : 'pointer', fontWeight: 700,
                         color: '#fff', background: 'var(--blue)', borderColor: 'var(--blue)',
-                        opacity: stampBlocks ? 0.4 : 1,
+                        opacity: blocks ? 0.4 : 1,
                       }}
-                      title={stampBlocks
-                        ? 'this step needs an approved stamp first (T8)'
+                      title={blocks ? blockWhy
                         : 'mark this step complete and hand the task to the next owner — one action'}>
                       ✓ Complete &amp; hand off
                     </button>
@@ -1430,15 +1754,32 @@ function StepForm({ heading, initial, roles, audible, submitLabel, onSubmit, onC
   roles: string[];
   audible: boolean;
   submitLabel: string;
-  onSubmit: (f: { owner: string | null; title: string; mode: 'execute' | 'discuss'; body: string }) => void;
+  onSubmit: (f: {
+    owner: string | null; title: string; mode: 'execute' | 'discuss'; body: string;
+    deliverables: StepDeliverable[];
+  }) => void;
   onCancel: () => void;
 }) {
   const [owner, setOwner] = useState<string | null>(initial?.owner ?? initial?.role ?? null);
   const [title, setTitle] = useState<string>(initial?.title ?? initial?.text ?? '');
   const [mode, setMode] = useState<'execute' | 'discuss'>(initial?.mode ?? 'execute');
   const [body, setBody] = useState<string>(initial?.body ?? '');
-  const canSave = title.trim().length > 0;
-  const submit = () => { if (canSave) onSubmit({ owner, title: title.trim(), mode, body }); };
+  // Board #184 §5.2 — the ONLY place a deliverable spec is authored. Fill state
+  // is never touched here: existing rows keep their server-owned fields
+  // (spread below), and a new row is minted unfilled by makeDeliverable.
+  const [dels, setDels] = useState<StepDeliverable[]>(
+    () => stepDeliverables(initial).map((d) => ({ ...d })));
+  const setDel = (i: number, patchD: Partial<StepDeliverable>) =>
+    setDels((prev) => prev.map((d, j) => (j === i ? { ...d, ...patchD } : d)));
+  const canSave = title.trim().length > 0
+    && dels.every((d) => d.label.trim().length > 0);
+  const submit = () => {
+    if (!canSave) return;
+    onSubmit({
+      owner, title: title.trim(), mode, body,
+      deliverables: dels.map((d) => ({ ...d, label: d.label.trim() })),
+    });
+  };
   const modeBtn = (m: 'execute' | 'discuss'): React.CSSProperties => ({
     ...input, cursor: 'pointer', fontSize: 12, fontWeight: mode === m ? 700 : 400,
     borderColor: mode === m ? (m === 'discuss' ? '#0ea5e9' : 'var(--blue)') : 'var(--border)',
@@ -1489,6 +1830,60 @@ function StepForm({ heading, initial, roles, audible, submitLabel, onSubmit, onC
               value={body} onChange={(e) => setBody(e.target.value)}
               placeholder="constraint set · verification story · known traps…" />
           </label>
+          {/* ── Deliverables (board #184 §5.2) — the authoring side ────────── */}
+          <div>
+            <span style={cfgLabel}>deliverables
+              <span style={cfgHint}> — the evidence this step must produce. Optional by
+                default; tick <b>required</b> only when the SHAPE of the answer is
+                genuinely known (a required one blocks Complete).</span>
+            </span>
+            {dels.map((d, i) => (
+              <div key={d.id || i} style={{
+                display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap',
+                marginTop: 6, paddingTop: 6, borderTop: '1px dashed var(--border)',
+              }}>
+                <select style={{ ...input, width: 92, fontSize: 12 }} value={d.kind}
+                  title={DELIVERABLE_KINDS.find((k) => k.key === d.kind)?.def}
+                  onChange={(e) => setDel(i, { kind: e.target.value as DeliverableKind })}>
+                  {DELIVERABLE_KINDS.map((k) =>
+                    <option key={k.key} value={k.key} title={k.def}>{k.icon} {k.label}</option>)}
+                </select>
+                <input style={{ ...input, flex: 1, minWidth: 150, fontSize: 12 }} value={d.label}
+                  placeholder="the ask, in one line — e.g. link to the merged PR"
+                  onChange={(e) => setDel(i, { label: e.target.value })} />
+                <label style={{ ...cfgHint, display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer' }}
+                  title="required — the owner cannot complete this step until it is filled (T10)">
+                  <input type="checkbox" checked={!!d.required}
+                    onChange={(e) => setDel(i, { required: e.target.checked })} />
+                  required
+                </label>
+                <input style={{ ...input, width: 130, fontSize: 12 }} value={d.hint || ''}
+                  placeholder="hint (optional)"
+                  onChange={(e) => setDel(i, { hint: e.target.value })} />
+                <button type="button" style={{ ...input, cursor: 'pointer', fontSize: 11, padding: '0 6px', color: 'var(--red)', borderColor: 'var(--red)' }}
+                  onClick={() => setDels((prev) => prev.filter((_, j) => j !== i))}
+                  title={isDeliverableFilled(d)
+                    ? 'remove this ask — it is already FILLED, so the thread will record what was dropped'
+                    : 'remove this ask'}>
+                  🗑
+                </button>
+                {isDeliverableFilled(d) && (
+                  <span style={{ ...cfgHint, color: 'var(--green)' }}
+                    title={`filled by ${d.filled_by} — removing it posts a system comment naming the value`}>
+                    ✓ filled
+                  </span>
+                )}
+              </div>
+            ))}
+            <button type="button" disabled={dels.length >= 8}
+              style={{ ...input, cursor: dels.length >= 8 ? 'default' : 'pointer', fontSize: 12, marginTop: 8, opacity: dels.length >= 8 ? 0.4 : 1 }}
+              onClick={() => setDels((prev) => [...prev, makeDeliverable()])}
+              title={dels.length >= 8
+                ? 'a step may declare at most 8 deliverables — if it needs more, it is really two steps'
+                : 'add a deliverable this step must produce'}>
+              ＋ add deliverable
+            </button>
+          </div>
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
           <button type="button" style={{ ...input, cursor: 'pointer' }} onClick={onCancel}>Cancel</button>

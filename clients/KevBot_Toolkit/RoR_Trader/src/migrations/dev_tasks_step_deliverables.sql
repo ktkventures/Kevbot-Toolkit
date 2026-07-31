@@ -1,0 +1,107 @@
+-- Step deliverables — the ask captured inside the step that asks for it
+-- (2026-07-31, board #184, Step 3). See docs/_active/Spec_Step_Deliverables.md.
+--
+-- ⛔ NO DDL IN THIS FILE, AND NOTHING TO RUN. It is the written record of a
+-- JSONB shape widening, in the style of dev_tasks_process_chain.sql §1. There
+-- is exactly ONE infra action to take, and it is NOT a migration — see §3.
+--
+-- ADDITIVE + BACK-COMPATIBLE. `dev_tasks.checklist` is already JSONB (added in
+-- dev_tasks_checklist.sql) and already whitelisted for PATCH. A step with no
+-- `deliverables` key behaves EXACTLY as it did before #184 — the API's
+-- `_deliverables()` reads absent and empty as the same thing, and every gate
+-- below is a no-op on an empty list. The 42 legacy checklists are untouched and
+-- there is NO retroactive backfill (#182 Step 9's retrofit-on-touch rule).
+
+-- ── 1. Widened step shape (dev_tasks.checklist, already JSONB) ───────────────
+-- The #182 step object gains ONE optional key:
+--
+--     step.deliverables : [ deliverable ]   -- ordered, optional, default absent
+--
+--     deliverable = {
+--       -- SPEC (authored: who asks, for what). Editable through the GENERIC
+--       -- checklist PATCH, on a not-yet-done step only.
+--       id           : text   -- server-assigned, uuid4 hex[:12] (like step.id).
+--                             -- The fill endpoints address a deliverable BY ID,
+--                             -- so a reorder must never re-point a stored value
+--                             -- at a different ask.
+--       kind         : text   -- 'text' | 'link' | 'file'. THREE, no more —
+--                             -- selects/dates/numbers would make this a form
+--                             -- builder rather than a step (spec §8).
+--       label        : text   -- the ask, one line: "link to the merged PR"
+--       required     : bool   -- DEFAULT false. Optional-by-default is the
+--                             -- ruling (Kevin 07-28): a required input encodes
+--                             -- a guess about the SHAPE of evidence, usually
+--                             -- made before anyone has run the process.
+--       hint         : text   -- placeholder / help line          default ""
+--
+--       -- FILLED STATE (server-owned). A generic PATCH may NEVER touch these —
+--       -- it 409s (_DELIVERABLE_FILL_FIELDS). Only the /steps/deliverables/*
+--       -- endpoints write them, exactly as only /steps/complete writes `done`.
+--       value        : text|null  -- text: the answer · link: the URL ·
+--                                 -- file: the STORAGE OBJECT PATH (never a URL:
+--                                 -- a URL would either expire inside the record
+--                                 -- or leak past the admin gate)
+--       filename     : text|null  -- file only
+--       size_bytes   : int|null   -- file only
+--       content_type : text|null  -- file only
+--       filled_at    : timestamptz|null
+--       filled_by    : text|null
+--     }
+--
+-- LIMITS, enforced in the API and named in every refusal (no silent clamping):
+--   ≤ 8 deliverables per step · label ≤ 120 chars · text value ≤ 4000 chars ·
+--   link must match ^https?://\S+$ · file ≤ 10 MB · file EXTENSION in
+--   (png jpg jpeg gif webp pdf csv txt md json log zip).
+--
+-- The extension is the upload gate, not the client-declared Content-Type: the
+-- extension is a durable property of the stored object, a Content-Type header
+-- is whatever the uploader claims. The declared type is still RECORDED (the
+-- read path needs it) — recorded, not trusted.
+--
+-- JSONB semantics unchanged: the API/UI always write the WHOLE checklist array
+-- (a partial dict REPLACES a JSONB value rather than merging into it —
+-- memory: feedback_jsonb_partial_updates).
+
+-- ── 2. Completion gate T10 (behaviour, not schema) ──────────────────────────
+-- POST /{id}/steps/complete gains one refusal, AFTER the T8 stamp check:
+--   a step with an unfilled REQUIRED deliverable cannot be completed (409).
+-- Optional-unfilled deliverables are RECORDED, never blocked: the step's
+-- existing system comment gains `· N optional deliverables left unfilled: …`.
+-- That comment is the durable half of "visible, not silent" — a UI dialog
+-- nobody records is not visibility.
+
+-- ── 3. THE ONE INFRA ACTION — a Storage bucket. NOT APPLIED BY THIS FILE. ────
+--
+--   name        : task-deliverables
+--   public      : FALSE  (private)
+--   file limit  : 10 MB  (the API refuses over-size before touching storage)
+--   policy      : none beyond the default — the service-role client is the only
+--                 reader/writer. Every route that touches it is admin-gated,
+--                 and reads are served as 1-hour signed URLs minted ON CLICK
+--                 (GET .../deliverables/{id}/url), never on board load.
+--   path layout : task-{task_id}/step-{step_id}/{uuid4hex}-{sanitized_filename}
+--
+-- PRIVATE, not public: the board is admin-gated, and a public-read bucket URL
+-- walks straight past that gate. Deliverables are not guaranteed to be
+-- innocuous screenshots. The cost of private is the click-time signed URL, and
+-- that cost is accepted.
+--
+-- ⚠ AUTHORIZATION: creating a production bucket is the same class of action as
+-- DDL — Kevin authorizes it BY NAME, then he or M applies it, and only then may
+-- the code merge. A dispatch brief is not authorization; a relayed "OK" is not
+-- authorization. Until the bucket exists, the upload endpoint fails LOUD with
+-- 502 naming the missing bucket (it does not silently degrade), and text/link
+-- deliverables work regardless — nothing else in #184 depends on it.
+--
+-- ⚠ ONE BUCKET, NOT TWO: Spec_Task_Thread_Screenshots.md (Backlog) proposes its
+-- own `task-screenshots` bucket + upload endpoint. It should be re-pointed at
+-- this one when it comes off the backlog (#184 chain step 6).
+--
+-- ORPHANS are deliberate. Clearing a value, or deleting a not-yet-done step
+-- that carried an upload, leaves the object in the bucket: deleting on the
+-- delete path would make an audit-trail edit destructive. A periodic orphan
+-- sweep is a named follow-up (spec §9.1), not a silent omission.
+
+-- RLS unchanged: dev_tasks / dev_task_comments already have RLS enabled with no
+-- public policy; only the service-role (admin) client reaches them, through
+-- admin-gated endpoints.
