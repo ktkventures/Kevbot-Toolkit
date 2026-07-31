@@ -68,5 +68,40 @@
   "incremental_class": {
     "module": "indicator_incremental",
     "class_name": "SrChannelsIncremental"
-  }
+  },
+  "flag_variants": [
+    {
+      "env": "RORT_SR_CHANNELS_PINE",
+      "description": "Board #73 — faithful rebuild against reference-indicators/sr_channels.pine. Default OFF: the legacy v2.0.0 implementation is used, unchanged. See docs/_active/Audit_SR_Channels_vs_Pine.md.",
+      "indicator_function": "calculate_sr_channels_pine",
+      "interpreter_function": "interpret_sr_channels_pine",
+      "incremental_class": "SrChannelsPineIncremental",
+      "manifest_overrides": {
+        "outputs": [
+          "ABOVE_RESISTANCE",
+          "IN_CHANNEL",
+          "BETWEEN_LEVELS",
+          "BELOW_SUPPORT"
+        ],
+        "output_descriptions": {
+          "ABOVE_RESISTANCE": "Price is above EVERY identified S/R channel — breakout territory",
+          "IN_CHANNEL": "Price is inside a channel. The Pine assigns no direction here — its grey inch_col state",
+          "BETWEEN_LEVELS": "Price is between S/R channels, not inside any channel",
+          "BELOW_SUPPORT": "Price is below EVERY identified S/R channel — breakdown territory"
+        },
+        "indicator_columns": [
+          "src_nearest_top",
+          "src_nearest_bot",
+          "src_num_channels",
+          "src_in_channel",
+          "src_res_broken",
+          "src_sup_broken",
+          "src_nearest_top_prev",
+          "src_nearest_bot_prev",
+          "src_ch_above",
+          "src_ch_below"
+        ]
+      }
+    }
+  ]
 }
