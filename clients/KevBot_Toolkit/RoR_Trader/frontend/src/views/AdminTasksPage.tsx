@@ -26,9 +26,10 @@ import {
   COLLAPSED_LS_KEY, RUN_REQUESTED_TAG, STATUS_DEF, STATUSES, withLegacy,
   statusOptionsFor, cell, input, badge, tagChip, NextChip, ProgressBar, RunButton,
   RETIRED_TAGS, StampButtons, TwoTouchChip, ImpactSelect, defaultChain,
-  groupBoard, isVisionTask, StuckChip, isStuckInTodo, HandoffChain,
+  groupBoard, StuckChip, isStuckInTodo, HandoffChain,
   AiEligibleToggle, RunStatePill, runState, isFinished, StampMode,
   AgentMeta, AgentRegistryContext, agentRegistryMap, MultiSelectFilter,
+  taskTypeOf, TaskTypeIcon, TASK_TYPES,
 } from './taskBoardShared';
 // Board #246 — multi-select predicates, in a plain-JS module so a test can
 // execute them for real rather than source-scan them (see taskFilters.js).
@@ -238,9 +239,11 @@ export default function AdminTasksPage() {
   // implementation shared with /admin/roadmap (Spec_Admin_Roadmap.md §2).
   const { byParent, visionItems, looseTasks } = useMemo(() => groupBoard(tasks), [tasks]);
 
-  // Vision rows are EXEMPT from the Approval/Review/Staged pipeline (board
-  // #136) — they track via their subtasks.
-  const isVision = (t: Task) => isVisionTask(t, byParent);
+  // The row's TYPE (board #261) — explicit `task_type`, falling back to the
+  // pre-#261 derivation. Everything per-type (status set, row glyph) reads this,
+  // never a re-derivation. Vision rows are EXEMPT from the
+  // Approval/Review/Staged pipeline (board #136) — they track via their subtasks.
+  const typeOf = (t: Task) => taskTypeOf(t, byParent.has(t.id));
 
   // Board #151 contradiction: Todo + next-actor Kevin (needs subtasks).
   const stuck = (t: Task) => isStuckInTodo(t, byParent.get(t.id) || []);
@@ -291,7 +294,14 @@ export default function AdminTasksPage() {
   // disagree. Its COUNT keeps the vision exemption (board #136 — vision rows
   // never wait on a stamp); the filtered view is therefore a superset of the
   // count, never a subset, which is the safe direction to be wrong in.
-  const awaitingCount = tasks.filter((t) => t.status === 'Approval' && !isVision(t)).length;
+  //
+  // Board #261 — the exemption is now read from the TYPE MAP ("does this type
+  // even have an Approval status?") instead of a hand-written `!isVision`.
+  // Identical today, since `vision` is the only type without it; correct
+  // tomorrow, because a `goal` DOES stop at Approval (Kevin authorises it to
+  // start) and must not be silently dropped from his stamp inbox.
+  const awaitingCount = tasks.filter((t) => t.status === 'Approval'
+    && TASK_TYPES[typeOf(t)].statuses.includes('Approval')).length;
   const awaitingOk = statusFilter.length === 1 && statusFilter[0] === 'Approval';
 
   // THE Approval stamp (board #136, one mode since #232): POST /stamp flips
@@ -412,6 +422,9 @@ export default function AdminTasksPage() {
           </span>
         )}
         {indent && <span style={{ color: 'var(--text-tertiary)' }}>↳ </span>}
+        {/* board #261 — the TYPE, visible on the row (Kevin's ask). Container
+            types wear a glyph; `action` (the default row) wears none. */}
+        <TaskTypeIcon type={typeOf(t)} />
         {t.title}
         {rollup && (
           <span style={{
@@ -445,7 +458,7 @@ export default function AdminTasksPage() {
         <select style={{ ...input, color: STATUS_COLOR[t.status] }} value={t.status}
           title={STATUS_DEF[t.status] || ''}
           onChange={(e) => patch(t.id, { status: e.target.value })}>
-          {statusOptionsFor(t, isVision(t)).map((s) =>
+          {statusOptionsFor(t, typeOf(t)).map((s) =>
             <option key={s} value={s} title={STATUS_DEF[s]}>{s}</option>)}
         </select>
       </td>
