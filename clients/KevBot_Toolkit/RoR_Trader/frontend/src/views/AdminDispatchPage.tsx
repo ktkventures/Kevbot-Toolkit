@@ -675,12 +675,22 @@ export default function AdminDispatchPage() {
     return days;
   }, [logRows]);
 
+  /**
+   * Board #248 — `actor` rides along, exactly as AdminTasksPage's `patch` does.
+   * Today this only ever sends `ai_eligible`, which the API's new rail does not
+   * gate; it is here so the FIRST status field anyone adds to this page is
+   * attributed on arrival rather than rejected (or, worse, logged anonymously
+   * had the rail not existed). `author` is this page's own actor picker.
+   */
   const patchTask = useCallback(async (id: number, fields: Partial<Task>) => {
     try {
-      await apiFetch(`/api/dev-tasks/${id}`, { method: 'PATCH', body: JSON.stringify(fields) });
+      await apiFetch(`/api/dev-tasks/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ ...fields, actor: author || 'kevin' }),
+      });
     } catch (e) { setErr(String(e)); }
     load();
-  }, [load]);
+  }, [author, load]);
 
   const requestRun = useCallback(async (id: number) => {
     try {

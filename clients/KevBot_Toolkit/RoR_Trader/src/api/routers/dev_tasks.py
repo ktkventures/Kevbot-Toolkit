@@ -528,12 +528,36 @@ def update_task(task_id: int, payload: dict = Body(...),
 
     Status/assignee changes auto-log a system activity entry on the comment
     thread ("status: Todo → In Progress (by F)") so handoffs stay traceable.
-    The optional `actor` field names who made the change; it is not a task
-    column and never lands on the row.
+    The `actor` field names who made the change; it is not a task column and
+    never lands on the row.
+
+    **`actor` is REQUIRED whenever the patch carries `status`** (board #248).
+    It used to be optional, and an optional audit field that every caller can
+    forget is not an audit field: 12 `status: X → Y` lines went to the thread
+    with nobody's name on them. Anything else stays exactly as it was —
+    assignee-only, title, tags, `ai_eligible` — because those are where the
+    headless reassign path lives and breaking it would cost more than it buys.
 
     Closing a task DISARMS it (`ai_eligible=false`, board #198) — see below.
     """
     row = {k: v for k, v in payload.items() if k in _EDITABLE}
+    # ── Board #248 — A STATUS CHANGE NAMES ITS ACTOR ────────────────────────
+    # Fail loud rather than log anonymously. The refusal is deliberately narrow:
+    # only a patch that SETS `status`. A patch that sets `assignee` alone is
+    # untouched, which is what keeps the ASSIGNEE CONTRACT (board #171 — every
+    # headless run PATCHes `assignee` on its way out) working unchanged.
+    #
+    # This closes the SMALLER half of #248. The larger half is not reachable
+    # from here at all: 175 of 178 finished tasks have NO arrival line, because
+    # the write went to PostgREST and never touched this endpoint. That half is
+    # closed in `dispatcher.api()`, which refuses the bypass at the source.
+    if "status" in row and not str(payload.get("actor") or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="a status change must name its actor — send `actor` "
+                   "(e.g. {\"status\": \"Done\", \"actor\": \"M\"}). It is not "
+                   "a task column; it names who made the change on the "
+                   "activity line (board #248)")
     # Board #198 audible — DISARM ON CLOSE. `ai_eligible` is the arming switch
     # ("may an AI run this"); once a task is Done the answer is permanently no,
     # so closing it clears the arm rather than leaving `Done` + armed rows on the
