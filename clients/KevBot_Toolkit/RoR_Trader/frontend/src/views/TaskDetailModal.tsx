@@ -41,6 +41,9 @@ import {
   SlashItem, SlashMenu, filterSlashItems, applySlashInsert, detectSlash,
   makeChainStep, chainStarted, AiEligibleToggle, RunStatePill, LaneKindChip,
   isFinished, StampMode, taskTypeOf, TaskTypeIcon, TASK_TYPES,
+  GOAL_PARAM_FIELDS, AUTONOMY_DEF, Autonomy, autonomyOf, autonomyPatch,
+  goalParamsOf, goalParamsPatch, missingGoalParams, renderGoalBlock,
+  goalNestError, GoalFieldDef, inheritedAutonomy,
 } from './taskBoardShared';
 import { Md, MD_CSS } from './taskMarkdown';
 
@@ -67,7 +70,7 @@ const cfgHint: React.CSSProperties = { fontSize: 11, color: 'var(--text-tertiary
 // skips ticks entirely while the tab is hidden.
 const POLL_MS = 15000;
 
-type Tab = 'summary' | 'process' | 'config';
+type Tab = 'summary' | 'process' | 'config' | 'goal';
 
 /** One consolidated modal-poll round-trip (board #148, GET .../poll). */
 interface PollResponse {
@@ -111,7 +114,14 @@ export default function TaskDetailModal({
   // hand-written copy of `isVisionTask`'s derivation; the modal and the board
   // must never disagree about what a row IS, so both now call `taskTypeOf`.
   const taskType = taskTypeOf(task, subtasks.length > 0);
-  const vision = taskType === 'vision';
+  // CONTAINER, not literally vision (board #262). Everything below that used to
+  // ask `taskType === 'vision'` meant "does this row hold subtasks" — which is
+  // now two types. Read off the map's `children` flag so a goal gets the same
+  // selector strip, the same roll-up counts and the same pipeline exemption a
+  // vision gets; without this a goal renders as a LEAF and its children have
+  // nowhere on the board to appear.
+  const vision = !!TASK_TYPES[taskType]?.children;
+  const isGoal = taskType === 'goal';
   const parent = task.parent_id != null ? allTasks.find((t) => t.id === task.parent_id) : undefined;
 
   // Selector state: which item the Context + Activity panels are scoped to.
@@ -447,8 +457,30 @@ export default function TaskDetailModal({
 
   const scopedIsLeaf = scoped.id === task.id ? !vision : true;
   const scopedDone = steps.filter((s) => s.done).length;
+  // Board #262 — the Goal tab exists ONLY on a goal-typed row, and only when
+  // the scope is that row (a selected subtask is an action task; it has no
+  // goal params of its own). Same fall-back shape as the Process tab.
+  const goalTabOk = isGoal && scoped.id === task.id;
+  // Surfaced on the tab chip itself, so "this goal cannot start yet" is visible
+  // without opening the tab.
+  const goalMissing = useMemo(
+    () => (isGoal ? missingGoalParams(task) : []), [isGoal, task]);
+  // The type of whatever the Config tab is SHOWING (the modal task, or a
+  // selected subtask) — the nesting guard is rendered against this, not the
+  // header task's type.
+  const scopedType = useMemo(
+    () => taskTypeOf(scoped, allTasks.some((t) => t.parent_id === scoped.id)),
+    [scoped, allTasks]);
+  // The SCOPED item's parent — not the modal task's (`parent` above). When a
+  // goal's subtask is selected, the container IS the modal task.
+  const scopedParent = useMemo(
+    () => (scoped.parent_id != null
+      ? allTasks.find((t) => t.id === scoped.parent_id) || null : null),
+    [scoped.parent_id, allTasks]);
+  const parentIsGoal = !!scopedParent && taskTypeOf(scopedParent, true) === 'goal';
   // Process tab is invalid when the scope is the vision itself — fall back.
-  const effTab: Tab = tab === 'process' && !scopedIsLeaf ? 'summary' : tab;
+  const effTab: Tab = (tab === 'process' && !scopedIsLeaf)
+    || (tab === 'goal' && !goalTabOk) ? 'summary' : tab;
 
   const selectRow = (id: number) => setSelected(id);
 
@@ -567,6 +599,12 @@ export default function TaskDetailModal({
                     process {steps.length > 0 ? `${scopedDone}/${steps.length}` : ''}
                   </button>
                 )}
+                {goalTabOk && (
+                  <button style={chipBtn(effTab === 'goal')} onClick={() => setTab('goal')}
+                    title="goal parameters + the context block for Claude’s built-in /goal">
+                    ⚑ goal {goalMissing.length ? `· ${goalMissing.length} missing` : ''}
+                  </button>
+                )}
                 <button style={chipBtn(effTab === 'config')} onClick={() => setTab('config')}>config</button>
                 <span style={{ flex: 1 }} />
                 {effTab === 'summary' && !ctxEdit &&
@@ -666,6 +704,10 @@ export default function TaskDetailModal({
                   </>
                 )}
 
+                {effTab === 'goal' && goalTabOk && (
+                  <GoalPanel task={task} type={taskType} patch={patch} />
+                )}
+
                 {effTab === 'config' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 560 }}>
                     <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
@@ -690,16 +732,38 @@ export default function TaskDetailModal({
                           <ImpactSelect t={scoped} onPick={(v) => patch(scoped.id, { impact: v })} />
                         </div>
                       </label>
-                      <label style={cfgLabel}>parent vision
-                        <div style={{ marginTop: 2 }}>
-                          <select style={input} value={scoped.parent_id ?? ''}
-                            onChange={(e) => patch(scoped.id, { parent_id: e.target.value ? +e.target.value : null })}>
-                            <option value="">— none (vision) —</option>
-                            {visionOptions.filter((v) => v.id !== scoped.id).map((v) =>
-                              <option key={v.id} value={v.id}>#{v.id} {v.title.slice(0, 32)}</option>)}
-                          </select>
-                        </div>
-                      </label>
+                      {/* Board #262 — THE NESTING GUARD, stated where the
+                          nesting would be done. A goal is a top-level
+                          container: no parent select at all, rather than a
+                          select whose every choice the API will refuse. The
+                          refusal text is the shared `goalNestError`, so the UI
+                          and the API say the same thing. */}
+                      {scopedType === 'goal' ? (
+                        <label style={cfgLabel}>parent container
+                          <div style={{ ...cfgHint, marginTop: 4, maxWidth: 340 }}>
+                            {goalNestError('goal', scoped.parent_id ?? 1)}
+                            {scoped.parent_id != null && (
+                              <div style={{ color: 'var(--red)', marginTop: 4 }}>
+                                ⚠ this goal HAS a parent (#{scoped.parent_id}) — clear it, or
+                                make it a vision.{' '}
+                                <button style={{ ...input, cursor: 'pointer', fontSize: 11 }}
+                                  onClick={() => patch(scoped.id, { parent_id: null })}>clear parent</button>
+                              </div>
+                            )}
+                          </div>
+                        </label>
+                      ) : (
+                        <label style={cfgLabel}>parent container
+                          <div style={{ marginTop: 2 }}>
+                            <select style={input} value={scoped.parent_id ?? ''}
+                              onChange={(e) => patch(scoped.id, { parent_id: e.target.value ? +e.target.value : null })}>
+                              <option value="">— none (top level) —</option>
+                              {visionOptions.filter((v) => v.id !== scoped.id).map((v) =>
+                                <option key={v.id} value={v.id}>#{v.id} {v.title.slice(0, 32)}</option>)}
+                            </select>
+                          </div>
+                        </label>
+                      )}
                       {scoped.parent_id != null && (
                         <label style={cfgLabel}>origin
                           <div style={{ marginTop: 2 }}>
@@ -751,8 +815,32 @@ export default function TaskDetailModal({
                       <label style={{ fontSize: 13, display: 'block', marginBottom: 6 }}>
                         <input type="checkbox" checked={!!scoped.standing_approval}
                           onChange={(e) => patch(scoped.id, { standing_approval: e.target.checked })} /> 🪪 standing approval
-                        <span style={cfgHint}> — pre-approved class of work (07-25 agreement); no pipeline logic reads it yet</span>
+                        {/* Board #262 wired this column: it IS a goal's
+                            `autonomy`. Editing it here and editing autonomy on
+                            the Goal tab are the SAME switch — which is the
+                            point; a second field would be two switches for one
+                            decision. */}
+                        <span style={cfgHint}> — pre-approved class of work (07-25 agreement).
+                          On a <b>goal</b> this is its <code>autonomy</code>: on = <code>standing</code>,
+                          off = <code>approve_each</code> (board #262). Elsewhere still declarative.</span>
                       </label>
+                      {/* Board #262 — a goal's child INHERITS its autonomy
+                          unless it overrides it. Shown, not silently applied:
+                          the child's own checkbox above says nothing about what
+                          it inherited, and a session reading only that would get
+                          it wrong. */}
+                      {parentIsGoal && (
+                        <div style={{ fontSize: 12.5, marginBottom: 6 }}>
+                          ⚑ inherited autonomy:{' '}
+                          <code>{inheritedAutonomy(scoped, scopedParent)}</code>
+                          <span style={cfgHint}>
+                            {' '}— from goal #{scopedParent?.id}
+                            {String(goalParamsOf(scoped).autonomy_override || '').trim()
+                              ? ' (OVERRIDDEN by this task’s goal_params.autonomy_override)'
+                              : ' (inherited — set goal_params.autonomy_override to differ)'}
+                          </span>
+                        </div>
+                      )}
                       {/* board #198 — the same switch as the header, scoped to
                           whichever item the Config tab is showing (so a subtask
                           can be armed without leaving the vision's modal).
@@ -961,6 +1049,151 @@ export default function TaskDetailModal({
     </div>,
     document.body,
   );
+}
+
+/**
+ * THE GOAL TAB (board #262) — a goal's parameters, and the context block that
+ * starts its session.
+ *
+ * Two halves, in the order they are used: the editor above, the block below.
+ *
+ * THE BLOCK IS FOR CLAUDE'S BUILT-IN `/goal`. It is not a skill, a runner or a
+ * scheduler, and this file must never grow into one (Kevin's ruling, 07-31).
+ * The block is self-sufficient on purpose — the built-in's own prompt cannot be
+ * introspected from here, so it states the objective, the end condition and the
+ * rails outright instead of assuming it will be asked.
+ *
+ * THE REFUSAL IS THE GATE. Rendered from `renderGoalBlock`, which returns no
+ * block at all when `done_when` is blank — so there is nothing to copy, and a
+ * goal with no end condition cannot be started. That is the whole enforcement
+ * mechanism for this task (M's step-1 decision: the render, not the API — a
+ * half-written goal must still SAVE, because that is what a draft is).
+ */
+function GoalPanel({ task, type, patch }: {
+  task: Task;
+  type: ReturnType<typeof taskTypeOf>;
+  patch: (id: number, body: Record<string, unknown>) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const params = goalParamsOf(task);
+  const autonomy = autonomyOf(task);
+  const rendered = renderGoalBlock(task, type, apiHostForBlock());
+
+  const setParam = (key: string, value: unknown) =>
+    patch(task.id, goalParamsPatch(task, key, value));
+
+  const copy = async () => {
+    if (!rendered.block) return;
+    try {
+      await navigator.clipboard.writeText(rendered.block);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);   // clipboard denied — the textarea below is the fallback
+    }
+  };
+
+  const fieldInput = (f: GoalFieldDef) => {
+    const missing = f.required && !f.column && !String(params[f.key] ?? '').trim();
+    const border = missing ? { borderColor: 'var(--red)' } : {};
+    if (f.column === 'standing_approval') {
+      // THE WIRING: autonomy reads and writes the EXISTING column. There is no
+      // `goal_params.autonomy` — see `autonomyOf`.
+      return (
+        <select style={{ ...input, width: '100%', marginTop: 2 }} value={autonomy}
+          onChange={(e) => patch(task.id, autonomyPatch(e.target.value as Autonomy))}>
+          {(f.options || []).map((o) => (
+            <option key={o} value={o} title={AUTONOMY_DEF[o as Autonomy]}>{o}</option>
+          ))}
+        </select>
+      );
+    }
+    if (f.kind === 'textarea') {
+      return (
+        <textarea key={`${f.key}-${task.id}`}
+          style={{ ...input, ...border, width: '100%', marginTop: 2, minHeight: 56, fontSize: 12.5 }}
+          defaultValue={String(params[f.key] ?? '')}
+          onBlur={(e) => {
+            if (e.target.value !== String(params[f.key] ?? '')) setParam(f.key, e.target.value.trim());
+          }} />
+      );
+    }
+    const shown = f.kind === 'list' && Array.isArray(params[f.key])
+      ? (params[f.key] as string[]).join(', ')
+      : String(params[f.key] ?? '');
+    return (
+      <input key={`${f.key}-${task.id}`}
+        style={{ ...input, ...border, width: '100%', marginTop: 2 }}
+        defaultValue={shown}
+        onBlur={(e) => {
+          const v = f.kind === 'list'
+            ? e.target.value.split(',').map((s) => s.trim()).filter(Boolean)
+            : e.target.value.trim();
+          if (JSON.stringify(v) !== JSON.stringify(f.kind === 'list' ? (Array.isArray(params[f.key]) ? params[f.key] : []) : shown)) {
+            setParam(f.key, f.kind === 'list' && !(v as string[]).length ? '' : v);
+          }
+        }} />
+    );
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 640 }}>
+      <div style={cfgHint}>
+        A <b>goal</b> is a container that carries its own session. These parameters ARE
+        the session’s brief: they render the context block below, which is pasted into a
+        session running Claude’s <b>built-in</b> <code>/goal</code>. Nothing here runs a
+        goal — no skill, no runner, no scheduler.
+      </div>
+
+      {GOAL_PARAM_FIELDS.map((f) => (
+        <label key={f.key} style={cfgLabel}>
+          <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{f.key}</span>
+          {f.required && <span style={{ color: 'var(--red)', marginLeft: 4 }}>*required</span>}
+          {f.column && (
+            <span style={{ ...cfgHint, marginLeft: 6 }}>
+              → column <code>{f.column}</code>
+            </span>
+          )}
+          <div style={cfgHint}>{f.hint}</div>
+          {fieldInput(f)}
+        </label>
+      ))}
+
+      <div style={{ borderTop: '1px solid var(--border)', paddingTop: 10 }}>
+        <div style={{ ...cfgLabel, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+          context block — paste into a session running <code>/goal</code>
+          {rendered.ok && (
+            <button style={{ ...input, cursor: 'pointer', fontSize: 11 }} onClick={copy}>
+              {copied ? '✓ copied' : 'copy'}
+            </button>
+          )}
+        </div>
+        {!rendered.ok && (
+          <div style={{
+            border: '1px solid var(--red)', borderRadius: 8, padding: '8px 10px',
+            fontSize: 12.5, color: 'var(--red)', background: 'rgba(220,60,60,0.08)',
+          }}>
+            <b>⛔ no block.</b> {rendered.refusal}
+          </div>
+        )}
+        {rendered.ok && rendered.block && (
+          <textarea readOnly value={rendered.block}
+            style={{
+              ...input, width: '100%', minHeight: 300, fontFamily: 'monospace',
+              fontSize: 11.5, lineHeight: 1.45,
+            }} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** The API origin written INTO the block, so the goal session is told where the
+ *  board actually is rather than guessing. Falls back to a placeholder the
+ *  reader will notice rather than a wrong host (no silent defaults). */
+function apiHostForBlock(): string {
+  const env = process.env.NEXT_PUBLIC_API_URL;
+  return (env && env.replace(/\/+$/, '')) || '<api-host>';
 }
 
 /** A step's approval-gate chip (board #182). Renders only for a stamp that is
