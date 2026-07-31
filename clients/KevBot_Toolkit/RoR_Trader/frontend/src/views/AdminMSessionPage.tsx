@@ -63,6 +63,8 @@ import {
   stepOwner, stepTitle, tagChip, utcDay, utcStamp,
 } from './taskBoardShared';
 import { MD_CSS, Md } from './taskMarkdown';
+import SignOfLife from './SignOfLife';
+import { HeartbeatPayload } from './rSessionSignals';
 import {
   FEED_MAX_HEIGHT, FEED_PAGE_ROWS, FEED_RULES, FeedClass, FeedComment, FeedEvent,
   InboxItem, MMark, MOrderRow, MSessionState, M_SESSION_AUTHOR, RulesPayload,
@@ -186,6 +188,20 @@ export default function AdminMSessionPage() {
   const [saveErr, setSaveErr] = useState<string | null>(null);
   const [markNote, setMarkNote] = useState<{ key: string; text: string } | null>(null);
 
+  // ── Sign of life (board #251) — is anyone actually running? ─────────────
+  // Rendered on BOTH session dashboards from the SAME component and the SAME
+  // endpoint, so the two surfaces can never disagree about whether R is alive.
+  // On 07-30 the missing piece was not information, it was a session that was
+  // looking; this strip is the part of the page that says so out loud.
+  const [hb, setHb] = useState<HeartbeatPayload | null>(null);
+  const [hbErr, setHbErr] = useState<string | null>(null);
+  const loadHeartbeats = useCallback(async () => {
+    try {
+      setHb(await apiFetch<HeartbeatPayload>('/api/r-session/heartbeats'));
+      setHbErr(null);
+    } catch (e) { setHb(null); setHbErr(String(e)); }
+  }, []);
+
   const loadStore = useCallback(async () => {
     try {
       setStoreErr(null);
@@ -219,6 +235,7 @@ export default function AdminMSessionPage() {
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => { loadStore(); }, [loadStore]);
+  useEffect(() => { loadHeartbeats(); }, [loadHeartbeats]);
   useEffect(() => {
     // The rules are files on disk; they change on a deploy, not on a timer, so
     // this is a one-shot read rather than part of the 30s refresh.
@@ -227,10 +244,10 @@ export default function AdminMSessionPage() {
   }, []);
   useEffect(() => {
     const id = setInterval(() => {
-      if (!document.hidden) { load(); loadStore(); }
+      if (!document.hidden) { load(); loadStore(); loadHeartbeats(); }
     }, REFRESH_MS);
     return () => clearInterval(id);
-  }, [load, loadStore]);
+  }, [load, loadStore, loadHeartbeats]);
   useEffect(() => {
     const id = setInterval(() => setTick((n) => n + 1), 5000);
     return () => clearInterval(id);
@@ -444,6 +461,7 @@ export default function AdminMSessionPage() {
         </span>
         <button style={{ ...input, cursor: 'pointer', fontSize: 12 }} onClick={load}>↻ refresh</button>
       </div>
+      <SignOfLife hb={hb} error={hbErr} />
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 14, maxWidth: 980 }}>
         One surface for the M session, so the watch-list lives in a RULE TABLE rather than in M&apos;s
         head — and so Kevin can see what M is holding, in what order, and under what rules. Every
