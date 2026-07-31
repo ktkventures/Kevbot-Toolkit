@@ -129,6 +129,11 @@ const navItems: NavItem[] = [
   {
     href: '/admin/agents', label: 'Team', icon: '⚑',
     children: [
+      // Board #257 — the OWNER's page, first because it is the one Kevin opens.
+      // The others answer "what is happening"; this one answers "what is
+      // waiting on ME", which is a different product and deliberately not a
+      // second manager dashboard.
+      { href: '/admin/kevin', label: 'Your Dashboard' },
       { href: '/admin/agents', label: 'Agents' },
       { href: '/admin/dispatch', label: 'Dispatch' },
       // Board #220 — /admin/dispatch answers STATE (what is running); this
