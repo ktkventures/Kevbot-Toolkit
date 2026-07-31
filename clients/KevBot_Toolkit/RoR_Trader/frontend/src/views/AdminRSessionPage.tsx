@@ -86,7 +86,9 @@ const Panel = ({ n, title, sub, right, children }: {
   <div style={{ marginBottom: 16 }}>
     <Card>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 10 }}>
-        <div style={{ flex: 1 }}>
+        {/* board #278 — `minWidth: 0` so a long token in `sub` cannot push
+            `right` (the headline number) off the card. */}
+        <div style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
           <div style={{
             fontSize: 11, fontWeight: 700, letterSpacing: 0.8, textTransform: 'uppercase',
             color: 'var(--text-tertiary)',
