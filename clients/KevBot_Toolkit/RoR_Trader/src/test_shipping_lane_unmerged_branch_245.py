@@ -258,21 +258,44 @@ ok("a Done/Closed task drops off too (the #232 finished SET, unchanged)",
    run_js([task(240, status="Closed")], {"240": RUNS["240"]}, True)["ids"] == [])
 ok("the merge source is the release-lane step, named in the page",
    "car_ship_tick" in PAGE and "merge-base --is-ancestor" in PAGE)
-ok("the ship-step owner list MIRRORS car_ship_tick.py's SHIP_OWNERS",
-   # Quote-AGNOSTIC on both sides. The first cut matched `'...'` only, so it read
-   # #242's `SHIP_OWNERS = ("R", "R-A")` (double quotes) as an EMPTY list and the
-   # mirror "failed" while the two lists were in fact identical. A cross-file
-   # mirror must not depend on the other file's quote style. Caught by the Wave-26
-   # combined-tree gate: both branches were green alone.
-   sorted(re.findall(r"['\"]([^'\"]+)['\"]",
-                     re.search(r"export const SHIP_STEP_OWNERS = \[([^\]]*)\]", PAGE).group(1)))
-   == sorted(re.findall(r"['\"]([^'\"]+)['\"]",
-                        re.search(r"^SHIP_OWNERS = \(([^)]*)\)",
-                                  read(ROOT, "tools", "release_brief", "car_ship_tick.py"),
-                                  re.M).group(1)))
-   if os.path.exists(os.path.join(ROOT, "tools", "release_brief", "car_ship_tick.py"))
-   else "SHIP_STEP_OWNERS" in PAGE,
-   "car_ship_tick.py is board #242 and may not have merged yet")
+# BOARD #269: the Python side of this mirror MOVED. It used to be a literal in
+# `car_ship_tick.py`; it is now the single definition in `release_lane.py`, which
+# `car_ship_tick.py` and `brief_gen.py` both import. The move is the fix: the
+# literal lived in one tool, `brief_gen.py` re-typed `== "R"` instead of reading
+# it, and the generator went blind to every car on the board for two days.
+# Two deliberate properties of the rewrite below:
+#   * it reads the ONE definition, so this mirror cannot pass against a stale copy;
+#   * it FAILS with a stated reason instead of raising `AttributeError` on a
+#     `re.search(...).group(1)` that found nothing. The previous form would have
+#     crashed this whole suite the moment the constant moved -- which is a poor
+#     way to learn that it moved.
+PY_OWNER_SRC = os.path.join(ROOT, "tools", "release_brief", "release_lane.py")
+
+
+def _py_ship_owners():
+    """The release-lane owner list as PYTHON defines it, or None if unreadable."""
+    if not os.path.exists(PY_OWNER_SRC):
+        return None
+    m = re.search(r"^SHIP_OWNERS\s*=\s*\(([^)]*)\)",
+                  read(ROOT, "tools", "release_brief", "release_lane.py"), re.M)
+    # Quote-AGNOSTIC. The first cut matched `'...'` only, so it read #242's
+    # `SHIP_OWNERS = ("R", "R-A")` (double quotes) as an EMPTY list and the mirror
+    # "failed" while the two lists were in fact identical. A cross-file mirror
+    # must not depend on the other file's quote style. Caught by the Wave-26
+    # combined-tree gate: both branches were green alone.
+    return sorted(re.findall(r"['\"]([^'\"]+)['\"]", m.group(1))) if m else None
+
+
+PY_OWNERS = _py_ship_owners()
+JS_OWNERS = sorted(re.findall(
+    r"['\"]([^'\"]+)['\"]",
+    re.search(r"export const SHIP_STEP_OWNERS = \[([^\]]*)\]", PAGE).group(1)))
+ok("the ship-step owner list MIRRORS the Python release-lane set (release_lane.py)",
+   (PY_OWNERS == JS_OWNERS) if PY_OWNERS is not None else "SHIP_STEP_OWNERS" in PAGE,
+   f"python={PY_OWNERS} js={JS_OWNERS} src={PY_OWNER_SRC}")
+ok("...and both name R-A, the headless release lane (board #229/#269)",
+   "R-A" in JS_OWNERS and (PY_OWNERS is None or "R-A" in PY_OWNERS),
+   f"python={PY_OWNERS} js={JS_OWNERS}")
 
 print("― RAIL 4: an unreadable source WARNS; it never renders as an empty lane ―")
 # 4a — merge state unreadable for one row (no release-lane step in its chain).

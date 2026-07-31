@@ -111,7 +111,14 @@ import brief_gen as B  # noqa: E402
 # chains carry both -- #225/#229 name `R-A`, older ones name `R`. Matching only
 # "R" would make the newer convention invisible, which is the same silent-drop
 # shape this whole task is about.
-SHIP_OWNERS = ("R", "R-A")
+#
+# BOARD #269: that is not a hypothetical -- `brief_gen.py` was matching exactly
+# "R" and could not see a single car on the board, while THIS tool was ticking
+# the same steps. The set therefore has ONE definition, in `release_lane.py`,
+# which both import. Re-exported under this module's name because
+# `backfill_car_status_249.py` reads it as `C.SHIP_OWNERS` and the frontend
+# mirror in `AdminDispatchPage.tsx` cites it by that path.
+from release_lane import SHIP_OWNERS  # noqa: E402,F401
 
 # Statuses a shipped-but-unticked car can be sitting in. The merge gate is what
 # actually protects this tool, so the scan is deliberately WIDER than
