@@ -76,8 +76,64 @@ _EDITABLE = {
     "is_urgent", "impacts_live", "needs_live_validation", "area",
     "assignee", "blocked_by", "tags", "notes", "parent_id", "origin",
     "checklist", "affected_sids", "impact", "kevin_final",
-    "standing_approval", "ai_eligible",
+    "standing_approval", "ai_eligible", "task_type",
 }
+
+# ── THE TASK-TYPE MODEL (board #261) ────────────────────────────────────────
+# The server half of the ONE type map. Its mirror is `TASK_TYPES` in
+# frontend/src/views/taskBoardShared.tsx, and the two are asserted equal BY
+# PARSED VALUE (the TS map is EXECUTED, not string-matched) in
+# src/test_task_type_model_261.py — boards #219/#245: a constant shipped without
+# its frontend mirror put dev red for hours, and a quote-naive string-compare
+# "mirror" read two identical lists as different.
+#
+# `statuses` here is DECLARATIVE, NOT A GATE. Nothing in this module rejects an
+# out-of-set status and nothing may start to in #261: 236 rows predate this map
+# and some hold a status no type lists — which is exactly why the UI keeps
+# `withLegacy`. Enforcement is a later task, to be taken deliberately.
+#
+# The vocabulary mirrors the DB CHECK constraint in
+# migrations/dev_tasks_task_type.sql. `loop` is deliberately absent — Kevin
+# raised it as a possible later type and excluded it from this plan.
+TASK_TYPES = {
+    "action": {
+        "label": "Action",
+        "icon": "",
+        "def": "action — a subtask or loose task; where the work actually happens",
+        "statuses": ["Backlog", "Scoping", "Approval", "Todo", "In Progress",
+                     "Review", "Staged", "Blocked", "Stand By", "Done", "Closed"],
+        "children": False,
+        "session": False,
+    },
+    "vision": {
+        "label": "Vision",
+        "icon": "◈",
+        "def": "vision — the default parent container; tracks via its subtasks",
+        # The pre-#261 VISION_STATUSES, unchanged: no Approval/Review/Staged,
+        # because a container has no branch to review or to stage.
+        "statuses": ["Backlog", "Scoping", "Todo", "In Progress", "Blocked",
+                     "Stand By", "Done", "Closed"],
+        "children": True,
+        "session": False,
+    },
+    "goal": {
+        "label": "Goal",
+        "icon": "⚑",
+        "def": "goal — a parent container that carries its own session",
+        # Approval, because a goal is authorised to START; still no
+        # Review/Staged, because a goal never ships — its children do.
+        "statuses": ["Backlog", "Scoping", "Approval", "In Progress", "Blocked",
+                     "Stand By", "Done", "Closed"],
+        "children": True,
+        "session": True,
+    },
+}
+
+# The column default, and what the backfill left on every non-container row.
+# Declared, never silently substituted: an ABSENT `task_type` on a read is
+# resolved by the UI's `taskTypeOf`, which falls back to the pre-#261 derivation
+# rather than assuming 'action' (no-silent-defaults).
+DEFAULT_TASK_TYPE = "action"
 
 # Blast-radius chip values (board #136) — see migrations/dev_tasks_lifecycle.sql.
 _IMPACTS = {"contained", "app", "engine", "live"}
@@ -313,6 +369,15 @@ def _validate_team_fields(c, row: dict, task_id: Optional[int] = None):
         raise HTTPException(
             status_code=400,
             detail=f"impact must be one of {sorted(_IMPACTS)}")
+    # Board #261 — VOCABULARY only. This refuses a type that is not one of the
+    # three (the same set the DB CHECK constraint pins), so a typo fails here
+    # with a readable 400 instead of as a constraint violation. It emphatically
+    # does NOT check the row's STATUS against that type's status list: legacy
+    # rows would be rejected, which is the failure `withLegacy` exists for.
+    if "task_type" in row and row["task_type"] not in TASK_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"task_type must be one of {sorted(TASK_TYPES)}")
     for f in ("kevin_final", "standing_approval", "ai_eligible"):
         if f in row and not isinstance(row[f], bool):
             raise HTTPException(

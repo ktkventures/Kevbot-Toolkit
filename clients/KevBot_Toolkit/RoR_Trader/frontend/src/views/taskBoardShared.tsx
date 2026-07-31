@@ -250,6 +250,14 @@ export interface Task {
   impact?: string;
   kevin_final?: boolean;
   standing_approval?: boolean;
+  // Explicit task type (board #261, dev_tasks_task_type.sql): action | vision |
+  // goal. OPTIONAL so a pre-migration row — or an API not yet serving the
+  // column — still renders: `taskTypeOf` falls back to the old derivation
+  // rather than defaulting silently to 'action'.
+  task_type?: string;
+  // Goal parameters (board #262). Ships in #261's migration, read by nothing
+  // until then — declared here so the shape is not invented twice.
+  goal_params?: Record<string, unknown> | null;
   // May an AI agent run this task (board #198, dev_tasks_ai_eligible.sql).
   // Optional so pre-migration rows render; see AiEligibleToggle for the split
   // this column makes — status says WHERE the task is, this says MAY IT RUN.
@@ -345,12 +353,116 @@ export const DISPATCHER = {
 // The agreed pipeline (Kevin+M 07-25, board #136; extended by #232): Backlog →
 // Scoping → Approval → Todo → In Progress → Review → Staged → Done → Closed.
 // `Blocked` and `Stand By` are the two anywhere-exceptions and they are NOT the
-// same thing — see STATUS_DEF. Vision rows are EXEMPT (VISION_STATUSES below).
+// same thing — see STATUS_DEF. This is the `action` type's status set; the
+// container types get their own (TASK_TYPES below).
 export const STATUSES = ['Backlog', 'Scoping', 'Approval', 'Todo', 'In Progress', 'Review', 'Staged', 'Blocked', 'Stand By', 'Done', 'Closed'];
-// Vision items track via their subtasks, not the pipeline — no Approval /
-// Review / Staged on them. `Stand By` and `Closed` apply to a vision the same
-// way they apply to a task: Kevin can park one, and he closes one out himself.
-export const VISION_STATUSES = ['Backlog', 'Scoping', 'Todo', 'In Progress', 'Blocked', 'Stand By', 'Done', 'Closed'];
+
+/* ── THE TASK-TYPE MODEL (board #261) ───────────────────────────────────────
+ * The board already BEHAVED as though tasks had types — `isVisionTask()`
+ * derived "vision" from a tag or from having children, and a separate
+ * `VISION_STATUSES` list gave those rows their own status set. The type was
+ * implicit and the split was frontend-only. #261 makes it explicit
+ * (`dev_tasks.task_type`, migration dev_tasks_task_type.sql) and gives it a
+ * third member.
+ *
+ * THIS MAP IS THE ONE SOURCE OF TRUTH for what a type IS. `VISION_STATUSES`
+ * folded INTO it and no longer exists beside it — a second exported list is
+ * exactly how the two drift. Everything that asks "which statuses may this row
+ * have / what icon does it wear / may it have children" reads THIS.
+ *
+ * Mirrored server-side by `api.routers.dev_tasks.TASK_TYPES`, asserted equal by
+ * PARSED VALUE in test_task_type_model_261.py (boards #219/#245: a constant
+ * shipped without its mirror put dev red for hours, and a quote-naive
+ * string-compare "mirror" read two identical lists as different).
+ *
+ * STATUSES ARE RENDERED FROM HERE, NOT ENFORCED FROM HERE. The API does not
+ * reject an out-of-set status: 236 legacy rows predate this map, which is the
+ * whole reason `withLegacy` exists. Enforcement is a later task.
+ *
+ * `loop` is deliberately NOT a member — Kevin raised it and excluded it. */
+export type TaskType = 'action' | 'vision' | 'goal';
+
+export interface TaskTypeDef {
+  /** Human label for the type. */
+  label: string;
+  /** Row glyph so the type is visible at a glance (Kevin's ask). The DEFAULT
+   *  type wears none — an icon on every row is an icon on no row. */
+  icon: string;
+  /** One-liner shown as the icon's tooltip. */
+  def: string;
+  /** The statuses this type may hold — the dropdown is rendered from this. */
+  statuses: string[];
+  /** May this type hold subtasks? Containers can; `action` cannot. */
+  children: boolean;
+  /** Does this type carry its own session? Only `goal` (board #262 builds it). */
+  session: boolean;
+}
+
+export const TASK_TYPES: Record<TaskType, TaskTypeDef> = {
+  // Where the work actually happens — a subtask or a loose task. The default,
+  // and the only type that runs the full pipeline.
+  action: {
+    label: 'Action', icon: '', statuses: STATUSES, children: false, session: false,
+    def: 'action — a subtask or loose task; where the work actually happens',
+  },
+  // The default parent container. Tracks via its subtasks, not the pipeline, so
+  // no Approval / Review / Staged — a container has no branch to review or
+  // stage. `Stand By` and `Closed` apply exactly as they do to a task: Kevin can
+  // park one, and he closes one out himself. THIS LIST IS THE PRE-#261
+  // `VISION_STATUSES`, unchanged — no vision row's dropdown moves on landing.
+  vision: {
+    label: 'Vision', icon: '◈', children: true, session: false,
+    statuses: ['Backlog', 'Scoping', 'Todo', 'In Progress', 'Blocked', 'Stand By', 'Done', 'Closed'],
+    def: 'vision — the default parent container; tracks via its subtasks',
+  },
+  // A DIFFERENT kind of parent container, and a SIBLING of vision — a goal is
+  // never filed under one. It gets `Approval` where a vision does not: a goal is
+  // authorised to START (Kevin stamps it), but a goal never ships — its children
+  // do, which is why it has no Review/Staged either. `Scoping` is load-bearing:
+  // #262 adds the rule that a goal cannot leave it without a `done_when`.
+  goal: {
+    label: 'Goal', icon: '⚑', children: true, session: true,
+    statuses: ['Backlog', 'Scoping', 'Approval', 'In Progress', 'Blocked', 'Stand By', 'Done', 'Closed'],
+    def: 'goal — a parent container that carries its own session',
+  },
+};
+
+/** The vocabulary, in declaration order. Mirrors the DB CHECK constraint. */
+export const TASK_TYPE_VALUES = Object.keys(TASK_TYPES) as TaskType[];
+/** The column default — and what a pre-migration row reads as. */
+export const DEFAULT_TASK_TYPE: TaskType = 'action';
+
+/**
+ * The type a row IS.
+ *
+ * The explicit `task_type` wins — EXCEPT that it can never DEMOTE a row today's
+ * derivation calls a container. That exception is the behaviour-preservation
+ * guarantee, not a hedge: the backfill matched `isVisionTask()` exactly at one
+ * MOMENT, and a row that gains children (or the vision tag) afterwards is
+ * precisely the row it could not cover. Without the rescue such a parent renders
+ * as an `action` row, drops out of `visionItems`, and its subtasks — filtered out
+ * of `looseTasks` by `parent_id != null` — VANISH from the board entirely.
+ *
+ * It only ever upgrades action → vision. An explicit `vision`/`goal` is always
+ * honoured, and a `goal` needs no rescue: it is already a container.
+ */
+export const taskTypeOf = (t: Task, hasChildren = false): TaskType => {
+  const derivedContainer = (t.tags || []).includes('vision') || hasChildren;
+  const explicit = t.task_type || '';
+  if (!(explicit in TASK_TYPES)) {
+    // Pre-migration row / API not serving the column / a value outside the
+    // vocabulary: today's derivation, whole. Never a silent 'action'.
+    return derivedContainer ? 'vision' : 'action';
+  }
+  const type = explicit as TaskType;
+  if (derivedContainer && !TASK_TYPES[type].children) return 'vision';
+  return type;
+};
+
+/** The statuses a type may hold. Unknown type → the full pipeline, never an
+ *  empty dropdown (a row must always be able to render its own status). */
+export const statusesForType = (type: TaskType): string[] =>
+  TASK_TYPES[type]?.statuses || STATUSES;
 
 /* ── THE ONE SHARED "FINISHED" SET (board #232) ─────────────────────────────
  * Two statuses mean a task is OVER: `Done` (M's close) and `Closed` (Kevin's
@@ -508,10 +620,30 @@ export const LANE_KIND_TIP: Record<string, string> = {
 export const withLegacy = (list: string[], current: string) =>
   list.includes(current) ? list : [...list, current];
 
-/** Status options for a select: full pipeline for leaves, the exempt set for
- *  vision rows — always keeping a legacy/current value renderable. */
-export const statusOptionsFor = (t: Task, isVision: boolean) =>
-  withLegacy(isVision ? VISION_STATUSES : STATUSES, t.status);
+/** Status options for a select — the TYPE's set (board #261), always keeping a
+ *  legacy/current value renderable.
+ *
+ *  `withLegacy` STAYS. 236 rows predate the type map and some hold a status no
+ *  type lists; dropping it would blank their dropdown, which is also why the API
+ *  does not enforce the set. */
+export const statusOptionsFor = (t: Task, type: TaskType) =>
+  withLegacy(statusesForType(type), t.status);
+
+/**
+ * The type glyph on a row (Kevin's ask: the type visible at a glance).
+ * Renders NOTHING for `action` — the default row is the baseline, and an icon
+ * on every row carries no information.
+ */
+export const TaskTypeIcon = ({ type }: { type: TaskType }) => {
+  const def = TASK_TYPES[type];
+  if (!def || !def.icon) return null;
+  return (
+    <span title={def.def} style={{
+      marginRight: 5, fontSize: 12, color: 'var(--text-secondary)',
+      verticalAlign: 'middle',
+    }}>{def.icon}</span>
+  );
+};
 
 export const cell: React.CSSProperties = { padding: '7px 8px', verticalAlign: 'middle', fontSize: 13 };
 export const input: React.CSSProperties = {
@@ -687,10 +819,12 @@ export function ageShort(iso: string | null | undefined): string {
   return `${Math.floor(h / 24)}d ${Math.round(h % 24)}h`;
 }
 
-/** Vision predicate: tagged 'vision' OR already has subtasks (pre-tag data
- *  still groups correctly). Vision rows are pipeline-exempt (board #136). */
+/** Vision predicate — now the explicit `task_type` (board #261), falling back
+ *  to the pre-#261 derivation (tagged 'vision' OR already has subtasks) for any
+ *  row the backfill missed. See `taskTypeOf` for why the fallback can only ever
+ *  promote. Vision rows are pipeline-exempt (board #136). */
 export const isVisionTask = (t: Task, byParent: Map<number, Task[]>) =>
-  (t.tags || []).includes('vision') || byParent.has(t.id);
+  taskTypeOf(t, byParent.has(t.id)) === 'vision';
 
 /**
  * The board grouping — ONE implementation consumed by /admin/tasks and

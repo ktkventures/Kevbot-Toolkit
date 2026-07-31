@@ -357,8 +357,20 @@ ok("Closed comes AFTER Done — it is Kevin's step past M's close, not a rival t
    order.index("Closed") > order.index("Done"), str(order))
 ok("Stand By sits beside Blocked, the other anywhere-exception",
    abs(order.index("Stand By") - order.index("Blocked")) == 1, str(order))
-ok("vision rows get them too", "'Stand By'" in
-   re.search(r"export const VISION_STATUSES = \[(.*?)\];", SHARED, re.S).group(1))
+# Board #261 folded VISION_STATUSES into the TASK_TYPES map. The list moved; the
+# #232 guarantee did not — EVERY container type still offers both statuses, and
+# asserting it per type (rather than on one lifted list) means a fourth type
+# cannot quietly drop them.
+type_map = re.search(r"export const TASK_TYPES[^{]*\{(.*)\n\};", SHARED, re.S).group(1)
+per_type = dict(re.findall(r"\n  (\w+): \{(.*?)\n  \},", type_map, re.S))
+ok("the type map lists every type #261 declares",
+   set(per_type) == {"action", "vision", "goal"}, str(sorted(per_type)))
+ok("vision rows get them too",
+   "'Stand By'" in per_type["vision"] and "'Closed'" in per_type["vision"])
+ok("...and so does every other type (action inherits STATUSES itself)",
+   all("'Stand By'" in v and "'Closed'" in v
+       for k, v in per_type.items() if k != "action")
+   and "statuses: STATUSES" in per_type["action"], str(sorted(per_type)))
 
 defs = re.search(r"export const STATUS_DEF[^{]*\{(.*?)\n\};", SHARED, re.S).group(1)
 ok("Stand By has a description that says it is NOT Blocked",

@@ -40,7 +40,7 @@ import {
   MENTION_ROLES, HandoffChain, isProcessChain, stepOwner, stepTitle, MODE_DEF,
   SlashItem, SlashMenu, filterSlashItems, applySlashInsert, detectSlash,
   makeChainStep, chainStarted, AiEligibleToggle, RunStatePill, LaneKindChip,
-  isFinished, StampMode,
+  isFinished, StampMode, taskTypeOf, TaskTypeIcon, TASK_TYPES,
 } from './taskBoardShared';
 import { Md, MD_CSS } from './taskMarkdown';
 
@@ -107,7 +107,11 @@ export default function TaskDetailModal({
 }: Props) {
   const subtasks = useMemo(
     () => allTasks.filter((t) => t.parent_id === task.id), [allTasks, task.id]);
-  const vision = (task.tags || []).includes('vision') || subtasks.length > 0;
+  // Board #261 — the row's TYPE, from the ONE map. This used to be a second,
+  // hand-written copy of `isVisionTask`'s derivation; the modal and the board
+  // must never disagree about what a row IS, so both now call `taskTypeOf`.
+  const taskType = taskTypeOf(task, subtasks.length > 0);
+  const vision = taskType === 'vision';
   const parent = task.parent_id != null ? allTasks.find((t) => t.id === task.parent_id) : undefined;
 
   // Selector state: which item the Context + Activity panels are scoped to.
@@ -479,7 +483,11 @@ export default function TaskDetailModal({
             </button>
           )}
           <span style={{ fontSize: 10.5, color: 'var(--text-tertiary)', letterSpacing: 0.6 }}>
-            {vision ? 'VISION ITEM' : task.parent_id != null ? 'SUBTASK' : 'TASK'} · #{task.id}
+            {/* board #261 — the type glyph, same one the board row wears */}
+            <TaskTypeIcon type={taskType} />
+            {TASK_TYPES[taskType].children
+              ? `${TASK_TYPES[taskType].label.toUpperCase()} ITEM`
+              : task.parent_id != null ? 'SUBTASK' : 'TASK'} · #{task.id}
           </span>
         </div>
 
@@ -497,7 +505,7 @@ export default function TaskDetailModal({
           <select style={{ ...input, color: STATUS_COLOR[task.status] }} value={task.status}
             title={STATUS_DEF[task.status] || ''}
             onChange={(e) => patchTracked({ status: e.target.value })}>
-            {statusOptionsFor(task, vision).map((s) =>
+            {statusOptionsFor(task, taskType).map((s) =>
               <option key={s} value={s} title={STATUS_DEF[s]}>{s}</option>)}
           </select>
           {/* impact chip lives next to status (board #136) */}
