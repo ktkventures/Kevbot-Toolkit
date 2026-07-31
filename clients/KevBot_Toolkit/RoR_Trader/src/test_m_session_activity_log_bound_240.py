@@ -353,9 +353,18 @@ KNOWN = {
     "/api/dev-tasks?include_done=true", "/api/run-history?limit=", "/api/m-session/state",
     "/api/m-session/rules", "/api/m-session/order", "/api/m-session/canvas",
     "/api/m-session/marks", "/api/dev-tasks/comments/recent?limit=",
+    # Board #251: the SIGN-OF-LIFE strip, rendered on both session dashboards
+    # from one component and one endpoint. A DECLARED addition, listed here so
+    # the rail keeps meaning "the M page calls only endpoints someone chose"
+    # rather than "the M page is frozen as of 07-30". The R opener names this
+    # trap explicitly: a rail phrased as "X appears nowhere else" describes a
+    # SNAPSHOT, not a property, and goes false the moment someone legitimately
+    # adds X.
+    "/api/r-session/heartbeats",
 }
 unknown = [e for e in endpoints if not any(e.startswith(k) for k in KNOWN)]
-ok("the fix adds no new endpoint — it is entirely render-side", not unknown, str(unknown))
+ok("the M page calls only DECLARED endpoints — no undeclared backend has crept "
+   "in (#240 itself added none)", not unknown, str(unknown))
 ok("no new migration is introduced by this step",
    not os.path.exists(os.path.join(SRC, "migrations", "m_session_render.sql")))
 
