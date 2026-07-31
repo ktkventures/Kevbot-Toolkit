@@ -416,7 +416,35 @@ def _creds():
     return url.rstrip("/"), key
 
 
+# ── Board #248 — NO ANONYMOUS STATUS WRITES THROUGH POSTGREST ───────────────
+# `api()` speaks service-role PostgREST, which bypasses `/api/dev-tasks`
+# entirely — so a `{"status": …}` PATCH sent through it changes the board and
+# logs NOTHING. Not anonymous: absent. Measured 07-31: 175 of 178 finished
+# tasks have no record of who finished them, and the board watcher, having no
+# data, announced one of M's own closes as "CLOSED by kevin".
+#
+# The API-side fix cannot reach this path, so the refusal lives HERE, at the
+# one chokepoint every PostgREST write in this process (and every M session
+# that does `import dispatcher as d; d.api(...)`) goes through. `set_status()`
+# is the sanctioned way in, and it opens this latch for exactly one call.
+_STATUS_WRITE_SANCTIONED = False
+
+
+class AnonymousStatusWrite(RuntimeError):
+    """Raised when a status write would leave no trace of who made it."""
+
+
 def api(method, path, body=None, prefer=None):
+    if (method == "PATCH" and path.startswith("dev_tasks")
+            and isinstance(body, dict) and "status" in body
+            and not _STATUS_WRITE_SANCTIONED):
+        raise AnonymousStatusWrite(
+            "refusing an unattributed status write through PostgREST — it "
+            "bypasses /api/dev-tasks and logs NOTHING (board #248). Use "
+            "set_status(task_id, new_status, actor, note=...), which PATCHes "
+            "AND writes the `status: old → new (by <actor>)` activity line. "
+            "From an M session: `import dispatcher as d; "
+            "d.set_status(248, 'Done', 'M')`.")
     url, key = _creds()
     headers = {"apikey": key, "Authorization": f"Bearer {key}",
                "Content-Type": "application/json"}
@@ -428,6 +456,64 @@ def api(method, path, body=None, prefer=None):
     with urllib.request.urlopen(req, timeout=API_TIMEOUT_S) as r:
         txt = r.read().decode()
         return json.loads(txt) if txt.strip() else None
+
+
+_UNREAD = object()   # "caller did not tell us the old status" — distinct from None
+
+
+def set_status(task_id, new_status, actor, note=None, extra=None, old=_UNREAD):
+    """THE way anything in this process changes a task's status (board #248).
+
+    PATCHes the row and writes the attributed activity line the API's own
+    `update_task` would have written — same wording, same `(by <actor>)`
+    suffix — so a transition looks identical on the thread whether it came
+    from the browser, a dispatched run, or the loop itself.
+
+    `actor` is not optional and not defaulted: a silent "system" fallback is
+    how the field became worthless in the first place. `note` appends context
+    inside the line (the reap legs carry a reason worth reading); `extra`
+    carries columns that must land in the SAME patch as the status — the
+    dispatch claim clears the run-requested tag atomically with the flip, and
+    splitting that into two writes would open a re-dispatch window.
+
+    PASS `old` WHEN YOU KNOW IT. Every caller inside this file does — the claim
+    read it for #197's restore, the reap legs know the task was In Progress —
+    and passing it means no extra round trip and, more importantly, no new way
+    for a reap to die. Board #197 has a rail for exactly that: reap MUST finish
+    on an unreadable board, and a blind `old` lookup here reintroduced the
+    failure it fixed. When `old` is omitted (the ergonomic M-session path) the
+    read is attempted and a failure DEGRADES to an explicit "(unreadable)" on
+    the line rather than propagating — the audit line is never worth failing
+    the write it describes.
+
+    Writes the line only when the status ACTUALLY changed, so a no-op patch
+    does not manufacture history.
+    """
+    global _STATUS_WRITE_SANCTIONED
+    if not str(actor or "").strip():
+        raise AnonymousStatusWrite(
+            f"set_status(#{task_id} → {new_status}) needs an actor — name who "
+            f"is making the change (board #248)")
+    if old is _UNREAD:
+        try:
+            rows = api("GET", f"dev_tasks?id=eq.{task_id}&select=status")
+            old = (rows[0].get("status") if rows else None)
+        except Exception:
+            old = "(unreadable)"
+    body = dict(extra or {})
+    body["status"] = new_status
+    _STATUS_WRITE_SANCTIONED = True
+    try:
+        api("PATCH", f"dev_tasks?id=eq.{task_id}", body=body)
+    finally:
+        _STATUS_WRITE_SANCTIONED = False
+    if (old or None) != (new_status or None):
+        tail = f" — {note}" if note else ""
+        api("POST", "dev_task_comments", body={
+            "task_id": task_id, "author": "system",
+            "body": f"status: {old or '—'} → {new_status or '—'} "
+                    f"(by {actor}){tail}"})
+    return old
 
 
 def headless_agents():
@@ -1281,7 +1367,17 @@ def report_failed_run(st, r, result, tail):
     elif used < MAX_AUTO_RETRIES:
         restore = status0 or "Todo"
         set_retries(st, r["task_id"], used + 1)
-        api("PATCH", f"dev_tasks?id=eq.{r['task_id']}", body={"status": restore})
+        # Board #248: through set_status, so the restore lands on the thread as
+        # a greppable `status: … (by dispatcher …)` line. The FAILED comment
+        # below still narrates it — deliberately, because on the leg where a
+        # human moved the task NOTHING is written and that prose is the only
+        # record. One canonical line plus one narrative beats a silent flip.
+        # `old` is passed, not read: this leg must survive an unreadable board
+        # (#197's rail), and it already knows the task was In Progress — the
+        # branch above is the one that runs when it was not.
+        set_status(r["task_id"], restore, f"dispatcher · run {r['run_id']}",
+                   note="pre-dispatch status restored after a failed run",
+                   old="In Progress")
         # V4.24 — the coupling #198's step_already_ran() docstring wrote down
         # before either half shipped. That guard refuses to re-run a step a
         # FINISHED run already covered; this run finished (badly), so without
@@ -1320,8 +1416,12 @@ def report_failed_run(st, r, result, tail):
         blocker = (f"{MAX_AUTO_RETRIES + 1} consecutive dispatched runs died — "
                    f"{MAX_AUTO_RETRIES} automatic retries spent. A human needs to read "
                    f"the log tails, fix the cause, and move this back to Todo.")
-        api("PATCH", f"dev_tasks?id=eq.{r['task_id']}",
-            body={"status": "Blocked", "notes": f"dispatch failure — {blocker}"})
+        # `notes` rides in the SAME patch as the status (board #248 `extra`) —
+        # splitting them would leave a Blocked row with no blocker on it.
+        set_status(r["task_id"], "Blocked", f"dispatcher · run {r['run_id']}",
+                   note=f"retries exhausted — {blocker}",
+                   extra={"notes": f"dispatch failure — {blocker}"},
+                   old="In Progress")
         transition = f"status: In Progress → Blocked — blocker: {blocker}{unverified}"
     api("POST", "dev_task_comments", body={
         "task_id": r["task_id"], "author": "system",
@@ -1730,8 +1830,13 @@ def reap(st):
             api("POST", "dev_task_comments", body={
                 "task_id": r["task_id"], "author": "system",
                 "body": f"dispatch LEASE EXPIRED ({r['agent']}·auto run {r['run_id']}) — killed. Log tail:\n{tail[-LEASE_COMMENT_TAIL:]}"})
-            api("PATCH", f"dev_tasks?id=eq.{r['task_id']}",
-                body={"status": "Blocked", "notes": "dispatch failure — see thread"})
+            # Board #248: this flip used to be invisible — the LEASE EXPIRED
+            # comment above names the run but never said the task had just been
+            # Blocked, so the column moved with no line explaining it.
+            set_status(r["task_id"], "Blocked", f"dispatcher · run {r['run_id']}",
+                       note="lease expired — the run was killed",
+                       extra={"notes": "dispatch failure — see thread"},
+                       old="In Progress")
             rh_finish(r["run_id"], "lease-expired", tail)
         else:
             # Only what we POST/store is capped: comment RESULT_COMMENT_MAX,
@@ -1748,12 +1853,14 @@ def reap(st):
                 api("POST", "dev_task_comments", body={
                     "task_id": r["task_id"], "author": f"{r['agent']}·auto",
                     "body": str(result)[:RESULT_COMMENT_MAX]})
-                api("PATCH", f"dev_tasks?id=eq.{r['task_id']}",
-                    body={"status": "Review"})
-                api("POST", "dev_task_comments", body={
-                    "task_id": r["task_id"], "author": "system",
-                    "body": f"status: In Progress → Review (by dispatcher — "
-                            f"run {r['run_id']} finished, output awaiting sign-off)"})
+                # Board #248: this was the ONE leg that already attributed
+                # itself, by hand-writing the line the API writes. Same output,
+                # now from the shared helper — a hand-rolled copy of an audit
+                # line is a copy that drifts.
+                set_status(r["task_id"], "Review",
+                           f"dispatcher · run {r['run_id']}",
+                           note="run finished, output awaiting sign-off",
+                           old="In Progress")
                 set_retries(st, r["task_id"], 0)  # a good run clears the streak
             rh_finish(r["run_id"], outcome, tail)
         # Board #195 — LAST, and after rh_finish: reporting is the job, the push
@@ -1898,8 +2005,14 @@ def one_pass(live, only_task=None):
         # restores this value instead of falsely claiming Review.
         status0 = t.get("status")
         tags = [x for x in (t.get("tags") or []) if x != RUN_REQUESTED_TAG]
-        api("PATCH", f"dev_tasks?id=eq.{t['id']}",
-            body={"status": "In Progress", "tags": tags})
+        # Board #248: still ONE patch — `extra` carries the tag clear so the
+        # claim stays atomic — and it now leaves a `status: … → In Progress (by
+        # dispatcher …)` line. The "dispatched to" comment below records the
+        # DISPATCH; it never recorded the status flip, which is why 07-31's
+        # audit found claims with no arrival line anywhere on the thread.
+        set_status(t["id"], "In Progress", f"dispatcher · run {run_id}",
+                   note=f"claimed for {t['assignee']}·auto",
+                   extra={"tags": tags}, old=status0)
         api("POST", "dev_task_comments", body={
             "task_id": t["id"], "author": "system",
             "body": f"dispatched to {t['assignee']}·auto (run {run_id})"})

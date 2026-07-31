@@ -188,6 +188,31 @@ task is NOT assigned to you, acting on it is optional.
   Todo queue undispatchable for ~41 hours** on 07-26/27 with no error, log, or comment.
   See memory `feedback_assignee_is_the_waiting_on`.
 
+**A STATUS CHANGE NAMES ITS ACTOR — AND NEVER GOES THROUGH POSTGREST (board #248).**
+The board's activity log has always been able to say who moved a task; it is the
+`actor` field on `PATCH /api/dev-tasks/<id>`, and it produces the
+`status: Todo → Done (by M)` line on the thread. The browser sends it. The dispatcher
+sends it. **M was the one bypassing it** — writing `d.api('PATCH', 'dev_tasks?id=eq.N',
+{'status': 'Done'})` against service-role PostgREST, which never touches the API and
+therefore logs *nothing at all*. Not anonymous: absent.
+- Measured 07-31: **175 of 178 finished tasks have no record of who finished them**, and
+  the board watcher — having no data — announced one of M's own closes as "CLOSED by
+  kevin". A further 12 activity lines were written through the API with no `actor`.
+- **Changing `status` or `assignee`? Use the API:**
+  `PATCH /api/dev-tasks/<id>` with `{"status": "...", "actor": "M"}`. `actor` is not a
+  task column and never lands on the row; it names who made the change on the thread.
+- **From a session that only has the service key** (no user JWT — see
+  `reference_headless_board_api_auth`): use the dispatcher's helper, which PATCHes AND
+  writes the same attributed line — `import dispatcher as d;
+  d.set_status(248, 'Done', 'M')`.
+- Both paths now REFUSE the anonymous version rather than logging it silently: the API
+  returns 400 naming the field, and `dispatcher.api()` raises `AnonymousStatusWrite` on
+  any `dev_tasks` status PATCH that did not come through `set_status`. An optional audit
+  field that every caller forgets is not an audit field.
+- **`assignee`-only patches are deliberately NOT gated** — that is the hand-off path
+  every headless run uses on its way out (board #171), and breaking it would cost more
+  than it buys. Send `actor` there anyway.
+
 **Git** (learned the hard way — see memory `feedback_multiagent_git_workflow`):
 - Each role works in its own worktree/branch. Branch from **latest** `origin/dev`:
   `git fetch origin && git worktree add ../Kevbot-<role> -b <branch> origin/dev`.

@@ -233,8 +233,12 @@ ok("...the blocked_by lookup is the shared FINISHED set, not a literal 'Done'",
    D.FINISHED_FILTER == "status=in.(Done,Closed)"
    and any("{FINISHED_FILTER}" in q for q in TASK_QUERIES),
    f"{D.FINISHED_FILTER} · {TASK_QUERIES}")
+# Board #248 respelled the WRITE, not the rule: reap's Review flip now goes
+# through `set_status(...)` so it lands on the thread with an actor on it. This
+# asks the same question it always did — does reap write Review at all? — of the
+# new spelling rather than of the raw PATCH body that used to carry it.
 ok("reap() still WRITES Review — status is write-only, not unused",
-   '"status": "Review"' in SOURCE)
+   'set_status(r["task_id"], "Review"' in SOURCE)
 
 # ── RAIL 4 — the step-guard replaces the Todo query's accidental guard ─────
 print("― rail 4: an armed task does not re-run the step it just ran ―")
