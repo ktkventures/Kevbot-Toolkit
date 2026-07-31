@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tick each shipped CAR's own ship step -- board #242.
+"""Tick each shipped CAR's own ship step AND move its status -- boards #242/#249.
 
 A release train is its own board task with its own chain, and it ticks **its
 own** steps. Nothing ticks the CARS'. So every car a train merges keeps an open
@@ -41,10 +41,49 @@ R/R-A-owned) and resolves branches with the same resolver, so it cannot be fed
 a wrong list of "what shipped". Truth comes from git, twice: the branch, and
 whether dev contains it.
 
+THE STEP IS NOT THE STATUS -- board #249
+----------------------------------------
+Ticking the step is only half the record, and shipping the half alone produced a
+second wrong board: on 07-30 the dispatch page's STAGED tile read **7** under
+the caption *"reviewed, waiting for a release train"* while **five of those
+seven had already shipped**. Kevin read the tile against an empty shipping lane
+and asked why they disagreed.
+
+`Staged` has exactly one meaning -- *reviewed, has code, waiting for a train*.
+Once the train has run that sentence is false, and every count built on `status`
+inherits the lie (`waitBucket('Staged')` is a pure status count: correct code,
+wrong input). The step tick records **what happened**; the status records
+**where the task now is**, and only the second drives the tiles.
+
+So a verified tick is followed by a status advance, on the SAME evidence:
+
+  * chain finished        -> `Done`
+  * anything still open   -> `Review` (the work ran; it awaits sign-off)
+  * `Closed`              -> NEVER. That is Kevin's own status, after `Done`.
+
+and under these rails:
+
+  * The status rides on the merge proof the tick already required. There is no
+    second, weaker path: if the tick is not owed, the status move is not either.
+  * Only cars THIS RUN ticked, and only ticks that VERIFIED. A blanket "fix all
+    Staged" sweep would rewrite tasks no train ever touched -- the cars already
+    mis-stated are corrected by an explicit id list in
+    `backfill_car_status_249.py`, deliberately a separate, reviewable tool.
+  * Neither target is dispatchable (`Review`/`Done` sit in the API's
+    `_UNDISPATCHABLE_STAGES` / `FINISHED_STATUSES`), so no status this tool
+    writes can hand a shipped car back to the dispatcher queue.
+  * The two-touch guard (board #136) is HONOURED, not bypassed. The status write
+    goes over PostgREST because `PATCH /api/dev-tasks/<id>` is user-gated and
+    401s for a service-key holder (#217), so the guard the endpoint would have
+    applied is re-applied here rather than lost by the change of route.
+  * Every status write is ATTRIBUTED -- a `status: X -> Y (by <actor>)` system
+    comment in the same format the API writes, which is what board #248 needs.
+
 WHAT THIS TOOL WILL NEVER DO: merge, push, rebase, run a gate, flip a flag or
-touch a worktree. It fetches, reads the board, and POSTs `/steps/complete` --
-the same route agents already use, so the hand-off, `completed_at` and
-`completed_by` are recorded properly rather than hand-patched.
+touch a worktree. It fetches, reads the board, POSTs `/steps/complete` -- the
+same route agents already use, so the hand-off, `completed_at` and
+`completed_by` are recorded properly rather than hand-patched -- and PATCHes
+`status` for the cars that route just ticked.
 
 Usage (from the app root, `clients/KevBot_Toolkit/RoR_Trader`):
 
@@ -53,7 +92,8 @@ Usage (from the app root, `clients/KevBot_Toolkit/RoR_Trader`):
     python3 tools/release_brief/car_ship_tick.py --actor 'R-A·auto' --only 225,229
 
 Exit codes: 0 = nothing to do or everything ticked and VERIFIED; 1 = a tick was
-attempted and could not be verified (loud -- hand to M); 2 = usage/wiring error.
+attempted and could not be verified, or its status write failed (loud -- hand to
+M); 2 = usage/wiring error.
 """
 
 import argparse
@@ -79,6 +119,29 @@ SHIP_OWNERS = ("R", "R-A")
 # `Staged` AND `Review`, and a car cannot be ticked from any status unless dev
 # already contains its branch.
 SCAN_STATUSES = ("Staged", "Review", "In Progress", "Todo", "Blocked")
+
+# Where a car can LAND once its ship step is ticked (board #249). Two values, and
+# the set is closed on purpose:
+#   Review -- the code shipped and the chain still has a step to run. That is
+#             what `Review` means on this board ("the work ran, awaiting
+#             sign-off", boards #136/#197) and it is what the tile says.
+#   Done   -- the chain is finished; there is nothing left to wait for.
+# `Closed` is ABSENT and must stay absent: it is Kevin's own status, reached from
+# `Done` by his hand, and a tool that can write it can manufacture his sign-off.
+STATUS_SHIPPED_OPEN = "Review"
+STATUS_SHIPPED_DONE = "Done"
+ALLOWED_TARGETS = (STATUS_SHIPPED_OPEN, STATUS_SHIPPED_DONE)
+
+# Mirrors dev_tasks.FINISHED_STATUSES (board #232): a task that is already over
+# is never re-stated by this sweep.
+FINISHED_STATUSES = ("Done", "Closed")
+
+# Mirrors the two-touch close guard in `PATCH /api/dev-tasks/<id>` (board #136).
+# The status write cannot use that endpoint (it is user-gated; a service key gets
+# 401 -- board #217), so the guard travels with the rule instead of with the
+# route. Losing a refusal to a change of transport is exactly the silent
+# weakening this task is about.
+TWO_TOUCH_GUARDED = ("Staged", "Done")
 
 API_TIMEOUT_S = 20
 
@@ -184,25 +247,99 @@ def verify_tick(row, decision, actor):
     return True, f'step {i + 1} "{B._step_title(step)}" ticked by {actor}'
 
 
-def apply_ticks(decisions, complete_step, actor):
-    """POST /steps/complete for every `tick`, then VERIFY each one.
+def next_open_step(chain):
+    """The first incomplete step of a chain, or None when it is finished."""
+    for s in chain or []:
+        if isinstance(s, dict) and not s.get("done"):
+            return s
+    return None
 
-    complete_step(task_id, actor) -> the updated task row (or raises)
+
+def target_status(chain):
+    """Where a car IS once its ship step is ticked -- `Done` or `Review`.
+
+    Read from the chain AFTER the tick, because that is the only description of
+    the task's position that the tick itself just changed. Two cases, and no
+    third:
+
+      * nothing left open -> `Done`. The chain is the task's definition of
+        finished, so there is nothing left to be waiting for.
+      * anything left open -> `Review`. The code shipped; what remains is
+        somebody looking at it. `Review` is this board's word for exactly that
+        ("output done, awaiting sign-off" -- boards #136/#197), and it is the
+        caption the tile carries.
+
+    The kevin-owned close step is the COMMON case of the second, not a separate
+    rule. Making it the only case would have left #242 itself sitting in
+    `Staged` after Wave 26 -- its post-ship step was M's, not Kevin's -- which is
+    the same lie in a less obvious costume. What matters is that the answer is
+    never `Closed` (Kevin's alone) and never `Done` while a step is open.
+    """
+    return STATUS_SHIPPED_DONE if next_open_step(chain) is None \
+        else STATUS_SHIPPED_OPEN
+
+
+def plan_status(row, current, actor):
+    """(target|None, reason) -- the status write owed after a VERIFIED tick.
+
+    `row` is the task as the server returned it FROM the tick, so the chain read
+    here is the post-tick one and no second board read can race it.
+
+    None is returned for every case where no write is owed, each with the reason
+    it is owed nothing -- the report prints them, because "nothing to do" and
+    "refused" must not look alike.
+    """
+    if not isinstance(row, dict) or not isinstance(row.get("checklist"), list):
+        return None, "the API returned no chain -- cannot tell where the task is"
+    if current in FINISHED_STATUSES:
+        return None, f"already {current} -- a finished task is not re-stated"
+    target = target_status(row["checklist"])
+    if target == current:
+        return None, f"already {current}"
+    # Two-touch (board #136): Kevin stamped "I review before Done", so only his
+    # hand moves the task into Staged/Done -- except Staged -> Done, which IS the
+    # release train shipping work he already signed off. Same condition the API
+    # applies; re-applied because the API's route is closed to a service key.
+    if (row.get("kevin_final") and target in TWO_TOUCH_GUARDED
+            and current not in TWO_TOUCH_GUARDED and actor != "kevin"):
+        return None, (f"two-touch task -- only Kevin moves it {current} -> "
+                      f"{target}; the step is ticked, the status is his call")
+    return target, f"shipped -- {current or '—'} -> {target}"
+
+
+def apply_ticks(decisions, complete_step, set_status, actor):
+    """POST /steps/complete for every `tick`, VERIFY it, then move the STATUS.
+
+    complete_step(task_id, actor)            -> the updated task row (or raises)
+    set_status(task_id, old, new, actor)     -> writes the status (or raises)
+
+    ORDER IS THE RAIL. The status write happens only after the tick VERIFIED --
+    not after the POST returned, and never on its own. An unverified tick means
+    someone else moved the chain underneath this run, and a status written on
+    that reading would be a guess. `set_status` is a required argument for the
+    same reason: a caller cannot half-use this function and silently ship the
+    #249 bug back.
 
     Returns (results, failures). A failure is never swallowed: an unverified
-    tick means the board and this report disagree, and that is exactly the
-    condition the whole task exists to stop being quiet about.
+    tick, or a status write that did not land, means the board and this report
+    disagree, and that is exactly the condition the whole task exists to stop
+    being quiet about. A REFUSAL (two-touch, nothing owed) is not a failure --
+    it is reported, in full, as the deliberate answer it is.
     """
     results, failures = [], []
     for d in decisions:
         if d["action"] != "tick":
             continue
         r = dict(d)
+        r["status_before"] = d.get("status")
+        r["status_after"] = None
         try:
             row = complete_step(d["task_id"], actor)
         except Exception as e:                       # noqa: BLE001 -- loud, not fatal
             r["result"] = "error"
             r["detail"] = f"{type(e).__name__}: {e}"
+            r["status_result"] = "not attempted"
+            r["status_detail"] = "the step was not ticked, so no status is owed"
             results.append(r)
             failures.append(r)
             continue
@@ -210,9 +347,33 @@ def apply_ticks(decisions, complete_step, actor):
         r["result"] = "ticked" if ok else "unverified"
         r["detail"] = detail
         r["assignee_after"] = (row or {}).get("assignee")
-        results.append(r)
         if not ok:
+            r["status_result"] = "not attempted"
+            r["status_detail"] = ("the tick did not verify, so the status is not "
+                                  "moved on it")
+            results.append(r)
             failures.append(r)
+            continue
+        # The status the SERVER just returned, not the one this run read a
+        # moment earlier -- same reason `verify_tick` re-reads the chain.
+        current = row.get("status") or d.get("status")
+        r["status_before"] = current
+        target, why = plan_status(row, current, actor)
+        r["status_detail"] = why
+        if target is None:
+            r["status_result"] = "unchanged"
+        else:
+            try:
+                set_status(d["task_id"], current, target, actor)
+            except Exception as e:                   # noqa: BLE001
+                r["status_result"] = "error"
+                r["status_detail"] = f"{type(e).__name__}: {e}"
+                results.append(r)
+                failures.append(r)
+                continue
+            r["status_result"] = "moved"
+            r["status_after"] = target
+        results.append(r)
     return results, failures
 
 
@@ -231,6 +392,19 @@ def render(decisions, results, dry_run):
                    f"\"{d['step_title']}\" [{d['branch']}]{tail}")
         if r and r.get("assignee_after"):
             out.append(f"        handed off to {r['assignee_after']}")
+        # The status line is printed for EVERY outcome, including the ones where
+        # nothing moved (board #249): a silent status is how a shipped car went
+        # on reading `Staged` for a week.
+        if r and r.get("status_result"):
+            smark = {"moved": "status", "unchanged": "status --",
+                     "error": "status !!", "not attempted": "status --"}.get(
+                         r["status_result"], "status")
+            arrow = (f" {r['status_before'] or '—'} -> {r['status_after']}"
+                     if r["status_result"] == "moved" else "")
+            out.append(f"        {smark}{arrow} ({r.get('status_detail')})")
+        elif not r:
+            out.append(f"        status: would move (dry run) from "
+                       f"{d.get('status') or '—'}")
     for d in skips:
         out.append(f"  --  #{d['task_id']} step {d['step_number']} "
                    f"\"{d['step_title']}\" -- {d['reason']}")
@@ -268,6 +442,39 @@ def live_complete_step(task_id, actor):
     return json.loads(txt) if txt.strip() else None
 
 
+def live_set_status(task_id, old, new, actor):
+    """PATCH the status, VERIFY it stuck, and ATTRIBUTE it on the thread.
+
+    Over PostgREST rather than `PATCH /api/dev-tasks/<id>`, which is user-gated
+    and 401s for a service-key holder (board #217) -- the same constraint that
+    put `/steps/complete` behind `get_service_or_user`. Everything the endpoint
+    would have done is therefore done here EXPLICITLY, never dropped:
+
+      * the two-touch refusal, in `plan_status` (board #136);
+      * `ai_eligible=false` on a finished status, so the board never carries a
+        `Done` + armed row (board #198's disarm-on-close);
+      * the `status: X -> Y (by <actor>)` system comment, in the API's own
+        wording, which is the audit trail board #248 is about. Written HERE
+        rather than left to the reader to infer.
+
+    Then it reads the row back. A PATCH that matched no row returns 204 exactly
+    like one that matched -- reporting a status move that never happened is the
+    failure mode this whole task exists to kill, so it is checked, not assumed.
+    """
+    body = {"status": new}
+    if new in FINISHED_STATUSES:
+        body["ai_eligible"] = False
+    B.api("PATCH", f"dev_tasks?id=eq.{task_id}", body=body)
+    rows = B.api("GET", f"dev_tasks?id=eq.{task_id}&select=id,status") or []
+    got = rows[0].get("status") if rows else None
+    if got != new:
+        raise RuntimeError(
+            f"status write did not land -- #{task_id} reads {got!r}, not {new!r}")
+    B.api("POST", "dev_task_comments",
+          body={"task_id": task_id, "author": "system",
+                "body": f"status: {old or '—'} → {new or '—'} (by {actor})"})
+
+
 def live_tasks(only=None):
     # `In Progress` has a space, which urllib refuses to put in a URL. Encode the
     # value rather than dropping the status -- a shipped car sitting In Progress
@@ -282,7 +489,7 @@ def live_tasks(only=None):
 
 
 def sweep(fetch, load_tasks, resolve_branch, is_merged, complete_step,
-          actor, dry_run=False, only=None):
+          set_status, actor, dry_run=False, only=None):
     """Fetch FIRST, then decide, then act.
 
     The fetch is load-bearing and is not a tidiness step: the cars this sweep
@@ -296,7 +503,7 @@ def sweep(fetch, load_tasks, resolve_branch, is_merged, complete_step,
     decisions = plan_ticks(load_tasks(only), resolve_branch, is_merged)
     if dry_run:
         return decisions, [], []
-    results, failures = apply_ticks(decisions, complete_step, actor)
+    results, failures = apply_ticks(decisions, complete_step, set_status, actor)
     return decisions, results, failures
 
 
@@ -320,6 +527,7 @@ def main(argv=None):
             resolve_branch=B.live_resolve_branch,
             is_merged=B.live_already_merged,
             complete_step=live_complete_step,
+            set_status=live_set_status,
             actor=args.actor, dry_run=args.dry_run, only=only)
     except Exception as e:                           # noqa: BLE001
         print(f"car_ship_tick: could not run -- {type(e).__name__}: {e}",
@@ -333,8 +541,9 @@ def main(argv=None):
         print(render(decisions, results, args.dry_run))
 
     if failures:
-        print(f"\n--- {len(failures)} tick(s) could NOT be verified -- the board and "
-              "this report disagree. Hand to M; do not re-run blindly. ---",
+        print(f"\n--- {len(failures)} car(s) could NOT be completed: the tick did "
+              "not verify, or its status write did not land -- the board and this "
+              "report disagree. Hand to M; do not re-run blindly. ---",
               file=sys.stderr)
         return 1
     return 0
