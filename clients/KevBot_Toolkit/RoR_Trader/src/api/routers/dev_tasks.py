@@ -77,6 +77,13 @@ _EDITABLE = {
     "assignee", "blocked_by", "tags", "notes", "parent_id", "origin",
     "checklist", "affected_sids", "impact", "kevin_final",
     "standing_approval", "ai_eligible", "task_type",
+    # Board #262 — the goal type's parameters. Shipped as a column by #261's
+    # migration and read by nothing until now. WHOLE-OBJECT WRITE: `goal_params`
+    # is JSONB, and a partial dict REPLACES the value rather than merging it
+    # (memory: feedback_jsonb_partial_updates), so the UI always sends the full
+    # object. `autonomy` is deliberately NOT one of its keys — it lives on the
+    # `standing_approval` column.
+    "goal_params",
 }
 
 # ── THE TASK-TYPE MODEL (board #261) ────────────────────────────────────────
@@ -378,6 +385,18 @@ def _validate_team_fields(c, row: dict, task_id: Optional[int] = None):
         raise HTTPException(
             status_code=400,
             detail=f"task_type must be one of {sorted(TASK_TYPES)}")
+    # Board #262 — SHAPE only, matching the #261 fence above: an object or null.
+    # Deliberately NOT a required-key check — `done_when` is enforced at RENDER
+    # time (the context block refuses to generate without it), not here, so that
+    # a half-authored goal can still be SAVED. That was M's step-1 decision and
+    # it keeps #261's "no API-level enforcement in this arc" fence intact;
+    # #168 owns any status/required enforcement.
+    if "goal_params" in row and row["goal_params"] is not None:
+        if not isinstance(row["goal_params"], dict):
+            raise HTTPException(
+                status_code=400,
+                detail="goal_params must be an object (or null) — send the "
+                       "WHOLE object; JSONB is replaced, not merged")
     for f in ("kevin_final", "standing_approval", "ai_eligible"):
         if f in row and not isinstance(row[f], bool):
             raise HTTPException(
@@ -400,6 +419,35 @@ def _validate_team_fields(c, row: dict, task_id: Optional[int] = None):
                        'owner/body, mode (execute|discuss), origin '
                        '(planned|audible), stamp, done:bool '
                        '(send the WHOLE array — JSONB is replaced, not merged)')
+    # ── Board #262 — A GOAL DOES NOT NEST ──────────────────────────────────
+    # A goal is a TOP-LEVEL container: it holds action tasks, and it never sits
+    # inside a vision or inside another goal. Both of those are one rule — a
+    # `goal` row may not carry a `parent_id` — so this is one check, not two.
+    #
+    # This is NESTING enforcement, the same kind the block below already does
+    # (one level, no self-parent); it is NOT the status enforcement #261 fenced
+    # off. Mirrored in the UI by `goalNestError`, which states the rule where
+    # the nesting would be done; neither is the other's only line of defence.
+    #
+    # BOTH DIRECTIONS, because a patch can arrive as either half: setting a
+    # parent on a row that is already a goal, or typing a parented row `goal`.
+    # So the EFFECTIVE type is resolved — the patch's `task_type` if it carries
+    # one, else the stored row's — and likewise the effective parent.
+    if task_id is not None and ("task_type" in row or "parent_id" in row):
+        stored = c.table("dev_tasks").select("task_type,parent_id") \
+            .eq("id", task_id).execute().data
+        stored = stored[0] if stored else {}
+    else:
+        stored = {}
+    eff_type = row.get("task_type", stored.get("task_type", DEFAULT_TASK_TYPE))
+    eff_parent = row.get("parent_id", stored.get("parent_id"))
+    if eff_type == "goal" and eff_parent is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"a goal is a top-level container — it cannot be filed "
+                   f"under #{eff_parent} (not under a vision, and not under "
+                   "another goal). Clear parent_id, or make it a vision.")
+
     parent_id = row.get("parent_id")
     if parent_id is None:
         return

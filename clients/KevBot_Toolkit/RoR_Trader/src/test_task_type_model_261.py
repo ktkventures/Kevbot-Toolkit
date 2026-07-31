@@ -356,8 +356,11 @@ ok("the icon carries a tooltip saying what the type IS",
 print("\n── RAIL 6 · the API accepts task_type, and only the three ──────────")
 ok("`task_type` is editable via the API (POST/PATCH whitelist)",
    "task_type" in dt._EDITABLE, str(sorted(dt._EDITABLE)))
-ok("`goal_params` is NOT editable yet — it is board #262's, read by nothing",
-   "goal_params" not in dt._EDITABLE)
+# Was "NOT editable yet — it is board #262's, read by nothing". #262 landed and
+# wired it, so the assertion flips rather than being deleted: the column is
+# still #262's, and the thing worth pinning now is that it IS reachable.
+ok("`goal_params` is editable via the API (wired by board #262)",
+   "goal_params" in dt._EDITABLE, str(sorted(dt._EDITABLE)))
 
 
 class _Refused(Exception):

@@ -464,6 +464,301 @@ export const taskTypeOf = (t: Task, hasChildren = false): TaskType => {
 export const statusesForType = (type: TaskType): string[] =>
   TASK_TYPES[type]?.statuses || STATUSES;
 
+/* ── THE GOAL TYPE (board #262) ─────────────────────────────────────────────
+ * #261 gave `goal` a row in the type map. This gives it its BEHAVIOUR: the
+ * parameters that define a goal, and the context block a goal session is
+ * started from.
+ *
+ * WHAT THIS IS NOT: a `/goal` skill, a runner or a scheduler. Kevin uses
+ * Claude's BUILT-IN `/goal` (his ruling, 07-31) — so everything here is
+ * INPUT to that command, never a replacement for it. The built-in's own prompt
+ * cannot be introspected from here, which is exactly why `renderGoalBlock`
+ * states the objective, the end condition and the rails OUTRIGHT rather than
+ * assuming the command will ask for them.
+ *
+ * The block is rendered CLIENT-SIDE and pasted. That is deliberate: the render
+ * IS the gate (see `renderGoalBlock`), and a goal session cannot start without
+ * it. */
+
+/** A goal's autonomy. NOT a `goal_params` key — see `autonomyOf`. */
+export type Autonomy = 'approve_each' | 'standing';
+export const AUTONOMY_VALUES: Autonomy[] = ['approve_each', 'standing'];
+export const AUTONOMY_DEF: Record<Autonomy, string> = {
+  approve_each: 'approve_each — Kevin approves each task before it runs; the '
+    + 'goal session creates it, assigns it to `kevin`, and waits',
+  standing: 'standing — the goal session may create AND dispatch tasks within '
+    + 'its scope without a per-task approval; it still reports',
+};
+
+/**
+ * AUTONOMY LIVES IN THE `standing_approval` COLUMN, NOT IN `goal_params`.
+ *
+ * `standing_approval` is a real column with a checkbox in the Config tab that
+ * NOTHING has ever read (shipped reserved by board #136). A goal's `autonomy`
+ * is precisely what it was reserved for, so it is wired — not duplicated. A
+ * second `goal_params.autonomy` would be two switches for one decision, and
+ * they would disagree the first time one of them was set.
+ *
+ * The column WINS unconditionally: a stray `goal_params.autonomy` (hand-PATCHed,
+ * or copied from M's spec table) is ignored on read and stripped on write.
+ */
+export const autonomyOf = (t: Task): Autonomy =>
+  t.standing_approval ? 'standing' : 'approve_each';
+
+/** The patch that SETS autonomy — the column, never a params key. */
+export const autonomyPatch = (v: Autonomy): { standing_approval: boolean } =>
+  ({ standing_approval: v === 'standing' });
+
+/**
+ * A child's effective autonomy: INHERITED from its goal unless the child
+ * overrides it.
+ *
+ * "Unless overridden" needs a way to tell "not set" from "set to approve_each",
+ * and a boolean column cannot carry three states — so the override is explicit:
+ * `goal_params.autonomy_override` on the CHILD. Absent = inherit. This is the
+ * one place a params key may name autonomy, and it is a child key, not a goal
+ * key: it never shadows a goal's own column.
+ */
+export const inheritedAutonomy = (child: Task, goal: Task | null): Autonomy => {
+  const override = String(goalParamsOf(child).autonomy_override || '').trim();
+  if (override === 'standing') return 'standing';
+  if (override === 'approve_each') return 'approve_each';
+  return goal ? autonomyOf(goal) : autonomyOf(child);
+};
+
+/** One editable goal parameter. `column` = it is stored on a real column, not
+ *  inside the `goal_params` JSONB. */
+export interface GoalFieldDef {
+  key: string;
+  label: string;
+  required: boolean;
+  kind: 'text' | 'textarea' | 'select' | 'list';
+  hint: string;
+  options?: string[];
+  column?: string;
+}
+
+/** Lanes a goal may dispatch to when it names none (M's spec default). */
+export const DEFAULT_GOAL_LANES = ['E', 'F', 'M-A'];
+
+/**
+ * The `goal_params` shape, field by field — M's step-1 spec, verbatim.
+ * DECLARATIVE: the editor and `missingGoalParams` are both rendered from this,
+ * so adding a field is one entry here, not an entry plus two hand-edits.
+ */
+export const GOAL_PARAM_FIELDS: GoalFieldDef[] = [
+  { key: 'objective', label: 'objective', required: true, kind: 'text',
+    hint: 'one sentence — what "achieved" means' },
+  { key: 'done_when', label: 'done_when', required: true, kind: 'textarea',
+    hint: 'the OBSERVABLE end condition. A goal without one never ends — the '
+      + 'context block refuses to render until this is filled in' },
+  { key: 'autonomy', label: 'autonomy', required: true, kind: 'select',
+    options: AUTONOMY_VALUES, column: 'standing_approval',
+    hint: 'writes the EXISTING standing_approval column — not a params key' },
+  { key: 'scope', label: 'scope', required: false, kind: 'textarea',
+    hint: 'what it may touch' },
+  { key: 'lanes', label: 'lanes', required: false, kind: 'list',
+    hint: `which agents it may dispatch to (comma-separated) — default ${DEFAULT_GOAL_LANES.join(', ')}` },
+  { key: 'boundaries', label: 'boundaries', required: false, kind: 'textarea',
+    hint: 'goal-specific ADDITIONS. The standing rails are emitted whether or '
+      + 'not this is filled in — they are not the author’s to omit' },
+  { key: 'oversight', label: 'oversight', required: false, kind: 'textarea',
+    hint: 'Kevin’s checkpoints beyond M’s standing review' },
+];
+
+/** The params keys actually stored in the JSONB (autonomy is a column). */
+export const GOAL_PARAM_KEYS = GOAL_PARAM_FIELDS
+  .filter((f) => !f.column).map((f) => f.key);
+
+export interface GoalParams {
+  objective?: string;
+  done_when?: string;
+  boundaries?: string;
+  scope?: string;
+  lanes?: string[] | string;
+  oversight?: string;
+  /** CHILD-only (see `inheritedAutonomy`). Never read on the goal itself. */
+  autonomy_override?: string;
+  [k: string]: unknown;
+}
+
+/** `goal_params` as an object, never null — a missing column reads as `{}`. */
+export const goalParamsOf = (t: Task): GoalParams => {
+  const p = t.goal_params;
+  return (p && typeof p === 'object' && !Array.isArray(p)) ? p as GoalParams : {};
+};
+
+/** The lanes a goal may dispatch to, defaulted DECLARATIVELY (the default is
+ *  written into the block, so the session never has to guess). */
+export const goalLanes = (t: Task): string[] => {
+  const raw = goalParamsOf(t).lanes;
+  const list = Array.isArray(raw)
+    ? raw : String(raw || '').split(',');
+  const clean = list.map((s) => String(s).trim()).filter(Boolean);
+  return clean.length ? clean : DEFAULT_GOAL_LANES;
+};
+
+/** The write that SETS one params key. Strips `autonomy` unconditionally: it
+ *  belongs to the column, and a params copy is the parallel field this task
+ *  exists to not create. */
+export const goalParamsPatch = (t: Task, key: string, value: unknown) => {
+  const next = { ...goalParamsOf(t) };
+  if (value === '' || value === null || value === undefined) delete next[key];
+  else next[key] = value;
+  delete next.autonomy;
+  return { goal_params: next };
+};
+
+/** One `goal_params` value as trimmed text. A value may be absent, or an array
+ *  (`lanes`); the block wants a string either way, and a blank is a blank. */
+export const goalVal = (p: GoalParams, k: string): string =>
+  String(p[k] ?? '').trim();
+
+/** REQUIRED params that are still blank. `autonomy` can never be missing — the
+ *  column is a boolean, so it always resolves to one of the two values. */
+export const missingGoalParams = (t: Task): string[] => {
+  const p = goalParamsOf(t);
+  return GOAL_PARAM_FIELDS
+    .filter((f) => f.required && !f.column)
+    .filter((f) => !String(p[f.key] ?? '').trim())
+    .map((f) => f.key);
+};
+
+/**
+ * THE NESTING GUARD — a goal is a TOP-LEVEL container.
+ *
+ * A goal contains action tasks; it does not sit inside another goal, and it
+ * does not sit inside a vision. Both directions are one rule: a `goal` row may
+ * not carry a `parent_id`. Returns the refusal text, or null when it is legal.
+ *
+ * Mirrored server-side in `_validate_team_fields` — the UI states the rule, the
+ * API enforces it, and neither is the other's only line of defence.
+ */
+export const goalNestError = (type: TaskType, parentId: number | null | undefined): string | null =>
+  (type === 'goal' && parentId != null)
+    ? `a goal is a top-level container — it cannot be filed under #${parentId} `
+      + '(not under a vision, and not under another goal). Its own children are '
+      + 'the action tasks it creates.'
+    : null;
+
+/** The rails EVERY goal inherits, emitted whether or not `boundaries` is set —
+ *  they are not the author's to omit. Kevin's ruling (a goal drives E for every
+ *  Railway action, flag flip and migration) is deliberately FIRST. */
+export const GOAL_STANDING_RAILS = [
+  '**Every Railway action, flag flip and migration goes through E.** Create a '
+  + 'task for E; do not run them yourself. This rail is not widened for goals.',
+  'Never force-push. Never reset `dev` or `main`.',
+  'Never apply a migration. Author it, hand it to M, Kevin authorizes by name.',
+  'Never edit the main checkout — a live dispatcher loop runs from it.',
+  'Never mark a task `Closed`. That is Kevin’s alone.',
+  'Never restart the dispatcher loop.',
+];
+
+export interface GoalBlockResult {
+  ok: boolean;
+  /** Why it refused. Present iff `ok` is false. */
+  refusal: string | null;
+  /** The pasteable block. Present iff `ok` is true — NEVER a partial block. */
+  block: string | null;
+  missing: string[];
+}
+
+/**
+ * THE CONTEXT BLOCK — the text Kevin pastes into a session running Claude's
+ * built-in `/goal`. M's step-1 template, rendered.
+ *
+ * IT REFUSES WITHOUT `done_when`, AND THAT REFUSAL IS THE WHOLE GATE.
+ * A goal with no observable end condition never ends. Enforcing it HERE rather
+ * than at the API (M's step-1 decision, argued and kept) puts the gate where it
+ * actually bites — a goal session cannot be started without this block — while
+ * still letting Kevin SAVE a half-written goal, which is what a draft is. It
+ * also keeps #261's fence: no API-level rejection is added to this arc without
+ * a deliberate decision (#168 owns that).
+ *
+ * Refusal is TOTAL: `block` is null, not a block with a hole in it. A
+ * half-rendered block is the one output that would get pasted anyway.
+ */
+export const renderGoalBlock = (
+  t: Task, type: TaskType, apiHost = '<api-host>',
+): GoalBlockResult => {
+  if (type !== 'goal') {
+    return { ok: false, block: null, missing: [],
+      refusal: `#${t.id} is a \`${type}\` task — only a goal has a goal block.` };
+  }
+  const missing = missingGoalParams(t);
+  if (missing.length) {
+    const head = missing.includes('done_when')
+      ? 'REFUSED — this goal has no `done_when`. A goal with no observable end '
+        + 'condition never ends, so the block that starts one will not render '
+        + 'without it.'
+      : 'REFUSED — this goal is missing a required parameter.';
+    return { ok: false, block: null, missing,
+      refusal: `${head} Missing: ${missing.join(', ')}. Fill it in above, then `
+        + 'the block renders.' };
+  }
+  const p = goalParamsOf(t);
+  const autonomy = autonomyOf(t);
+  const autonomyPara = autonomy === 'standing'
+    ? 'You have standing approval to create and dispatch tasks within your\n'
+      + 'scope. You do NOT need Kevin’s approval per task. You still report.'
+    : 'Kevin approves each task before it runs. Create the task, assign\n'
+      + 'it to `kevin`, and WAIT. Do not dispatch work he has not approved.';
+  const extra = goalVal(p, 'boundaries');
+  const block = [
+    `You are the session for GOAL #${t.id} — ${t.title}.`,
+    '',
+    '## The goal',
+    goalVal(p, 'objective'),
+    '',
+    '## Done when',
+    goalVal(p, 'done_when'),
+    '',
+    'This is the ONLY definition of finished. When it is true, say so and stop. If you',
+    'come to believe it is unreachable or wrong, say THAT and stop — do not quietly',
+    'substitute a goal you can reach.',
+    '',
+    '## Your container',
+    `Board task #${t.id} is your container. Every task you create in pursuit of this`,
+    `goal is a CHILD of it: set \`parent_id\` to ${t.id}. Do not create top-level tasks.`,
+    `Board: /admin/tasks · API: ${apiHost}/api/dev-tasks`,
+    '',
+    `## Autonomy — ${autonomy}`,
+    autonomyPara,
+    'Children of this goal inherit this autonomy unless their own',
+    '`goal_params.autonomy_override` says otherwise.',
+    '',
+    '## Scope',
+    goalVal(p, 'scope') || '(not narrowed — stay inside what the objective plainly implies, and ask if unsure)',
+    '',
+    '## Lanes you may dispatch to',
+    `${goalLanes(t).join(', ')} — assign a task to that letter and the dispatcher picks it up. You do`,
+    'not do the deep work yourself; you decompose it and route it.',
+    '',
+    '## Oversight',
+    `M reviews your output and owns the chain structure. ${goalVal(p, 'oversight')}`.trim(),
+    'Report to Kevin when the goal is achieved, when it is blocked, and when you',
+    'learn something that changes what "achieved" means.',
+    '',
+    '## Boundaries — never, regardless of what seems reasonable',
+    ...GOAL_STANDING_RAILS.map((r) => `- ${r}`),
+    ...(extra ? [extra] : []),
+    '',
+    '## Sign of life',
+    // The letter is validated server-side by `parse_letter`
+    // (^[A-Z](?:[0-9]|-[A-Z])?$), so `G<id>` would 400 and the session would
+    // look dead forever. The KEY stays `G`; the goal id rides in `actor`,
+    // which is a free string. See the report on #262.
+    `POST ${apiHost}/api/r-session/heartbeat {"letter": "G", "actor": "goal-${t.id}"} each`,
+    'cycle. If it goes stale, the dashboards show NOT RUNNING — which is correct.',
+    'Do not fake it.',
+    '',
+    '## Start here',
+    'Read your container task and its existing children before creating anything.',
+    'Say what you plan to do first, then do it.',
+  ].join('\n');
+  return { ok: true, refusal: null, block, missing: [] };
+};
+
 /* ── THE ONE SHARED "FINISHED" SET (board #232) ─────────────────────────────
  * Two statuses mean a task is OVER: `Done` (M's close) and `Closed` (Kevin's
  * retrospective look, which comes after it). Everything asking "is this task
@@ -827,10 +1122,30 @@ export const isVisionTask = (t: Task, byParent: Map<number, Task[]>) =>
   taskTypeOf(t, byParent.has(t.id)) === 'vision';
 
 /**
+ * CONTAINER predicate — a row that HOLDS subtasks, read off the type map's
+ * `children` flag rather than a hard-coded 'vision' (board #262).
+ *
+ * WHY THIS EXISTS: `groupBoard` used to ask `isVisionTask`, which is
+ * `type === 'vision'` exactly. #261 added a SECOND container type, so a `goal`
+ * with children fell through to `looseTasks` while its children — filtered out
+ * of `looseTasks` by `parent_id != null` and belonging to no vision — VANISHED
+ * from the board. That is the identical failure the `taskTypeOf` rescue exists
+ * to prevent, one type over. Adding container type number three should now be
+ * a `children: true` in the map and nothing else.
+ */
+export const isContainerTask = (t: Task, hasChildren: boolean) =>
+  !!TASK_TYPES[taskTypeOf(t, hasChildren)]?.children;
+
+/**
  * The board grouping — ONE implementation consumed by /admin/tasks and
  * /admin/roadmap (Spec_Admin_Roadmap.md §2): the two pages must never
  * disagree about what a vision item is. Input order (API priority order)
  * is preserved in every output list.
+ *
+ * `visionItems` is the CONTAINER list — vision AND goal (board #262). The key
+ * keeps its name because three pages destructure it, but the predicate is
+ * `isContainerTask`, not `isVisionTask`: a goal renders its children strip
+ * exactly as a vision does, and without that its children are invisible.
  */
 export function groupBoard(tasks: Task[]): {
   byParent: Map<number, Task[]>; visionItems: Task[]; looseTasks: Task[];
@@ -839,8 +1154,8 @@ export function groupBoard(tasks: Task[]): {
   tasks.forEach((t) => {
     if (t.parent_id != null) byParent.set(t.parent_id, [...(byParent.get(t.parent_id) || []), t]);
   });
-  const visionItems = tasks.filter((t) => t.parent_id == null && isVisionTask(t, byParent));
-  const looseTasks = tasks.filter((t) => t.parent_id == null && !isVisionTask(t, byParent));
+  const visionItems = tasks.filter((t) => t.parent_id == null && isContainerTask(t, byParent.has(t.id)));
+  const looseTasks = tasks.filter((t) => t.parent_id == null && !isContainerTask(t, byParent.has(t.id)));
   return { byParent, visionItems, looseTasks };
 }
 
