@@ -1783,6 +1783,18 @@ def cleanup_orphaned_mass_searches() -> dict:
     import os
     summary = {'resumed': 0, 'orphaned': 0, 'ids_resumed': [], 'ids_orphaned': [],
                'queued_recovered': 0}
+
+    # Environment-role guard (board #286). This sweep uses the ADMIN client and
+    # flips EVERY user's rows — per-user scoping does not contain it at all.
+    # Under the shared-database dev environment (#165) it must not run, and the
+    # guard lives HERE as well as at the api-boot call site so that no caller
+    # (boot, the /cleanup-orphans route, app.py, a future one) can reach it by
+    # accident. With RORT_ENV_ROLE unset this is one dict lookup and a False.
+    from env_role import boot_sweep_blocked
+    if boot_sweep_blocked('cleanup_orphaned_mass_searches'):
+        summary['skipped_env_role'] = True
+        return summary
+
     from db import USE_DB
     if not USE_DB:
         return summary

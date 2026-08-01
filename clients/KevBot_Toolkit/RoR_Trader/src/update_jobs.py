@@ -290,6 +290,13 @@ def cleanup_orphaned_update_jobs() -> dict:
 
     Returns {'orphaned': int, 'ids': [...]}.
     """
+    # Environment-role guard (board #286) — see the twin in
+    # `mass_builder.cleanup_orphaned_mass_searches`. This is the sweep whose
+    # boot path made *starting the dev API* a fleet-wide production write.
+    from env_role import boot_sweep_blocked
+    if boot_sweep_blocked('cleanup_orphaned_update_jobs'):
+        return {'orphaned': 0, 'ids': [], 'skipped_env_role': True}
+
     try:
         from db import load_orphaned_update_jobs, mark_update_job_orphaned
     except Exception as e:
