@@ -95,6 +95,43 @@ type Tab = 'summary' | 'process' | 'config' | 'goal' | 'deliverables';
  *  INSTEAD of the server check — the API refusal is the real gate. */
 const DELIVERABLE_MAX_BYTES = 10 * 1024 * 1024;
 
+/**
+ * Board #184 §7 (invariant I1) — the deliverables strip's ENTIRE vertical
+ * budget, fixed. One header line plus one row of square cards, and the row
+ * scrolls sideways rather than wrapping, so 3 deliverables and 30 cost the
+ * column exactly the same 56px.
+ *
+ * The card is 40, not the spec's "~44": the slim scroll affordance has to live
+ * INSIDE the 56 rather than push it, and a fixed strip that quietly grew by a
+ * scrollbar's height would be the very thing I1 forbids. 40px still reads as a
+ * square icon card at 18px glyphs.
+ */
+const STRIP_H = 56;
+const STRIP_HEAD_H = 12;
+const STRIP_CARD = 40;
+
+/**
+ * The hover detail for a strip card (spec §7). One `title` string — the modal's
+ * existing tooltip convention — carrying what the card's icon cannot: which ask
+ * it is, which step asked, what was delivered, and by whom. No tooltip library
+ * for a strip of 40px squares.
+ */
+const deliverableTip = (
+  d: StepDeliverable, step: ChecklistStep, idx: number,
+): string => {
+  const owner = stepOwner(step);
+  const filled = isDeliverableFilled(d);
+  const value = !filled ? 'not provided'
+    : d.kind === 'file' ? `📎 ${d.filename || '(file)'} (${fileSize(d.size_bytes)})`
+      : (d.value || '').slice(0, 200);
+  return [
+    `${d.label || '(unlabelled)'}${d.required ? ' *' : ''}`,
+    `step ${idx + 1}${owner ? ` (${owner})` : ''}${step.done ? ' ✓' : ''}`,
+    value,
+    filled ? `${d.filled_by || '?'}${d.filled_at ? ` · ${relTime(d.filled_at)}` : ''}` : '',
+  ].filter(Boolean).join(' · ');
+};
+
 /** One consolidated modal-poll round-trip (board #148, GET .../poll). */
 interface PollResponse {
   comments: Comment[];
@@ -330,6 +367,33 @@ export default function TaskDetailModal({
         `/api/dev-tasks/${scoped.id}/steps/deliverables/${id}/url`);
       if (res?.url) window.open(res.url, '_blank', 'noopener');
     } catch (e) { setStepErr(String(e)); }
+  };
+
+  /**
+   * The strip card's ONE click (spec §7: "the natural action … one click, no
+   * menu"). The action follows the card's STATE, not a menu: a filled file
+   * opens its signed URL, a filled link opens the URL, filled text expands into
+   * the deliverables tab.
+   *
+   * An UNFILLED card has no value to open, and the spec's stated fallback (the
+   * tab) is a dead end there — the tab is read-only and can only say
+   * "— not provided". So an unfilled deliverable on a still-open step routes to
+   * the place that can actually satisfy it: the process accordion, with that
+   * step already expanded. On a COMPLETED step nothing is fillable any more
+   * (fills 409 there), so the read-only tab is the right destination after all.
+   */
+  const openDeliverableCard = (
+    d: StepDeliverable, step: ChecklistStep, idx: number,
+  ) => {
+    if (isDeliverableFilled(d)) {
+      if (d.kind === 'file' && d.id) { openDeliverableFile(d.id); return; }
+      if (d.kind === 'link' && d.value) { window.open(d.value, '_blank', 'noopener'); return; }
+      setTab('deliverables');
+      return;
+    }
+    if (step.done) { setTab('deliverables'); return; }
+    setTab('process');
+    setOpenSteps((prev) => new Set(prev).add(step.id || String(idx)));
   };
 
   // T10's UI half. Required-and-unfilled BLOCKS (the server refuses it anyway —
@@ -622,6 +686,15 @@ export default function TaskDetailModal({
         .pulse-dot {
           display: inline-block; width: 8px; height: 8px; border-radius: 50%;
           background: var(--blue); animation: taskPulse 1.4s ease-in-out infinite;
+        }
+        /* Board #184 §7 (I1) — the deliverables strip scrolls SIDEWAYS and never
+           wraps, so the scroll affordance has to be slim enough to fit inside the
+           strip's fixed height instead of adding to it. Thin, not hidden: hiding
+           it would leave no cue that there are more cards off the right edge. */
+        .dlv-strip { scrollbar-width: thin; }
+        .dlv-strip::-webkit-scrollbar { height: 4px; }
+        .dlv-strip::-webkit-scrollbar-thumb {
+          background: var(--border); border-radius: 4px;
         }
       `}</style>
       <div onClick={(e) => e.stopPropagation()} style={{
@@ -1117,6 +1190,82 @@ export default function TaskDetailModal({
                 )}
               </div>
             </div>
+
+            {/* ── Board #184 §7 — the deliverables STRIP (Half 2, Phase 2) ─────
+                Kevin's two constraints are INVARIANTS, not preferences, so they
+                are stated where the layout makes or breaks them:
+
+                I1 · it must not eat real estate. `flex:'none'` + a fixed
+                STRIP_H; one row that scrolls sideways and never wraps, so the
+                height is independent of the card count; and — the load-bearing
+                half — it renders NOTHING AT ALL when the scoped task has zero
+                deliverables. A task that never asked for evidence gets no new
+                chrome, which is why this reuses `deliverablesTabOk`: the strip
+                and the tab appear and disappear together, never one alone.
+
+                I2 · a vision must still show its subtask list. The strip is
+                inserted BELOW the context panel and ABOVE the Pipeline, and its
+                height comes out of the context panel's `flex: 1`. The Pipeline's
+                `maxHeight: '45%'` resolves against the WHOLE left column — not
+                the space left over — so it is untouched by construction, not by
+                a number that happens to still fit. Do not "tidy" this by giving
+                the strip a share of the Pipeline's box. */}
+            {deliverablesTabOk && (
+              <div style={{
+                flex: 'none', height: STRIP_H, boxSizing: 'border-box',
+                display: 'flex', flexDirection: 'column', gap: 2,
+              }}>
+                <div style={{
+                  flex: 'none', height: STRIP_HEAD_H, lineHeight: `${STRIP_HEAD_H}px`,
+                  fontSize: 10, letterSpacing: 0.6, textTransform: 'uppercase',
+                  color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', gap: 6,
+                }}>
+                  <span>deliverables · {deliverablesFilled}/{scopedDeliverables.length}</span>
+                  {scoped.id !== task.id &&
+                    <span style={{ textTransform: 'none' }}>#{scoped.id}</span>}
+                  <span style={{ flex: 1 }} />
+                  <span style={{ textTransform: 'none', opacity: 0.8 }}>hover for detail</span>
+                </div>
+                <div className="dlv-strip" style={{
+                  flex: 'none', height: STRIP_H - STRIP_HEAD_H - 2,
+                  display: 'flex', flexWrap: 'nowrap', gap: 6,
+                  overflowX: 'auto', overflowY: 'hidden', alignItems: 'flex-start',
+                }}>
+                  {scopedDeliverables.map(({ d, step, i }, n) => {
+                    const filled = isDeliverableFilled(d);
+                    return (
+                      <button key={d.id || `${i}-${n}`}
+                        title={deliverableTip(d, step, i)}
+                        onClick={() => openDeliverableCard(d, step, i)}
+                        style={{
+                          flex: 'none', width: STRIP_CARD, height: STRIP_CARD,
+                          boxSizing: 'border-box', position: 'relative', padding: 0,
+                          display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          borderRadius: 8, cursor: 'pointer',
+                          border: '1px solid var(--border)',
+                          // The fill is what the card is FOR, so a filled one
+                          // sits in a box and an unfilled one is an outline.
+                          background: filled ? 'var(--bg-input)' : 'transparent',
+                        }}>
+                        {/* Three states, one glyph (spec §7). The opacity rides
+                            the ICON, never the button — a muted `*` would defeat
+                            the whole point of marking the required ones. */}
+                        <span style={{
+                          fontSize: 18, lineHeight: 1,
+                          opacity: filled ? 1 : d.required ? 0.65 : 0.4,
+                        }}>{deliverableIcon(d.kind)}</span>
+                        {!filled && d.required && (
+                          <span style={{
+                            position: 'absolute', top: 1, right: 4, lineHeight: 1,
+                            color: 'var(--red)', fontSize: 12, fontWeight: 700,
+                          }}>*</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Subtask-selector strip — VISIONS ONLY (the vision's pipeline) */}
             {vision && (
