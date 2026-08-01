@@ -85,8 +85,13 @@ G argued in this document that **"M's candidate, the 07-21 fleet cull, appears w
 **One genuinely durable slice:** `RORT_RESAMPLED_STORE_SERVE`/`_LIVE`, armed **07-13**, best explains the chart's mid-July softening (~137 → ~112, ≈18%). Call it **~15–20% structural and durable, ~80%+ workload and reversible** — and the 18% is eyeballed, so treat it as indicative.
 
 > ### 💰 The unit price — the durable deliverable of this research
-> **≈ 2.1 GB/day of total egress and ≈ 1.4 min of nightly recompute per forward-testing strategy ⇒ ~$5.80/month each.**
-> *(All-in, anchored on the measured 49.58 GB/day ÷ 23 strategies. #301's `read_bars`-lane-only figure is 1.55 GB/day ⇒ $4.20/mo; the difference is the API lane plus the 9.5% residual.)*
+> **≈ 2.16 GB/day of total egress and ≈ 1.4 min of nightly recompute per forward-testing strategy ⇒ ~$5.82/month each.**
+>
+> ⚠️ **Use the ALL-IN figure. Two are in circulation and the other is 39% low:** #301's `read_bars`-lane-only figure is **1.55 GB/day ⇒ $4.18/mo**, which excludes the PostgREST lane and the 9.5% residual. Anything quoting ~$4.20 — including "69 strategies became a $271/mo line" — is the lane, not the bill. **All-in at fleet 69 is ~$379/mo.**
+>
+> ⚠️ **These are marginal-cost projections from ONE measured point, not a measured curve.** Linearity in fleet size held across the 07-20 cull (3.0× fleet ⇒ ~3× egress) but is untested above 73. **Label them as projections wherever displayed (#303).**
+>
+> **The always-on floor is fleet-scaled too.** The measured 12.4–12.7 GB/day idle floor comes from `refresh_mtf_states()` running per shadow every 120 s, 24/7 regardless of market window — so **even the necessary cost of divergence monitoring is per-strategy, not fixed.**
 
 | fleet | egress/day | monthly | **egress cost** | nightly recompute |
 |---:|---:|---:|---:|---:|
@@ -325,7 +330,7 @@ Per #281's boundary — *"the deliverable is understanding, not action"* — and
 
 | # | Lever | Size vs current run-rate | Speed cost | Verdict |
 |---|---|---|---|---|
-| **1** | **Fleet size itself** | **±2.1 GB/day per strategy — the entire 3× lives here** | it *buys* product | **Not a code fix — a unit price to know before adding strategies. Unowned and unmetered.** |
+| **1** | **Fleet size itself — #303** | **±2.16 GB/day per strategy — the entire 3× lives here** | it *buys* product | **Not a code fix — a unit price to display before adding strategies. Visibility only; no cap was asked for and none is proposed.** |
 | **2** | **#298** — instrument `read_bars` by caller | unlocks attribution of **100%** of the run-rate | none (in-process counter) | **Do first.** Nothing below can be sized or verified without it. |
 | **3** | **#299** — `canonical_resampled()` per-target base re-read | **unsized** — known instance ≈34 MB/admin-page-load | none, pure sharing | Right shape, real waste, **gated on #298 for its number** |
 | **4** | **#300** — board-tooling hygiene | **1.15 GB/day = 2.3–3.2%**, ~$3.10/mo | negative (gzip is faster) | Genuine pure waste. **Do it because it is free, not because it is big.** |
