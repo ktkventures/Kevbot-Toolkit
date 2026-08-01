@@ -30,6 +30,16 @@ def create_app() -> FastAPI:
         redirect_slashes=False,
     )
 
+    # Environment-role write guard (board #286) — refuses the 29 fleet-wide
+    # WRITE routes when RORT_ENV_ROLE is anything other than production. With
+    # the variable unset this is a single dict lookup per request and changes
+    # nothing. Installed BEFORE CORS on purpose: Starlette makes the
+    # last-added middleware outermost, so CORS must wrap this one or the 403
+    # comes back without CORS headers and the browser sees an opaque error
+    # instead of the message explaining the refusal.
+    from env_role import install_env_role_guard
+    install_env_role_guard(app)
+
     # CORS — allow frontend origins (including Railway dev URLs)
     import os as _os
     _extra_origins = [o.strip() for o in _os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
@@ -132,25 +142,37 @@ def create_app() -> FastAPI:
     # when Supabase was under load, producing persistent 502s even after
     # the deploy reported SUCCESS). The cleanup still runs on boot but
     # uvicorn starts serving requests immediately.
+    #
+    # ⚠️ board #286: BOTH sweeps below use the admin client and flip EVERY
+    # user's 'running' rows to 'orphaned'. Under the shared-database dev
+    # environment (#165) that makes *starting the API* a fleet-wide write — no
+    # one has to click anything, and it repeats on every deploy. They are
+    # therefore skipped whenever RORT_ENV_ROLE is not production. The sweep
+    # functions themselves carry the same guard (defence in depth, and it also
+    # covers app.py's Streamlit boot path); this call-site check exists so the
+    # skip is decided and logged even if the import below were to fail.
     import threading
+    from env_role import boot_sweep_blocked
     def _startup_cleanup():
-        try:
-            from mass_builder import cleanup_orphaned_mass_searches
-            cleanup_orphaned_mass_searches()
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(
-                "Mass search startup cleanup failed (non-fatal): %s", e)
+        if not boot_sweep_blocked("cleanup_orphaned_mass_searches"):
+            try:
+                from mass_builder import cleanup_orphaned_mass_searches
+                cleanup_orphaned_mass_searches()
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Mass search startup cleanup failed (non-fatal): %s", e)
         # Same pattern for update_jobs — orphan any 'running' UAD jobs
         # from a previous worker process so the UI surfaces them and the
         # user can retry.
-        try:
-            from update_jobs import cleanup_orphaned_update_jobs
-            cleanup_orphaned_update_jobs()
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning(
-                "Update jobs orphan cleanup failed (non-fatal): %s", e)
+        if not boot_sweep_blocked("cleanup_orphaned_update_jobs"):
+            try:
+                from update_jobs import cleanup_orphaned_update_jobs
+                cleanup_orphaned_update_jobs()
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Update jobs orphan cleanup failed (non-fatal): %s", e)
     threading.Thread(target=_startup_cleanup, daemon=True, name="startup_orphan_cleanup").start()
 
     # Stale parity_status cleanup — bg parity threads are daemon=True and
@@ -159,7 +181,14 @@ def create_app() -> FastAPI:
     # "Computing" forever. Mark anything PENDING older than 10 minutes as
     # ERROR with a clear hint so the user can re-trigger via Run Parity.
     # Runs once at boot, in a background thread to avoid blocking uvicorn.
+    #
+    # ⚠️ board #286: this is a THIRD boot sweep, and the #285 audit missed it
+    # because it lives in main.py rather than in a router. It reads EVERY row
+    # of `strategies` through the admin client and overwrites `parity_status`
+    # on any it judges stale — same class as the two above, same fix.
     def _stale_parity_cleanup():
+        if boot_sweep_blocked("_stale_parity_cleanup"):
+            return
         try:
             from datetime import datetime, timezone, timedelta
             import json as _json
