@@ -84,14 +84,25 @@ G argued in this document that **"M's candidate, the 07-21 fleet cull, appears w
 
 **One genuinely durable slice:** `RORT_RESAMPLED_STORE_SERVE`/`_LIVE`, armed **07-13**, best explains the chart's mid-July softening (~137 → ~112, ≈18%). Call it **~15–20% structural and durable, ~80%+ workload and reversible** — and the 18% is eyeballed, so treat it as indicative.
 
-> ### 💰 The unit price — the durable deliverable of this research
-> **≈ 2.16 GB/day of total egress and ≈ 1.4 min of nightly recompute per forward-testing strategy ⇒ ~$5.82/month each.**
+> ### 💰 The unit price — the durable deliverable, stated as a BAND
+> **Marginal cost of one more forward-testing strategy: ~$4.20–$5.80/month of egress, plus ~1.4 min of nightly recompute.**
 >
-> ⚠️ **Use the ALL-IN figure. Two are in circulation and the other is 39% low:** #301's `read_bars`-lane-only figure is **1.55 GB/day ⇒ $4.18/mo**, which excludes the PostgREST lane and the 9.5% residual. Anything quoting ~$4.20 — including "69 strategies became a $271/mo line" — is the lane, not the bill. **All-in at fleet 69 is ~$379/mo.**
+> **The band is real and it is not laziness — which end applies depends on an unmeasured quantity.** Today's 49.58 GB/day decomposes as `read_bars` **35.7** (fleet-scaled) + PostgREST board tooling **1.47** (fixed) + an **unattributed residual of 12.41 GB/day — 25% of the total, fleet-scaling unknown.**
+>
+> | if the residual is… | marginal | per strategy |
+> |---|---:|---:|
+> | **fixed** (backups/PITR, storage, WAL) | 1.55 GB/day | **$4.19/mo** |
+> | **fleet-scaled** | 2.16 GB/day | **$5.82/mo** |
+>
+> **The residual grew from 9.5% of the 30-day window to 25% of today's rate** — because `read_bars` fell 3× and fixed costs did not. That leans toward *substantially fixed*, and therefore the low end. **It is a signal, not a measurement.**
+>
+> **For budgeting, use the top of the band.** Under-budgeting a growth cost is the more expensive error. **One datum collapses the band entirely: the per-service egress split, still outstanding on #290.**
 >
 > ⚠️ **These are marginal-cost projections from ONE measured point, not a measured curve.** Linearity in fleet size held across the 07-20 cull (3.0× fleet ⇒ ~3× egress) but is untested above 73. **Label them as projections wherever displayed (#303).**
 >
 > **The always-on floor is fleet-scaled too.** The measured 12.4–12.7 GB/day idle floor comes from `refresh_mtf_states()` running per shadow every 120 s, 24/7 regardless of market window — so **even the necessary cost of divergence monitoring is per-strategy, not fixed.**
+
+**Fleet projections below use the top of the band (2.16 GB/day/strategy). At the bottom of the band each figure is ~28% lower.**
 
 | fleet | egress/day | monthly | **egress cost** | nightly recompute |
 |---:|---:|---:|---:|---:|
