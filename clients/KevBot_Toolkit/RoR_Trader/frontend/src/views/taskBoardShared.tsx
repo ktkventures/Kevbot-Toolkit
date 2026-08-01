@@ -1,7 +1,12 @@
 /**
  * Shared types, constants, style atoms, and small chips for the team-board
  * views (AdminTasksPage table + TaskDetailModal). One source for the role
- * list — adding a role is one line here (ASSIGNEES + ROLE_COLOR).
+ * list — adding a FIXED role is one line here (ASSIGNEES + ROLE_COLOR).
+ *
+ * Board #289 added the one lane class that is NOT fixed: per-goal lanes
+ * (`G281`) are DERIVED from the board's open goal rows and coloured by a prefix
+ * rule, because goals are created at will and no array can enumerate them. See
+ * PER-GOAL ASSIGNEE LANES below before reaching for a new ASSIGNEES entry.
  */
 import React from 'react';
 // Board #246 — the multi-select PREDICATES live in a dependency-free plain-JS
@@ -872,6 +877,9 @@ export const STATUS_DEF: Record<string, string> = {
 export const AREAS = ['engine', 'backtest', 'frontend', 'infra', 'data', 'docs', 'other'];
 // Team roles per Session_Charters.md §1. Legacy values ('claude', …) still
 // render: selects append any unknown current value instead of blanking it.
+// NOT the whole assignee vocabulary since board #289 — per-goal lanes (`G281`)
+// are derived, not listed (see openGoalLanes / rolesWithGoalLanes). This stays
+// the FALLBACK the selects use when the agents registry fetch fails.
 export const ASSIGNEES = ['', 'M', 'M-A', 'E', 'E2', 'F', 'P', 'R', 'R-A', 'kevin'];
 export const ORIGINS = ['planned', 'discovered', 'kevin'];
 export const AUTHOR_LS_KEY = 'ror_task_comment_author';
@@ -912,6 +920,63 @@ export const IMPACT_DEF: Record<string, string> = {
   engine: 'engine — engine code paths, correctness risk',
   live: 'live — touches live trading, deploy carefully',
 };
+/* ── PER-GOAL ASSIGNEE LANES (board #289) ───────────────────────────────────
+ * A goal task carries its OWN SESSION (`TASK_TYPES.goal.session`), and Kevin's
+ * ruling 08-01 is that the lane is PER-GOAL — `G281`, not one shared `G`:
+ * *"the point of a goal is to have a dedicated session fully focused on that
+ * goal."* So the lane vocabulary is UNBOUNDED, and `ASSIGNEES` — a fixed array
+ * — structurally cannot express it. The G-lanes are DERIVED from the goal rows
+ * the board already holds, and `roleColor` gets a PREFIX rule rather than N map
+ * entries, for the same reason.
+ *
+ * THIS IS THE UI HALF ONLY. They already worked in the DATA: the API whitelists
+ * which FIELDS a caller may set and validates `origin`/`task_type`, but it has
+ * no `assignee` vocabulary at all — which is how #281's goal session set itself
+ * to `G` within minutes of the first goal being spawned, with no UI for it.
+ *
+ * ⛔ NO `G*` ROW IS ADDED TO THE AGENTS REGISTRY, and that omission is the
+ * safety rail, not an oversight. `dispatcher.headless_agents()` selects
+ * `status=eq.headless`, and `triage_todo()` refuses any assignee absent from
+ * that dict as *"waiting on G281 (not a headless agent)"* — is_stuck=False, so
+ * the task sits QUIETLY and the loop never tries to spawn a goal session.
+ * KEVIN spawns goals. A registry row is precisely what would arm the loop to do
+ * it instead, which is why the fix lives here and not there.
+ *
+ * The heartbeat key is the precedent, not a contradiction: `session_heartbeat_G`
+ * keys on the BARE letter because `parse_letter` (^[A-Z](?:[0-9]|-[A-Z])?$)
+ * would 400 on `G281`, so #262 rides the goal id in the free-string `actor`.
+ * `assignee` has no such validator, so the lane carries the id outright. */
+export const GOAL_LANE_PREFIX = 'G';
+/** The lane a goal task's session runs as. */
+export const goalLaneFor = (t: Task): string => `${GOAL_LANE_PREFIX}${t.id}`;
+/** `G` + digits and nothing else. A BARE `G` is deliberately NOT a lane (that
+ *  is the shared-lane shape Kevin ruled out), and neither is some future
+ *  registry letter that merely starts with G. */
+export const isGoalLane = (role?: string | null): boolean =>
+  /^G\d+$/.test(String(role || ''));
+/**
+ * The G-lanes worth OFFERING: one per UNFINISHED goal on the board, lowest id
+ * first. A finished goal drops out — its session is over — but a task still
+ * parked on that lane keeps rendering it, because every assignee select wraps
+ * its options in `withLegacy`. That is the same treatment a retired role gets,
+ * and it is why this list can shrink without blanking a dropdown.
+ */
+export const openGoalLanes = (tasks: Task[] | null | undefined): string[] =>
+  (tasks || [])
+    .filter((t) => taskTypeOf(t) === 'goal' && !isFinished(t.status))
+    .sort((a, b) => a.id - b.id)
+    .map(goalLaneFor);
+/** Registry lanes + the board's open goal lanes = what an ASSIGNEE select
+ *  offers. Deliberately NOT what the @-mention picker offers: the API only
+ *  writes a `task_mentions` row for a real registry letter, so an `@G281` would
+ *  post and then silently reach nobody (see TaskDetailModal.mentionRoles). */
+export const rolesWithGoalLanes = (
+  roles: string[], tasks: Task[] | null | undefined,
+): string[] => {
+  const add = openGoalLanes(tasks).filter((g) => !roles.includes(g));
+  return add.length ? [...roles, ...add] : roles;
+};
+
 // A split lane's headless half takes a LIGHTER tint of the same hue (M/M-A,
 // R/R-A) — same family reads as "same lane", the tint is only the secondary
 // cue. The primary one is shape, set by the registry (see isSessionLane).
@@ -920,7 +985,14 @@ export const ROLE_COLOR: Record<string, string> = {
   P: '#2e9e5b', R: '#2aa8a0', 'R-A': '#5fc9c2', kevin: '#c9a227',
   claude: '#64748b', system: '#556070',
 };
-export const roleColor = (r: string) => ROLE_COLOR[r] || '#64748b';
+/** ONE colour for EVERY per-goal lane (board #289) — magenta, the open slot in
+ *  the palette: far from E's red, F's blue and M's violet at chip size. It is a
+ *  PREFIX rule below rather than a map entry because there is no finite key set
+ *  to enumerate; goals are created at will. Goal lanes do not tint by id: the
+ *  hue says "a goal session owns this", the LABEL says which goal. */
+export const GOAL_LANE_COLOR = '#d4499b';
+export const roleColor = (r: string) =>
+  ROLE_COLOR[r] || (isGoalLane(r) ? GOAL_LANE_COLOR : '#64748b');
 export const roleAbbrev = (r: string) =>
   r === 'kevin' ? 'K' : r === 'claude' ? 'C' : r === 'system' ? '⚙'
     : r === 'M-A' ? 'MA' : r === 'R-A' ? 'RA' : r;
@@ -972,6 +1044,15 @@ const SESSION_FALLBACK = new Set(['kevin', 'M', 'R']);
  *  a task parked here waits on a person, which is the designed state. */
 export const isSessionLane = (role: string,
                               reg: Map<string, AgentMeta>): boolean => {
+  // Board #289 — the ONE class the registry cannot answer for, because its
+  // absence from the registry IS the design (see PER-GOAL ASSIGNEE LANES). A
+  // lookup miss falls through to "agent", whose tooltip reads *"the dispatcher
+  // can auto-run this lane"* — the single thing that is never true of a goal:
+  // Kevin spawns them, the loop never does. So it is STATED here, since the
+  // registry has no row with which to state it. This is not the letter check
+  // the comment above forbids: that one asked the wrong source for data the
+  // registry HAS. Every registry-backed lane below is untouched.
+  if (isGoalLane(role)) return true;
   const row = reg.get(role);
   if (!row) return reg.size === 0 && SESSION_FALLBACK.has(role);
   return row.status === 'live-session' || row.kind === 'human';
@@ -985,6 +1066,13 @@ export const LANE_KIND_TIP: Record<string, string> = {
     + 'waits on a person at a keyboard (registry status: live-session/human)',
   agent: 'headless agent — the dispatcher can auto-run this lane '
     + '(registry status: headless)',
+  // Board #289 — a per-goal lane is a session, but not one the REGISTRY knows:
+  // it has no row there by design. Both parentheticals above would therefore be
+  // false of it, and "waits on a person at a keyboard" doubly so, so it gets
+  // its own line instead of being bent to fit one of theirs.
+  goal: 'goal session — the session dedicated to that goal task. The dispatcher '
+    + 'never auto-runs it: Kevin spawns a goal, the loop cannot (no registry '
+    + 'row, deliberately — board #289)',
 };
 
 export const withLegacy = (list: string[], current: string) =>
@@ -1289,13 +1377,20 @@ export const RoleChip = ({ role, title, size = 20 }: {
 }) => {
   const reg = useAgentRegistry();
   const session = isSessionLane(role, reg);
-  const kind = session ? 'session' : 'agent';
+  const kind = isGoalLane(role) ? 'goal' : session ? 'session' : 'agent';
   const ring = size / 20;   // the ring is part of the shape cue — it scales too
+  // Board #289 — a per-goal lane's label is `G281`, not one or two glyphs, and
+  // four characters do not fit a fixed 20px avatar. It grows into a PILL rather
+  // than truncating, because the digits ARE the identity: two goal lanes that
+  // both render "G…" are indistinguishable, which defeats the per-goal ruling.
+  // Same shape family (it is already session-squared), same colour, wider box.
+  const goal = kind === 'goal';
   return (
     <span title={title ? `${title} · ${LANE_KIND_TIP[kind]}`
       : `${role} — ${LANE_KIND_TIP[kind]}`} style={{
       display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-      width: size, height: size, flex: 'none',
+      width: goal ? 'auto' : size, minWidth: size, height: size, flex: 'none',
+      padding: goal ? `0 ${Math.max(3, Math.round(size * 0.2))}px` : 0,
       borderRadius: session ? Math.max(3, Math.round(size * 0.25)) : '50%',
       boxShadow: session
         ? `0 0 0 ${1.5 * ring}px var(--bg-card, #12161c), 0 0 0 ${3 * ring}px ${roleColor(role)}`
@@ -1316,20 +1411,25 @@ export const LaneKindChip = ({ role, sessionOnly = false }: {
   role: string; sessionOnly?: boolean;
 }) => {
   const reg = useAgentRegistry();
-  const kind = laneKindLabel(role, reg);
+  // Board #289 — a goal lane is a session AND says which kind, so it gets its
+  // own label rather than borrowing "◧ session" and the registry parenthetical
+  // that comes with it. `laneKindLabel` already returns 'session' for it (via
+  // isSessionLane), so this only refines the wording, never the dispatch claim.
+  const kind = isGoalLane(role) ? 'goal' : laneKindLabel(role, reg);
   if (!role) return null;
   // `sessionOnly` for dense rows (chain-step lines): say something only when
   // there IS something to say — a step owned by a session is the thing that
   // silently never dispatches, and it is what #195/#219 got wrong at authoring
   // time. An agent-owned step is the unremarkable case; stay quiet.
-  if (sessionOnly && kind !== 'session') return null;
+  if (sessionOnly && kind === 'agent') return null;
+  const undispatched = kind !== 'agent';
   return (
     <span title={LANE_KIND_TIP[kind]} style={{
       ...tagChip, marginLeft: 5,
-      border: `1px solid ${kind === 'session' ? roleColor(role) : 'var(--border)'}`,
-      color: kind === 'session' ? roleColor(role) : 'var(--text-secondary)',
-      fontWeight: kind === 'session' ? 700 : 400,
-    }}>{kind === 'session' ? '◧ session' : '◍ agent'}</span>
+      border: `1px solid ${undispatched ? roleColor(role) : 'var(--border)'}`,
+      color: undispatched ? roleColor(role) : 'var(--text-secondary)',
+      fontWeight: undispatched ? 700 : 400,
+    }}>{kind === 'goal' ? '⚑ goal session' : kind === 'session' ? '◧ session' : '◍ agent'}</span>
   );
 };
 

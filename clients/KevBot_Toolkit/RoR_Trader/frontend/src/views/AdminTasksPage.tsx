@@ -29,7 +29,7 @@ import {
   groupBoard, StuckChip, isStuckInTodo, HandoffChain,
   AiEligibleToggle, RunStatePill, runState, isFinished, StampMode,
   AgentMeta, AgentRegistryContext, agentRegistryMap, MultiSelectFilter,
-  taskTypeOf, TaskTypeIcon, TASK_TYPES,
+  taskTypeOf, TaskTypeIcon, TASK_TYPES, rolesWithGoalLanes,
 } from './taskBoardShared';
 // Board #246 — multi-select predicates, in a plain-JS module so a test can
 // execute them for real rather than source-scan them (see taskFilters.js).
@@ -267,14 +267,20 @@ export default function AdminTasksPage() {
     // the whole board, not an empty one.
     taskMatchesSelects(t, { areas: areaFilter, assignees: assigneeFilter, statuses: statusFilter });
 
+  // Board #289 — the assignee vocabulary is the registry lanes PLUS one derived
+  // lane per open goal (`G281`). Derived, because a goal session has no registry
+  // row by design: that absence is what stops the dispatcher spawning one. Every
+  // assignee/owner select on this page reads THIS, not `roles`.
+  const roleOptions = useMemo(() => rolesWithGoalLanes(roles, tasks), [roles, tasks]);
+
   // '' is now a pickable value ("(unassigned)"), not the all-pass sentinel it
   // was under single-select — so unassigned tasks became reachable for free.
   const assigneeOptions = useMemo(() => {
-    const known = roles.filter(Boolean);
+    const known = roleOptions.filter(Boolean);
     const legacy = Array.from(new Set(tasks.map((t) => t.assignee).filter(Boolean) as string[]))
       .filter((a) => !known.includes(a));
     return ['', ...known, ...legacy];
-  }, [tasks, roles]);
+  }, [tasks, roleOptions]);
 
   const visible = useMemo(() => tasks.filter(matches),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -482,7 +488,7 @@ export default function AdminTasksPage() {
       </td>
       <td style={cell}>
         <select style={input} value={t.assignee || ''} onChange={(e) => patch(t.id, { assignee: e.target.value })}>
-          {withLegacy(roles, t.assignee || '').map((a) => <option key={a} value={a}>{a || '—'}</option>)}
+          {withLegacy(roleOptions, t.assignee || '').map((a) => <option key={a} value={a}>{a || '—'}</option>)}
         </select>
       </td>
       {/* board #198 — INPUT: standing permission for an agent to claim this */}
@@ -581,7 +587,7 @@ export default function AdminTasksPage() {
             {AREAS.map((a) => <option key={a} value={a}>{a}</option>)}
           </select>
           <select style={input} value={nt.assignee} onChange={(e) => setNt({ ...nt, assignee: e.target.value })}>
-            {roles.map((a) => <option key={a} value={a}>{a || '—'}</option>)}
+            {roleOptions.map((a) => <option key={a} value={a}>{a || '—'}</option>)}
           </select>
           <label style={{ fontSize: 12 }}><input type="checkbox" checked={nt.impacts_live}
             onChange={(e) => setNt({ ...nt, impacts_live: e.target.checked })} /> 🔴 live</label>
@@ -741,7 +747,7 @@ export default function AdminTasksPage() {
         <TaskDetailModal key={`${modalTask.id}:${modal?.sel ?? ''}`}
           task={modalTask} allTasks={tasks} visionOptions={visionItems}
           initialSelected={modal?.sel}
-          roles={roles}
+          roles={roleOptions}
           patch={patch} del={del}
           onClose={() => setModal(null)}
           onOpenTask={(id, sel) => setModal({ id, sel })}

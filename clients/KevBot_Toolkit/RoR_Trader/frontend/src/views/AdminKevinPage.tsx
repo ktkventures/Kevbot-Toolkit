@@ -53,7 +53,8 @@ import SignOfLife from './SignOfLife';
 import {
   AgentMeta, AgentRegistryContext, ASSIGNEES, AUTHOR_LS_KEY, DISPATCHER, RoleChip,
   RolePicker, RunRow, STATUS_COLOR, Task, ageColor, agentRegistryMap, groupBoard,
-  input, isFinished, relTime, runIneligibleReason, tagChip, utcDay, utcStamp,
+  input, isFinished, relTime, rolesWithGoalLanes, runIneligibleReason, tagChip,
+  utcDay, utcStamp,
 } from './taskBoardShared';
 import { CapSetting, isLeaseLive, resolveDailyCap, shippingRows } from './AdminDispatchPage';
 import {
@@ -144,6 +145,10 @@ export default function AdminKevinPage() {
   // silently sign his name to a stamp.
   const [author, setAuthor] = useState(KEVIN);
   const [roles, setRoles] = useState<string[]>(ASSIGNEES);
+  // Board #289 — registry lanes plus one derived lane per OPEN goal (`G281`).
+  // A goal session has no registry row by design, so the registry fetch above
+  // can never surface it; every assignee picker here reads THIS, not `roles`.
+  const roleOptions = useMemo(() => rolesWithGoalLanes(roles, tasks), [roles, tasks]);
 
   const load = useCallback(async () => {
     try {
@@ -390,7 +395,7 @@ export default function AdminKevinPage() {
             ✓ Close</button>
         )}
         <span title="hand it to a lane — assignee = whoever the task now waits on (board #171)">
-          <RolePicker value={r.task.assignee} options={roles.filter(Boolean)}
+          <RolePicker value={r.task.assignee} options={roleOptions.filter(Boolean)}
             allowEmpty pickTitle="assignee"
             onPick={(role) => patch(r.task.id, { assignee: role || null })} />
         </span>
@@ -752,7 +757,7 @@ export default function AdminKevinPage() {
         <TaskDetailModal key={`${modalTask.id}:${modal?.sel ?? ''}`}
           task={modalTask} allTasks={tasks} visionOptions={visionItems}
           initialSelected={modal?.sel}
-          roles={roles}
+          roles={roleOptions}
           patch={patch} del={del}
           onClose={() => setModal(null)}
           onOpenTask={(id, sel) => setModal({ id, sel })}
