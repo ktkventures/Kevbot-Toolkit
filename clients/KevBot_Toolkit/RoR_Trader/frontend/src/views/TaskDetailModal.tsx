@@ -46,7 +46,7 @@ import {
   fileSize,
   GOAL_PARAM_FIELDS, AUTONOMY_DEF, Autonomy, autonomyOf, autonomyPatch,
   goalParamsOf, goalParamsPatch, missingGoalParams, renderGoalBlock,
-  goalNestError, GoalFieldDef, inheritedAutonomy,
+  goalNestError, GoalFieldDef, inheritedAutonomy, isGoalLane,
 } from './taskBoardShared';
 import { Md, MD_CSS } from './taskMarkdown';
 
@@ -441,7 +441,15 @@ export default function TaskDetailModal({
     setMentionOpen(false);
   };
   // Registry roles for the picker (falls back to the static token set).
-  const mentionRoles = roles.filter(Boolean).length ? roles.filter(Boolean) : MENTION_ROLES;
+  //
+  // Board #289 — per-goal lanes (`G281`) are ASSIGNABLE but NOT mentionable, and
+  // the asymmetry is deliberate. `dev_tasks._write_mentions` only writes a
+  // `task_mentions` row for a letter that EXISTS in the agents registry, and a
+  // goal lane has no row there by design; an `@G281` would post, be dropped
+  // silently, and never reach an inbox. Offering a dead token is worse than
+  // offering none. Making goal mentions work is an API change, not a UI one.
+  const pickableMentions = roles.filter((r) => r && !isGoalLane(r));
+  const mentionRoles = pickableMentions.length ? pickableMentions : MENTION_ROLES;
 
   // Checklist ops operate on the SCOPED item (the selected pipeline row, or
   // the task itself) — ALWAYS send the whole array (JSONB replace).
