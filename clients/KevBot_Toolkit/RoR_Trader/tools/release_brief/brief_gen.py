@@ -1080,7 +1080,9 @@ def live_other_branches(car_branches):
         if not line.startswith("branch refs/heads/"):
             continue
         b = line.split("refs/heads/", 1)[1]
-        if b in ("dev", "main", "master") or b in car_branches:
+        # #287: `production` joins the never-touch names before the `main` ->
+        # `production` rename (#165); `main` stays on the list after it.
+        if b in ("dev", "main", "master", "production") or b in car_branches:
             continue
         if git("merge-base", "--is-ancestor", b, BASE)[0] == 0:
             continue                              # already on dev
