@@ -892,6 +892,9 @@ export const RETIRED_TAGS = ['needs-review', 'needs-approval', 'kevin-ok'];
 // LOCAL dispatcher --loop polls for it and executes (Railway cannot reach
 // Kevin's machine). Cleared by the dispatcher on claim.
 export const RUN_REQUESTED_TAG = 'run-requested';
+// Legacy key name (board #295): it holds the ids of every COLLAPSED CONTAINER
+// — goals as well as visions. Renaming the string would silently drop everyone's
+// saved collapse state, so it stays; only the label above it was ever wrong.
 export const COLLAPSED_LS_KEY = 'ror_board_collapsed_visions';
 // New-stage colors track who acts there: Approval gold = Kevin's stamp inbox
 // (his role color), Review sky = eyes on output, Staged teal = R's
@@ -1302,13 +1305,34 @@ export const isContainerTask = (t: Task, hasChildren: boolean) =>
 /**
  * The board grouping — ONE implementation consumed by /admin/tasks and
  * /admin/roadmap (Spec_Admin_Roadmap.md §2): the two pages must never
- * disagree about what a vision item is. Input order (API priority order)
+ * disagree about what a CONTAINER is. Input order (API priority order)
  * is preserved in every output list.
  *
- * `visionItems` is the CONTAINER list — vision AND goal (board #262). The key
- * keeps its name because three pages destructure it, but the predicate is
- * `isContainerTask`, not `isVisionTask`: a goal renders its children strip
- * exactly as a vision does, and without that its children are invisible.
+ * `visionItems` is the CONTAINER list — vision AND goal (board #262). The
+ * predicate is `isContainerTask`, not `isVisionTask`: a goal renders its
+ * children strip exactly as a vision does, and without that its children are
+ * invisible.
+ *
+ * THE KEY NAME IS A DELIBERATE HOLD, RE-DECIDED AT BOARD #295 WITH THE COST
+ * MEASURED. #295 asked for `visionItems` → `containerItems`, full rename or
+ * none. Counted, the surface is not the "three pages destructure it" this
+ * comment used to claim — it is 5 frontend files plus 3 Python source-scan
+ * tests that assert the exact strings:
+ *   · test_goal_task_type_262.py  — `lift_group_board()` string-substitutes
+ *     this signature VERBATIM to run groupBoard under node, and asserts it
+ *     breaks loudly if the signature moves;
+ *   · test_kevin_dashboard_257.py — asserts the literal `visionOptions=
+ *     {visionItems}` prop, AND asserts TaskDetailModal.tsx is BYTE-UNCHANGED
+ *     vs origin/dev, which a `visionOptions` rename would have to defeat;
+ *   · test_task_type_model_261.py — names `visionItems` in an assertion label.
+ * Payoff: zero user-visible change. Risk: the #219/#245 shape exactly — a
+ * constant shipped without its mirror, which put dev red for hours. So the
+ * name is held ON PURPOSE. Renaming it means moving those tests in the SAME
+ * commit, including the byte-identity tripwire; anything less is the
+ * half-rename #295 explicitly ruled out.
+ *
+ * What #295 DID fix is the part users read: the /admin/tasks toggle said
+ * "By vision" for a grouping that has been container-wide since #262.
  */
 export function groupBoard(tasks: Task[]): {
   byParent: Map<number, Task[]>; visionItems: Task[]; looseTasks: Task[];

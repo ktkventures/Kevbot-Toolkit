@@ -2,8 +2,9 @@
  * Roadmap — /admin/roadmap (Spec_Admin_Roadmap.md, board #139).
  *
  * The WHY leg of the hub (Tasks = what · Roadmap = why · Agents = who):
- * Kevin's read-only big picture. Awaiting-Kevin strip on top, vision cards
- * with progress rollups grouped by priority phase, ungrouped tasks footer.
+ * Kevin's read-only big picture. Awaiting-Kevin strip on top, CONTAINER cards
+ * (vision ◈ and goal ⚑ — board #262/#295) with progress rollups grouped by
+ * priority phase, ungrouped tasks footer.
  * This page is a PROJECTION of the board — GET requests only, no mutation
  * code paths; every interaction deep-links to /admin/tasks?task=<id>.
  *
@@ -88,6 +89,8 @@ export default function AdminRoadmapPage() {
   useEffect(() => { load(); }, [load]);
 
   // Same grouping implementation as /admin/tasks — never disagrees (§2).
+  // `visionItems` is every CONTAINER (vision + goal, board #262); the key name
+  // is a deliberate hold — see the groupBoard docblock (board #295).
   const { byParent, visionItems, looseTasks } = useMemo(() => groupBoard(tasks), [tasks]);
 
   // Strip membership (§4.2): open LEAF tasks only (visions WITH subtasks are

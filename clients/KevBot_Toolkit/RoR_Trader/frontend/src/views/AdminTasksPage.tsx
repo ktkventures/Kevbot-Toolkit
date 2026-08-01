@@ -1,12 +1,23 @@
 /**
  * Dev Task Tracker — the multi-session team's board (Spec_Tasks_Team_Board.md).
  *
- * Vision items (top-level tasks tagged 'vision') group their subtasks in the
- * default "By vision" view — title + n/m done rollup, collapsible via a
- * chevron (persisted in localStorage) — so rabbit-hole fixes stay visibly
- * parented under the big-picture item that spawned them (origin 'discovered'
- * renders the 🔍 chip). One nesting level only; the API rejects deeper trees.
- * "Flat" toggle keeps the original priority-sorted table.
+ * CONTAINER rows group their subtasks in the default "By container" view —
+ * title + n/m done rollup, collapsible via a chevron (persisted in
+ * localStorage) — so rabbit-hole fixes stay visibly parented under the
+ * big-picture item that spawned them (origin 'discovered' renders the 🔍 chip).
+ * One nesting level only; the API rejects deeper trees. "Flat" toggle keeps the
+ * original priority-sorted table.
+ *
+ * A container is ANY type carrying `children: true` in TASK_TYPES — vision AND
+ * goal since board #262, and whatever type three turns out to be. It is NOT
+ * "tagged 'vision'", which is what this header claimed until board #295.
+ *
+ * WHY #295 EXISTED, since the behaviour it "fixed" was already correct: the
+ * toggle was labelled "By vision" while `groupBoard` had filtered on
+ * `isContainerTask` since #262. Kevin read the label, and reported goal
+ * grouping as MISSING on a board that was grouping his goal correctly in front
+ * of him. A label that makes a working feature look broken is a real defect —
+ * so #295 changed the words and nothing else. Grouping is untouched.
  *
  * Priority = phase.seq, sorted ascending so 1.1 ("do next") is at top.
  * Urgent is a tag, not a priority. impacts_live / needs_live_validation are
@@ -219,7 +230,7 @@ export default function AdminTasksPage() {
     } catch (e) { setErr(String(e)); }
   };
   const del = async (id: number) => {
-    if (!confirm('Delete this task? Subtasks are deleted with their vision item.')) return;
+    if (!confirm('Delete this task? Subtasks are deleted with their parent.')) return;
     setTasks((t) => t.filter((x) => x.id !== id));
     if (modal?.id === id) setModal(null);
     try { await apiFetch(`/api/dev-tasks/${id}`, { method: 'DELETE' }); }
@@ -235,8 +246,10 @@ export default function AdminTasksPage() {
     titleRef.current?.focus();
   };
 
-  // Grouping + vision predicate live in taskBoardShared.groupBoard — the ONE
-  // implementation shared with /admin/roadmap (Spec_Admin_Roadmap.md §2).
+  // Grouping + the CONTAINER predicate live in taskBoardShared.groupBoard — the
+  // ONE implementation shared with /admin/roadmap (Spec_Admin_Roadmap.md §2).
+  // `visionItems` is a legacy KEY NAME holding every container (vision + goal);
+  // see the groupBoard docblock for why it was deliberately not renamed.
   const { byParent, visionItems, looseTasks } = useMemo(() => groupBoard(tasks), [tasks]);
 
   // The row's TYPE (board #261) — explicit `task_type`, falling back to the
@@ -441,7 +454,7 @@ export default function AdminTasksPage() {
         {t.parent_id != null && t.origin === 'discovered' &&
           <span style={{ ...tagChip, marginLeft: 6 }} title="discovered mid-work (rabbit-hole fix)">🔍</span>}
         {view === 'flat' && t.parent_id != null &&
-          <span style={{ ...tagChip, marginLeft: 6 }} title="subtask of this vision item">↳ #{t.parent_id}</span>}
+          <span style={{ ...tagChip, marginLeft: 6 }} title="subtask of this container">↳ #{t.parent_id}</span>}
         <TagChips t={t} />
         {/* board #169 — the handoff chain as owner avatars, so the process is
             visible on the card instead of hidden behind the Process tab */}
@@ -456,7 +469,7 @@ export default function AdminTasksPage() {
         {(t.blocked_by?.length > 0) && <span style={{ color: 'var(--red)', fontSize: 11 }}> ⛔{t.blocked_by.join(',')}</span>}
         {rollup && (
           <button style={{ ...input, cursor: 'pointer', fontSize: 11, padding: '1px 6px', marginLeft: 8 }}
-            title="add a subtask under this vision item"
+            title="add a subtask under this container"
             onClick={(e) => { e.stopPropagation(); startSubtask(t.id); }}>+ subtask</button>
         )}
       </td>
@@ -527,7 +540,7 @@ export default function AdminTasksPage() {
       groupedRows.push(
         <tr key="loose-header">
           <td colSpan={11} style={{ ...cell, color: 'var(--text-tertiary)', fontSize: 11, paddingTop: 14 }}>
-            ungrouped — tasks without a vision parent
+            ungrouped — tasks without a container parent
           </td>
         </tr>);
       shownLoose.forEach((t) => groupedRows.push(<TaskRow key={t.id} t={t} />));
@@ -544,7 +557,7 @@ export default function AdminTasksPage() {
         vision rows exempt). Legend:
         🟢 offline-ok = fully validatable now (safe to work); ⏳ = needs live-market data to confirm;
         🔴 = touches live engine/trading code (deploy carefully); ⚡ = urgent (a tag, not a priority);
-        🔍 = discovered mid-work (rabbit-hole fix, parented under its vision item);
+        🔍 = discovered mid-work (rabbit-hole fix, parented under its container);
         🔏 = two-touch (Kevin reviews before Done); Impact = blast radius (contained | app | engine | live).
         🤖 AI = may an agent claim this task (armed by Kevin’s Approval stamp, independent of the
         kanban status) · the Run column reads out what the dispatcher is doing (idle / queued /
@@ -564,10 +577,10 @@ export default function AdminTasksPage() {
             placeholder={ntParent ? `subtask under #${ntParent.id} ${ntParent.title.slice(0, 40)}…` : 'task title…'}
             value={nt.title} onChange={(e) => setNt({ ...nt, title: e.target.value })}
             onKeyDown={(e) => e.key === 'Enter' && createTask()} />
-          <select style={input} title="parent vision item (none = new vision item)"
+          <select style={input} title="parent container — vision or goal (none = a new vision item)"
             value={nt.parent_id ?? ''}
             onChange={(e) => setNt({ ...nt, parent_id: e.target.value ? +e.target.value : null })}>
-            <option value="">— vision item —</option>
+            <option value="">— container —</option>
             {visionItems.map((v) => <option key={v.id} value={v.id}>↳ #{v.id} {v.title.slice(0, 40)}</option>)}
           </select>
           {nt.parent_id != null && (
@@ -599,8 +612,13 @@ export default function AdminTasksPage() {
       <Card>
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 12, alignItems: 'center' }}>
           <span>
+            {/* Board #295 — was "By vision", which named ONE of the two types it
+                groups. It groups every CONTAINER (vision ◈ and goal ⚑), and has
+                since #262; the old label read as "goals excluded" and got a
+                working feature reported as missing. Behaviour is unchanged. */}
             <button style={{ ...input, cursor: 'pointer', fontWeight: view === 'grouped' ? 700 : 400, background: view === 'grouped' ? 'var(--bg-input)' : 'transparent' }}
-              onClick={() => setView('grouped')}>By vision</button>
+              title="group subtasks under their container row — vision ◈ and goal ⚑ alike (action tasks are where work happens, never containers)"
+              onClick={() => setView('grouped')}>By container</button>
             <button style={{ ...input, cursor: 'pointer', marginLeft: 4, fontWeight: view === 'flat' ? 700 : 400, background: view === 'flat' ? 'var(--bg-input)' : 'transparent' }}
               onClick={() => setView('flat')}>Flat</button>
             {/* Messages tab (board #143) — unread @-mentions for the current
