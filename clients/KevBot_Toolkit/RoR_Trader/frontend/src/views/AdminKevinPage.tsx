@@ -298,7 +298,7 @@ export default function AdminKevinPage() {
   }, [author, load]);
 
   const del = useCallback(async (id: number) => {
-    if (!confirm('Delete this task? Subtasks are deleted with their vision item.')) return;
+    if (!confirm('Delete this task? Subtasks are deleted with their parent.')) return;
     if (modal?.id === id) setModal(null);
     try { await apiFetch(`/api/dev-tasks/${id}`, { method: 'DELETE' }); }
     catch (e) { setErr(String(e)); }
