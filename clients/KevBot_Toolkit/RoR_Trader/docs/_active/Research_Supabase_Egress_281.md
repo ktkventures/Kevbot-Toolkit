@@ -1,14 +1,19 @@
 # Supabase egress — where the bill actually comes from
 
-**Board:** goal #281 · children #290–#294 · **Date:** 2026-08-01 · **Author:** G281 (goal session), measured by E·auto (#292, #294) and F·auto (#293), method gated by M (#291)
+**Board:** goal #281 · children #290–#294, #298–#301 · **Date:** 2026-08-01 · **Author:** G281 (goal session), measured by E·auto (#292, #294) and F·auto (#293), method gated by M (#291)
 
-**Status:** COMPLETE against `done_when`, with one stated gap — the *billed* denominator (#290) is still inferred rather than read off the invoice. See §2.
+**Status:** The **top 3 and their measured byte volumes are final** — `done_when`'s requirement is met. **Two things are NOT settled and neither may be skipped when reading the fix list:**
+
+1. **§2a — daily egress already collapsed ~3× around 17–20 July, cause unidentified (#301).** That is a larger effect than any fix proposed here. **Rank everything against the current ~25–55 GB/day run-rate, not the 78.1 GB/day period average.**
+2. **§2 — the denominator reconciles only to within the ±10% of an eyeballed chart.** Two free readings close it (#290).
 
 ---
 
 ## 1 · The answer in one table
 
 Every number is **measured at the socket** over a **stated window**, with a **named caller**. Nothing here is a type-width calculation.
+
+⚠️ **These are rates over the measurement window (Jul 2 – Aug 1), which spans the ~3× step-down in §2a.** The *ranking* is robust — source #1 is two orders of magnitude clear — but **the absolute figures describe a workload that is already about a third smaller than the window average.**
 
 | # | Source | **Measured egress** | Window | Named caller | Verdict |
 |---|---|---:|---|---|---|
@@ -28,18 +33,55 @@ Every number is **measured at the socket** over a **stated window**, with a **na
 
 ---
 
-## 2 · The denominator, and what is still missing
+## 2a · ⭐ Egress already collapsed ~3× around 17–20 July, and nobody was looking
 
-| | value | status |
-|---|---:|---|
-| **D1_billed** — the invoiced egress | **not read** | **#290, Kevin. The one open item.** |
-| **D1_inferred** — from the invoice + public price | **≈ 2,172 GB** | $172.94 ÷ $0.09/GB overage + 250 GB Pro allowance. **An inference, not a measurement.** |
-| **D2** — Σ of everything measured above | **≈ 2,379 GB** | |
-| **Reconciliation** | **+9.5%** | Inside the method's ±25% tolerance. |
+**This is the largest single effect in the whole investigation and it was not caused by anything in this document.** From Kevin's usage chart (transcribed by M — **±10% eyeball against labelled gridlines 46.6 / 93.1 / 171.4 GB; bounds, not measurements**):
 
-**What this means, stated precisely:** the measured sources account for the bill to within 9.5% of a denominator that is itself derived from the invoice total and Supabase's published price. **If Kevin posts the actual egress GB from the dashboard, this upgrades from "reconciles" to "confirmed" — and if that number is far from 2,172 GB, source #1's share changes and this doc needs revisiting.** That is the honest state.
+| window | daily egress |
+|---|---|
+| early Jul (03–10) | **~100–175 GB/day** |
+| mid Jul (13–17) | ~85–140 GB/day |
+| **late Jul – 01 Aug** | **~25–55 GB/day** |
 
-**Window caveat, carried everywhere:** `pg_stat_statements` was reset **2026-07-02 23:42:28 UTC**; the window to measurement time is **29.86 days**. The billing period is **Jul 6 – Aug 5**. The window overruns the period by ~3.4 days at the front. Every figure is a **rate over 29.86 days**, not a billing total.
+**Cause unidentified — #301 (E).** M's stated candidate, the 07-21 fleet cull, **appears wrong on timing: the collapse is 17–20 Jul and the cull is 07-21, after it.** `Deploy_Log.md` has a hole across exactly that window (07-16, then nothing until 07-21). The nearest preceding change is **07-16 M-RS5b — `RORT_CANONICAL_FINE_TF_STATE`, "fine RTH gate state rebuilt from the canonical resample"** — mechanically the right shape to cut `bar_cache` reads several-fold. `RORT_RESAMPLED_STORE_SERVE` (M-RS2 P2) is the same shape.
+
+**Why this must be resolved before any fix is actioned:**
+- **A fix ranked against the period average is sized against a workload that no longer exists.**
+- **If the cause is an already-shipped arm, the #1 egress source was largely fixed once already, by accident, while chasing fidelity** — and what remains to recommend is much smaller.
+- **If the cause is the fleet cull, it is a workload change that reverts the moment the fleet regrows** — a forward risk, not a past win. The two have opposite implications for whether #299 and #300 are worth doing at all.
+
+---
+
+## 2 · The denominator — reconciles, but only inside an eyeballed ±10%
+
+| | value | window | status |
+|---|---:|---|---|
+| **D1_chart** — summed from the usage chart | **1,800–2,000 GB** | 06 Jul → 01 Aug (**26.85 d elapsed**) | ±10%, read off pixels |
+| **D1_inferred** — from the invoice + public price | **≈ 2,172 GB** | full 30 d | $172.94 ÷ $0.09/GB + 250 GB allowance |
+| **D2** — Σ of everything measured here | **≈ 2,379 GB** | 02 Jul → 01 Aug (**29.86 d**) | measured at the socket |
+
+### The apparent contradiction, and why it is a span artifact
+
+M flagged that **#292's 2,333 GB exceeds the entire billed total of 1,800–2,000 GB — one query cannot egress more than the project does.** That comparison sets a **29.86-day** measurement against a **26.85-day** elapsed bill. #292's window carries **3.01 extra days at the front — the highest days on the chart — and misses the final 4, which are the lowest.** It is guaranteed to overshoot.
+
+**Aligned on a common span the two denominators agree:** 1,800–2,000 GB over 26.85 d ⇒ 67–74 GB/day ⇒ **2,010–2,235 GB over 30 days — a range that contains D1_inferred's 2,172 GB.** The invoice-derived number was sound; the *span* was mismatched.
+
+### Where it is still not clean — stated, not smoothed
+
+Removing #292's 3.01-day head depends on what those days ran at:
+
+| assumption for 03–05 Jul | head | aligned Σ | vs D1_chart |
+|---|---:|---:|---|
+| **A** — ran at the early-Jul high (~137 GB/d) | 413 GB | **1,964 GB** | **fits** |
+| **B** — ran low | 120 GB | **2,257 GB** | **overshoots 13–23%** |
+
+**Case B is live: 2026-07-04 is a Saturday, so Friday 03 Jul is the observed market holiday and 03–05 Jul is a three-day market-closed stretch.** Against that, `bar_cache` reads are dominated by bursty recompute/backtest which run nightly regardless of the market. **Which one holds is not currently known and has not been guessed.**
+
+If Case B holds, the residual needs **cached-vs-uncached** to explain it — Supabase bills uncached egress only, while #292 measured total wire bytes. For a workload that is 98% direct Postgres that would be surprising, since PG connections are not CDN-cacheable, **so Case B would itself be a finding rather than a patch.**
+
+**Two free readings close this**, both visible on the screenshot already captured — filed as stamped steps on #290: **the bar heights for 03/04/05 July**, and **how large the green (cached) band is.**
+
+**Window rail, carried everywhere:** `pg_stat_statements` was reset **2026-07-02 23:42:28 UTC**; the window to measurement is **29.86 days**. The billing period is **06 Jul – 05 Aug**. Every figure here is a **rate over 29.86 days**, not a billing total.
 
 ### The pre-registered prediction — CONFIRMED
 
@@ -215,10 +257,14 @@ Browser-side egress while a board tab is open (bursty, `GET /api/dev-tasks` = 46
 
 Per #281's boundary — *"the deliverable is understanding, not action"* — and its oversight line, **Kevin sees this list before any of these is actioned.**
 
+**⚠️ Read §2a first. If #301 finds the ~3× collapse was an already-shipped arm, #299 and #300 shrink to near-nothing and may not be worth doing at all.** They are filed so the findings are not lost, not because they are established as worthwhile.
+
 | Task | Source | Bucket |
 |---|---|---|
 | **#298** — instrument `read_bars` to attribute the 1.4M calls by caller | #1 | Prerequisite — **you cannot fix what you cannot attribute** |
 | **#299** — `canonical_resampled()` re-reads the base per target; share it | #1 | Pure waste, concrete instance |
 | **#300** — board-tooling egress hygiene: gate projection, `Accept-Encoding`, R watcher finished-rows filter | #2, #3 | Pure waste + cheap win, zero/negative speed cost |
 
-**#290 (Kevin) remains open** — the billed egress GB that turns §2's reconciliation from *inferred* into *confirmed*.
+| **#301** — identify what cut daily egress ~3× around 17–20 July | §2a | **Forensics — outranks every fix above** |
+
+**#290 (Kevin) remains open** — two readings off the chart already captured (§2), which turn the reconciliation from *fits inside an eyeballed ±10%* into *settled*.
