@@ -113,7 +113,6 @@ const navItems: NavItem[] = [
       { href: '/admin/bar-cache', label: 'Bar Cache' },
       { href: '/admin/resampled-store', label: 'Resampled Store' },
       { href: '/admin/trade-snapshots', label: 'Trade Snapshots' },
-      { href: '/admin/tasks', label: 'Tasks' },
       { href: '/admin/roadmap', label: 'Roadmap' },
     ],
   },
@@ -124,15 +123,22 @@ const navItems: NavItem[] = [
   // `/admin/r-session` and Kevin has these bookmarked. Moving the URLs would
   // break instructions already in flight for no gain the regrouping needs.
   // Each entry lives here and ONLY here — two nav paths to one page is how a
-  // sidebar starts lying. `Tasks` and `Roadmap` deliberately stay under
-  // `Admin`: Kevin named exactly these four, and the board's home is his call.
+  // sidebar starts lying.
+  //
+  // 08-01 (Kevin): *"Can we move over the tasks page into the team that is
+  // nested under team instead of admin?"* — so `Tasks` MOVED here too, first in
+  // the group, and is no longer under `Admin`. `Roadmap` STAYS under `Admin`:
+  // he named `Tasks` only, and moving both would be a guess. Same rule as the
+  // original four — navigation-only, the route is still `/admin/tasks`.
   {
     href: '/admin/agents', label: 'Team', icon: '⚑',
     children: [
-      // Board #257 — the OWNER's page, first because it is the one Kevin opens.
-      // The others answer "what is happening"; this one answers "what is
-      // waiting on ME", which is a different product and deliberately not a
-      // second manager dashboard.
+      // The board — the surface Kevin opens most, so it leads. This group is
+      // intent-ordered (what you reach for first), not alphabetical.
+      { href: '/admin/tasks', label: 'Tasks' },
+      // Board #257 — the OWNER's page. The others answer "what is happening";
+      // this one answers "what is waiting on ME", which is a different product
+      // and deliberately not a second manager dashboard.
       { href: '/admin/kevin', label: 'Your Dashboard' },
       { href: '/admin/agents', label: 'Agents' },
       { href: '/admin/dispatch', label: 'Dispatch' },

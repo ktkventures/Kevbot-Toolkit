@@ -21,18 +21,22 @@ What is asserted, and why each one can rot silently:
     #252 is a MOVE, not a copy: two nav paths to one page is how a sidebar
     starts lying about where a thing lives. A half-applied move (added to
     `Team`, left in `Admin`) is the likely failure and looks fine by eye.
-  • ORDER (rail 3) — `Team` sits strictly between `Admin` and `Settings`, with
-    its four children in Kevin's stated order.
+  • ORDER (rail 3) — `Team` sits strictly between `Admin` and `Settings`; the
+    four children #252 moved are all still there in Kevin's stated order, and
+    `Tasks` (added 08-01) leads the group.
   • ROUTES DID NOT MOVE (rail 4) — the pages stay at `/admin/*`.
     `docs/_active/R_Session_Opener.md` hands a LIVE R session the literal
     string `/admin/r-session`, and Kevin has these bookmarked. A later
     "tidy-up" that relocates the routes to `/team/*` breaks instructions
     already in flight; this rail makes that a deliberate, loud change (update
     the opener + add redirects) instead of a silent one.
-  • NOT-ASKED-FOR (rail 5) — `Tasks` and `Roadmap` stay under `Admin`. Kevin
-    named exactly three things to move; whether the board belongs under `Team`
-    is his call, not an inference, so the test pins today's answer rather than
-    letting a future agent drift it.
+  • WHERE THE BOARD LIVES (rail 5) — `Tasks` is under `Team`; `Roadmap` is
+    under `Admin`. This one CHANGED on 08-01. Kevin, 08-01: *"Can we move over
+    the tasks page into the team that is nested under team instead of admin?"*
+    — so `Tasks` moved, and `Roadmap` did not, because he named `Tasks` only.
+    The rail is BIDIRECTIONAL on purpose: present in `Team` AND absent from
+    `Admin`. A presence-only check passes on a duplicate, which is exactly the
+    half-applied move rail 2 exists to catch.
 
 The sidebar is parsed structurally (sections and their children), not
 string-matched, so these hold under reformatting and comment edits.
@@ -107,6 +111,10 @@ MOVED = [
     ("M Session", "/admin/m-session"),
     ("R Session", "/admin/r-session"),
 ]
+# Moved into `Team` later, by the 08-01 audible. Kept separate from MOVED
+# because rail 3 pins the ORIGINAL four in their original relative order;
+# lumping this in would silently rewrite that assertion.
+TASKS = ("Tasks", "/admin/tasks")
 
 print("― rail 1: the #251 regression — R Session is REACHABLE from the nav ―")
 
@@ -131,7 +139,7 @@ for d in routed:
 
 print("― rail 2: this was a MOVE — each entry appears exactly ONCE ―")
 
-for label, href in MOVED:
+for label, href in MOVED + [TASKS]:
     ok(f"'{label}' appears exactly once in the whole sidebar",
        child_labels.count(label) == 1, f"count={child_labels.count(label)}")
     ok(f"{href} appears exactly once in the whole sidebar",
@@ -164,6 +172,10 @@ ok("the four pages #252 moved are all still under Team, in their original order"
    [k for k in team_kids if k in MOVED] == MOVED, team_kids)
 ok("...and none of them was dropped when the section grew",
    all(k in team_kids for k in MOVED), team_kids)
+# 08-01: the board leads the group — it is the surface Kevin opens most, and
+# this section is intent-ordered rather than alphabetical, so "first" is a
+# decision worth pinning, not an accident of where the line was pasted.
+ok("'Tasks' is FIRST under Team", team_kids[0] == TASKS, team_kids)
 ok("Team is a real top-level section with an icon", bool(BY_LABEL["Team"][1]) and
    re.search(r"label: 'Team', icon: '\S+'", SIDEBAR) is not None)
 
@@ -171,7 +183,7 @@ print("― rail 4: NAVIGATION-only — the routes did NOT move ―")
 
 # The opener is handed to a live R session; it cites the path literally.
 ok("R_Session_Opener.md still cites /admin/r-session", "/admin/r-session" in OPENER)
-for label, href in MOVED:
+for label, href in MOVED + [TASKS]:
     seg = href.split("/")[-1]
     ok(f"the {label} page still routes at {href}",
        os.path.exists(os.path.join(FE, "app", "admin", seg, "page.tsx")))
@@ -181,21 +193,35 @@ for label, href in MOVED:
 ok("every Team child still points at /admin/*",
    all(h.startswith("/admin/") for h, _ in BY_LABEL["Team"][2]))
 
-print("― rail 5: Tasks and Roadmap were NOT moved (Kevin's call, not ours) ―")
+print("― rail 5: Tasks moved to Team (08-01); Roadmap stayed under Admin ―")
 
 admin_kids = {l: h for h, l in BY_LABEL["Admin"][2]}
-for label, href in (("Tasks", "/admin/tasks"), ("Roadmap", "/admin/roadmap")):
-    ok(f"'{label}' is still under Admin", admin_kids.get(label) == href, admin_kids)
-    ok(f"'{label}' was not also copied into Team",
-       label not in {l for _, l in BY_LABEL["Team"][2]})
+team_labels = {l for _, l in BY_LABEL["Team"][2]}
+team_kids_map = {l: h for h, l in BY_LABEL["Team"][2]}
+
+# BOTH directions. Presence alone would pass on a duplicate — leaving `Tasks`
+# in `Admin` as well is the exact half-applied move this file was written for.
+ok("'Tasks' is under Team", team_kids_map.get("Tasks") == "/admin/tasks",
+   team_kids_map)
+ok("'Tasks' is NO LONGER under Admin", "Tasks" not in admin_kids,
+   "the 08-01 move must be a MOVE — a copy leaves two nav paths to one page")
+ok("nothing under Admin points at /admin/tasks anymore",
+   "/admin/tasks" not in set(admin_kids.values()), admin_kids)
+
+# Roadmap did NOT move: Kevin named `Tasks` only, and moving both is a guess.
+ok("'Roadmap' is still under Admin", admin_kids.get("Roadmap") == "/admin/roadmap",
+   admin_kids)
+ok("'Roadmap' was not also copied into Team", "Roadmap" not in team_labels)
+
 ok("Admin kept its platform entries (Overview/Users/Strategy Health)",
    {"Platform Overview", "Users", "Strategy Health"} <= set(admin_kids))
 
 print("― rail 6: exactly ONE section highlights per route ―")
 
-# `Team`'s parent href intentionally repeats its first child's (`/admin/agents`),
-# which is the house convention (`Strategies`, `Portfolios` and `Admin` all do
-# it) — but it means `Admin` and `Team` now both sit on the `/admin` prefix, and
+# `Team`'s parent href is `/admin/agents` (it was the first child when the
+# section was created; the header is a toggle button, not a link, so the href is
+# used only for highlighting) — which means `Admin` and `Team` both sit on the
+# `/admin` prefix, and
 # `isActive()` resolves that overlap by a "is some child a better match?" scan.
 # Get it wrong and BOTH sections light up on /admin/r-session, or `Admin` stays
 # lit for pages that no longer live under it. Neither is a type error and
@@ -229,7 +255,9 @@ def lit(path):
 for path, expect in (
     ("/admin", "Admin"),                    # Platform Overview stays Admin's
     ("/admin/users", "Admin"),
-    ("/admin/tasks", "Admin"),
+    # 08-01: the board moved sections, so the highlight must move with it —
+    # `Admin` must NOT stay lit on /admin/tasks now that it no longer owns it.
+    ("/admin/tasks", "Team"),
     ("/admin/roadmap", "Admin"),
     ("/admin/agents", "Team"),
     ("/admin/dispatch", "Team"),
