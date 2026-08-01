@@ -46,12 +46,87 @@ export interface ChecklistStep {
   stamp?: StepStamp | null;
   completed_at?: string | null;
   completed_by?: string | null;
+  // #184 step deliverables — the evidence this step asks for
+  deliverables?: StepDeliverable[];
 }
+
+export type DeliverableKind = 'text' | 'link' | 'file';
+
+/**
+ * A deliverable declared by a chain step (board #184) — the evidence the step
+ * asks for, captured where it is asked for rather than in a comment no surface
+ * can see. Mirrors the API's shape (dev_tasks._DELIVERABLE_*).
+ *
+ * TWO HALVES, and the split IS the design. The SPEC (kind/label/required/hint)
+ * is author-owned and edited through the generic checklist PATCH; the FILL
+ * (value + provenance) is SERVER-owned and reachable only through
+ * /steps/deliverables/* — a PATCH that touches a fill field is a 409. Never
+ * write the fill fields from the UI's checklist path.
+ */
+export interface StepDeliverable {
+  id?: string;
+  kind: DeliverableKind;
+  label: string;
+  /** DEFAULT FALSE. Optional-by-default is the ruling (Kevin 07-28): a required
+   *  input encodes a guess about the SHAPE of the evidence, usually made before
+   *  anyone has run the process. Only a `*` one blocks Complete (T10). */
+  required?: boolean;
+  hint?: string;
+  // ── server-owned (fill state) ──
+  value?: string | null;   // text: the answer · link: the URL ·
+                           // file: the STORAGE OBJECT PATH (never a URL)
+  filename?: string | null;
+  size_bytes?: number | null;
+  content_type?: string | null;
+  filled_at?: string | null;
+  filled_by?: string | null;
+}
+
+/** Three kinds, no more (spec §8) — the moment this grows selects and dates it
+ *  stops being a step and starts being a form builder. */
+export const DELIVERABLE_KINDS: {
+  key: DeliverableKind; icon: string; label: string; def: string;
+}[] = [
+  { key: 'text', icon: '✎', label: 'text', def: 'a short written answer (≤ 4000 chars)' },
+  { key: 'link', icon: '🔗', label: 'link', def: 'an http(s) URL — a PR, a doc, a dashboard' },
+  { key: 'file', icon: '📎', label: 'file', def: 'an upload ≤ 10 MB: png jpg gif webp pdf csv txt md json log zip' },
+];
+export const deliverableIcon = (k?: string): string =>
+  DELIVERABLE_KINDS.find((d) => d.key === k)?.icon || '•';
+
+/** A step's deliverables — [] when it never declared any. ABSENT and EMPTY read
+ *  the same, which is what makes every pre-#184 chain render unchanged. */
+export const stepDeliverables = (s?: ChecklistStep | null): StepDeliverable[] =>
+  (Array.isArray(s?.deliverables) ? s!.deliverables! : []);
+
+export const isDeliverableFilled = (d?: StepDeliverable | null): boolean => !!d?.value;
+
+/** Unfilled deliverables of one requiredness. The two halves of T10: required
+ *  BLOCKS Complete; optional only prompts (decision D2 — never a block). */
+export const unfilledDeliverables = (
+  s: ChecklistStep | null | undefined, required: boolean,
+): StepDeliverable[] =>
+  stepDeliverables(s).filter((d) => !!d.required === required && !isDeliverableFilled(d));
+
+/** Mint a NEW deliverable spec for the step form. No `id` — the server assigns
+ *  a stable one on PATCH (_ensure_deliverable_ids), exactly as it does for a
+ *  step — and never a fill value: the API refuses one that arrives filled. */
+export const makeDeliverable = (
+  kind: DeliverableKind = 'text', label = '',
+): StepDeliverable => ({ kind, label, required: false, hint: '' });
+
+/** Human file size for the deliverable rows. */
+export const fileSize = (n?: number | null): string => {
+  if (n == null) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+};
 
 // A checklist becomes a #182 process chain once ANY step carries a new-shape
 // key — the exact opt-in signal the API uses (dev_tasks._NEW_SHAPE_KEYS).
 // Legacy {text,role,done} checklists stay legacy and behave as before #182.
-const NEW_SHAPE_KEYS: (keyof ChecklistStep)[] = ['id', 'owner', 'title', 'body', 'mode', 'origin', 'stamp'];
+const NEW_SHAPE_KEYS: (keyof ChecklistStep)[] = ['id', 'owner', 'title', 'body', 'mode', 'origin', 'stamp', 'deliverables'];
 export const isProcessChain = (cl?: ChecklistStep[] | null): boolean =>
   Array.isArray(cl) && cl.some((s) => !!s && NEW_SHAPE_KEYS.some((k) => s[k] != null));
 
