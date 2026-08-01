@@ -4,7 +4,7 @@
 
 **Status:** ✅ **COMPLETE against `done_when`.** The top 3 are named, each with a measured byte volume and a filed fix task; everything else has a written leave-alone reason. **The denominator is now exact** (§2) — `read_bars` alone accounts for **88.8% of all Supabase egress**.
 
-**One thing outranks every recommendation here and must be read first: §2a — the workload already fell 43.4%, worth ~$64/mo, and the cause is unidentified (#301).**
+**One thing outranks every recommendation here and must be read first: §2a — the workload already fell 43.4%, worth ~$64/mo, and the cause is a REVERSIBLE workload change, not a fix (#301).**
 
 ---
 
@@ -32,7 +32,7 @@ Every number is **measured at the socket** over a **stated window**, with a **na
 
 ---
 
-## 2a · ⭐ The workload already fell 43.4% — worth ~$64/mo — and nobody knows why
+## 2a · ⭐ The workload already fell 43.4% — and the saving is REVERSIBLE
 
 **This is the largest single effect in the investigation and nothing in this document caused it.**
 
@@ -44,12 +44,34 @@ Every number is **measured at the socket** over a **stated window**, with a **na
 
 **Forward run-rate: ~1,487 GB/mo ⇒ $111.37/mo, against $175.27 this cycle. ~$63.90/mo is already banked**, by something that shipped before this research began.
 
-**Cause unidentified — #301 (E).** M's candidate, the 07-21 fleet cull, **appears wrong on timing: the step-down in the daily chart is 17–20 Jul, before it.** `Deploy_Log.md` has a hole across exactly that window (07-16, then nothing until 07-21). The nearest preceding change is **07-16 M-RS5b — `RORT_CANONICAL_FINE_TF_STATE`, "fine RTH gate state rebuilt from the canonical resample"** — mechanically the right shape to cut `bar_cache` reads several-fold. `RORT_RESAMPLED_STORE_SERVE` (M-RS2 P2) is the same shape.
+### Cause: the fleet cull — pinned to **07-20 18:00–19:00 UTC** (#301, measured)
 
-**Why this must be resolved before any fix is actioned:**
-- **A fix ranked against the 30-day average is sized against a workload that no longer exists.** Rank against **49.58 GB/day.**
-- **If the cause is an already-shipped arm, the #1 egress source was largely fixed once already, by accident, while chasing fidelity** — and what remains to recommend is much smaller.
-- **If the cause is the fleet cull, it is a workload change that reverts the moment the fleet regrows** — a forward risk, not a past win. Opposite implications for whether #299 and #300 are worth doing at all.
+**Not a code fix. A workload change.** Two independent production time series step in the same UTC hour:
+
+| | through 07-20 | 07-21 onward |
+|---|---|---|
+| Nightly `full_recompute` (`compute_jobs`) | **69–73 strategies**, 61–98 min | **22–23**, 22–39 min |
+| Live lane (distinct `strategy_id` in `alerts`) | **54–62 sids**, 11.2k–15.8k alerts/day | **12–17 sids**, 1.6k–2.0k/day |
+
+Hour resolution pins the deletion itself: on 07-20 the fleet holds 44 sids at 17:00Z, 37 at 18:00Z, then **15 at 19:00Z**. Control days hold 38–40 at 19:00Z, so this is not an end-of-day taper. Magnitudes corroborate: fleet 3.3× · recompute wall clock 4.5× · alert volume 5.8× · chart egress ~3×.
+
+**Both flag candidates were checked and neither is the cause.** `RORT_CANONICAL_FINE_TF_STATE` (armed 07-16) rebuilds fine-TF state from the hub's **in-memory** 1Min history — it neither adds nor removes a `bar_cache` read, and the four nights after it are the heaviest in the series. `RORT_RESAMPLED_STORE_SERVE`/`_LIVE` (armed **07-13**) is real and structural — `_load_warmup_df` skips up to 355 d of 1Min per warmup — but it fits the mild mid-July softening, not the 3×.
+
+> ### 🔴 This inverts the optimistic branch
+> **The saving was not earned by a fix. It was earned by deleting ~50 strategies, and it reverts the moment the fleet regrows.** `Roadmap_Trading_At_Scale` is a plan to regrow it. **~$64/mo is on loan, not banked** — and the same cull is the recorded heal for the worker minute-boundary saturation ceiling, so egress and that latency ceiling will come back **together**.
+>
+> **This makes #298/#299/#300 more relevant, not less.** They were filed as hygiene against a 3× larger workload; they are now the only *durable* reductions on the table.
+
+### ⚠️ A wrong call of G's, corrected
+
+G argued in this document that **"M's candidate, the 07-21 fleet cull, appears wrong on timing — the collapse is 17–20 Jul, before it."** **That was wrong. M's candidate was right.** The error came from a stale date: the cull is recorded everywhere as *07-21*, which is when the **latency heal was observed**, one RTH session after the deletion. The `Deploy_Log.md` hole across 07-17→07-20 hid the rest. **The record was a day late, and the argument built on it inverted a correct answer.** Memory `project_worker_minute_boundary_saturation` has been corrected.
+
+**One more thing #301 established that bears on §2's retracted Case A/B:** the 07-18/19 weekend still ran **69 sids / 100 min** nightly. **Weekend egress stays high, because recompute is market-independent** — so Case A (the 03–05 Jul head ran high) was the right read, and the market-closed reasoning behind Case B was unsound. Moot for the result, but the reasoning error is worth naming.
+
+**Consequences for the fix list:**
+- **Rank against 49.58 GB/day**, not the 87.53 GB/day 30-day average — a fix sized on the average is sized against a workload that no longer runs.
+- **Treat the reduction as a loan.** Any capacity plan that regrows the fleet must budget egress at the *pre-cull* per-strategy rate, ~1.2 GB/strategy/day (2,626 GB ÷ 30 d ÷ 73 sids).
+- **#301 step 2 (in flight) owns the formal re-rank.**
 
 ---
 
