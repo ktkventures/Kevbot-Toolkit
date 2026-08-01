@@ -4,7 +4,7 @@
 
 **Status:** ✅ **COMPLETE against `done_when`.** The top 3 are named, each with a measured byte volume and a filed fix task; everything else has a written leave-alone reason. **The denominator is now exact** (§2) — `read_bars` alone accounts for **88.8% of all Supabase egress**.
 
-**One thing outranks every recommendation here and must be read first: §2a — the workload already fell 43.4%, worth ~$64/mo, and the cause is a REVERSIBLE workload change, not a fix (#301).**
+**One thing outranks every recommendation here and must be read first: §2a.** The workload fell 43.4% because **~50 strategies were deleted on 07-20 — a `DELETE`, not a fix.** It reverts when the fleet regrows. **The single most useful output of this research is therefore not a smaller bill; it is a unit price: ~2.1 GB/day of egress per forward-testing strategy, ~$5.80/month each, currently unmetered and uncapped.**
 
 ---
 
@@ -12,7 +12,11 @@
 
 Every number is **measured at the socket** over a **stated window**, with a **named caller**. Nothing here is a type-width calculation.
 
-⚠️ **These are rates over the measurement window (Jul 2 – Aug 1), which spans the step-down in §2a.** The *ranking* is robust — source #1 is two orders of magnitude clear — but **the absolute figures describe a workload that is already ~43% smaller than the window average.**
+> ⚠️ **DO NOT rank fixes against these absolutes, or against the 78.1 GB/day they imply.** The measurement window **straddles the 07-20 cull** — 17.78 days before it, 12.08 after — so it blends two regimes and **overstates today by ~2.2×** (#301).
+>
+> **Rank against the measured current rate: 49.58 GB/day** (dashboard, last 7 days — §2). #301's independent model of the measured lanes gives 36–45 GB/day which, plus the 9.5% residual, is 39–49 — **agreeing with the measurement.**
+>
+> The **ranking below is unaffected** — source #1 is two orders of magnitude clear — but every *saving* must be sized against 49.58, not 87.53 and not 78.1.
 
 | # | Source | **Measured egress** | Window | Named caller | Verdict |
 |---|---|---:|---|---|---|
@@ -68,10 +72,33 @@ G argued in this document that **"M's candidate, the 07-21 fleet cull, appears w
 
 **One more thing #301 established that bears on §2's retracted Case A/B:** the 07-18/19 weekend still ran **69 sids / 100 min** nightly. **Weekend egress stays high, because recompute is market-independent** — so Case A (the 03–05 Jul head ran high) was the right read, and the market-closed reasoning behind Case B was unsound. Moot for the result, but the reasoning error is worth naming.
 
-**Consequences for the fix list:**
-- **Rank against 49.58 GB/day**, not the 87.53 GB/day 30-day average — a fix sized on the average is sized against a workload that no longer runs.
-- **Treat the reduction as a loan.** Any capacity plan that regrows the fleet must budget egress at the *pre-cull* per-strategy rate, ~1.2 GB/strategy/day (2,626 GB ÷ 30 d ÷ 73 sids).
-- **#301 step 2 (in flight) owns the formal re-rank.**
+### Ruling (#301 step 2): **WORKLOAD — fully reversible. Nothing was fixed.**
+
+**A strategy created today costs exactly what one cost on 07-19.** Three independent instruments say so:
+
+1. **No arm sits in the window.** The `Deploy_Log.md` hole across 07-17→07-20 held three flag-OFF M-RS5a commits, one egress *increase* (`RORT_MTF_STATE_REFRESH_S` restored to 120 on 07-17), and two commits landing ~4 h *after* the drop.
+2. **The deletion is not parked.** No `strategies_deleted` / archive table exists — the rows are gone, and equally, **nothing caps a rebuild.**
+3. **Per-strategy cost is unchanged, and this is the load-bearing evidence.** Nightly `full_recompute` wall clock went **1.28 min/strategy pre-cull → 1.40 min/strategy post-cull.** Per-strategy work got *more* expensive per unit once fixed overhead stopped amortising across 69. **That is the signature of a workload change and is incompatible with a structural fix.**
+
+*(Note on instrument 3's necessity: #301's egress split selects the fleet-independent share f ≈ 0 to reproduce the chart's ~3×, which then makes the pre/post per-strategy figures identically 1.55 GB/day **by construction**. That match is tautological and must not be cited as confirmation. The recompute wall clock is the independent check, and it is the one that carries the ruling.)*
+
+**One genuinely durable slice:** `RORT_RESAMPLED_STORE_SERVE`/`_LIVE`, armed **07-13**, best explains the chart's mid-July softening (~137 → ~112, ≈18%). Call it **~15–20% structural and durable, ~80%+ workload and reversible** — and the 18% is eyeballed, so treat it as indicative.
+
+> ### 💰 The unit price — the durable deliverable of this research
+> **≈ 2.1 GB/day of total egress and ≈ 1.4 min of nightly recompute per forward-testing strategy ⇒ ~$5.80/month each.**
+> *(All-in, anchored on the measured 49.58 GB/day ÷ 23 strategies. #301's `read_bars`-lane-only figure is 1.55 GB/day ⇒ $4.20/mo; the difference is the API lane plus the 9.5% residual.)*
+
+| fleet | egress/day | monthly | **egress cost** | nightly recompute |
+|---:|---:|---:|---:|---:|
+| **23 — today** | 49.6 GB | 1,487 GB | **$111** | 31 min |
+| 69 — pre-cull | 149 GB | 4,466 GB | **$379** | 94 min |
+| 200 | 431 GB | 12,945 GB | **$1,143** | 4 h 32 m |
+
+**Fleet is flat at 23–24 for 11 nights, all forward-testing, 5 symbols — with no cap, no quota and no alarm. Adding a strategy is a UI click.** Regrowth restores the early-July regime within a day.
+
+**Two walls, and the money one arrives first.** Nightly recompute does not threaten the 13:30 UTC open until ~600 strategies. **The bill is linear and unbounded from 23.** And #292's buffer-cache pressure (70.8% hit ratio, 1.93B real disk reads on a 42M-row table) is a **pre-cull** measurement — **that speed cost returns with the fleet, which is the axis Kevin said he cares about more than the bill.**
+
+⚠️ **This is a growth tax on the roadmap.** `project_monetization` and the multi-user direction multiply the fleet by users, and the per-strategy read cost is currently unpriced.
 
 ---
 
@@ -99,6 +126,8 @@ Last 7 days        347.070 GB
 | Method §6 tolerance | ±25% | **PASS** |
 
 **One query accounts for ~89% of everything that leaves this database.**
+
+> **⚠️ Use the "last 30 days" figure, not the billing-period figure, for this comparison — two readers have now tripped on it.** Against the billing period's 2,197.474 GB, `read_bars` computes to **106.2%**, and a part cannot exceed its whole. That is a **window error, not a data error**: the billing period starts 06 Jul (excluding the highest days, which the measurement window includes) and runs to 05 Aug (four days that had not happened at capture). **The like-for-like comparison is against `last 30 days` = 2,625.939 GB, and it gives 88.8%.**
 
 **The 249 GB residual is named, not shrugged at.** Candidates, none yet measured: **the per-service split (Database vs API/Auth/Storage vs Realtime) was requested and has not yet been supplied** — it would localise this immediately · the ~232M rows (0.82%) across the other 2,439 `pg_stat_statements` entries, ~20 GB at a similar byte/row · browser-side board loads (469 KB per load) · the product frontend's server-side reads, which #293 did not cover — it scoped to agent tooling · Storage · Realtime (billing already $0.00) · Auth · WAL, backups/PITR.
 
@@ -290,14 +319,22 @@ Browser-side egress while a board tab is open (bursty, `GET /api/dev-tasks` = 46
 
 Per #281's boundary — *"the deliverable is understanding, not action"* — and its oversight line, **Kevin sees this list before any of these is actioned.**
 
-**⚠️ Read §2a first. If #301 finds the ~3× collapse was an already-shipped arm, #299 and #300 shrink to near-nothing and may not be worth doing at all.** They are filed so the findings are not lost, not because they are established as worthwhile.
+**⚠️ Read §2a first.** Per #281's boundary — *"the deliverable is understanding, not action"* — and its oversight line, **Kevin sees this list before any of these is actioned.**
 
-| Task | Source | Bucket |
-|---|---|---|
-| **#298** — instrument `read_bars` to attribute the 1.4M calls by caller | #1 | Prerequisite — **you cannot fix what you cannot attribute** |
-| **#299** — `canonical_resampled()` re-reads the base per target; share it | #1 | Pure waste, concrete instance |
-| **#300** — board-tooling egress hygiene: gate projection, `Accept-Encoding`, R watcher finished-rows filter | #2, #3 | Pure waste + cheap win, zero/negative speed cost |
+**Re-ranked against the measured 49.58 GB/day (#301):**
 
-| **#301** — identify what cut daily egress ~3× around 17–20 July | §2a | **Forensics — outranks every fix above** |
+| # | Lever | Size vs current run-rate | Speed cost | Verdict |
+|---|---|---|---|---|
+| **1** | **Fleet size itself** | **±2.1 GB/day per strategy — the entire 3× lives here** | it *buys* product | **Not a code fix — a unit price to know before adding strategies. Unowned and unmetered.** |
+| **2** | **#298** — instrument `read_bars` by caller | unlocks attribution of **100%** of the run-rate | none (in-process counter) | **Do first.** Nothing below can be sized or verified without it. |
+| **3** | **#299** — `canonical_resampled()` per-target base re-read | **unsized** — known instance ≈34 MB/admin-page-load | none, pure sharing | Right shape, real waste, **gated on #298 for its number** |
+| **4** | **#300** — board-tooling hygiene | **1.15 GB/day = 2.3–3.2%**, ~$3.10/mo | negative (gzip is faster) | Genuine pure waste. **Do it because it is free, not because it is big.** |
+| **5** | **#294** — error-response egress | $0.02–0.07/mo | none | **Closed** — the ~91% was a `postgres_logs` artifact |
+| — | **#301** — the forensics above | identified 71 GB/day | — | **Delivered** |
 
-**#290 is CLOSED** — D1 delivered exact (§2). The remaining ask carried forward into the residual: the **per-service egress split**, which would localise the unattributed 249 GB.
+### The two sentences that matter
+
+1. **The cull removed ~71 GB/day. The entire measured remainder of the fix list removes ~1.2 GB/day — 1.6% of it.** No proposal on this board is within an order of magnitude of the thing that already happened by accident.
+2. **Because the cause is workload and not an arm, #298 and #299 are worth MORE, not less.** The optimistic reading — *"already fixed by accident"* — does not fire. **The win is not banked, the per-strategy cost is exactly where it was, and the roadmap multiplies it.** The right output of #281 is not a smaller bill today; it is **a known, reduced marginal cost per strategy before the fleet regrows.**
+
+**#290 is CLOSED** — D1 delivered exact (§2). Still outstanding and non-blocking: the **per-service egress split**, which would localise the unattributed 249 GB.
