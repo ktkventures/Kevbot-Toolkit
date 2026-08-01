@@ -15,7 +15,8 @@ for the wrong reason cannot notice its rail being deleted.
   1  happy path            branch is created on origin, upstream set
   2  refuses dev           protected, and origin/dev does NOT move
   3  refuses main          protected — and `main` is absent from origin here, so
-                           ONLY the protected rail can decline it
+                           ONLY the protected rail can decline it. `master` and
+                           `production` (board #287) ride the same rail
   4  refuses dirty         a modified tracked file, and an untracked file
   5  refuses not-ours (a)  HEAD never moved off the branch the run started on
   6  refuses not-ours (b)  the branch already exists on origin
@@ -208,6 +209,13 @@ ok("3 main: not on origin", not origin_has("main"))
 wt = agent_tree(branch="master")
 ok("3 master: refused AS PROTECTED",
    disp.push_run_branch(run_rec(wt, "dev"))["reason"] == "protected")
+# Board #287 — `production` is the branch the production environment will deploy
+# from after the #165 rename, so it must be refused BEFORE the rename lands. The
+# `main` cases above stay: both names are protected during and after it.
+wt = agent_tree(branch="production")
+res = disp.push_run_branch(run_rec(wt, "dev"))
+ok("3 production: refused AS PROTECTED", res["reason"] == "protected", res)
+ok("3 production: not on origin", not origin_has("production"))
 
 # 4 ── refuses a dirty worktree ─────────────────────────────────────────────
 wt = agent_tree(branch="feat/dirty-mod-195", dirty="modified")
@@ -524,6 +532,10 @@ res, r = fresh_case("main")                      # absent from origin: only the
 ok("16 discovered `main`: refused AS PROTECTED",  # protected rail can decline it
    reasons(res, r["worktree"]) == ["protected"], res)
 ok("16 discovered `main`: not on origin", not origin_has("main"))
+res, r = fresh_case("production")                # board #287: same rail, for the
+ok("16 discovered `production`: refused AS PROTECTED",   # post-#165 branch name
+   reasons(res, r["worktree"]) == ["protected"], res)
+ok("16 discovered `production`: not on origin", not origin_has("production"))
 res, r = fresh_case("feat/fresh-empty-195", commits=0)
 ok("16 discovered+no commits: declined AS NOTHING-AHEAD",
    reasons(res, r["worktree"]) == ["nothing-ahead"], res)

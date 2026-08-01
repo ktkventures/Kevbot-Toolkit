@@ -360,6 +360,13 @@ ok("8 owned+untracked: refused AS DIRTY", reasons(res, lane) == ["dirty"], res)
 res, lane = owned_case("main", "wt-main")        # absent from origin here
 ok("8 owned+`main`: refused AS PROTECTED", reasons(res, lane) == ["protected"], res)
 ok("8 owned+`main`: not on origin", not origin_has("main"))
+# Board #287 — a PROVABLY OWNED tree is the strongest possible push candidate, so
+# it is the sharpest place to assert `production` is refused on the branch name
+# alone. Kept alongside `main`, not in place of it.
+res, lane = owned_case("production", "wt-production")
+ok("8 owned+`production`: refused AS PROTECTED",
+   reasons(res, lane) == ["protected"], res)
+ok("8 owned+`production`: not on origin", not origin_has("production"))
 res, lane = owned_case("feat/owned-empty-218", "wt-empty", commits=0)
 ok("8 owned+no commits: declined AS NOTHING-AHEAD",
    reasons(res, lane) == ["nothing-ahead"], res)

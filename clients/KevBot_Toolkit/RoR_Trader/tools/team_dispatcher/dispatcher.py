@@ -299,7 +299,11 @@ MAX_AUTO_RETRIES = 2
 
 GIT_TIMEOUT_S = 120        # board #195: any single git call in the push leg
 PUSH_BASE = "origin/dev"   # "has this branch got work on it?" is measured vs dev
-PROTECTED_BRANCHES = ("dev", "main", "master")  # never pushed by the loop, ever
+# Never pushed by the loop, ever. Board #287 adds `production` BEFORE the
+# `main` -> `production` rename (#165), and KEEPS `main` after it: a stale entry
+# costs nothing, a branch the environment deploys from that is NOT on this list
+# costs everything. Both names are refused during and after the rename.
+PROTECTED_BRANCHES = ("dev", "main", "master", "production")
 
 # Board #109 (Registry Phase 2): the Run button is DECLARATIVE — the API adds
 # this tag + a run_history row (outcome='requested'); this --loop is what
