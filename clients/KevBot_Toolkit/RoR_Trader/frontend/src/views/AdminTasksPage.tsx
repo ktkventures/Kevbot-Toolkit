@@ -32,6 +32,10 @@ import Card from '@/components/Card';
 import { apiFetch } from '@/lib/api/client';
 import TaskDetailModal from './TaskDetailModal';
 import TaskMessagesPanel from './TaskMessagesPanel';
+// Board #297 — the board's own manual, GENERATED from taskBoardShared's model
+// rather than written beside it. See that file's header for why it must never
+// become a hand-typed second copy of the rules.
+import TaskHelpModal from './TaskHelpModal';
 import {
   Task, RunRow, Mention, AREAS, ASSIGNEES, ORIGINS, STATUS_COLOR, AUTHOR_LS_KEY,
   COLLAPSED_LS_KEY, RUN_REQUESTED_TAG, STATUS_DEF, STATUSES, withLegacy,
@@ -86,6 +90,9 @@ export default function AdminTasksPage() {
   // the pipeline (priority within vision), so it stays fixed.
   const [sort, setSort] = useState<{ key: string; dir: 1 | -1 } | null>(null);
   const [modal, setModal] = useState<{ id: number; sel?: number } | null>(null);
+  // Board #297 — the help manual. Board-state only, nothing persisted: it is a
+  // reference surface, so re-opening it should always start at topic one.
+  const [helpOpen, setHelpOpen] = useState(false);
   const [commentAuthor, setCommentAuthor] = useState('kevin');
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
   // Assignee/author options come from the agents registry; the const is the
@@ -550,7 +557,16 @@ export default function AdminTasksPage() {
   return (
     <AgentRegistryContext.Provider value={agentReg}>
     <div style={{ padding: 20, maxWidth: 1500, margin: '0 auto' }}>
-      <h1 style={{ fontSize: 22, marginBottom: 4 }}>Dev Task Tracker</h1>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+        <h1 style={{ fontSize: 22, margin: 0 }}>Dev Task Tracker</h1>
+        {/* Board #297 — Kevin's ask: a help button at the TOP of the page, not
+            buried in a menu. The manual is generated from the same model this
+            page renders from, so it can never describe a board other than the
+            one in front of you. */}
+        <button style={{ ...input, cursor: 'pointer', fontSize: 12, padding: '3px 9px' }}
+          title="how this board works — task types, statuses and assignees, generated from the board's own model (warts included, board #297)"
+          onClick={() => setHelpOpen(true)}>✻ Help</button>
+      </div>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>
         {openCount} open · {liveCount} touch live · sorted by priority (phase.seq, 1.1 first). Pipeline:
         Backlog → Scoping → Approval → Todo → In Progress → Review → Staged → Done (Blocked = exception;
@@ -760,6 +776,11 @@ export default function AdminTasksPage() {
           </table>
         </Card>
       )}
+
+      {/* Board #297 — fed the live task list so the per-goal assignee lanes it
+          shows are the board's ACTUAL open goals, derived the same way the
+          assignee selects derive them, not a list typed into the manual. */}
+      {helpOpen && <TaskHelpModal tasks={tasks} onClose={() => setHelpOpen(false)} />}
 
       {modalTask && (
         <TaskDetailModal key={`${modalTask.id}:${modal?.sel ?? ''}`}
