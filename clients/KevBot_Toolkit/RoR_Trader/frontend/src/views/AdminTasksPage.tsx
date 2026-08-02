@@ -32,9 +32,10 @@ import Card from '@/components/Card';
 import { apiFetch } from '@/lib/api/client';
 import TaskDetailModal from './TaskDetailModal';
 import TaskMessagesPanel from './TaskMessagesPanel';
-// Board #297 — the board's own manual, GENERATED from taskBoardShared's model
-// rather than written beside it. See that file's header for why it must never
-// become a hand-typed second copy of the rules.
+// Board #297 — the board's own manual. Every section either RENDERS from
+// taskBoardShared's model or PINS its claim to the `path:line` that enforces it.
+// See that file's header for why it must never become a hand-typed second copy
+// of rules that already live in five places.
 import TaskHelpModal from './TaskHelpModal';
 import {
   Task, RunRow, Mention, AREAS, ASSIGNEES, ORIGINS, STATUS_COLOR, AUTHOR_LS_KEY,
@@ -564,7 +565,7 @@ export default function AdminTasksPage() {
             page renders from, so it can never describe a board other than the
             one in front of you. */}
         <button style={{ ...input, cursor: 'pointer', fontSize: 12, padding: '3px 9px' }}
-          title="how this board works — task types, statuses and assignees, generated from the board's own model (warts included, board #297)"
+          title="how this board works — types, statuses, lanes, process chains, stamps, status-vs-chain and the release lifecycle; generated from the board's own model or pinned to the line that enforces it (warts included, board #297)"
           onClick={() => setHelpOpen(true)}>✻ Help</button>
       </div>
       <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 16 }}>

@@ -12,8 +12,16 @@ and Kevin has said outright he wants the agents to trust it.
 
 So the whole of this suite is one claim, made unfakeable:
 
-    every row the manual shows is DERIVED from taskBoardShared's model,
-    and a future hand-edit that hardcodes one turns this file red.
+    every section of the manual either RENDERS from taskBoardShared's model or
+    PINS its claim to a `path:line` that still says what it says — and a future
+    hand-edit that hardcodes a row, or a citation whose line has moved, turns
+    this file red.
+
+The rule is the task's own (board #297 step 2, Kevin 08-02): *"a section that
+does neither is a sixth copy of rules already living in five places, and it is
+wrong within a week."* Both halves are checked here — the generated half by
+EXECUTING the builders, the cited half by opening every cited file and asserting
+the anchor is on the cited line.
 
 Rails, each of which FAILS without its fix:
 
@@ -46,18 +54,25 @@ Rails, each of which FAILS without its fix:
                                 `STATUS_DEF` sentence may appear in it at all.
                                 Retyping one line of the model into the JSX
                                 fails here.
-  RAIL 6  THE WARTS ARE STATED— the four behaviours Kevin must see before he
-                                redesigns against them are present, each with a
-                                board ref AND a file+symbol citation. Every
-                                cited file is OPENED and the named symbol found,
-                                so a rename breaks the test instead of quietly
-                                leaving a lie in a modal.
-  RAIL 7  SCOPE HELD          — this pass documents only what renders itself.
-                                Process chains, stamps and the release/train
-                                lifecycle are NOT written up here (they are
-                                prose, and prose is the sixth copy); nothing in
-                                the modal writes, and the written sources it
-                                points at exist on disk.
+  RAIL 6  THE WARTS ARE STATED— every behaviour Kevin must see before he
+                                redesigns against it is present, each with a
+                                board ref AND a file+line+symbol citation. Every
+                                cited file is OPENED and the named symbol found
+                                ON THE NAMED LINE, so a rename or a move breaks
+                                the test instead of quietly leaving a lie in a
+                                modal.
+  RAIL 7  SECTIONS 4-7 CITE   — process chains, stamps, status-vs-the-chain and
+                                the release lifecycle each have claims; EVERY
+                                claim carries at least one citation; every
+                                citation resolves to a real file whose cited
+                                LINE still holds its anchor. An uncited claim is
+                                the sixth copy, and this rail is what refuses
+                                one. The two model-backed tables inside the
+                                chain panel (step modes, deliverable kinds) are
+                                EXECUTED like rails 2-4.
+  RAIL 8  READ-ONLY           — describing the system is in scope; becoming it
+                                is not. Nothing in the modal writes, and the
+                                written sources it points at exist on disk.
 
 The derivations are EXECUTED in node, never grepped — board #245's lesson is
 that a string-compare "mirror" is not a mirror. The lifters are the ones
@@ -222,11 +237,15 @@ PRELUDE = (
     + lift_literal(SHARED, "STATUS_DEF")
     + lift_literal(SHARED, "STATUS_COLOR")
     + lift_literal(SHARED, "ASSIGNEES")
-    # …and the three builders under test, lifted out of the modal itself.
+    + lift_literal(SHARED, "MODE_DEF")
+    + lift_literal(SHARED, "DELIVERABLE_KINDS")
+    # …and the builders under test, lifted out of the modal itself.
     + lift_arrow(HELP, "helpTypeRows")
     + lift_arrow(HELP, "helpStatusRows")
     + lift_arrow(HELP, "helpAssigneeRow")
     + lift_arrow(HELP, "helpAssigneeRows")
+    + lift_arrow(HELP, "helpModeRows")
+    + lift_arrow(HELP, "helpDeliverableRows")
 )
 
 
@@ -256,19 +275,32 @@ ok("it is fed the live task list, so goal lanes are the board's real ones",
 # "at the top" = above the board, and specifically in the page's h1 row. Anchor
 # on the `<h1` TAG, not on the page title text — that string appears first in
 # the file's own docstring, which is not a row anything renders.
+#
+# Checked STRUCTURALLY (between the `<h1>` and the close of the element that
+# wraps it) rather than by a byte window: the first version of this rail allowed
+# 700 characters, and lengthening the button's own tooltip broke it. A rail that
+# fails on the length of a title attribute is measuring the wrong thing.
 H1 = TASKS_PAGE.find("<h1")
+ROW_END = TASKS_PAGE.find("</div>", H1)
+BTN = TASKS_PAGE.find("Help</button>")
 ok("the button sits in the page's title row, at the TOP (Kevin's ask)",
-   -1 < H1 < TASKS_PAGE.find("Help</button>") < H1 + 700,
-   (H1, TASKS_PAGE.find("Help</button>")))
+   -1 < H1 < BTN < ROW_END, (H1, BTN, ROW_END))
 ok("it opens BEFORE the board table renders, not below it",
    TASKS_PAGE.find("Help</button>") < TASKS_PAGE.find("<tbody>"))
 
-# Left nav / right detail — Kevin's shape, and four topics reachable.
+# Left nav / right detail — Kevin's shape, and ALL SEVEN sections reachable
+# (plus the pointer panel). The scope was rewritten on 08-02 to refuse
+# deferrals: the sections M had held back are exactly the ones Kevin means to
+# change, so a missing panel is a missing deliverable, not a smaller one.
 ok("left nav + right detail, both present in the shell",
    "<nav" in HELP and "setTopic(" in HELP)
-for t in ("types", "statuses", "assignees", "sources"):
+SECTIONS = ("types", "statuses", "assignees", "chains", "stamps", "dispatch",
+            "releases", "sources")
+for t in SECTIONS:
     ok(f"topic `{t}` has a panel bound to it",
        re.search(rf"topic === '{t}' && <", HELP) is not None)
+ok("the nav lists every section — no panel is reachable only by editing code",
+   all(re.search(rf"id: '{t}',", HELP) is not None for t in SECTIONS))
 ok("Escape closes it (a reference surface must never trap you)",
    "'Escape'" in HELP and "onClose()" in HELP)
 
@@ -418,14 +450,16 @@ IMPORT = re.search(r"import \{([^}]+)\} from './taskBoardShared';", HELP)
 ok("the modal imports its vocabulary from taskBoardShared", IMPORT is not None)
 imported = {s.strip() for s in (IMPORT.group(1) if IMPORT else "").split(",")}
 for sym in ("TASK_TYPES", "TASK_TYPE_VALUES", "STATUSES", "STATUS_DEF",
-            "ASSIGNEES", "FINISHED_STATUSES", "openGoalLanes", "laneKindLabel"):
+            "ASSIGNEES", "FINISHED_STATUSES", "openGoalLanes", "laneKindLabel",
+            "MODE_DEF", "DELIVERABLE_KINDS"):
     ok(f"`{sym}` is read from the model, not redefined here",
        sym in imported and f"const {sym} =" not in HELP)
 # The ONLY module-level arrays the modal may own: its nav structure (TOPICS —
-# which panels exist, a UI fact and not a rule), the warts (the one thing that
-# cannot be derived, since the model is what they contradict), and the pointers
-# to written sources. A fourth array is a vocabulary being retyped.
-ALLOWED_ARRAYS = {"TOPICS", "HELP_WARTS", "HELP_SOURCES"}
+# which panels exist, a UI fact and not a rule), the warts and the cited claims
+# (the two things that cannot be derived, since the model is precisely what they
+# contradict or sit outside of), and the pointers to written sources. A fifth
+# array is a vocabulary being retyped.
+ALLOWED_ARRAYS = {"TOPICS", "HELP_WARTS", "HELP_CLAIMS", "HELP_SOURCES"}
 own_arrays = set(re.findall(
     r"^(?:export )?const ([A-Z_]+)(?::[^=]+)? = \[", HELP, re.M))
 ok("the modal declares no vocabulary array of its own beyond nav/warts/sources",
@@ -438,31 +472,59 @@ WARTS = js(lift_literal(HELP, "HELP_WARTS").replace(
     prelude="")
 by_id = {w["id"]: w for w in WARTS}
 
+# The task named these outright ("DOCUMENT THE WARTS — this is a diagnostic,
+# not a brochure"). Each is checked by id AND by the board ref it belongs to, so
+# dropping one is a red test rather than a quieter manual.
 for wid, ref in (("backlog-does-not-hold", "#296"),
                  ("statuses-not-enforced", "#261"),
                  ("assignee-unvalidated", "#289"),
-                 ("staged-is-terminal", "#198")):
+                 ("staged-is-terminal", "#242"),
+                 ("complete-ticks-the-first-step", "#202"),
+                 ("chain-assignee-disagreement-stops-work", "#73"),
+                 ("no-ship-step-never-ships", "#302")):
     ok(f"wart `{wid}` is documented, with board ref {ref}",
        wid in by_id and ref in by_id[wid]["refs"],
        by_id.get(wid, {}).get("refs"))
 
-ok("every wart names a board ref and a file+symbol that proves it",
-   all(w["refs"] and w["source"] and w["symbol"] for w in WARTS))
+ok("every wart names a board ref and a file+line+symbol that proves it",
+   all(w["refs"] and w["source"] and w["symbol"] and w.get("line")
+       for w in WARTS))
 ok("every wart is attached to a panel that actually exists",
-   {w["section"] for w in WARTS} <= {"types", "statuses", "assignees"},
+   {w["section"] for w in WARTS} <= set(SECTIONS),
    sorted({w["section"] for w in WARTS}))
 ok("every wart is RENDERED (the panels filter to their own section)",
-   "wartsFor(" in HELP and HELP.count("wartsFor('") >= 3)
+   "wartsFor(" in HELP and HELP.count("wartsFor('") >= len(
+       {w["section"] for w in WARTS}))
+
+
+def anchored_at(source, line, anchor):
+    """(ok, detail) — `anchor` is on line `line` of `source`, 1-indexed.
+
+    The line number is the whole value of a citation: `dev_tasks.py:954` is a
+    thing you can open, and a footnote you cannot check is decoration. So the
+    pin is asserted EXACTLY, and the failure names the line the anchor actually
+    sits on — fixing a drifted citation is then a one-number edit rather than an
+    investigation."""
+    path = os.path.join(ROOT, source)
+    if not os.path.isfile(path):
+        return False, f"no such file: {source}"
+    lines = read(path).split("\n")
+    if not (1 <= line <= len(lines)):
+        return False, f"line {line} is past the end of {source}"
+    if anchor in lines[line - 1]:
+        return True, ""
+    found = [i + 1 for i, ln in enumerate(lines) if anchor in ln]
+    return False, (f"{source}:{line} no longer holds {anchor!r} — "
+                   + (f"it is now on line {found[0]}" if found
+                      else "it is not in the file at all"))
+
 
 # The citations are checked against the real files — this is what stops a wart
 # outliving the behaviour it describes.
 for w in WARTS:
-    path = os.path.join(ROOT, w["source"])
-    exists = os.path.isfile(path)
-    ok(f"wart `{w['id']}` cites a file that exists: {w['source']}", exists)
-    if exists:
-        ok(f"…and `{w['symbol']}` is still in it",
-           w["symbol"] in read(path), w["symbol"])
+    good, detail = anchored_at(w["source"], w["line"], w["symbol"])
+    ok(f"wart `{w['id']}` is pinned: {w['source']}:{w['line']} → {w['symbol']}",
+       good, detail)
 
 # The two warts whose whole point is what the code DOES — pinned at the source,
 # so this suite fails if the behaviour is fixed and the manual is not updated.
@@ -478,12 +540,102 @@ ok("the API really validates task_type but NOT status — the wart, proved",
 ok("the API really has no assignee vocabulary — proved positively",
    '"origin" in row' in API and '"assignee" in row and' not in API)
 
-print("\n=== RAIL 7 — SCOPE HELD ===")
+print("\n=== RAIL 7 — SECTIONS 4-7 EXIST, AND EVERY CLAIM CITES ===")
 
-ok("no prose write-up of process chains / stamps / release trains in this pass",
-   not re.search(r"HELP_(CHAINS|STAMPS|TRAINS|LIFECYCLE)", HELP))
-ok("the modal is read-only — no PATCH/POST/fetch anywhere in it",
-   not re.search(r"apiFetch|fetch\(|PATCH|POST", HELP))
+CLAIMS = js(lift_literal(HELP, "HELP_CLAIMS").replace(
+    "const HELP_CLAIMS", "const C") + "console.log(JSON.stringify(C));",
+    prelude="")
+CITES = js(lift_literal(HELP, "HELP_CITES").replace(
+    "const HELP_CITES", "const K") + "console.log(JSON.stringify(K));",
+    prelude="")
+
+# The four sections the 08-02 rewrite refused to let anyone defer. Each is named
+# explicitly: "all of them, no deferrals".
+CITED_SECTIONS = ("chains", "stamps", "dispatch", "releases")
+for s in CITED_SECTIONS:
+    n = len([c for c in CLAIMS if c["section"] == s])
+    ok(f"section `{s}` has cited claims ({n})", n >= 3, n)
+
+ok("every claim is attached to a section that has a panel",
+   {c["section"] for c in CLAIMS} <= set(SECTIONS),
+   sorted({c["section"] for c in CLAIMS}))
+ok("EVERY claim carries at least one citation — an uncited one is the 6th copy",
+   all(c["cites"] for c in CLAIMS),
+   [c["id"] for c in CLAIMS if not c["cites"]])
+unknown = sorted({k for c in CLAIMS for k in c["cites"] if k not in CITES})
+ok("every citation key resolves to a real entry in the citation table",
+   not unknown, unknown)
+orphans = sorted(set(CITES) - {k for c in CLAIMS for k in c["cites"]})
+ok("no citation sits in the table unused (a pin nothing shows is not a source)",
+   not orphans, orphans)
+ok("every cited section is RENDERED from the claims, not hand-written JSX",
+   "claimsFor(" in HELP
+   and all(f"claimsFor('{s}')" in HELP for s in CITED_SECTIONS))
+ok("the citation is VISIBLE to the reader — path AND line, on the claim",
+   "{c.path}:{c.line}" in HELP)
+
+# THE pin check: every cited line still says what the manual says it says.
+for key in sorted(CITES):
+    c = CITES[key]
+    good, detail = anchored_at(c["path"], c["line"], c["anchor"])
+    ok(f"citation `{key}` is pinned: {c['path']}:{c['line']}", good, detail)
+
+# The task's own list of what sections 4-7 must actually cover. Checked by the
+# CITED LINE rather than by prose, so a section that merely mentions a topic
+# without pinning it does not pass.
+MUST_PIN = {
+    "the step's field set": ("chainShape",),
+    "server-owned completion": ("chainServerOwned",),
+    "a checklist BECOMES a chain on opt-in": ("chainOptIn", "chainOptInUi"),
+    "strict order — first incomplete step only": ("chainStrictOrder",),
+    "auto-reassign to the next step's owner": ("chainHandoff",),
+    "stamp shape {required,state,by,at}": ("stampShape", "stampStates"),
+    "a kevin step + required stamp derives kevin_final":
+        ("stampDerivesKevinFinal",),
+    "/steps/stamp owns state; a generic PATCH is refused":
+        ("stampEndpoint", "stampPatchRefused"),
+    "the dispatch gate is ai_eligible OR Todo": ("gateFilter",),
+    "status is a separate field nothing derives":
+        ("gateCompletionWrites", "gateNoStatusValidation"),
+    "triage refuses on chain/assignee disagreement": ("gateDisagree",),
+    "Staged is the release lane's entry point": ("relEntryPoint",),
+    "a car is a release-owned current step": ("relCarIsAStep",),
+    "the post-merge sweep, gated on git": ("relSweep", "relMergedGate"),
+    "who may merge": ("relProtocol",),
+}
+for what, keys in MUST_PIN.items():
+    ok(f"covered and pinned — {what}", all(k in CITES for k in keys),
+       [k for k in keys if k not in CITES])
+
+# The two model-backed tables inside the chain panel are held to rails 2-4's
+# standard: EXECUTED, not grepped.
+modes = js("console.log(JSON.stringify(helpModeRows()));")
+model_modes = js("console.log(JSON.stringify(MODE_DEF));")
+ok("step modes are DERIVED from MODE_DEF, definitions included",
+   [m["mode"] for m in modes] == list(model_modes)
+   and all(m["def"] == model_modes[m["mode"]] for m in modes),
+   [m["mode"] for m in modes])
+delivs = js("console.log(JSON.stringify(helpDeliverableRows()));")
+model_delivs = js("console.log(JSON.stringify(DELIVERABLE_KINDS));")
+ok("deliverable kinds are DERIVED from the model, definitions included",
+   [d["kind"] for d in delivs] == [d["key"] for d in model_delivs]
+   and all(d["def"] == m["def"] for d, m in zip(delivs, model_delivs)),
+   [d["kind"] for d in delivs])
+ok("neither table's definitions are retyped in the modal",
+   not any(m in HELP for m in model_modes.values())
+   and not any(d["def"] in HELP for d in model_delivs))
+
+print("\n=== RAIL 8 — READ-ONLY, AND THE WRITTEN SOURCES EXIST ===")
+
+# Matched as CODE, not as a word: the manual now DESCRIBES what a PATCH may and
+# may not do, so a bare substring search for "PATCH" would fail on its own
+# documentation. What must be absent is a call site.
+ok("the modal is read-only — no network call anywhere in it",
+   not re.search(r"apiFetch\s*\(|\bfetch\s*\(|\baxios\b|useMutation"
+                 r"|method:\s*['\"](POST|PATCH|PUT|DELETE)", HELP))
+ok("…and it imports no write helper", "apiFetch" not in HELP)
+ok("nothing in it is editable — no input/textarea/select/onChange",
+   not re.search(r"<input|<textarea|<select|onChange", HELP))
 SOURCES = js(lift_literal(HELP, "HELP_SOURCES").replace(
     "const HELP_SOURCES", "const S") + "console.log(JSON.stringify(S));",
     prelude="")
@@ -494,6 +646,12 @@ for s in SOURCES:
        os.path.isfile(os.path.join(ROOT, s["path"])))
 ok("the charter is among them — roles are prose and stay prose",
    any("Session_Charters.md" in s["path"] for s in SOURCES))
+ok("every file a claim cites is also named in the sources panel",
+   {c["path"] for c in CITES.values()} <= {s["path"] for s in SOURCES}
+   | {"frontend/src/views/taskBoardShared.tsx",
+      "tools/release_brief/release_lane.py",
+      "tools/release_brief/car_ship_tick.py"},
+   sorted({c["path"] for c in CITES.values()}))
 
 print(f"\n{'=' * 60}")
 if FAILED:
