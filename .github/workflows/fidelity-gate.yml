@@ -79,6 +79,12 @@ jobs:
           python test_unified_parity.py
           python test_parity_regression.py
           python test_mass_builder_fidelity_parity.py
+          # Board #165 Phase B — the dev fleet's write isolation. Hermetic (no
+          # DB, no network, no engine import): proves a dev row cannot land in
+          # `alerts` and that a consumed bar is never re-processed. Both rails
+          # are asserted in BOTH directions, so removing a guard fails the gate
+          # instead of passing quietly.
+          python test_dev_bars_consumer_165.py
 
       - name: No engine changes — gate passes trivially
         if: steps.changes.outputs.run != 'true'
